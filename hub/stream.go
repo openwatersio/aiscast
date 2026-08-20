@@ -257,7 +257,14 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	cl, authErr := p.authorize(r, "publish") // optional: anonymous sockets may subscribe, not publish
+	// Anonymous sockets may subscribe (the viewer), never publish. A supplied token must verify, and its
+	// claims (cidr, conns, bbox) bind the socket whatever its role; publishing needs a publish role.
+	cl, err := p.socketClaims(r)
+	if err != nil {
+		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
+		c.Close(websocket.StatusPolicyViolation, "invalid token")
+		return
+	}
 	if cl != nil {
 		if release, ok := conns.acquire(cl.Sub, cl.Conns); ok {
 			defer release()
@@ -265,6 +272,10 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "concurrent connections per key exceeded"})
 			return
 		}
+	}
+	canPublish := (cl != nil && cl.may("publish")) || (cl == nil && allowAnon)
+	if cl == nil && allowAnon {
+		cl = &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}
 	}
 	var boxes atomic.Pointer[[]bbox] // nil = not subscribed
 	go func() {
@@ -296,8 +307,8 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				}
 				boxes.Store(&b)
 			case "publish":
-				if authErr != nil {
-					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "publish requires a feeder or peer token: " + authErr.Error()})
+				if !canPublish {
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "publish requires a feeder or peer token"})
 					continue
 				}
 				now := time.Now()

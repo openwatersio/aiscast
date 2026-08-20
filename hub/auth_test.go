@@ -141,3 +141,31 @@ func TestPersonalKeys(t *testing.T) {
 }
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+func TestV1SocketTokenScope(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, p)
+	exp := time.Now().Add(time.Hour).Unix()
+	personal, _ := signToken(priv, Claims{Kid: kid, Sub: "p1", Role: "personal", Exp: exp, BBox: []bbox{{55, 5, 65, 15}}})
+	expired, _ := signToken(priv, Claims{Kid: kid, Sub: "old", Role: "admin", Exp: time.Now().Add(-time.Minute).Unix()})
+
+	for _, c := range []struct {
+		name, key string
+		wantErr   bool
+	}{{"anonymous", "", false}, {"personal", personal, false}, {"expired", expired, true}, {"garbage", "ak1.x.y", true}} {
+		r := httptest.NewRequest("GET", "/v1/stream?key="+c.key, nil)
+		r.RemoteAddr = "1.2.3.4:1"
+		cl, err := p.socketClaims(r)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err=%v", c.name, err)
+		}
+		if c.name == "personal" && (cl == nil || cl.may("publish") || cl.allowsBox(bbox{40, -80, 45, -70}) || !cl.allowsBox(bbox{58, 9, 60, 11})) {
+			t.Errorf("personal claims not enforced: %+v", cl)
+		}
+		if c.name == "anonymous" && cl != nil {
+			t.Errorf("anonymous should have no claims")
+		}
+	}
+}

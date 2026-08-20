@@ -74,13 +74,6 @@ func (c *Claims) allowsIP(ip string) bool {
 	addr := net.ParseIP(ip)
 	for _, s := range c.CIDR {
 		if _, n, err := net.ParseCIDR(s); err == nil && n.Contains(addr) {
-			continue
-		} else if err == nil {
-			continue
-		}
-	}
-	for _, s := range c.CIDR {
-		if _, n, err := net.ParseCIDR(s); err == nil && n.Contains(addr) {
 			return true
 		}
 		if net.ParseIP(s) != nil && net.ParseIP(s).Equal(addr) {
@@ -199,6 +192,26 @@ func (p *Pipeline) authorize(r *http.Request, action string) (*Claims, error) {
 	}
 	if !c.may(action) {
 		return nil, fmt.Errorf("role %s may not %s", c.Role, action)
+	}
+	if !c.allowsIP(clientIP(r)) {
+		return nil, errors.New("token not valid from this address")
+	}
+	return c, nil
+}
+
+// socketClaims verifies the token on a WebSocket request. No token → anonymous (nil, nil). A token that is
+// present but invalid, or not valid from this address, is an error: it must never degrade to anonymous access.
+func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
+	tok := requestToken(r)
+	if tok == "" {
+		return nil, nil
+	}
+	c, err := p.auth.verify(tok, time.Now())
+	if err != nil {
+		if allowAnon {
+			return &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}, nil
+		}
+		return nil, err
 	}
 	if !c.allowsIP(clientIP(r)) {
 		return nil, errors.New("token not valid from this address")
