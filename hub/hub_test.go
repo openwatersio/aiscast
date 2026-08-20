@@ -221,9 +221,9 @@ func TestUDPSenderKeyedByOwnMMSI(t *testing.T) {
 	sub := p.subscribe()
 	src := udpStation("198.51.100.7")
 	now := time.Now()
-	p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"}) // a target, before we know who the sender is
-	p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: "!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21"}) // own ship 227006760
-	p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: "!AIVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43"}) // another target, after
+	p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})                            // a target, before we know who the sender is
+	p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: "!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21"})                            // own ship 227006760
+	p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: `\s:2573010,c:1787234980*03\!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43`}) // another target, after
 	got := []string{}
 	for len(sub.ch) > 0 {
 		got = append(got, (<-sub.ch).Source)
