@@ -78,6 +78,10 @@ func (a *archive) key(source string, hour time.Time) string {
 
 func (a *archive) open(source string, hour time.Time) *hourFile {
 	path := filepath.Join(a.dir, a.key(source, hour))
+	if rel, err := filepath.Rel(a.dir, path); err != nil || strings.HasPrefix(rel, "..") {
+		log.Printf("archive: refusing path outside archive dir for source %q", source)
+		return nil
+	}
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {

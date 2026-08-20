@@ -15,7 +15,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// v0Keys from V0_API_KEYS="k1,k2". Empty = any non-empty key is valid (dev).
+// v0Keys from V0_API_KEYS="k1,k2"; with ALLOW_ANON=1 any non-empty key is valid.
 var v0Keys = func() map[string]bool {
 	m := map[string]bool{}
 	for _, k := range strings.Split(os.Getenv("V0_API_KEYS"), ",") {
@@ -60,7 +60,7 @@ func parseV0Sub(data []byte) (*v0Filter, string) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, errMalformed
 	}
-	if s.APIKey == "" || (len(v0Keys) > 0 && !v0Keys[s.APIKey]) {
+	if s.APIKey == "" || (!allowAnon && !v0Keys[s.APIKey]) {
 		return nil, errBadKey
 	}
 	if len(s.BoundingBoxes) == 0 || len(s.FiltersShipMMSI) > 50 {

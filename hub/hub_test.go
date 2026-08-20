@@ -15,7 +15,26 @@ import (
 )
 
 func testPipeline(t *testing.T) *Pipeline {
+	allowAnon = true
 	return newPipeline(newArchive(t.TempDir(), ""))
+}
+
+func TestFeederAuthFailsClosed(t *testing.T) {
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	feederKeys["st1"] = "secret"
+	for _, c := range []struct {
+		user, pass string
+		ok         bool
+	}{{"st1", "secret", true}, {"st1", "wrong", false}, {"nobody", "x", false}, {"../etc", "secret", false}, {"", "", false}} {
+		r := httptest.NewRequest("POST", "/v1/receive", nil)
+		if c.user != "" {
+			r.SetBasicAuth(c.user, c.pass)
+		}
+		if _, ok := feederAuth(r); ok != c.ok {
+			t.Errorf("%q/%q: ok=%v want %v", c.user, c.pass, ok, c.ok)
+		}
+	}
 }
 
 func TestParseV0Sub(t *testing.T) {

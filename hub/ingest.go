@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"log"
@@ -17,35 +18,40 @@ import (
 
 const maxBody = 1 << 20
 
-// feederKeys maps station id → secret from FEEDER_KEYS="id:secret,id:secret". Empty = accept any (dev).
+// allowAnon (ALLOW_ANON=1) accepts any feeder id and any v0 API key. Local development only; never set it on a public host.
+var allowAnon = os.Getenv("ALLOW_ANON") == "1"
+
+// feederKeys maps station id → secret from FEEDER_KEYS="id:secret,id:secret".
 var feederKeys = func() map[string]string {
 	m := map[string]string{}
 	for _, kv := range strings.Split(os.Getenv("FEEDER_KEYS"), ",") {
-		if id, sec, ok := strings.Cut(kv, ":"); ok {
+		if id, sec, ok := strings.Cut(kv, ":"); ok && validID(id) {
 			m[id] = sec
 		}
 	}
-	if len(m) == 0 {
-		log.Printf("FEEDER_KEYS unset: accepting any feeder credentials")
+	if allowAnon {
+		log.Printf("ALLOW_ANON=1: accepting any feeder and any v0 API key")
 	}
 	return m
 }()
 
-var safeID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+// validID keeps ids safe for log lines and archive path components.
+var validID = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`).MatchString
 
 // feederAuth returns the station id from Basic auth (AIS-catcher USERPWD id:key) or ?key=id:secret.
 func feederAuth(r *http.Request) (string, bool) {
 	id, sec, ok := r.BasicAuth()
 	if !ok {
-		id, sec, ok = strings.Cut(r.URL.Query().Get("key"), ":")
+		id, sec, _ = strings.Cut(r.URL.Query().Get("key"), ":")
 	}
-	if !safeID.MatchString(id) { // id becomes an archive path component
+	if !validID(id) {
 		return "", false
 	}
-	if len(feederKeys) == 0 {
+	if allowAnon {
 		return id, true
 	}
-	return id, feederKeys[id] == sec
+	want, known := feederKeys[id]
+	return id, known && subtle.ConstantTimeCompare([]byte(want), []byte(sec)) == 1
 }
 
 // jsonaiscatcher is AIS-catcher's -H envelope; only the fields we use.
@@ -74,10 +80,10 @@ func (p *Pipeline) serveReceive(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad gzip", http.StatusBadRequest)
 			return
 		}
-		rd = gz
+		rd = io.LimitReader(gz, maxBody+1) // bound the decompressed size too
 	}
 	body, err := io.ReadAll(rd)
-	if err != nil {
+	if err != nil || len(body) > maxBody {
 		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
 		return
 	}

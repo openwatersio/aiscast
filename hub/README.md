@@ -3,7 +3,7 @@
 AIS ingest → reassemble → dedupe → decode → bbox fan-out, with an aisstream.io-compatible WebSocket at `/v0/stream`. One Go binary; see [../PLAN.md](../PLAN.md) for the design.
 
 ```sh
-go run .                       # Kystverket upstream on, HTTP :8080, UDP :10110, archive/ in cwd
+ALLOW_ANON=1 go run .          # Kystverket upstream on, HTTP :8080, UDP :10110, archive/ in cwd; any key accepted
 go test ./...
 ```
 
@@ -15,6 +15,6 @@ Endpoints:
 - UDP `:10110` raw NMEA datagrams.
 - `GET /health` 503 when no event for 2 minutes.
 
-Environment: `ADDR` (`:8080`), `UDP_ADDR` (`:10110`), `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`, `ARCHIVE_DIR` (`archive`), `R2_BUCKET` (unset = local only; uploads via `npx wrangler` on hourly rotation), `V0_API_KEYS` (comma list; unset = any non-empty key), `FEEDER_KEYS` (`id:secret,...`; unset = any).
+Environment: `ADDR` (`:8080`), `UDP_ADDR` (`:10110`), `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`, `ARCHIVE_DIR` (`archive`), `R2_BUCKET` (unset = local only; uploads via `npx wrangler` on hourly rotation), `V0_API_KEYS` (comma list), `FEEDER_KEYS` (`id:secret,...`), `ALLOW_ANON=1` (accept any key/feeder; local development only).
 
 Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received.
