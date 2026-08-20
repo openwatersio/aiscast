@@ -83,7 +83,27 @@ Analytics Engine ([limits](https://developers.cloudflare.com/analytics/analytics
 
 One 4 vCPU / 8–16 GB box: UDP receive ~1–2% of a core at 10k msg/s, decode 1–5%, dedupe <1%, vessel state 10 MB. Fan-out is the real cost: 1,000 clients × 50 msg/s = 50k sends/s = 200 Mbps, comfortable; 5,000 clients = 1 Gbps = 324 TB/mo, CPU-feasible with frame batching but bandwidth-infeasible on per-GB hosts. Real per-client rates are far below 50 msg/s because of bbox filtering.
 
-Compute: Fly.io `shared-cpu-4x` 8 GB $47.32/mo, `performance-2x` 8 GB $85.17/mo, dedicated IPv4 $2/mo, egress $0.02/GB ([pricing](https://fly.io/docs/about/pricing/)). Hetzner CCX23 4 dedicated vCPU / 16 GB / 160 GB NVMe / 20 TB EU traffic (prices are client-side rendered; verify in calculator; US regions include only 1–5 TB) ([general-purpose](https://www.hetzner.com/cloud/general-purpose/)).
+Compute and egress by host (list prices checked 2026-08-20, on-demand, Linux, ex-VAT; 1 TB = 1024 GB; "65 TB" and "13 TB" are the 1,000-client fan-out case uncompressed and with ~5:1 deflate, instance plus egress):
+
+| Host | Instance (4 vCPU class) | $/mo | Included egress | Overage | 65 TB/mo | 13 TB/mo | Caveats |
+|---|---|---|---|---|---|---|---|
+| Hetzner Cloud EU | CCX23 4 ded. / 16 GB | $50.49 + $0.60 IPv4 | 20 TB | $1.20/TB | $105 | $51 | EU locations only; Singapore overage $8.30/TB |
+| Hetzner Cloud US | CCX23 (ASH1/HIL1) | $50.99 + $0.60 | 1 TB | $1.20/TB | $128 | $66 | US/APAC bundle only 1 TB |
+| OVHcloud Public Cloud | b3-16 4 / 16 GB | $82.64 | unmetered, 1 Gbps | n/a outside APAC | $83 | $83 | US (Vint Hill, Hillsboro), CA, EU |
+| OVHcloud VPS | VPS-2 4 / 8 GB | $8.50 | unmetered, 1 Gbps guaranteed | n/a outside APAC | $8.50 | $8.50 | no 16 GB VPS; APAC quota'd then throttled |
+| Scaleway | PRO2-XS 4 / 16 GB | €81.90 | included, 700 Mbps cap | n/a | €82 | €82 | EU only (PAR/AMS/WAW) |
+| Oracle OCI | E5.Flex 2 OCPU / 16 GB | $67.16 | 10 TB free | $0.0085/GB | $546 | $93 | NA/EU/UK rates; free ARM tier exists |
+| Akamai/Linode | G6 Linode 8 GB | $48 | 5 TB | $0.005/GB | $355 | $89 | G8 plans bundle 0 TB |
+| Vultr | vhp-4c-8gb | $48 | 6 TB | $0.01/GB | $652 | $120 | |
+| DigitalOcean | Basic 8 GiB | $48 | 5 TiB pooled | $0.01/GiB | $664 | $131 | no regional variation |
+| Fly.io | shared-cpu-4x 8 GB | $42.79 | none | $0.02/GB NA/EU | $1,374 | $309 | fine for the beta slice |
+| AWS | m7i.xlarge / Lightsail 16 GB | $147 / $84 | 100 GB / 6 TB | $0.09→$0.05/GB | $5,617 / $5,521 | $1,321 / $729 | |
+| GCP | n2-standard-4 | $142 | ~0 | $0.12→$0.08/GiB (Std tier $0.085→$0.045) | $5,784 (Std $4,656) | $1,524 (Std $1,195) | |
+| Azure | D4as_v5 | $126 | 100 GB | $0.087→$0.05/GB (Internet routing $0.08→$0.04) | $5,484 ($4,513) | $1,263 ($1,134) | |
+
+Sources: [Hetzner](https://www.hetzner.com/cloud/general-purpose/) (live price feed `live_data_prices.json`), [OVH VPS](https://us.ovhcloud.com/vps/) and [Public Cloud](https://www.ovhcloud.com/en/public-cloud/prices/), [Scaleway](https://www.scaleway.com/en/pricing/virtual-instances/), [Oracle](https://www.oracle.com/cloud/networking/pricing/), [Akamai](https://www.akamai.com/cloud/pricing/north-america), [Vultr](https://docs.vultr.com/support/platform/billing/what-is-the-bandwidth-overage-rate), [DigitalOcean](https://docs.digitalocean.com/platform/billing/bandwidth/), [Fly.io](https://fly.io/docs/about/pricing/), [AWS](https://aws.amazon.com/ec2/pricing/on-demand/) and [Lightsail](https://aws.amazon.com/lightsail/pricing/), [GCP](https://cloud.google.com/vpc/network-pricing), [Azure](https://azure.microsoft.com/en-us/pricing/details/bandwidth/).
+
+Reading: the hyperscalers are 5–10× on egress and nothing in this workload needs them. The mid-tier VPS vendors (DO, Vultr, Linode) are fine for a beta and get uncomfortable past ~20 TB/mo. The cheap-bandwidth tier is Hetzner EU, OVH, Scaleway, and Oracle's 10 TB free. For a US node, Hetzner's 1 TB bundle makes OVH (Vint Hill/Hillsboro/Beauharnois), Oracle, or Linode the ones to price; OVH VPS-2 at $8.50 unmetered is the outlier worth testing for real sustained throughput before trusting it.
 
 Archive: Parquet → R2 ($0.015/GB-mo, free egress, [r2/pricing](https://developers.cloudflare.com/r2/pricing/)) registered in R2 Data Catalog → queryable by R2 SQL and DuckDB/Spark/Trino. Recommended. ClickHouse Cloud needs 24/7 ingest → Scale tier ~$500/mo floor ([billing](https://clickhouse.com/docs/cloud/manage/billing)). Self-hosted ClickHouse on one extra node handles 300–800M rows/day easily (~20–30 B/row compressed) but adds ops. TimescaleDB not recommended at this rate.
 
@@ -111,6 +131,6 @@ Design B for the hot path, Design A's storage for the cold path:
 
 Estimated ~$130–180/mo vs ~$712 (A) and ~$730 (C).
 
-Verify before committing: Hetzner prices (client-rendered); Cloudflare WS proxy idle timeout (unpublished); Pipelines 5 MB/s per-stream cap if A/C; DO duration assumes always-hot fan-out DOs.
+Verify before committing: Cloudflare WS proxy idle timeout (unpublished); Pipelines 5 MB/s per-stream cap if A/C; DO duration assumes always-hot fan-out DOs.
 
-Extrapolated rather than cited: single-DO send throughput, Parquet compression ratio, Hetzner overage rate.
+Extrapolated rather than cited: single-DO send throughput, Parquet compression ratio.
