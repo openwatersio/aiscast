@@ -7,7 +7,7 @@ ALLOW_ANON=1 go run .          # Kystverket upstream on, HTTP :8080, UDP :10110,
 go test ./...
 ```
 
-Endpoints:
+Endpoints (full reference in [docs/API.md](../docs/API.md)):
 
 - `GET /v0/stream` WebSocket, aisstream.io protocol (subscribe JSON with `APIKey`, `BoundingBoxes`, `FiltersShipMMSI`, `FilterMessageTypes`). Frozen; nothing here may deviate.
 - `GET /v1/stream` WebSocket, bidirectional. Frames in: `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon],...]}` (empty bbox = everything; open), `{"type":"publish","nmea":["!AIVDM,..."]}` (needs a feeder/peer token via `?key=` or `Authorization: Bearer`). Frames out: `{"type":"event", id, time, source, station, channel, nmea, mmsi, msg_type, lat, lon, message, synthesized}`.

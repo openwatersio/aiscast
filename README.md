@@ -4,11 +4,11 @@ Live AIS vessel traffic, streamed by bounding box, from open government feeds an
 
 This is a beta. No SLA, coverage is uneven, and the terms under which some sources are re-served are still being settled (see [Coverage](#coverage)).
 
-## Getting data
+## Usage
 
 **aisstream.io clients.** The hub speaks aisstream.io's protocol on `wss://ais.openwaters.io/v0/stream`: the same subscribe message, the same `MessageType` / `MetaData` / `Message` frames. Change the hostname, use your aiscast token as the `APIKey`, and existing code keeps working ([aisstream-ts](https://www.npmjs.com/package/aisstream-ts), the official Go/Python/JS examples, `signalk-aisstream`).
 
-**Native API.**
+**Native API** ([full reference](docs/API.md)).
 
 - `wss://ais.openwaters.io/v1/stream`: send `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon]]}` and receive one JSON event per decoded AIS message with its source, station, receive time, raw sentence, and the decoded fields. Subscribing needs no token.
 - `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon`: GeoJSON of every vessel currently in view (last position, name, type, course, speed, heading, when and from where it was last heard). No token.
@@ -18,7 +18,7 @@ This is a beta. No SLA, coverage is uneven, and the terms under which some sourc
 
 Events carry a `source` so you can tell a live volunteer receiver from a government feed or an aggregate, and `synthesized: true` marks messages that were re-encoded from a non-NMEA source.
 
-## Feeding the hub
+## Contributing data
 
 If you run an AIS receiver, send it here and it is re-served to everyone, deduplicated against the open feeds and every other station, and forwarded to AISHub as part of our reciprocal feed. Volunteer terms proper come with the next stage; until then treat this as a beta in both directions.
 
@@ -30,13 +30,13 @@ If you run an AIS receiver, send it here and it is re-served to everyone, dedupl
 
 ## Coverage
 
-| Source | Where | Freshness |
-|---|---|---|
-| Kystverket | Norwegian coast, 40–60 nm out | live |
-| Fintraffic Digitraffic | Finnish waters | live |
-| Volunteer receivers | wherever they are (Buzzards Bay / Vineyard Sound as of the first station) | live |
-| AISHub aggregate | worldwide terrestrial, ~50k vessels | 1–6 min (their snapshot refreshes every ~5 min) |
-| aisstream.io | worldwide, when it is up | live; frequently down |
+| Source                 | Where                                                                     | Freshness                                       |
+| ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------------- |
+| Kystverket             | Norwegian coast, 40–60 nm out                                             | live                                            |
+| Fintraffic Digitraffic | Finnish waters                                                            | live                                            |
+| Volunteer receivers    | wherever they are (Buzzards Bay / Vineyard Sound as of the first station) | live                                            |
+| AISHub aggregate       | worldwide terrestrial, ~50k vessels                                       | 1–6 min (their snapshot refreshes every ~5 min) |
+| aisstream.io           | worldwide, when it is up                                                  | live; frequently down                           |
 
 Every event says which of these it came from. What is deliberately not pulled in, and why, is in [PLAN.md](PLAN.md#stage-0c-more-sources-some-on-borrowed-terms).
 
@@ -44,13 +44,13 @@ Every event says which of these it came from. What is deliberately not pulled in
 
 Licensing is per source. The hub does not relicense the aggregate: each event is re-served under the terms of the source it came from, which is why `source` is on every event, every vessel, and every archived hour. If you display or redistribute the data, carry the source's attribution through.
 
-| Source | License | What you must do |
-|---|---|---|
-| Kystverket | [NLOD 2.0](https://data.norge.no/nlod/en/2.0) | Credit: "Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration." NLOD is not sublicensable: you are bound by it directly. |
-| Fintraffic Digitraffic | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Credit: "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY." |
-| Volunteer receivers | beta: contributed for re-serving by this hub; a written feeder agreement (open license on the aggregate, non-transferable to any acquirer, opt-in, station locations never published precisely) is the next stage and will be reviewed before volunteer data scales | Credit "aiscast volunteer receivers" for now; expect an open-data license (ODbL is the proposal) once the agreement exists. |
-| AISHub aggregate | AISHub membership; their published terms grant "use" only | Treat as view-only: fine to display, do not build a product on these events alone. They may be withdrawn; `source: aishub` and the `aishub-terms/` archive tag make that a clean cut. |
-| aisstream.io | no published terms | Same as AISHub: best effort, may disappear. `source: aisstream`. |
+| Source                 | License                                                                                                                                                                                                                                                             | What you must do                                                                                                                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kystverket             | [NLOD 2.0](https://data.norge.no/nlod/en/2.0)                                                                                                                                                                                                                       | Credit: "Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration." NLOD is not sublicensable: you are bound by it directly. |
+| Fintraffic Digitraffic | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)                                                                                                                                                                                                           | Credit: "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY."                                                                                                                                 |
+| Volunteer receivers    | beta: contributed for re-serving by this hub; a written feeder agreement (open license on the aggregate, non-transferable to any acquirer, opt-in, station locations never published precisely) is the next stage and will be reviewed before volunteer data scales | Credit "aiscast volunteer receivers" for now; expect an open-data license (ODbL is the proposal) once the agreement exists.                                                                       |
+| AISHub aggregate       | AISHub membership; their published terms grant "use" only                                                                                                                                                                                                           | Treat as view-only: fine to display, do not build a product on these events alone. They may be withdrawn; `source: aishub` and the `aishub-terms/` archive tag make that a clean cut.             |
+| aisstream.io           | no published terms                                                                                                                                                                                                                                                  | Same as AISHub: best effort, may disappear. `source: aisstream`.                                                                                                                                  |
 
 The hub's own code is [MIT](LICENSE). Volunteer station locations are never published with precision, UDP stations are identified by a keyed hash rather than an address, and the archive keeps raw receptions per source so any source can be purged. The full position, including the feeder agreement draft, the privacy rules, and how the project intends to fund itself without relicensing data, is in [PLAN.md](PLAN.md#licensing-and-attribution).
 
