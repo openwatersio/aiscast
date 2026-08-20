@@ -14,6 +14,7 @@ Endpoints:
 - `GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon` GeoJSON of current positions (all vessels without `bbox`); vessels unseen for 30 minutes are dropped. CORS open.
 - `POST /v1/receive` AIS-catcher HTTP output (`-H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on`): `jsonaiscatcher` JSON or plain NMEA lines, optional gzip; needs a feeder token.
 - UDP `:10110` raw NMEA datagrams.
+- `GET /v1/stations` per-source event counts and seconds since last event (public; how a contributor sees their feed arriving).
 - `GET /health` 503 when any configured upstream has been silent for 2 minutes.
 - `GET /metrics` Prometheus text: events, duplicates, parse/decode failures, client and archive drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age.
 
