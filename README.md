@@ -30,18 +30,30 @@ If you run an AIS receiver, send it here and it is re-served to everyone, dedupl
 
 ## Coverage
 
-What is in the feed today, and on what terms:
+| Source | Where | Freshness |
+|---|---|---|
+| Kystverket | Norwegian coast, 40–60 nm out | live |
+| Fintraffic Digitraffic | Finnish waters | live |
+| Volunteer receivers | wherever they are (Buzzards Bay / Vineyard Sound as of the first station) | live |
+| AISHub aggregate | worldwide terrestrial, ~50k vessels | 1–6 min (their snapshot refreshes every ~5 min) |
+| aisstream.io | worldwide, when it is up | live; frequently down |
 
-| Source | Where | Freshness | Terms |
-|---|---|---|---|
-| Kystverket | Norwegian coast | live | NLOD, redistribution allowed |
-| Fintraffic Digitraffic | Finnish waters | live | CC BY 4.0 |
-| Volunteer receivers | wherever they are | live | beta; terms to come |
-| AISHub aggregate | worldwide terrestrial, ~50k vessels | 1–6 min (their snapshot refreshes every ~5 min) | reciprocal membership; "use" only, may be withdrawn |
-| aisstream.io | worldwide when it is up | live | no published terms; best effort |
+Every event says which of these it came from. What is deliberately not pulled in, and why, is in [PLAN.md](PLAN.md#stage-0c-more-sources-some-on-borrowed-terms).
 
-Every event says which of these it came from, and each source is archived under its own license tag so any of them can be withdrawn cleanly. Details, including what is deliberately not pulled in, are in [PLAN.md](PLAN.md#stage-0c-more-sources-some-on-borrowed-terms).
+## Licensing and attribution
 
-## License
+Licensing is per source. The hub does not relicense the aggregate: each event is re-served under the terms of the source it came from, which is why `source` is on every event, every vessel, and every archived hour. If you display or redistribute the data, carry the source's attribution through.
 
-Code is [MIT](LICENSE). Re-served data carries its source license (Kystverket NLOD, Digitraffic CC BY 4.0, …); see [PLAN.md](PLAN.md#licensing-and-attribution). Developers and operators: see [CONTRIBUTING.md](CONTRIBUTING.md).
+| Source | License | What you must do |
+|---|---|---|
+| Kystverket | [NLOD 2.0](https://data.norge.no/nlod/en/2.0) | Credit: "Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration." NLOD is not sublicensable: you are bound by it directly. |
+| Fintraffic Digitraffic | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Credit: "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY." |
+| Volunteer receivers | beta: contributed for re-serving by this hub; a written feeder agreement (open license on the aggregate, non-transferable to any acquirer, opt-in, station locations never published precisely) is the next stage and will be reviewed before volunteer data scales | Credit "aiscast volunteer receivers" for now; expect an open-data license (ODbL is the proposal) once the agreement exists. |
+| AISHub aggregate | AISHub membership; their published terms grant "use" only | Treat as view-only: fine to display, do not build a product on these events alone. They may be withdrawn; `source: aishub` and the `aishub-terms/` archive tag make that a clean cut. |
+| aisstream.io | no published terms | Same as AISHub: best effort, may disappear. `source: aisstream`. |
+
+The hub's own code is [MIT](LICENSE). Volunteer station locations are never published with precision, UDP stations are identified by a keyed hash rather than an address, and the archive keeps raw receptions per source so any source can be purged. The full position, including the feeder agreement draft, the privacy rules, and how the project intends to fund itself without relicensing data, is in [PLAN.md](PLAN.md#licensing-and-attribution).
+
+## Contributing
+
+Developers and operators: see [CONTRIBUTING.md](CONTRIBUTING.md).
