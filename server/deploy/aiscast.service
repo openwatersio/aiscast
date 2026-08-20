@@ -1,16 +1,16 @@
-# /etc/systemd/system/hub.service — one hub per box. Binary at /opt/hub/hub, env in /etc/hub.env
+# /etc/systemd/system/aiscast.service — one aiscast per box. Binary at /opt/aiscast/aiscast, env in /etc/aiscast.env
 # (ADDR, UDP_ADDR, ARCHIVE_DIR, SNAPSHOT, R2_BUCKET, V0_API_KEYS, FEEDER_KEYS; never ALLOW_ANON).
 [Unit]
-Description=AIS hub
+Description=aiscast AIS server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=hub
-Group=hub
-EnvironmentFile=/etc/hub.env
-WorkingDirectory=/var/lib/hub
-ExecStart=/opt/hub/hub
+User=aiscast
+Group=aiscast
+EnvironmentFile=/etc/aiscast.env
+WorkingDirectory=/var/lib/aiscast
+ExecStart=/opt/aiscast/aiscast
 Restart=always
 RestartSec=2
 # SIGTERM: snapshot + flush/upload open archive hours; give it time
@@ -19,7 +19,7 @@ TimeoutStopSec=120
 LimitNOFILE=65536
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/hub
+ReadWritePaths=/var/lib/aiscast
 
 [Install]
 WantedBy=multi-user.target

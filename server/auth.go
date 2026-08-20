@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// Access tokens: Ed25519-signed claims, verified with the issuer's public key. The hub never holds a key that
+// Access tokens: Ed25519-signed claims, verified with the issuer's public key. The server never holds a key that
 // can mint broad tokens; the CLI (cmd/aiscast-key) does. Format: "ak1.<b64url claims JSON>.<b64url signature>".
 //
 //	{"kid":"2026-08","sub":"station-42","role":"feeder","exp":1787000000,"iat":...,
@@ -247,7 +247,7 @@ func (cc *connCounter) acquire(sub string, max int) (func(), bool) {
 }
 
 // ---- personal tokens: POST /v1/keys {"pubkey": "<base64 ed25519 public key>"} ----
-// The hub holds a separate personal-tier issuer key (PERSONAL_ISSUER_KEY, base64 seed); what it mints is
+// The server holds a separate personal-tier issuer key (PERSONAL_ISSUER_KEY, base64 seed); what it mints is
 // bounded by personalClaims, so a compromised box can only hand out personal-tier access.
 
 var personalIssuer = func() (string, ed25519.PrivateKey) {

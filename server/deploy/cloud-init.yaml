@@ -2,7 +2,7 @@
 package_update: true
 packages: [curl, unattended-upgrades, fail2ban]
 users:
-  - name: hub
+  - name: aiscast
     system: true
     shell: /usr/sbin/nologin
 write_files:
@@ -21,30 +21,30 @@ write_files:
       maxretry = 3
       findtime = 10m
       bantime = 1h
-  - path: /etc/hub.env
+  - path: /etc/aiscast.env
     permissions: "0600"
     content: |
       ADDR=:8080
       UDP_ADDR=:10110
-      ARCHIVE_DIR=/var/lib/hub/archive
-      SNAPSHOT=/var/lib/hub/vessels.json
+      ARCHIVE_DIR=/var/lib/aiscast/archive
+      SNAPSHOT=/var/lib/aiscast/vessels.json
       ISSUER_PUBKEYS=__ISSUER_PUBKEYS__
       PERSONAL_ISSUER_KEY=__PERSONAL_ISSUER_KEY__
-  - path: /etc/systemd/system/hub.service
+  - path: /etc/systemd/system/aiscast.service
     content: |
-      # /etc/systemd/system/hub.service — one hub per box. Binary at /opt/hub/hub, env in /etc/hub.env
+      # /etc/systemd/system/aiscast.service — one server per box. Binary at /opt/server/server, env in /etc/aiscast.env
       # (ADDR, UDP_ADDR, ARCHIVE_DIR, SNAPSHOT, R2_BUCKET, V0_API_KEYS, FEEDER_KEYS; never ALLOW_ANON).
       [Unit]
-      Description=AIS hub
+      Description=aiscast AIS server
       After=network-online.target
       Wants=network-online.target
       
       [Service]
-      User=hub
-      Group=hub
-      EnvironmentFile=/etc/hub.env
-      WorkingDirectory=/var/lib/hub
-      ExecStart=/opt/hub/hub
+      User=aiscast
+      Group=aiscast
+      EnvironmentFile=/etc/aiscast.env
+      WorkingDirectory=/var/lib/aiscast
+      ExecStart=/opt/aiscast/aiscast
       Restart=always
       RestartSec=2
       # SIGTERM: snapshot + flush/upload open archive hours; give it time
@@ -53,14 +53,14 @@ write_files:
       LimitNOFILE=65536
       NoNewPrivileges=true
       ProtectSystem=strict
-      ReadWritePaths=/var/lib/hub
+      ReadWritePaths=/var/lib/aiscast
       
       [Install]
       WantedBy=multi-user.target
 runcmd:
   - systemctl reload ssh
   - systemctl enable --now fail2ban
-  - mkdir -p /opt/hub /var/lib/hub/archive
-  - chown -R hub:hub /var/lib/hub
+  - mkdir -p /opt/aiscast /var/lib/aiscast/archive
+  - chown -R aiscast:aiscast /var/lib/aiscast
   - systemctl daemon-reload
-  - systemctl enable hub
+  - systemctl enable aiscast

@@ -1,4 +1,4 @@
-// hub: AIS ingest → dedupe → decode → bbox fan-out, aisstream.io-compatible at /v0/stream.
+// aiscast: AIS ingest → dedupe → decode → bbox fan-out, aisstream.io-compatible at /v0/stream.
 package main
 
 import (

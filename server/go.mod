@@ -1,4 +1,4 @@
-module hub
+module github.com/openwatersio/aiscast/server
 
 go 1.24.0
 

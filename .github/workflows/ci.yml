@@ -14,21 +14,21 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: hub
+        working-directory: server
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: hub/go.mod
-          cache-dependency-path: hub/go.sum
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test ./...
-      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o hub-linux .
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o aiscast-linux .
       - uses: actions/upload-artifact@v4
         with:
-          name: hub-linux
-          path: hub/hub-linux
+          name: aiscast-linux
+          path: server/aiscast-linux
           retention-days: 7
 
   deploy:
@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: hub-linux
+          name: aiscast-linux
       - name: ssh setup
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -50,7 +50,7 @@ jobs:
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
       - name: install and restart
         run: |
-          scp hub-linux deploy@"$DEPLOY_HOST":/opt/hub/hub.new
-          ssh deploy@"$DEPLOY_HOST" 'chmod 755 /opt/hub/hub.new && mv /opt/hub/hub.new /opt/hub/hub && sudo systemctl restart hub && sleep 3 && sudo systemctl is-active hub && curl -fsS localhost:8080/health'
+          scp aiscast-linux deploy@"$DEPLOY_HOST":/opt/aiscast/aiscast.new
+          ssh deploy@"$DEPLOY_HOST" 'chmod 755 /opt/aiscast/aiscast.new && mv /opt/aiscast/aiscast.new /opt/aiscast/aiscast && sudo systemctl restart aiscast && sleep 3 && sudo systemctl is-active aiscast && curl -fsS localhost:8080/health'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}

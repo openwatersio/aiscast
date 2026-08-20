@@ -37,13 +37,13 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter := func(name, help string, v int64) {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", name, help, name, name, v)
 	}
-	counter("hub_events_total", "decoded, deduplicated AIS messages", p.stats.events.Load())
-	counter("hub_duplicates_total", "messages dropped as duplicates", p.stats.dup.Load())
-	counter("hub_parse_errors_total", "unparseable input lines", p.stats.parseErr.Load())
-	counter("hub_decode_failures_total", "sentences that did not decode to an AIS message", p.stats.decodeFail.Load())
-	counter("hub_client_drops_total", "events dropped because a client queue was full", p.stats.clientDrops.Load())
-	counter("hub_archive_drops_total", "receptions dropped because the archive queue was full", p.arch.drops.Load())
-	counter("hub_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
+	counter("aiscast_events_total", "decoded, deduplicated AIS messages", p.stats.events.Load())
+	counter("aiscast_duplicates_total", "messages dropped as duplicates", p.stats.dup.Load())
+	counter("aiscast_parse_errors_total", "unparseable input lines", p.stats.parseErr.Load())
+	counter("aiscast_decode_failures_total", "sentences that did not decode to an AIS message", p.stats.decodeFail.Load())
+	counter("aiscast_client_drops_total", "events dropped because a client queue was full", p.stats.clientDrops.Load())
+	counter("aiscast_archive_drops_total", "receptions dropped because the archive queue was full", p.arch.drops.Load())
+	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
 
 	p.vmu.RLock()
 	nv := len(p.vessels)
@@ -51,18 +51,18 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	p.smu.RLock()
 	ns := len(p.subs)
 	p.smu.RUnlock()
-	fmt.Fprintf(w, "# TYPE hub_vessels gauge\nhub_vessels %d\n# TYPE hub_clients gauge\nhub_clients %d\n", nv, ns)
+	fmt.Fprintf(w, "# TYPE aiscast_vessels gauge\naiscast_vessels %d\n# TYPE aiscast_clients gauge\naiscast_clients %d\n", nv, ns)
 
-	fmt.Fprintf(w, "# HELP hub_source_last_age_seconds seconds since the last event from each source\n# TYPE hub_source_last_age_seconds gauge\n")
+	fmt.Fprintf(w, "# HELP aiscast_source_last_age_seconds seconds since the last event from each source\n# TYPE aiscast_source_last_age_seconds gauge\n")
 	var sources []string
 	p.lastBySource.Range(func(k, _ any) bool { sources = append(sources, k.(string)); return true })
 	sort.Strings(sources)
 	for _, s := range sources {
-		fmt.Fprintf(w, "hub_source_last_age_seconds{source=%q} %.0f\n", s, p.sourceAge(s).Seconds())
+		fmt.Fprintf(w, "aiscast_source_last_age_seconds{source=%q} %.0f\n", s, p.sourceAge(s).Seconds())
 	}
-	fmt.Fprintf(w, "# HELP hub_source_events_total events per source\n# TYPE hub_source_events_total counter\n")
+	fmt.Fprintf(w, "# HELP aiscast_source_events_total events per source\n# TYPE aiscast_source_events_total counter\n")
 	p.stats.bySource.Range(func(k, v any) bool {
-		fmt.Fprintf(w, "hub_source_events_total{source=%q} %d\n", k.(string), v.(*counterT).Load())
+		fmt.Fprintf(w, "aiscast_source_events_total{source=%q} %d\n", k.(string), v.(*counterT).Load())
 		return true
 	})
 }

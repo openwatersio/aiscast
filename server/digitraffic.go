@@ -110,8 +110,8 @@ func (p *Pipeline) digitrafficMessage(topic string, body []byte) {
 func runDigitraffic(p *Pipeline, url string) {
 	host, _ := os.Hostname()
 	opts := mqtt.NewClientOptions().AddBroker(url).
-		SetClientID(fmt.Sprintf("openwaters-hub-%s-%d", host, os.Getpid())).
-		SetHTTPHeaders(http.Header{"Digitraffic-User": {"openwaters-hub"}}). // asked for by the ToS; lifts the per-IP limits
+		SetClientID(fmt.Sprintf("aiscast-%s-%d", host, os.Getpid())).
+		SetHTTPHeaders(http.Header{"Digitraffic-User": {"aiscast"}}). // asked for by the ToS; lifts the per-IP limits
 		SetAutoReconnect(true).SetConnectRetry(true).SetConnectRetryInterval(10 * time.Second).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) { log.Printf("digitraffic: connection lost: %v", err) }).
 		SetOnConnectHandler(func(c mqtt.Client) {

@@ -1,0 +1,48 @@
+name: release
+
+# Publishes signalk-plugin/ to npm via trusted publishing (OIDC) when a GitHub release
+# is created with a tag like signalk-plugin-v1.2.3. Hub releases use other tags and are ignored.
+on:
+  release:
+    types: [created]
+
+jobs:
+  npm:
+    if: startsWith(github.event.release.tag_name, 'signalk-plugin-v')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # npm trusted publishing
+      contents: write # commit the version bump
+    defaults:
+      run:
+        working-directory: signalk-plugin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.target_commitish }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # npm >= 11.5.1 for trusted publishing
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: signalk-plugin/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Set version from release tag
+        run: npm version "${TAG#signalk-plugin-v}" --no-git-tag-version --allow-same-version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+
+      - run: npm publish # prepack runs the build
+
+      # Only after a successful publish, so a failed release never mutates the repo
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet || { git commit -am "signalk-aiscast ${TAG#signalk-plugin-v}" && git push; }
+        env:
+          TAG: ${{ github.event.release.tag_name }}

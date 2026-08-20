@@ -1,4 +1,4 @@
-// loadtest opens N aisstream-style clients against a hub and reports delivered message rates and server drops.
+// loadtest opens N aisstream-style clients against a server and reports delivered message rates and server drops.
 package main
 
 import (
@@ -15,11 +15,11 @@ import (
 )
 
 func main() {
-	url := flag.String("url", "ws://localhost:8080/v0/stream", "hub /v0/stream URL")
+	url := flag.String("url", "ws://localhost:8080/v0/stream", "aiscast /v0/stream URL")
 	n := flag.Int("clients", 100, "concurrent clients")
 	dur := flag.Duration("duration", 20*time.Second, "test duration")
 	box := flag.String("bbox", "[[[-90,-180],[90,180]]]", "BoundingBoxes JSON")
-	metrics := flag.String("metrics", "", "hub /metrics URL to read drops from (default derived from -url)")
+	metrics := flag.String("metrics", "", "aiscast /metrics URL to read drops from (default derived from -url)")
 	flag.Parse()
 	if *metrics == "" {
 		*metrics = "http" + strings.TrimSuffix(strings.TrimPrefix(*url, "ws"), "/v0/stream") + "/metrics"
@@ -75,7 +75,7 @@ func serverDrops(url string) string {
 	b, _ := io.ReadAll(res.Body)
 	var out []string
 	for _, l := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(l, "hub_client_drops_total") || strings.HasPrefix(l, "hub_clients") || strings.HasPrefix(l, "hub_events_total") {
+		if strings.HasPrefix(l, "aiscast_client_drops_total") || strings.HasPrefix(l, "aiscast_clients") || strings.HasPrefix(l, "aiscast_events_total") {
 			out = append(out, l)
 		}
 	}

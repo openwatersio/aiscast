@@ -18,10 +18,10 @@
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js" integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin="anonymous"></script>
 <script>
   const params = new URLSearchParams(location.search);
-  let hub = params.get("hub") || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "localhost:8080" : "ais.openwaters.io");
-  if (!hub.includes("://")) hub = (location.protocol === "https:" ? "https://" : "http://") + hub;
-  const WS = hub.replace(/^http/, "ws") + "/v1/stream";
-  const TTL = 30 * 60e3; // drop after 30 min unseen, same as the hub
+  let server = params.get("server") || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "localhost:8080" : "ais.openwaters.io");
+  if (!server.includes("://")) server = (location.protocol === "https:" ? "https://" : "http://") + server;
+  const WS = server.replace(/^http/, "ws") + "/v1/stream";
+  const TTL = 30 * 60e3; // drop after 30 min unseen, same as aiscast
 
   // Per-source attribution; licensing is per source, so only sources actually seen are credited.
   const LICENSES = {
@@ -79,7 +79,7 @@
 
   async function refresh() {
     try {
-      const res = await fetch(`${hub}/v1/vessels?bbox=${bboxParam().join(",")}`);
+      const res = await fetch(`${server}/v1/vessels?bbox=${bboxParam().join(",")}`);
       const fc = await res.json();
       for (const f of fc.features) {
         const p = f.properties;

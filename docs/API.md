@@ -37,7 +37,7 @@ POST /v1/keys
 200 {"token": "ak1....", "claims": {"kid": "...", "sub": "ed25519:<pubkey>", "role": "personal", "exp": ..., "iat": ..., "conns": 2}}
 ```
 
-30 days, two concurrent connections, no bbox limit; request a new one before it expires. 10 requests per minute per IP. `501` if the hub has no personal issuer configured. The token is a bearer token naming your key; there is no proof-of-possession handshake yet. Feeder, peer, partner, and admin tokens are minted offline by the operator.
+30 days, two concurrent connections, no bbox limit; request a new one before it expires. 10 requests per minute per IP. `501` if aiscast has no personal issuer configured. The token is a bearer token naming your key; there is no proof-of-possession handshake yet. Feeder, peer, partner, and admin tokens are minted offline by the operator.
 
 ## `/v0/stream`: aisstream.io compatibility
 
@@ -70,7 +70,7 @@ Error frames close the connection: `{"error": "Api Key Is Not Valid"}`, `{"error
 
 Connect to `wss://ais.openwaters.io/v1/stream`, optionally with `?key=<token>` or `Authorization: Bearer`. Frames are JSON text.
 
-Client → hub:
+Client → server:
 
 ```json
 {"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0], [58.5, 9.5, 60.5, 11.5]]}
@@ -80,7 +80,7 @@ Client → hub:
 - `subscribe`: `bbox` is a list of boxes; an empty list or no `bbox` means everything. Re-sending replaces the subscription. Nothing is sent until the first subscribe. If the token carries `bbox`, every requested box must fit inside; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
 - `publish`: needs a `feeder`, `peer`, or `admin` token. Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`. Without a publish role: `{"type":"error","error":"publish requires a feeder or peer token"}`.
 
-Hub → client, one frame per decoded message after deduplication:
+aiscast → client, one frame per decoded message after deduplication:
 
 ```json
 {"type": "event",
@@ -100,7 +100,7 @@ Hub → client, one frame per decoded message after deduplication:
 - `nmea`: the sentences as received, or a re-encoded `!AIVDM` for synthesized events.
 - `lat`/`lon`: the vessel's last known position from the cache (present for static messages too); absent until a position has been heard.
 - `msg_type`: aisstream type name; `message`: go-ais decoded struct.
-- `synthesized`: `true` when the message was rebuilt from a non-NMEA source (Digitraffic JSON, AISHub rows, aisstream envelopes).
+- `synthesized`: `true` when the message was rebuilt from a non-NMEA source (Digitraffic JSON, AISaiscast rows, aisstream envelopes).
 
 Other frames: `{"type":"error","error":"invalid token"}` followed by close 1008 for a bad token; `{"type":"error","error":"bad frame"}` / `"unknown type"` for malformed input; `"concurrent connections per key exceeded"` then close. Frames in are limited to 256 KB. Slow clients are closed with 1008 "client too slow".
 
@@ -118,7 +118,7 @@ Other frames: `{"type":"error","error":"invalid token"}` followed by close 1008 
 
 ## `GET /v1/stations`
 
-Every source seen since the hub started:
+Every source seen since aiscast started:
 
 ```json
 [{"source": "digitraffic", "events": 334, "last_age_s": 0},
@@ -134,7 +134,7 @@ AIS-catcher's HTTP output: `AIS-catcher -H https://ais.openwaters.io/v1/receive 
 
 ## UDP `ais.openwaters.io:10110`
 
-Datagrams of newline-separated NMEA (`!AIVDM`/`!AIVDO`, `!BSVDM`…, TAG blocks allowed, lines ≤ 4 KB). No authentication. The sender is identified as `udp:<keyed hash of address>`; if it sends `!AIVDO`, as `mmsi:<own MMSI>` from then on. Anything received is forwarded to AISHub under the hub's reciprocal feed.
+Datagrams of newline-separated NMEA (`!AIVDM`/`!AIVDO`, `!BSVDM`…, TAG blocks allowed, lines ≤ 4 KB). No authentication. The sender is identified as `udp:<keyed hash of address>`; if it sends `!AIVDO`, as `mmsi:<own MMSI>` from then on. Anything received is forwarded to AISaiscast under aiscast's reciprocal feed.
 
 ## Tolerances and dedupe
 
@@ -153,4 +153,4 @@ Accepted on every input: NMEA 4.10 TAG blocks (`s:` station, `c:` time in s/ms/�
 
 ## Health
 
-`GET /health` returns `ok` or `503` with the names of open-feed upstreams (Kystverket, Digitraffic) silent for more than two minutes. AISHub and aisstream are best-effort and never affect it.
+`GET /health` returns `ok` or `503` with the names of open-feed upstreams (Kystverket, Digitraffic) silent for more than two minutes. AISaiscast and aisstream are best-effort and never affect it.
