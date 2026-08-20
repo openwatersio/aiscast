@@ -67,6 +67,7 @@ type Pipeline struct {
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
 
+	auth         *verifier  // issuer public keys for access tokens
 	upstreams    []string   // configured upstream source names; /health watches them
 	feeder       *udpFeeder // optional: forward received (non-synthesized) events to an aggregator
 	last         atomic.Int64
@@ -81,7 +82,7 @@ func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
 	return &Pipeline{
-		arch: arch, codec: c,
+		arch: arch, codec: c, auth: verifierFromEnv(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]string{},

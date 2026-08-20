@@ -19,24 +19,6 @@ func testPipeline(t *testing.T) *Pipeline {
 	return newPipeline(newArchive("", nil))
 }
 
-func TestFeederAuthFailsClosed(t *testing.T) {
-	allowAnon = false
-	defer func() { allowAnon = true }()
-	feederKeys["st1"] = "secret"
-	for _, c := range []struct {
-		user, pass string
-		ok         bool
-	}{{"st1", "secret", true}, {"st1", "wrong", false}, {"nobody", "x", false}, {"../etc", "secret", false}, {"", "", false}} {
-		r := httptest.NewRequest("POST", "/v1/receive", nil)
-		if c.user != "" {
-			r.SetBasicAuth(c.user, c.pass)
-		}
-		if _, ok := feederAuth(r); ok != c.ok {
-			t.Errorf("%q/%q: ok=%v want %v", c.user, c.pass, ok, c.ok)
-		}
-	}
-}
-
 func TestParseV0Sub(t *testing.T) {
 	cases := map[string]string{
 		`{"APIKey":"k","BoundingBoxes":[[[-90,-180],[90,180]]]}`:                            "",
@@ -51,12 +33,13 @@ func TestParseV0Sub(t *testing.T) {
 		`{"APIKey":"k","BoundingBoxes":[[[60,11],[58,9]]],"FiltersShipMMSI":["12"]}`:                                 errMalformed,
 		`{"APIKey":"k","BoundingBoxes":[[[60,11],[58,9]]],"FilterMessageTypes":["PositionReport","PositionReport"]}`: errMalformed,
 	}
+	p := testPipeline(t)
 	for in, want := range cases {
-		if _, got := parseV0Sub([]byte(in)); got != want {
+		if _, _, got := p.parseV0Sub([]byte(in), "127.0.0.1"); got != want {
 			t.Errorf("%s: got %q want %q", in, got, want)
 		}
 	}
-	f, _ := parseV0Sub([]byte(`{"APIKey":"k","BoundingBoxes":[[[60,11],[58,9]]]}`))
+	f, _, _ := p.parseV0Sub([]byte(`{"APIKey":"k","BoundingBoxes":[[[60,11],[58,9]]]}`), "127.0.0.1")
 	if f.boxes[0] != (bbox{58, 9, 60, 11}) {
 		t.Errorf("corner normalization: %v", f.boxes[0])
 	}
@@ -142,7 +125,7 @@ func TestReceiveHTTP(t *testing.T) {
 	}
 	select {
 	case ev := <-sub.ch:
-		if ev.Source != "http:st1" || ev.MMSI != 227006760 {
+		if ev.Source != "http:anon" || ev.MMSI != 227006760 { // ALLOW_ANON identity
 			t.Errorf("unexpected event %+v", ev)
 		}
 	case <-time.After(time.Second):

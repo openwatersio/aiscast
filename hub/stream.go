@@ -5,26 +5,13 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
 	"github.com/coder/websocket"
 )
-
-// v0Keys from V0_API_KEYS="k1,k2"; with ALLOW_ANON=1 any non-empty key is valid.
-var v0Keys = func() map[string]bool {
-	m := map[string]bool{}
-	for _, k := range strings.Split(os.Getenv("V0_API_KEYS"), ",") {
-		if k != "" {
-			m[k] = true
-		}
-	}
-	return m
-}()
 
 var wsOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover}
 
@@ -55,25 +42,42 @@ const (
 	errMalformed = "Subscription Object Is Malformed"
 )
 
-func parseV0Sub(data []byte) (*v0Filter, string) {
+const errBoxDenied = "Bounding Box Not Allowed For This Key"
+
+// parseV0Sub validates an aisstream subscription against the token in APIKey. The claims come back so the
+// caller can enforce connection caps; with ALLOW_ANON any non-empty key is an anonymous admin.
+func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, string) {
 	var s v0Sub
 	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, errMalformed
+		return nil, nil, errMalformed
 	}
-	if s.APIKey == "" || (!allowAnon && !v0Keys[s.APIKey]) {
-		return nil, errBadKey
+	if s.APIKey == "" {
+		return nil, nil, errBadKey
+	}
+	c, err := p.auth.verify(s.APIKey, time.Now())
+	if err != nil {
+		if !allowAnon {
+			return nil, nil, errBadKey
+		}
+		c = &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}
+	}
+	if !c.may("subscribe") || !c.allowsIP(ip) {
+		return nil, nil, errBadKey
 	}
 	if len(s.BoundingBoxes) == 0 || len(s.FiltersShipMMSI) > 50 {
-		return nil, errMalformed
+		return nil, nil, errMalformed
 	}
 	f := &v0Filter{}
 	for _, box := range s.BoundingBoxes {
 		if len(box) != 2 || len(box[0]) != 2 || len(box[1]) != 2 {
-			return nil, errMalformed
+			return nil, nil, errMalformed
 		}
 		b := bbox{min(box[0][0], box[1][0]), min(box[0][1], box[1][1]), max(box[0][0], box[1][0]), max(box[0][1], box[1][1])}
 		if b[0] < -90 || b[2] > 90 || b[1] < -180 || b[3] > 180 {
-			return nil, errMalformed
+			return nil, nil, errMalformed
+		}
+		if !c.allowsBox(b) {
+			return nil, nil, errBoxDenied
 		}
 		f.boxes = append(f.boxes, b)
 	}
@@ -82,7 +86,7 @@ func parseV0Sub(data []byte) (*v0Filter, string) {
 		for _, m := range s.FiltersShipMMSI {
 			n, err := strconv.ParseUint(m, 10, 32)
 			if err != nil || len(m) != 9 {
-				return nil, errMalformed
+				return nil, nil, errMalformed
 			}
 			f.mmsi[uint32(n)] = true
 		}
@@ -91,12 +95,12 @@ func parseV0Sub(data []byte) (*v0Filter, string) {
 		f.types = map[string]bool{}
 		for _, t := range s.FilterMessageTypes {
 			if f.types[t] {
-				return nil, errMalformed // duplicates are rejected upstream
+				return nil, nil, errMalformed // duplicates are rejected upstream
 			}
 			f.types[t] = true
 		}
 	}
-	return f, ""
+	return f, c, ""
 }
 
 func (f *v0Filter) match(ev *Event) bool {
@@ -148,6 +152,13 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var filter atomic.Pointer[v0Filter]
+	var release func()
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+	ip := clientIP(r)
 	readSub := func(timeout time.Duration) bool {
 		rctx := ctx
 		if timeout > 0 {
@@ -159,7 +170,13 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return false
 		}
-		f, msg := parseV0Sub(data)
+		f, cl, msg := p.parseV0Sub(data, ip)
+		if msg == "" && release == nil {
+			var ok bool
+			if release, ok = conns.acquire(cl.Sub, cl.Conns); !ok {
+				msg = "concurrent connections per user exceeded" // aisstream's wording
+			}
+		}
 		if msg != "" {
 			wsWriteJSON(ctx, c, map[string]string{"error": msg})
 			c.Close(websocket.StatusPolicyViolation, msg)
@@ -240,7 +257,15 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	pubID, canPublish := feederAuth(r)
+	cl, authErr := p.authorize(r, "publish") // optional: anonymous sockets may subscribe, not publish
+	if cl != nil {
+		if release, ok := conns.acquire(cl.Sub, cl.Conns); ok {
+			defer release()
+		} else {
+			wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "concurrent connections per key exceeded"})
+			return
+		}
+	}
 	var boxes atomic.Pointer[[]bbox] // nil = not subscribed
 	go func() {
 		defer cancel()
@@ -257,14 +282,26 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			switch f.Type {
 			case "subscribe":
 				b := f.BBox
+				if cl != nil && len(cl.BBox) > 0 {
+					for _, x := range b {
+						if !cl.allowsBox(x) {
+							wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "bbox not allowed for this key"})
+							b = nil
+							break
+						}
+					}
+					if b == nil {
+						continue
+					}
+				}
 				boxes.Store(&b)
 			case "publish":
-				if !canPublish {
-					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "publish requires credentials"})
+				if authErr != nil {
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "publish requires a feeder or peer token: " + authErr.Error()})
 					continue
 				}
 				now := time.Now()
-				src := "v1:" + pubID
+				src := "v1:" + cl.Sub
 				for _, line := range f.NMEA {
 					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line})
 				}

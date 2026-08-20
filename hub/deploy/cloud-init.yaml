@@ -13,8 +13,8 @@ write_files:
       UDP_ADDR=:10110
       ARCHIVE_DIR=/var/lib/hub/archive
       SNAPSHOT=/var/lib/hub/vessels.json
-      V0_API_KEYS=__V0_API_KEY__
-      FEEDER_KEYS=
+      ISSUER_PUBKEYS=__ISSUER_PUBKEYS__
+      PERSONAL_ISSUER_KEY=__PERSONAL_ISSUER_KEY__
   - path: /etc/systemd/system/hub.service
     content: |
       # /etc/systemd/system/hub.service — one hub per box. Binary at /opt/hub/hub, env in /etc/hub.env
