@@ -67,7 +67,8 @@ type Pipeline struct {
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
 
-	upstreams    []string // configured upstream source names; /health watches them
+	upstreams    []string   // configured upstream source names; /health watches them
+	feeder       *udpFeeder // optional: forward received (non-synthesized) events to an aggregator
 	last         atomic.Int64
 	lastBySource sync.Map // source → time.Time of last event; /health and /metrics read it
 	stats        struct {
@@ -193,9 +194,18 @@ func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Pac
 		return
 	}
 	p.mu.Lock()
-	sentences := p.encoder.EncodeSentence(aisnmea.VdmPacket{Channel: 'A', TalkerID: "AI", MessageType: "VDM", Payload: payload})
+	sentences := p.encoder.EncodeSentence(aisnmeaPacket('A', payload))
 	p.mu.Unlock()
 	p.emit(&Event{Time: t, Source: source, Station: station, Payload: payload, Packet: decoded, Sentences: sentences, Synthesized: true})
+}
+
+// aisnmeaPacket builds a VdmPacket for EncodeSentence, which wants the channel as 1/2, not 'A'/'B'.
+func aisnmeaPacket(channel byte, payload []byte) aisnmea.VdmPacket {
+	ch := byte(1)
+	if channel == 'B' || channel == 2 {
+		ch = 2
+	}
+	return aisnmea.VdmPacket{Channel: ch, TalkerID: "AI", MessageType: "VDM", Payload: payload}
 }
 
 // emit is the common tail: dedupe on (payload, channel) within the window, then id, vessel cache, fan-out.
@@ -299,6 +309,9 @@ func (p *Pipeline) unsubscribe(s *subscriber) {
 }
 
 func (p *Pipeline) broadcast(ev *Event) {
+	if p.feeder != nil {
+		p.feeder.send(p, ev)
+	}
 	p.smu.RLock()
 	for s := range p.subs {
 		select {

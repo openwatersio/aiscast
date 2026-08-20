@@ -37,6 +37,16 @@ func main() {
 		// best effort: not in p.upstreams, so aisstream being down never fails our /health
 		go runAisstream(p, env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream"), key, env("AISSTREAM_BBOX", "[[[-90,-180],[90,180]]]"))
 	}
+	if addr := os.Getenv("AISHUB_FEED"); addr != "" { // reciprocity: our received stream to AISHub's assigned UDP port
+		f, err := newUDPFeeder(addr)
+		if err != nil {
+			log.Fatalf("AISHUB_FEED: %v", err)
+		}
+		p.feeder = f
+	}
+	if u := os.Getenv("AISHUB_USERNAME"); u != "" {
+		go runAishub(p, u) // best effort, outside the health gate like aisstream
+	}
 	go runUDP(p, env("UDP_ADDR", ":10110"))
 	go p.logStats()
 	go func() {

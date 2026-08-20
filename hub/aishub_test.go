@@ -1,0 +1,56 @@
+package main
+
+import (
+	"testing"
+	"time"
+
+	"github.com/BertoldVdb/go-ais"
+)
+
+func TestAishubSnapshot(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
+	now := time.Unix(1625826600, 0)
+	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"NAVSTAT":8,"IMO":0,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"","ETA":1596}]]`
+	n, err := p.ingestAishub([]byte(body), now, st)
+	if err != nil || n != 2 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	pos := <-sub.ch
+	pr := pos.Packet.(ais.PositionReport)
+	if pos.MMSI != 244750034 || !pos.Synthesized || pos.Source != "aishub" || pos.Time.Unix() != 1625826523 {
+		t.Errorf("position event: %+v", pos)
+	}
+	if d := float64(pr.Latitude) - 52.46024; d > 1e-4 || d < -1e-4 {
+		t.Errorf("lat %v", pr.Latitude)
+	}
+	if float64(pr.Cog) != 360 || pr.TrueHeading != 511 || pr.NavigationalStatus != 8 {
+		t.Errorf("sentinels not preserved: %+v", pr)
+	}
+	stc := <-sub.ch
+	sd := stc.Packet.(ais.ShipStaticData)
+	if sd.Name != "CHATEAUROUX" || sd.CallSign != "PH7002" || sd.Type != 69 || float64(sd.MaximumStaticDraught) != 1.2 || sd.Dimension.A != 24 {
+		t.Errorf("static: %+v", sd)
+	}
+	// same snapshot again: nothing new (TIME and static unchanged)
+	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute), st)
+	if n != 0 || len(sub.ch) != 0 {
+		t.Errorf("repeat snapshot produced %d events", n)
+	}
+	// error envelope
+	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now, st); err == nil {
+		t.Error("error envelope not reported")
+	}
+}
+
+func TestReencodeKeepsChannel(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: `\s:2573010,c:1787234980*03\!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43`})
+	ev := <-sub.ch
+	lines := p.encoder.EncodeSentence(aisnmeaPacket(ev.Channel, ev.Payload))
+	if len(lines) != 1 || lines[0][:14] != "!AIVDM,1,1,,B," {
+		t.Errorf("re-encoded as %v, want channel B", lines)
+	}
+}

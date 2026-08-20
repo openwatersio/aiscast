@@ -137,6 +137,43 @@ Code: [`viewer/`](viewer/README.md). Not yet deployed to Pages.
 
 Kystverket allows one TCP connection per source IP (a second connection makes both reconnect every few seconds): one hub per public IP, and the second node in Stage 4 must not also pull Kystverket from the same IP.
 
+### Stage 0C: openwaters.io pages
+
+The public face of the service lives on [openwaters.io](https://openwaters.io) (repo `openwatersio/openwaters.io`, Astro + Tailwind, `website/src/pages/`, nav in `components/layout/Header.astro`, footer in `Footer.astro`, API docs built from OpenAPI at build time in `pages/api.astro` + `utils/openapi.ts` + `components/api/ApiEndpoint.astro`). This repo stays the source of truth for anything the site pulls in (viewer, OpenAPI spec, plugin); the site only renders.
+
+Website repo:
+
+- **Nav**: `AIS` → `/ais` in `navItems` (after Charts) and the footer Explore list.
+- **`/ais`** (`pages/ais/index.astro`, same hero pattern as `/charts`): hero (plain about coverage: Norway and Finland from open feeds today, volunteer receivers later), `<iframe src="https://openwatersio.github.io/aiscast/#8/59.5/10.6">` full-width under the hero (Pages sends no frame-blocking headers; the hash sets the initial framing), then sections with a TOC like `/charts/seamap`: **Use the data** (`GET /v1/vessels?bbox=` and a `/v1/stream` subscribe frame as copy-paste `curl`/`websocat` examples, `/v0/stream` for existing aisstream.io clients with the hostname swap, link to `/api#ais`), **Signal K** (the plugin card; see blockers), **Contribute** (run the hub, code on GitHub, feed a receiver once Stage 1 opens), **Sources and license** (per-source table from [Licensing](#licensing-and-attribution) with the attribution strings consumers must carry; the aggregate is not relicensed), a "not for navigation" callout (positions are drawn where reported, minutes stale, no collision avoidance), and a link to the repo. No live counters on the page (the hub's `/v1/vessels` has CORS open, so a vessel count is one fetch away when wanted).
+- **`/api`**: AIS endpoints as a second tag group on the same page, built from this repo's spec fetched at build time from `raw.githubusercontent.com/openwatersio/aiscast/main/hub/openapi.json` (not from the hub itself, so a hub outage cannot fail a site build). `ApiEndpoint` takes the host from the spec's `servers[0].url` instead of `API_HOST`; WebSocket operations carry `x-websocket: true` and render a `WS` badge with the frame schemas from `components`. `utils/openapi.ts` types against `@neaps/api`'s literal spec; loosen `extractEndpoints` to a structural OpenAPI type so a fetched JSON spec passes.
+- **Homepage**: an AIS card next to Charts/Tides/Bathymetry.
+
+This repo:
+
+- **`hub/openapi.json`**: OpenAPI 3.1 for `/v0/stream` (WS, aisstream.io subscribe and envelope), `/v1/stream` (WS, subscribe/publish/event frames), `/v1/vessels` (GeoJSON), `/v1/receive` (AIS-catcher POST), `/health`; `servers: [{url: "https://ais.openwaters.io"}]`; examples from `hub/testdata`. Served by the hub at `/openapi.json` via `go:embed` so the deployed binary describes itself. Golden test: the spec parses and every `mux.HandleFunc` path appears in it.
+- **Viewer**: `cooperativeGestures: window.self !== window.top` so the embedded map doesn't capture page scroll; nothing else changes.
+
+Checklist: [ ] `hub/openapi.json` + `/openapi.json` + route-coverage test [ ] viewer `cooperativeGestures` [ ] site: nav + footer + homepage card [ ] site: `/ais` page [ ] site: `/api` AIS group from the fetched spec, host from `servers`, WS badge [ ] verify `signalk-aisstream` against `wss://ais.openwaters.io/v0/stream`, then link it from `/ais` [ ] swap the Signal K link to `signalk-aiscast` on npm when Stage 3 ships.
+
+Blockers and decisions before the pages can say what they need to say:
+
+1. **`/v0` keys are hand-issued** (`V0_API_KEYS` in `/etc/hub.env`); a docs page cannot hand out one. Decide: accept any key on `/v0` (per-IP and rate limits already enforce; `/v1` subscribe is anonymous anyway) or "email for a key". Lean: accept any key, log it, keep `V0_API_KEYS` as a later allowlist.
+2. **Signal K link target**: `signalk-aiscast` does not exist yet; `signalk-aisstream` (npm 0.9.1) is the launch-requirement client but is not yet verified against the hub. Until verified, `/ais` links the Stage 3 section of this plan, not a package.
+3. **Contribute-a-receiver docs** are blocked on Stage 1 (feeder agreement, `FEEDER_KEYS`, registry); the page says so and offers an email, nothing more.
+4. **Terms line**: the free-tier wording ("free for non-commercial use; commercial use needs a paid key", see Sustainability) is undecided, so the page states source licenses and attribution only and carries no terms line until it is.
+5. **Name**: repo and viewer say `aiscast`, the nav says AIS, the hostname is `ais.openwaters.io`; pick the public product name before the page copy is written (open question below).
+6. **Uptime**: no status page or monitor exists (the top aisstream.io complaint); the hero should not promise availability, and `/health` can be linked as the interim status check.
+
+### Stage 0C: more sources, some on borrowed terms
+
+Decision (2026-08-20): pull in sources whose terms are unclear to get coverage now, keep every one of them separable, and walk them back as volunteer and licensed data arrive. Separable means: its own `source` value on every event, its own license tag in the archive path (purgeable), its own env flag, and never in the health gate.
+
+- [x] AISHub, reciprocal: the hub feeds its received (non-synthesized) stream to the assigned UDP port (`AISHUB_FEED`), and polls the aggregate snapshot once a minute (`AISHUB_USERNAME`): global terrestrial coverage at one position per vessel per minute, `synthesized`, source `aishub`, archive `aishub-terms/`. Their current page grants "use" only (the 2021 "publish freely or commercially" sentence is gone); they can revoke at any time. Walk-back: unset the flag, purge `aishub-terms/`. [ ] API username from AISHub (issued after they verify the station).
+- [ ] BarentsWatch: second path for Norway plus EEZ/Svalbard (NLOD; free registration, OAuth2). Clean.
+- [ ] Ask Sjöfartsverket (Sweden; 2019 price sheet: 5,000–25,000 SEK/yr distributor tiers) and DMA (Denmark live; paid subscription) for current terms.
+- [ ] EuRIS inland overlay on `/v1` if the viewer wants inland Europe (anonymised; never in `/v0`).
+- Not doing: MarineTraffic/VesselFinder/ShipXplorer feeder programs (web plans, not data; perpetual licenses over what is fed), scraping any commercial map (circumvention, not a grey area), aprs.fi (no caching), GFW (CC BY-NC, aggregated), Kystverket restricted tier and HELCOM raw (explicit agreements required).
+
 ### Stage 1: volunteer ingest
 
 Blocked until the feeder agreement (including the funding terms in Sustainability), per-source licensing, privacy policy, station registry, and deletion/opt-out procedures are settled (see below).
