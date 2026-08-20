@@ -1,0 +1,173 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+func testPipeline(t *testing.T) *Pipeline {
+	return newPipeline(newArchive(t.TempDir(), ""))
+}
+
+func TestParseV0Sub(t *testing.T) {
+	cases := map[string]string{
+		`{"APIKey":"k","BoundingBoxes":[[[-90,-180],[90,180]]]}`:                            "",
+		`{"apikey":"k","boundingboxes":[[[60,11],[58,9]]]}`:                                 "", // any key casing, any corner order
+		`{"APIKey":"k","BoundingBoxes":[[[60,11],[58,9]]],"FiltersShipMMSI":["227006760"]}`: "",
+		`{"BoundingBoxes":[[[-90,-180],[90,180]]]}`:                                         errBadKey,
+		`{"APIKey":"","BoundingBoxes":[[[-90,-180],[90,180]]]}`:                             errBadKey,
+		`not json`:       errMalformed,
+		`{"APIKey":"k"}`: errMalformed,
+		`{"APIKey":"k","BoundingBoxes":[[[60,11]]]}`:                                                                 errMalformed,
+		`{"APIKey":"k","BoundingBoxes":[[[95,11],[58,9]]]}`:                                                          errMalformed,
+		`{"APIKey":"k","BoundingBoxes":[[[60,11],[58,9]]],"FiltersShipMMSI":["12"]}`:                                 errMalformed,
+		`{"APIKey":"k","BoundingBoxes":[[[60,11],[58,9]]],"FilterMessageTypes":["PositionReport","PositionReport"]}`: errMalformed,
+	}
+	for in, want := range cases {
+		if _, got := parseV0Sub([]byte(in)); got != want {
+			t.Errorf("%s: got %q want %q", in, got, want)
+		}
+	}
+	f, _ := parseV0Sub([]byte(`{"APIKey":"k","BoundingBoxes":[[[60,11],[58,9]]]}`))
+	if f.boxes[0] != (bbox{58, 9, 60, 11}) {
+		t.Errorf("corner normalization: %v", f.boxes[0])
+	}
+}
+
+// Golden aisstream envelope for the pyais README sentence (MMSI 227006760, 49.4755767N 0.13138E, COG 36.7).
+const goldenV0 = `{"Message":{"PositionReport":{"Cog":36.7,"CommunicationState":22136,"Latitude":49.47557666666667,"Longitude":0.13138,"MessageID":1,"NavigationalStatus":0,"PositionAccuracy":false,"Raim":false,"RateOfTurn":-128,"RepeatIndicator":0,"Sog":0,"Spare":0,"SpecialManoeuvreIndicator":0,"Timestamp":14,"TrueHeading":511,"UserID":227006760,"Valid":true}},"MessageType":"PositionReport","MetaData":{"MMSI":227006760,"MMSI_String":227006760,"ShipName":"","latitude":49.47557666666667,"longitude":0.13138,"time_utc":"2023-10-22 22:47:36.94034384 +0000 UTC"}}`
+
+func TestV0Golden(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	at := time.Date(2023, 10, 22, 22, 47, 36, 940343840, time.UTC)
+	p.Ingest(Reception{Source: "test", Station: "test", RecvTime: at, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	ev := <-sub.ch
+	if got := string(ev.renderV0()); got != goldenV0 {
+		t.Errorf("v0 envelope\n got %s\nwant %s", got, goldenV0)
+	}
+}
+
+func TestPipelineAssemblyAndDedupe(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	f, err := os.Open("testdata/kystverket.nmea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	n, frags := 0, 0
+	sc := bufio.NewScanner(f)
+	var lines []string
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+	ingest := func() {
+		for _, l := range lines {
+			if strings.Contains(l, "VDM,2,2,") {
+				frags++
+			}
+			p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: time.Unix(1787234990, 0), Body: l})
+		}
+	}
+	ingest()
+	multipart, tagged := false, 0
+	for len(sub.ch) > 0 {
+		ev := <-sub.ch
+		n++
+		if len(ev.Sentences) == 2 && ev.Type == "ShipStaticData" {
+			multipart = true
+		}
+		if strings.HasPrefix(ev.Station, "kystverket/") {
+			tagged++
+		}
+	}
+	if !multipart {
+		t.Error("no reassembled two-sentence ShipStaticData event")
+	}
+	if tagged < n-1 { // one fixture line has no TAG block
+		t.Errorf("station not taken from TAG block: %d of %d", tagged, n)
+	}
+	if n == 0 || n > len(lines)-frags/2 {
+		t.Errorf("events=%d lines=%d", n, len(lines))
+	}
+	ingest() // same payloads within the window: all duplicates
+	if d := len(sub.ch); d != 0 {
+		t.Errorf("second pass produced %d events, want 0 (dedupe)", d)
+	}
+	if p.stats.parseErr.Load() != 0 {
+		t.Errorf("parse errors: %d", p.stats.parseErr.Load())
+	}
+}
+
+func TestReceiveHTTP(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	body := `{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260820111900","nmea":["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"]}]}`
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/receive", strings.NewReader(body))
+	req.SetBasicAuth("st1", "secret")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("post: %v %v", err, res)
+	}
+	select {
+	case ev := <-sub.ch:
+		if ev.Source != "http:st1" || ev.MMSI != 227006760 {
+			t.Errorf("unexpected event %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("no event from HTTP post (parse_err=%d decode_fail=%d)", p.stats.parseErr.Load(), p.stats.decodeFail.Load())
+	}
+}
+
+func TestV0WebSocket(t *testing.T) {
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v0/stream"
+
+	c, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Write(ctx, websocket.MessageText, []byte(`{"BoundingBoxes":[[[-90,-180],[90,180]]]}`))
+	_, msg, err := c.Read(ctx)
+	if err != nil || string(msg) != `{"error":"Api Key Is Not Valid"}` {
+		t.Fatalf("bad key: %s %v", msg, err)
+	}
+	c.CloseNow()
+
+	c, _, err = websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	c.Write(ctx, websocket.MessageText, []byte(`{"APIKey":"k","BoundingBoxes":[[[49,0],[50,1]]],"FilterMessageTypes":["PositionReport"]}`))
+	time.Sleep(50 * time.Millisecond) // let the server register the subscriber
+	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	_, msg, err = c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		MessageType string
+		MetaData    map[string]any
+	}
+	json.Unmarshal(msg, &env)
+	if env.MessageType != "PositionReport" || env.MetaData["MMSI"] != float64(227006760) {
+		t.Errorf("unexpected frame: %s", msg)
+	}
+}

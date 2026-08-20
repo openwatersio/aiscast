@@ -106,7 +106,9 @@ Goal: the whole pipeline running locally on one real source, with the data model
 4. `/v0/stream` golden fixtures from captured aisstream samples; conformance harness running `aisstream-ts` against localhost.
 5. Verify: subscribe with a bbox over Oslo fjord, see positions; POST an AIS-catcher batch and send a UDP sentence, see both come out; hourly gz lands in R2.
 
-Checklist: [ ] repo + decode [ ] Kystverket source [ ] reception + event records [ ] dedupe + state [ ] `/v0/stream` + golden tests [ ] `/v1/stream` bidirectional [ ] HTTP + UDP ingest [ ] R2 archive [ ] `aisstream-ts` works locally
+Checklist: [x] repo + decode [x] Kystverket source [x] reception + event records [x] dedupe + state [x] `/v0/stream` + golden tests [x] `/v1/stream` bidirectional [x] HTTP + UDP ingest [x] R2 archive (hourly rotation uploads to `ais-archive`) [x] `aisstream-ts` works locally
+
+Code: [`hub/`](hub/README.md). Simplifications to revisit in 0B: UDP station = sender IP (not per-station ports/keys), R2 upload shells out to wrangler, the open hour is not uploaded on shutdown, no `/metrics` or rate limits yet.
 
 ### Stage 0B, this week: public Nordic beta
 
