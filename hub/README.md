@@ -23,6 +23,6 @@ Kystverket allows one TCP connection per source IP: a second hub on the same IP 
 
 Load test: `go run ./cmd/loadtest -clients 1000 -duration 30s` against a hub started with `WS_CONNECTS_PER_MIN=100000` (all clients come from one IP). SIGTERM snapshots the vessel cache and flushes and uploads the open archive hours before exit.
 
-Sources: Kystverket (Norway, NLOD, TCP NMEA), Digitraffic (Finland, CC BY 4.0, MQTT JSON mapped to go-ais structs and re-encoded; events carry `synthesized: true`), aisstream.io when `AISSTREAM_API_KEY` is set (its `/v0` envelopes mapped back to structs, also `synthesized`; anything the open feeds already delivered dedupes), and AISHub's aggregate snapshot when `AISHUB_USERNAME` is set (one position per vessel per minute at best, `synthesized`, source `aishub`; reciprocal with `AISHUB_FEED`).
+Sources: Kystverket (Norway, NLOD, TCP NMEA), Digitraffic (Finland, CC BY 4.0, MQTT JSON mapped to go-ais structs and re-encoded; events carry `synthesized: true`), aisstream.io when `AISSTREAM_API_KEY` is set (its `/v0` envelopes mapped back to structs, also `synthesized`; anything the open feeds already delivered dedupes), and AISHub's aggregate snapshot when `AISHUB_USERNAME` is set (`synthesized`, source `aishub`; reciprocal with `AISHUB_FEED`). AISHub regenerates its world snapshot only every ~5 minutes, so positions from it are 1–6 minutes old; unchanged snapshots are skipped.
 
 Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -170,6 +171,7 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 	url := "https://data.aishub.net/ws.php?username=" + username + "&format=0&output=json&compress=2"
 	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
 	client := &http.Client{Timeout: 50 * time.Second}
+	var lastHash [32]byte
 	for {
 		start := time.Now()
 		n, err := func() (int, error) {
@@ -188,13 +190,20 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			if err != nil {
 				return 0, err
 			}
+			// AISHub regenerates the world snapshot only every ~5 min and serves the same bytes in between
+			if h := sha256.Sum256(body); h == lastHash {
+				return -1, nil
+			} else {
+				lastHash = h
+			}
 			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
 			return p.ingestAishub(body, start, st)
 		}()
-		if err != nil {
+		switch {
+		case err != nil:
 			log.Printf("aishub: %v", err)
-		} else {
-			log.Printf("aishub: %d events from snapshot in %s", n, time.Since(start).Truncate(time.Millisecond))
+		case n >= 0:
+			log.Printf("aishub: %d events from new snapshot in %s", n, time.Since(start).Truncate(time.Millisecond))
 		}
 		// never faster than once a minute: AISHub answers "Too frequent requests!" if polled more often
 		time.Sleep(max(interval-time.Since(start), 10*time.Second))
