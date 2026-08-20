@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log"
-	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -44,12 +43,6 @@ type Event struct {
 
 	v0Once sync.Once
 	v0     []byte
-}
-
-type vessel struct {
-	Name     string
-	Lat, Lon float64
-	HasPos   bool
 }
 
 type subscriber struct {
@@ -222,52 +215,6 @@ func typeName(p ais.Packet) string {
 	return t.Name()
 }
 
-// updateVessel folds the event into the per-MMSI cache and stamps the event with the cached name/position,
-// so positionless messages (5, 24) can be bbox-routed and carry MetaData like aisstream.
-func (p *Pipeline) updateVessel(ev *Event) {
-	var lat, lon float64
-	hasPos, name := false, ""
-	switch m := ev.Packet.(type) {
-	case ais.PositionReport:
-		lat, lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
-	case ais.StandardClassBPositionReport:
-		lat, lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
-	case ais.ExtendedClassBPositionReport:
-		lat, lon, hasPos, name = float64(m.Latitude), float64(m.Longitude), true, m.Name
-	case ais.LongRangeAisBroadcastMessage:
-		lat, lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
-	case ais.StandardSearchAndRescueAircraftReport:
-		lat, lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
-	case ais.BaseStationReport:
-		lat, lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
-	case ais.AidsToNavigationReport:
-		lat, lon, hasPos, name = float64(m.Latitude), float64(m.Longitude), true, m.Name
-	case ais.ShipStaticData:
-		name = m.Name
-	case ais.StaticDataReport:
-		if m.ReportA.Valid {
-			name = m.ReportA.Name
-		}
-	}
-	if hasPos && (math.Abs(lat) > 90 || math.Abs(lon) > 180) { // 91/181 = not available
-		hasPos = false
-	}
-	p.vmu.Lock()
-	v := p.vessels[ev.MMSI]
-	if v == nil {
-		v = &vessel{}
-		p.vessels[ev.MMSI] = v
-	}
-	if hasPos {
-		v.Lat, v.Lon, v.HasPos = lat, lon, true
-	}
-	if name != "" {
-		v.Name = name
-	}
-	ev.Name, ev.Lat, ev.Lon, ev.HasPos = v.Name, v.Lat, v.Lon, v.HasPos
-	p.vmu.Unlock()
-}
-
 func (p *Pipeline) subscribe() *subscriber {
 	s := &subscriber{ch: make(chan *Event, 1024)}
 	p.smu.Lock()
@@ -296,9 +243,7 @@ func (p *Pipeline) broadcast(ev *Event) {
 
 func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
-		p.vmu.RLock()
-		nv := len(p.vessels)
-		p.vmu.RUnlock()
+		nv := p.sweepVessels(time.Now().Add(-vesselTTL))
 		p.smu.RLock()
 		ns := len(p.subs)
 		p.smu.RUnlock()

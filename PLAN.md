@@ -110,12 +110,26 @@ Checklist: [x] repo + decode [x] Kystverket source [x] reception + event records
 
 Code: [`hub/`](hub/README.md). Simplifications to revisit in 0B: UDP station = sender IP (not per-station ports/keys), R2 upload shells out to wrangler, the open hour is not uploaded on shutdown, no `/metrics` or rate limits yet.
 
+### Stage 0A½: viewer
+
+A static map of live traffic, the first client of the hub other than aisstream-compatible ones. Lives in [`viewer/`](viewer/) at the repo root, not in the hub: the hub stays a pure API, the page is a client like the chart plugin, it deploys to Cloudflare Pages for free, and it becomes the public "what's on the feed" and coverage page later.
+
+- One `index.html`, vanilla JS + MapLibre GL, no build step. `?hub=` selects the hub (default `localhost:8080`). OpenFreeMap basemap until the Open Waters tiles are used. `hash: true` for shareable positions.
+- On load and debounced `moveend`: `GET /v1/vessels?bbox=` fills the viewport, then `subscribe` on `/v1/stream` with the same bbox; live events update a per-MMSI map, `setData` at ≤2 Hz.
+- Triangles rotated by heading (COG fallback), colored by ship-type class; dot when no heading; opacity by age, dropped after 30 min. Drawn where reported, never extrapolated (the lookout-marine rule). Click → name, MMSI, type, SOG/COG/HDG, nav status, last seen, source/station, last raw NMEA. Corner stats: WS state, events/s, vessels in view. Per-source license attribution in the map attribution.
+- Hub side, pulled forward from 0B: vessel cache carries COG/SOG/heading/type/nav status/last seen/source/station and evicts idle vessels; `GET /v1/vessels?bbox=` returns GeoJSON with `Access-Control-Allow-Origin: *`.
+- Skipped until asked: tracks (Stage 2 history), clustering, outlines to scale, search.
+
+Checklist: [x] vessel cache + eviction [x] `/v1/vessels` [x] `viewer/index.html` [x] verified against Kystverket in a browser
+
+Code: [`viewer/`](viewer/README.md). Not yet deployed to Pages.
+
 ### Stage 0B, this week: public Nordic beta
 
 - Digitraffic MQTT adapter (`Digitraffic-User` header, gzip) mapped to structs with `synthesized: true`; originals archived.
 - Reconnect with backoff on every upstream; `/health` fails when any upstream is silent >2 min; `/metrics`; uptime monitor on the WS endpoint.
 - Bounded client queues with drop accounting; payload/line limits on all inputs; per-IP and per-key rate limits on ingest and WS.
-- Vessel-state snapshot/restore; `/v1/vessels` bbox snapshot.
+- Vessel-state snapshot/restore.
 - Tests against GPSD `sample.aivdm` and libais `tagblock.nmea`; load test with synthetic clients (AisVirtualNet or a Go generator) as the deployment gate.
 - Deploy on Hetzner with systemd, Cloudflare DNS (`ais.<domain>` proxied, `ingest.<domain>` unproxied), Origin CA cert.
 - aisstream.io as an upstream behind a flag for coverage while it lasts (pending the terms question); EuRIS overlay on `/v1` if anonymised positions are useful to the chart client.
@@ -163,20 +177,6 @@ The feeder agreement (plain language: non-exclusive license limited to running t
 
 Reception and redistribution of AIS is lawful where it matters (US 47 USC §605(a) exempts broadcasts "for the use of the general public, which relates to ships"; Germany § 5 TDDDG; UK grey on text, settled in practice). IMO MSC 79's 2004 condemnation is non-binding and universally ignored.
 
-## Privacy, before volunteer data
-
-Decided before Stage 1, not after:
-
-- Vessel opt-out: documented request path, suppression list applied at fan-out and in history queries; precedent is Norway's open feed excluding fishing <15 m and leisure <45 m, which we treat as a policy dial with a stated default (publish all, honor opt-outs).
-- Retention: reception archive retained indefinitely for open-licensed sources; volunteer-contributed receptions per the feeder agreement; deletion procedure for opt-out vessels in history.
-- Station locations: coarse by default, precise only on opt-in.
-- Own-ship `!AIVDO` from Signal K: off by default, separate consent.
-- Abuse response: per-key revocation, per-IP limits, and a contact address.
-- GDPR basis for Class B small-craft data is documented (legitimate interest, broadcast data) and reviewed with the feeder agreement.
-
-## Chart plugin implications
-
-The Open Waters chart plugin speaks bbox-subscribe over WebSocket regardless of who serves it; its core seams (`VIEW_CHANGED` event, `net` provenance flag) are provider-agnostic, so pointing it at this hub needs no core work. The bundled aisstream key moves server-side (aisstream throttles per key). The `net.ws` manifest allowlist holds up to 8 hosts, so the hub hostname and a backup can be pre-listed to avoid re-consent later.
 ## Sustainability
 
 Goal: cover infrastructure (Hetzner box plus a growing R2 archive, on the order of $50–150/mo in year one) and make the time feel worthwhile, not build a company. Model: **open data, paid access.**
@@ -192,6 +192,20 @@ Goal: cover infrastructure (Hetzner box plus a growing R2 archive, on the order 
 
 Open: whether the deduped global raw feed (`/v1/nmea`) is free for everyone or free for feeders and non-commercial use with commercial users paying. If free for all, the paid product is decoded stream, history, and SLA only. Until decided, `/v1/nmea` is reciprocity-only.
 
+## Privacy, before volunteer data
+
+Decided before Stage 1, not after:
+
+- Vessel opt-out: documented request path, suppression list applied at fan-out and in history queries; precedent is Norway's open feed excluding fishing <15 m and leisure <45 m, which we treat as a policy dial with a stated default (publish all, honor opt-outs).
+- Retention: reception archive retained indefinitely for open-licensed sources; volunteer-contributed receptions per the feeder agreement; deletion procedure for opt-out vessels in history.
+- Station locations: coarse by default, precise only on opt-in.
+- Own-ship `!AIVDO` from Signal K: off by default, separate consent.
+- Abuse response: per-key revocation, per-IP limits, and a contact address.
+- GDPR basis for Class B small-craft data is documented (legitimate interest, broadcast data) and reviewed with the feeder agreement.
+
+## Chart plugin implications
+
+The Open Waters chart plugin speaks bbox-subscribe over WebSocket regardless of who serves it; its core seams (`VIEW_CHANGED` event, `net` provenance flag) are provider-agnostic, so pointing it at this hub needs no core work. The bundled aisstream key moves server-side (aisstream throttles per key). The `net.ws` manifest allowlist holds up to 8 hosts, so the hub hostname and a backup can be pre-listed to avoid re-consent later.
 
 ## Open questions
 

@@ -35,6 +35,7 @@ func httpHandler(p *Pipeline) http.Handler {
 	mux.HandleFunc("/v0/stream", p.serveV0)
 	mux.HandleFunc("/v1/stream", p.serveV1)
 	mux.HandleFunc("/v1/receive", p.serveReceive)
+	mux.HandleFunc("/v1/vessels", p.serveVessels)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if time.Since(p.lastEvent()) > 2*time.Minute {
 			http.Error(w, "no events in 2 minutes", http.StatusServiceUnavailable)

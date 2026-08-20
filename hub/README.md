@@ -11,6 +11,7 @@ Endpoints:
 
 - `GET /v0/stream` WebSocket, aisstream.io protocol (subscribe JSON with `APIKey`, `BoundingBoxes`, `FiltersShipMMSI`, `FilterMessageTypes`). Frozen; nothing here may deviate.
 - `GET /v1/stream` WebSocket, bidirectional. Frames in: `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon],...]}` (empty bbox = everything), `{"type":"publish","nmea":["!AIVDM,..."]}` (needs Basic auth or `?key=id:secret`). Frames out: `{"type":"event", id, time, source, station, channel, nmea, mmsi, msg_type, lat, lon, message, synthesized}`.
+- `GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon` GeoJSON of current positions (all vessels without `bbox`); vessels unseen for 30 minutes are dropped. CORS open.
 - `POST /v1/receive` AIS-catcher HTTP output (`-H http://host:8080/v1/receive USERPWD id:key GZIP on`): `jsonaiscatcher` JSON or plain NMEA lines, optional gzip.
 - UDP `:10110` raw NMEA datagrams.
 - `GET /health` 503 when no event for 2 minutes.

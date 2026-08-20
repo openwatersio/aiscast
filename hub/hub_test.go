@@ -190,3 +190,38 @@ func TestV0WebSocket(t *testing.T) {
 		t.Errorf("unexpected frame: %s", msg)
 	}
 }
+
+func TestVesselsSnapshot(t *testing.T) {
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // 49.4756N 0.1314E, COG 36.7
+	get := func(q string) (int, map[string]any) {
+		res, err := http.Get(srv.URL + "/v1/vessels" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fc map[string]any
+		json.NewDecoder(res.Body).Decode(&fc)
+		feats, _ := fc["features"].([]any)
+		if len(feats) == 0 {
+			return 0, nil
+		}
+		return len(feats), feats[0].(map[string]any)["properties"].(map[string]any)
+	}
+	if n, props := get("?bbox=49,0,50,1"); n != 1 || props["mmsi"] != float64(227006760) || props["cog"] != 36.7 || props["heading"] != nil {
+		t.Errorf("in-bbox: n=%d props=%v", n, props)
+	}
+	if n, _ := get("?bbox=60,10,61,11"); n != 0 {
+		t.Errorf("out-of-bbox: n=%d", n)
+	}
+	if n, _ := get(""); n != 1 {
+		t.Errorf("all: n=%d", n)
+	}
+	if res, _ := http.Get(srv.URL + "/v1/vessels?bbox=junk"); res.StatusCode != 400 {
+		t.Errorf("bad bbox: %d", res.StatusCode)
+	}
+	if n := p.sweepVessels(time.Now().Add(time.Minute)); n != 0 {
+		t.Errorf("sweep left %d", n)
+	}
+}

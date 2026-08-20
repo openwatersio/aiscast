@@ -1,0 +1,222 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AIS viewer</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="anonymous" />
+<style>
+  body { margin: 0; font: 13px/1.4 system-ui, sans-serif; }
+  #map { position: fixed; inset: 0; }
+  #stats { position: fixed; top: 8px; left: 8px; background: #fffd; padding: 6px 10px; border-radius: 4px; box-shadow: 0 1px 4px #0003; }
+  #stats b { display: inline-block; min-width: 4.5em; }
+  .maplibregl-popup-content { font: 12px/1.5 system-ui, sans-serif; max-width: 24em; }
+  .maplibregl-popup-content h3 { margin: 0 0 4px; font-size: 14px; }
+  .maplibregl-popup-content table td { padding: 0 6px 0 0; vertical-align: top; }
+  .maplibregl-popup-content pre { margin: 4px 0 0; font-size: 10px; white-space: pre-wrap; word-break: break-all; }
+</style>
+<div id="map"></div>
+<div id="stats"></div>
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js" integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin="anonymous"></script>
+<script>
+  const params = new URLSearchParams(location.search);
+  let hub = params.get("hub") || "localhost:8080";
+  if (!hub.includes("://")) hub = (location.protocol === "https:" ? "https://" : "http://") + hub;
+  const WS = hub.replace(/^http/, "ws") + "/v1/stream";
+  const TTL = 30 * 60e3; // drop after 30 min unseen, same as the hub
+
+  // Per-source attribution; licensing is per source, so only sources actually seen are credited.
+  const LICENSES = {
+    kystverket: '<a href="https://www.kystverket.no/">Kystverket</a> (NLOD 2.0)',
+    digitraffic: 'Source: <a href="https://www.digitraffic.fi/">Fintraffic / digitraffic.fi</a>, license CC 4.0 BY',
+  };
+  const NAV = ["Under way using engine", "At anchor", "Not under command", "Restricted manoeuvrability", "Constrained by draught", "Moored", "Aground", "Fishing", "Under way sailing", "HSC", "WIG", "", "", "", "AIS-SART", ""];
+  const CLASS_COLORS = { cargo: "#2e7d32", tanker: "#c62828", passenger: "#1565c0", fishing: "#ef6c00", pleasure: "#8e24aa", special: "#00838f", aton: "#6d4c41", base: "#37474f", sar: "#d81b60", other: "#616161" };
+
+  function shipClass(kind, t) {
+    if (kind && kind !== "vessel") return kind;
+    if (!t) return "other";
+    if (t === 30) return "fishing";
+    if (t === 36 || t === 37) return "pleasure";
+    if (t >= 50 && t <= 59) return "special";
+    if (t >= 60 && t <= 69) return "passenger";
+    if (t >= 70 && t <= 79) return "cargo";
+    if (t >= 80 && t <= 89) return "tanker";
+    return "other";
+  }
+
+  const map = new maplibregl.Map({
+    container: "map",
+    style: "https://tiles.openfreemap.org/styles/positron",
+    center: [10.6, 59.5],
+    zoom: 8,
+    hash: true,
+    attributionControl: false,
+  });
+  map.addControl(new maplibregl.NavigationControl());
+  let attribution = null;
+  const seenSources = new Set();
+  function updateAttribution() {
+    if (attribution) map.removeControl(attribution);
+    const custom = [...seenSources].map((s) => LICENSES[s] || `AIS: ${esc(s)}`);
+    attribution = new maplibregl.AttributionControl({ compact: false, customAttribution: custom });
+    map.addControl(attribution);
+  }
+  updateAttribution();
+  function noteSource(src) {
+    if (seenSources.has(src)) return;
+    seenSources.add(src);
+    updateAttribution();
+  }
+
+  // mmsi -> {lat, lon, cog, sog, heading, nav, type, kind, name, seen, source, station, msg_type, nmea}
+  const vessels = new Map();
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+  function bboxParam() {
+    const b = map.getBounds();
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    return [clamp(b.getSouth(), -90, 90), clamp(b.getWest(), -180, 180), clamp(b.getNorth(), -90, 90), clamp(b.getEast(), -180, 180)];
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch(`${hub}/v1/vessels?bbox=${bboxParam().join(",")}`);
+      const fc = await res.json();
+      for (const f of fc.features) {
+        const p = f.properties;
+        const v = vessels.get(p.mmsi) || {};
+        Object.assign(v, p, { lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], seen: Date.parse(p.seen) });
+        vessels.set(p.mmsi, v);
+        noteSource(p.source);
+      }
+      dirty = true;
+    } catch (e) {
+      console.warn("snapshot failed", e);
+    }
+  }
+
+  // ---- live stream ----
+  let ws, wsState = "connecting", backoff = 1000, eventCount = 0, eventsPerSec = 0;
+  function connect() {
+    ws = new WebSocket(WS);
+    ws.onopen = () => { wsState = "live"; backoff = 1000; subscribe(); };
+    ws.onclose = () => { wsState = "reconnecting"; setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 30e3); };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      if (ev.type !== "event") return;
+      eventCount++;
+      onEvent(ev);
+    };
+  }
+  function subscribe() {
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: "subscribe", bbox: [bboxParam()] }));
+  }
+
+  const POSITION_TYPES = new Set(["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "LongRangeAisBroadcastMessage", "StandardSearchAndRescueAircraftReport", "BaseStationReport", "AidsToNavigationReport"]);
+  function onEvent(ev) {
+    const m = ev.message || {};
+    const v = vessels.get(ev.mmsi) || { kind: "vessel" };
+    if (ev.lat != null) { v.lat = ev.lat; v.lon = ev.lon; }
+    if (POSITION_TYPES.has(ev.msg_type)) {
+      const lr = ev.msg_type === "LongRangeAisBroadcastMessage";
+      v.cog = m.Cog != null && m.Cog < (lr ? 511 : 360) ? m.Cog : undefined;
+      v.sog = m.Sog != null && m.Sog < (lr ? 63 : 102.3) ? m.Sog : undefined;
+      v.heading = m.TrueHeading != null && m.TrueHeading < 511 ? m.TrueHeading : undefined;
+    }
+    if (m.NavigationalStatus != null && m.NavigationalStatus !== 15) v.nav_status = m.NavigationalStatus;
+    const name = m.Name || m.ReportA?.Name;
+    if (name) v.name = name;
+    const type = m.Type || m.ReportB?.ShipType;
+    if (type) v.type = type;
+    if (ev.msg_type === "AidsToNavigationReport") v.kind = "aton";
+    else if (ev.msg_type === "BaseStationReport") v.kind = "base";
+    else if (ev.msg_type === "StandardSearchAndRescueAircraftReport") v.kind = "sar";
+    Object.assign(v, { seen: Date.parse(ev.time), source: ev.source, station: ev.station, msg_type: ev.msg_type, nmea: ev.nmea });
+    vessels.set(ev.mmsi, v);
+    noteSource(ev.source);
+    dirty = true;
+  }
+
+  // ---- rendering ----
+  let dirty = false;
+  function render() {
+    const now = Date.now(), features = [];
+    let inView = 0;
+    const b = map.getBounds();
+    for (const [mmsi, v] of vessels) {
+      if (now - v.seen > TTL) { vessels.delete(mmsi); continue; }
+      if (v.lat == null) continue;
+      const hdg = v.heading ?? v.cog;
+      const ageMin = (now - v.seen) / 60e3;
+      if (b.contains([v.lon, v.lat])) inView++;
+      features.push({
+        type: "Feature",
+        id: mmsi,
+        geometry: { type: "Point", coordinates: [v.lon, v.lat] },
+        properties: { mmsi, name: v.name || "", hdg, hasHdg: hdg != null, cls: shipClass(v.kind, v.type), opacity: ageMin < 3 ? 1 : ageMin < 10 ? 0.6 : 0.3 },
+      });
+    }
+    map.getSource("ais")?.setData({ type: "FeatureCollection", features });
+    document.getElementById("stats").innerHTML = `<b>${esc(wsState)}</b> ${eventsPerSec} msg/s<br><b>${inView}</b> in view, ${vessels.size} tracked`;
+  }
+  setInterval(() => { eventsPerSec = eventCount; eventCount = 0; if (dirty) { dirty = false; render(); } }, 1000);
+  setInterval(render, 15e3); // age fading without events
+
+  function triangle() {
+    const s = 24, c = document.createElement("canvas");
+    c.width = c.height = s;
+    const g = c.getContext("2d");
+    g.beginPath(); g.moveTo(s / 2, 1); g.lineTo(s - 3, s - 2); g.lineTo(s / 2, s * 0.7); g.lineTo(3, s - 2); g.closePath();
+    g.fillStyle = "#000"; g.fill();
+    return g.getImageData(0, 0, s, s);
+  }
+
+  map.on("load", () => {
+    map.addImage("ship", triangle(), { sdf: true });
+    map.addSource("ais", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "mmsi" });
+    const color = ["match", ["get", "cls"], ...Object.entries(CLASS_COLORS).flat(), "#616161"];
+    map.addLayer({
+      id: "ais-still", type: "circle", source: "ais", filter: ["!", ["get", "hasHdg"]],
+      paint: { "circle-radius": 4, "circle-color": color, "circle-opacity": ["get", "opacity"], "circle-stroke-width": 1, "circle-stroke-color": "#fff" },
+    });
+    map.addLayer({
+      id: "ais-moving", type: "symbol", source: "ais", filter: ["get", "hasHdg"],
+      layout: { "icon-image": "ship", "icon-size": 0.7, "icon-rotate": ["get", "hdg"], "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-ignore-placement": true },
+      paint: { "icon-color": color, "icon-opacity": ["get", "opacity"], "icon-halo-color": "#fff", "icon-halo-width": 1 },
+    });
+    map.addLayer({
+      id: "ais-label", type: "symbol", source: "ais", minzoom: 11,
+      layout: { "text-field": ["get", "name"], "text-size": 11, "text-offset": [0, 1.2], "text-anchor": "top", "text-optional": true },
+      paint: { "text-halo-color": "#fff", "text-halo-width": 1.5, "text-opacity": ["get", "opacity"] },
+    });
+    for (const layer of ["ais-still", "ais-moving"]) {
+      map.on("mouseenter", layer, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", layer, () => (map.getCanvas().style.cursor = ""));
+      map.on("click", layer, (e) => popup(e.features[0].properties.mmsi, e.lngLat));
+    }
+    refresh();
+    connect();
+  });
+
+  let moveTimer;
+  map.on("moveend", () => { clearTimeout(moveTimer); moveTimer = setTimeout(() => { refresh(); subscribe(); }, 300); });
+
+  function popup(mmsi, lngLat) {
+    const v = vessels.get(mmsi);
+    if (!v) return;
+    const row = (k, val) => (val == null || val === "" ? "" : `<tr><td>${k}</td><td>${val}</td></tr>`);
+    const html = `<h3>${esc(v.name || mmsi)}</h3><table>
+      ${row("MMSI", mmsi)}
+      ${row("Class", shipClass(v.kind, v.type) + (v.type ? ` (${v.type})` : ""))}
+      ${row("SOG", v.sog != null ? v.sog.toFixed(1) + " kn" : null)}
+      ${row("COG", v.cog != null ? v.cog.toFixed(1) + "°" : null)}
+      ${row("HDG", v.heading != null ? v.heading + "°" : null)}
+      ${row("Status", v.nav_status != null ? esc(NAV[v.nav_status] || v.nav_status) : null)}
+      ${row("Position", `${v.lat.toFixed(5)}, ${v.lon.toFixed(5)}`)}
+      ${row("Seen", new Date(v.seen).toISOString().replace("T", " ").slice(0, 19) + "Z")}
+      ${row("Source", esc(v.source) + (v.station && v.station !== v.source ? ` / ${esc(v.station)}` : ""))}
+      ${row("Last", esc(v.msg_type))}
+    </table>${v.nmea ? `<pre>${esc(v.nmea.join("\n"))}</pre>` : ""}`;
+    new maplibregl.Popup().setLngLat(lngLat).setHTML(html).addTo(map);
+  }
+</script>
