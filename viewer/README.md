@@ -1,6 +1,6 @@
 # viewer
 
-Live map of what the hub is receiving. One static page, no build step; a client of the hub like any other.
+Live map of what the hub is receiving: https://openwatersio.github.io/aiscast/ (GitHub Pages, deployed by `.github/workflows/pages.yml` on every push to `main` that touches `viewer/`). One static page, no build step; a client of the hub like any other.
 
 ```sh
 cd viewer && python3 -m http.server 8089   # then open http://localhost:8089/?hub=localhost:8080
