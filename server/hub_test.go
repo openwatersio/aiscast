@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -231,5 +232,69 @@ func TestUDPSenderKeyedByOwnMMSI(t *testing.T) {
 	want := []string{src, "mmsi:227006760", "mmsi:227006760"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("sources %v, want %v", got, want)
+	}
+}
+
+// /v1/stream publish: ack per frame, stale buffered sentences archived but not emitted, unsubscribe silences.
+func TestV1PublishAckAndReplay(t *testing.T) {
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	read := func() map[string]any {
+		_, msg, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		json.Unmarshal(msg, &m)
+		return m
+	}
+	c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","bbox":[]}`))
+	time.Sleep(50 * time.Millisecond)
+
+	// live sentence: ack, then the event
+	c.Write(ctx, websocket.MessageText, []byte(`{"type":"publish","nmea":["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"]}`))
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		got[read()["type"].(string)] = true
+	}
+	if !got["ack"] || !got["event"] {
+		t.Fatalf("want ack and event, got %v", got)
+	}
+
+	// stale sentence (TAG c: an hour old): ack, counted as replayed, no event
+	tag := fmt.Sprintf("c:%d", time.Now().Add(-time.Hour).Unix())
+	var sum byte
+	for i := 0; i < len(tag); i++ {
+		sum ^= tag[i]
+	}
+	stale := fmt.Sprintf(`\%s*%02X\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`, tag, sum)
+	body, _ := json.Marshal(map[string]any{"type": "publish", "nmea": []string{stale}})
+	c.Write(ctx, websocket.MessageText, body)
+	if m := read(); m["type"] != "ack" {
+		t.Fatalf("want ack, got %v", m)
+	}
+	if p.stats.replayed.Load() != 1 {
+		t.Errorf("replayed=%d want 1", p.stats.replayed.Load())
+	}
+
+	// unsubscribe: a fresh sentence acks but no event follows
+	c.Write(ctx, websocket.MessageText, []byte(`{"type":"unsubscribe"}`))
+	time.Sleep(50 * time.Millisecond)
+	c.Write(ctx, websocket.MessageText, []byte(`{"type":"publish","nmea":["!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43"]}`))
+	if m := read(); m["type"] != "ack" {
+		t.Fatalf("want ack, got %v", m)
+	}
+	rctx, rcancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer rcancel()
+	if _, msg, err := c.Read(rctx); err == nil {
+		t.Errorf("unexpected frame after unsubscribe: %s", msg)
 	}
 }

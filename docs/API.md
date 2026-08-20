@@ -5,7 +5,7 @@ Base: `https://ais.openwaters.io` (WebSocket: `wss://`). All responses are JSON;
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `GET /v0/stream` (WebSocket) | token as `APIKey` | aisstream.io-compatible stream |
-| `GET /v1/stream` (WebSocket) | none to subscribe; feeder/peer token to publish | native event stream, both directions |
+| `GET /v1/stream` (WebSocket) | none to subscribe; any token to publish | native event stream, both directions |
 | `GET /v1/vessels` | none | current positions as GeoJSON |
 | `GET /v1/stations` | none | sources being heard |
 | `POST /v1/keys` | none | mint a personal token for a device key |
@@ -20,11 +20,13 @@ Credentials are Ed25519-signed claim tokens, `ak1.<base64url claims>.<base64url 
 | Claim | Meaning |
 |---|---|
 | `sub` | who: a station name, partner name, or `ed25519:<pubkey>` / `mmsi:<n>` for a device |
-| `role` | `personal` (subscribe, small limits), `feeder` (publish), `peer` (publish + subscribe), `partner` (subscribe), `admin` (everything) |
+| `role` | `personal` (subscribe + publish as the device key, small limits), `feeder` (publish), `peer` (publish + subscribe), `partner` (subscribe), `admin` (everything) |
 | `exp`, `iat` | unix seconds |
 | `bbox` | optional list of `[minLat,minLon,maxLat,maxLon]`; every subscription box must fit inside one of them |
 | `cidr` | optional list of source CIDRs/IPs the token may be used from |
 | `conns` | optional cap on concurrent WebSockets for this `sub` |
+| `rate` | optional cap on messages per second per connection; excess events are thinned (skipped), the connection stays up |
+| `area` | optional cap on the total subscribed bounding-box area in square degrees (a 20°×20° box is 400) |
 
 Where to put it: aisstream `APIKey` field, `Authorization: Bearer <token>`, HTTP Basic password (`anything:<token>`, which is what AIS-catcher's `USERPWD` sends), or `?key=<token>` on the URL. A token that is present but invalid, expired, revoked, used outside its `cidr`, or lacking the role for the action is refused; it never degrades to anonymous access.
 
@@ -37,7 +39,7 @@ POST /v1/keys
 200 {"token": "ak1....", "claims": {"kid": "...", "sub": "ed25519:<pubkey>", "role": "personal", "exp": ..., "iat": ..., "conns": 2}}
 ```
 
-30 days, two concurrent connections, no bbox limit; request a new one before it expires. 10 requests per minute per IP. `501` if aiscast has no personal issuer configured. The token is a bearer token naming your key; there is no proof-of-possession handshake yet. Feeder, peer, partner, and admin tokens are minted offline by the operator.
+30 days, two concurrent connections, 50 messages/s per connection, 400 square degrees of subscribed area; request a new one before it expires. Minted tokens raise or drop any of these. A personal token may publish: receptions are credited to `v1:ed25519:<pubkey>`, an identity label with no trust attached (the Signal K plugin contributes this way). 10 requests per minute per IP. `501` if aiscast has no personal issuer configured. The token is a bearer token naming your key; there is no proof-of-possession handshake yet. Feeder, peer, partner, and admin tokens are minted offline by the operator.
 
 ## `/v0/stream`: aisstream.io compatibility
 
@@ -75,10 +77,12 @@ Client → server:
 ```json
 {"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0], [58.5, 9.5, 60.5, 11.5]]}
 {"type": "publish", "nmea": ["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23", "\\s:st1,c:1787234980*03\\!AIVDM,..."]}
+{"type": "unsubscribe"}
 ```
 
-- `subscribe`: `bbox` is a list of boxes; an empty list or no `bbox` means everything. Re-sending replaces the subscription. Nothing is sent until the first subscribe. If the token carries `bbox`, every requested box must fit inside; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
-- `publish`: needs a `feeder`, `peer`, or `admin` token. Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`. Without a publish role: `{"type":"error","error":"publish requires a feeder or peer token"}`.
+- `subscribe`: `bbox` is a list of boxes; an empty list or no `bbox` means everything (only for tokens without an `area` cap). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 4 concurrent connections per address, 50 messages/s, 400 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
+- `unsubscribe`: stop receiving events; the socket stays open for publishing.
+- `publish`: needs a token (`personal`, `feeder`, `peer`, or `admin`). Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`, and every frame is answered in order with `{"type":"ack","n":<sentences>}`. A sentence whose TAG `c:` time is more than 60 s old is treated as an offline backlog being replayed: archived and counted, not emitted live and not folded into the vessel cache. Without a token: `{"type":"error","error":"publish requires a token"}`.
 
 aiscast → client, one frame per decoded message after deduplication:
 
@@ -145,7 +149,9 @@ Accepted on every input: NMEA 4.10 TAG blocks (`s:` station, `c:` time in s/ms/�
 | What | Limit |
 |---|---|
 | WebSocket connects | 60 per minute per IP (`/v0` and `/v1`) |
-| Concurrent WebSockets per token | the token's `conns` claim (2 for personal tokens) |
+| Concurrent WebSockets per token | the token's `conns` claim (2 for personal tokens, 4 per address anonymous on `/v1`) |
+| Messages per second per connection | the token's `rate` claim (50 for personal and anonymous); excess thinned |
+| Subscribed area | the token's `area` claim (400 square degrees for personal and anonymous) |
 | Subscribe deadline on `/v0` | 3 s |
 | `/v1/receive` | 600 posts/min per station, 1 MB per post |
 | `/v1/keys` | 10 per minute per IP |

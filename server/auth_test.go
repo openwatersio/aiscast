@@ -38,6 +38,7 @@ func TestTokens(t *testing.T) {
 	feeder := mk(Claims{Sub: "station-1", Role: "feeder"})
 	personal := mk(Claims{Sub: "ed25519:abc", Role: "personal", BBox: []bbox{{55, 5, 65, 15}}, Conns: 1})
 	expired := mk(Claims{Sub: "old", Role: "admin", Exp: now.Add(-time.Minute).Unix()})
+	partner := mk(Claims{Sub: "acme", Role: "partner"})
 	banned := mk(Claims{Sub: "banned", Role: "admin"})
 	lan := mk(Claims{Sub: "lan", Role: "peer", CIDR: []string{"10.0.0.0/8"}})
 
@@ -54,11 +55,11 @@ func TestTokens(t *testing.T) {
 		t.Error("revoked accepted")
 	}
 
-	// /v1/receive: feeder may publish, personal may not, bad token rejected
+	// /v1/receive: feeder and personal may publish, partner may not, bad token rejected
 	for _, c := range []struct {
 		tok  string
 		want int
-	}{{feeder, 200}, {personal, 401}, {"nope", 401}, {"", 401}} {
+	}{{feeder, 200}, {personal, 200}, {partner, 401}, {"nope", 401}, {"", 401}} {
 		r := httptest.NewRequest("POST", "/v1/receive", strings.NewReader("!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"))
 		r.RemoteAddr = "203.0.113.5:1234"
 		if c.tok != "" {
@@ -135,7 +136,7 @@ func TestPersonalKeys(t *testing.T) {
 	if err != nil || c.Role != "personal" || c.Sub != "ed25519:"+devPub || c.Conns != 2 {
 		t.Errorf("personal token: %+v %v", c, err)
 	}
-	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+res.Token+`","BoundingBoxes":[[[-90,-180],[90,180]]]}`), "9.9.9.9"); msg != "" {
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+res.Token+`","BoundingBoxes":[[[40,-75],[45,-65]]]}`), "9.9.9.9"); msg != "" {
 		t.Errorf("personal token on /v0: %q", msg)
 	}
 }
@@ -161,11 +162,45 @@ func TestV1SocketTokenScope(t *testing.T) {
 		if (err != nil) != c.wantErr {
 			t.Errorf("%s: err=%v", c.name, err)
 		}
-		if c.name == "personal" && (cl == nil || cl.may("publish") || cl.allowsBox(bbox{40, -80, 45, -70}) || !cl.allowsBox(bbox{58, 9, 60, 11})) {
+		if c.name == "personal" && (cl == nil || !cl.may("publish") || cl.allowsBox(bbox{40, -80, 45, -70}) || !cl.allowsBox(bbox{58, 9, 60, 11})) {
 			t.Errorf("personal claims not enforced: %+v", cl)
 		}
 		if c.name == "anonymous" && cl != nil {
 			t.Errorf("anonymous should have no claims")
 		}
+	}
+}
+
+func TestLimitsClaims(t *testing.T) {
+	c := &Claims{Area: 400}
+	if !c.allowsArea([]bbox{{50, 0, 60, 20}}) || c.allowsArea([]bbox{{-90, -180, 90, 180}}) || !c.allowsArea([]bbox{{0, 0, 10, 10}, {20, 20, 30, 30}}) {
+		t.Error("area claim")
+	}
+	if !(&Claims{}).allowsArea([]bbox{{-90, -180, 90, 180}}) {
+		t.Error("unlimited area")
+	}
+	p := pacer{n: 2}
+	now := time.Unix(100, 0)
+	if !p.allow(now) || !p.allow(now) || p.allow(now) || !p.allow(now.Add(time.Second)) {
+		t.Error("pacer")
+	}
+	if !(&pacer{}).allow(now) {
+		t.Error("unlimited pacer")
+	}
+	an := anonymousClaims("1.2.3.4")
+	if an.Conns != 4 || an.Rate != 50 || an.Area != 400 || an.may("publish") || !an.may("subscribe") || an.Role != "anonymous" {
+		t.Errorf("anonymous claims: %+v", an)
+	}
+	// /v0: personal token with the default area cannot take the whole world
+	pp := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, pp)
+	tok, _ := signToken(priv, personalClaims(kid, "ed25519:x", time.Now()))
+	if _, _, msg := pp.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,-180],[90,180]]]}`), "1.2.3.4"); msg != errBoxDenied {
+		t.Errorf("world bbox on personal token: %q", msg)
+	}
+	if _, _, msg := pp.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[40,-75],[45,-65]]]}`), "1.2.3.4"); msg != "" {
+		t.Errorf("regional bbox on personal token: %q", msg)
 	}
 }

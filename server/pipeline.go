@@ -23,6 +23,7 @@ type Reception struct {
 	RecvTime   time.Time
 	SourceTime time.Time // feeder-supplied, zero if none
 	Body       string
+	Buffered   bool // sender replays an offline backlog: sentences with a TAG time older than replayAge are archived, not emitted
 }
 
 // Event is one decoded AIS message after reassembly and dedupe.
@@ -75,8 +76,8 @@ type Pipeline struct {
 	last         atomic.Int64
 	lastBySource sync.Map // source → time.Time of last event; /health and /metrics read it
 	stats        struct {
-		parseErr, decodeFail, dup, events, clientDrops, rateLimited atomic.Int64
-		bySource                                                    sync.Map // source → *counterT
+		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned atomic.Int64
+		bySource                                                                       sync.Map // source → *counterT
 	}
 }
 
@@ -135,6 +136,10 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	}
 	vdm, ok := s.(nmea.VDMVDO)
 	if !ok {
+		return
+	}
+	if st := tagTime(vdm.TagBlock.Time); rx.Buffered && !st.IsZero() && rx.RecvTime.Sub(st) > replayAge {
+		p.stats.replayed.Add(1)
 		return
 	}
 	station := rx.Station
@@ -275,6 +280,7 @@ func stripTrailingFields(line string) string {
 const (
 	maxSkew      = 30 * time.Second
 	dedupeWindow = 10 * time.Second
+	replayAge    = 60 * time.Second // buffered receptions older than this go to the archive only
 )
 
 func absDur(d time.Duration) time.Duration {

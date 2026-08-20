@@ -21,11 +21,12 @@ import (
 // can mint broad tokens; the CLI (cmd/aiscast-key) does. Format: "ak1.<b64url claims JSON>.<b64url signature>".
 //
 //	{"kid":"2026-08","sub":"station-42","role":"feeder","exp":1787000000,"iat":...,
-//	 "bbox":[[s,w,n,e]],"cidr":["203.0.113.0/24"],"conns":2}
+//	 "bbox":[[s,w,n,e]],"cidr":["203.0.113.0/24"],"conns":2,"rate":50,"area":400}
 //
 // Roles: personal (subscribe, small limits), feeder (publish/receive), peer (publish+subscribe), partner
 // (subscribe, negotiated limits), admin (everything). bbox limits what may be subscribed; cidr limits where
-// from; conns caps concurrent WebSockets per sub.
+// from; conns caps concurrent WebSockets per sub; rate thins each connection to n msg/s; area caps the total
+// subscribed bbox area in square degrees. Unset claims are unlimited; personal tokens get 2/50/400.
 
 const tokenPrefix = "ak1."
 
@@ -38,6 +39,43 @@ type Claims struct {
 	BBox  []bbox   `json:"bbox,omitempty"`
 	CIDR  []string `json:"cidr,omitempty"`
 	Conns int      `json:"conns,omitempty"`
+	Rate  int      `json:"rate,omitempty"` // messages per second per connection; excess is thinned, not disconnected
+	Area  float64  `json:"area,omitempty"` // max total subscribed bbox area, square degrees
+}
+
+// allowsArea: the total area of the requested boxes must not exceed the claim (0 = unlimited).
+func (c *Claims) allowsArea(boxes []bbox) bool {
+	if c.Area <= 0 {
+		return true
+	}
+	total := 0.0
+	for _, b := range boxes {
+		total += (b[2] - b[0]) * (b[3] - b[1])
+	}
+	return total <= c.Area
+}
+
+// anonymousClaims is what a socket without a token gets on /v1: personal-tier limits keyed by address.
+func anonymousClaims(ip string) *Claims {
+	return &Claims{Sub: "anon:" + ip, Role: "anonymous", Exp: 1 << 62, Conns: 4, Rate: 50, Area: 400}
+}
+
+// pacer thins a connection to at most n events per second. ponytail: fixed one-second window.
+type pacer struct {
+	n    int
+	sec  int64
+	sent int
+}
+
+func (p *pacer) allow(now time.Time) bool {
+	if p.n <= 0 {
+		return true
+	}
+	if s := now.Unix(); s != p.sec {
+		p.sec, p.sent = s, 0
+	}
+	p.sent++
+	return p.sent <= p.n
 }
 
 func (c *Claims) may(action string) bool {
@@ -46,9 +84,9 @@ func (c *Claims) may(action string) bool {
 		return true
 	case "feeder":
 		return action == "publish"
-	case "peer":
+	case "peer", "personal": // personal: self-minted for a device key; publishes as itself, never a trust upgrade
 		return action == "publish" || action == "subscribe"
-	case "personal", "partner":
+	case "partner", "anonymous":
 		return action == "subscribe"
 	}
 	return false
@@ -266,7 +304,7 @@ var personalIssuer = func() (string, ed25519.PrivateKey) {
 var keysLimit = newLimiter(10) // personal-token requests per IP per minute
 
 func personalClaims(kid, sub string, now time.Time) Claims {
-	return Claims{Kid: kid, Sub: sub, Role: "personal", Iat: now.Unix(), Exp: now.Add(30 * 24 * time.Hour).Unix(), Conns: 2}
+	return Claims{Kid: kid, Sub: sub, Role: "personal", Iat: now.Unix(), Exp: now.Add(30 * 24 * time.Hour).Unix(), Conns: 2, Rate: 50, Area: 400}
 }
 
 func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {

@@ -81,6 +81,9 @@ func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, strin
 		}
 		f.boxes = append(f.boxes, b)
 	}
+	if !c.allowsArea(f.boxes) {
+		return nil, nil, errBoxDenied
+	}
 	if len(s.FiltersShipMMSI) > 0 {
 		f.mmsi = map[uint32]bool{}
 		for _, m := range s.FiltersShipMMSI {
@@ -152,6 +155,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var filter atomic.Pointer[v0Filter]
+	var pace pacer
 	var release func()
 	defer func() {
 		if release != nil {
@@ -176,6 +180,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 			if release, ok = conns.acquire(cl.Sub, cl.Conns); !ok {
 				msg = "concurrent connections per user exceeded" // aisstream's wording
 			}
+			pace.n = cl.Rate
 		}
 		if msg != "" {
 			wsWriteJSON(ctx, c, map[string]string{"error": msg})
@@ -209,6 +214,10 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 			if !filter.Load().match(ev) {
 				continue
 			}
+			if !pace.allow(time.Now()) {
+				p.stats.thinned.Add(1)
+				continue
+			}
 			wctx, wc := context.WithTimeout(ctx, 10*time.Second)
 			err := c.Write(wctx, websocket.MessageText, ev.renderV0())
 			wc()
@@ -223,7 +232,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 // ponytail: minimal envelope of our own; revisit against NIP-01 before any second implementation exists.
 
 type v1Frame struct {
-	Type string   `json:"type"`           // "subscribe" | "publish"
+	Type string   `json:"type"`           // "subscribe" | "unsubscribe" | "publish"
 	BBox []bbox   `json:"bbox,omitempty"` // subscribe: [minLat,minLon,maxLat,maxLon]...; empty = everything
 	NMEA []string `json:"nmea,omitempty"` // publish: tagged or bare sentences
 }
@@ -265,18 +274,21 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusPolicyViolation, "invalid token")
 		return
 	}
-	if cl != nil {
-		if release, ok := conns.acquire(cl.Sub, cl.Conns); ok {
-			defer release()
+	if cl == nil {
+		if allowAnon {
+			cl = &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}
 		} else {
-			wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "concurrent connections per key exceeded"})
-			return
+			cl = anonymousClaims(clientIP(r)) // personal-tier limits, keyed by address
 		}
 	}
-	canPublish := (cl != nil && cl.may("publish")) || (cl == nil && allowAnon)
-	if cl == nil && allowAnon {
-		cl = &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}
+	if release, ok := conns.acquire(cl.Sub, cl.Conns); ok {
+		defer release()
+	} else {
+		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "concurrent connections per key exceeded"})
+		return
 	}
+	canPublish := cl.may("publish")
+	pace := pacer{n: cl.Rate}
 	var boxes atomic.Pointer[[]bbox] // nil = not subscribed
 	go func() {
 		defer cancel()
@@ -293,29 +305,30 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			switch f.Type {
 			case "subscribe":
 				b := f.BBox
-				if cl != nil && len(cl.BBox) > 0 {
-					for _, x := range b {
-						if !cl.allowsBox(x) {
-							wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "bbox not allowed for this key"})
-							b = nil
-							break
-						}
-					}
-					if b == nil {
-						continue
+				denied := !cl.allowsArea(b) || (len(b) == 0 && cl.Area > 0)
+				for _, x := range b {
+					if !cl.allowsBox(x) {
+						denied = true
 					}
 				}
+				if denied {
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "bbox not allowed for this key"})
+					continue
+				}
 				boxes.Store(&b)
+			case "unsubscribe":
+				boxes.Store(nil)
 			case "publish":
 				if !canPublish {
-					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "publish requires a feeder or peer token"})
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "publish requires a token"})
 					continue
 				}
 				now := time.Now()
 				src := "v1:" + cl.Sub
 				for _, line := range f.NMEA {
-					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line})
+					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line, Buffered: true})
 				}
+				wsWriteJSON(ctx, c, map[string]any{"type": "ack", "n": len(f.NMEA)})
 			default:
 				wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "unknown type"})
 			}
@@ -336,6 +349,10 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			}
 			bp := boxes.Load()
 			if bp == nil {
+				continue
+			}
+			if !pace.allow(time.Now()) {
+				p.stats.thinned.Add(1)
 				continue
 			}
 			if len(*bp) > 0 {
