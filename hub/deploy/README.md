@@ -1,11 +1,36 @@
 # Deploy
 
-One box, one binary, Cloudflare in front of the WebSocket/HTTP side, UDP direct.
+One box, one binary. Cloudflare goes in front of the WebSocket/HTTP side once DNS exists; UDP goes straight to the box.
 
-1. Build: `GOOS=linux GOARCH=amd64 go build -o hub .` (CCX23 is x86). Copy to `/opt/hub/hub`.
-2. `useradd -r -s /usr/sbin/nologin hub; mkdir -p /var/lib/hub/archive; chown -R hub:hub /var/lib/hub`.
-3. `/etc/hub.env`: `ADDR=127.0.0.1:8080` (behind the TLS terminator) or `:443` with the Origin CA cert if the hub terminates TLS itself; `UDP_ADDR=:10110`; `ARCHIVE_DIR=/var/lib/hub/archive`; `SNAPSHOT=/var/lib/hub/vessels.json`; `R2_BUCKET=ais-archive`; `V0_API_KEYS=...`; `FEEDER_KEYS=id:secret,...`.
-4. `cp deploy/hub.service /etc/systemd/system/ && systemctl enable --now hub`.
-5. Cloudflare DNS: `ais.<domain>` proxied (A record → box) for `/v0/stream`, `/v1/*`, `/health`; `ingest.<domain>` unproxied (A record → box) for UDP. WebSockets on in the zone; `permessage-deflate` is negotiated end to end.
-6. Firewall: 443 (or the TLS terminator's port), 10110/udp, ssh. `/metrics` stays off the public hostname (bind a second listener or scrape over ssh/WireGuard).
-7. Uptime monitor on `wss://ais.<domain>/v0/stream` with a real subscribe, not just a TCP check: the aisstream failure mode was a healthy-looking empty service.
+## What exists
+
+- Hetzner Cloud server `ais-hub-1`: `cx43` (8 shared vCPU, 16 GB, 160 GB NVMe, 20 TB/mo traffic, €18.49/mo) in `hel1` (Helsinki), Ubuntu 24.04, IPv4 `2.29.0.215`, IPv6 `2a01:4f9:c015:e7ca::/64`, label `project=ais`. Resize to a dedicated-CPU type (`ccx23`, €101.49/mo) only if fan-out CPU shows up in `/metrics`; the load test ran 1,000 clients at ~12% of one core.
+- Firewall `ais-hub`: in 22/tcp, 80/tcp, 443/tcp, 8080/tcp (plain HTTP until TLS is in front; close it then), 10110/udp, ICMP.
+- SSH key `bkeepers-ed25519` (the 1Password agent key); root login with it.
+- On the box (from [cloud-init.yaml](cloud-init.yaml)): user `hub`, `/opt/hub/hub`, `/var/lib/hub/{archive,vessels.json}`, `/etc/hub.env` (0600; holds `V0_API_KEYS`, also in the repo's untracked `.env` as `V0_API_KEY_PROD`), `/etc/systemd/system/hub.service` enabled.
+- Hub reachable at `http://2.29.0.215:8080/` (`/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, `/health`, `/metrics`) and `udp://2.29.0.215:10110`, with Kystverket and Digitraffic as upstreams.
+
+## How it was created
+
+Hetzner Cloud API with `HCLOUD_TOKEN` from the repo's `.env` (no `hcloud` CLI needed):
+
+```sh
+set -a; . ./.env; set +a; H="Authorization: Bearer $HCLOUD_TOKEN"; A=https://api.hetzner.cloud/v1
+curl -H "$H" -H "Content-Type: application/json" -X POST $A/ssh_keys -d '{"name":"bkeepers-ed25519","public_key":"ssh-ed25519 AAAA..."}'
+curl -H "$H" -H "Content-Type: application/json" -X POST $A/firewalls -d '{"name":"ais-hub","rules":[{"direction":"in","protocol":"tcp","port":"22","source_ips":["0.0.0.0/0","::/0"]}, ...80, 443, 8080 tcp; 10110 udp; icmp...]}'
+sed "s/__V0_API_KEY__/$(openssl rand -hex 16)/" hub/deploy/cloud-init.yaml > /tmp/ci.yaml
+python3 -c 'import json;print(json.dumps({"name":"ais-hub-1","server_type":"cx43","location":"hel1","image":"ubuntu-24.04","ssh_keys":["bkeepers-ed25519"],"firewalls":[{"firewall":<firewall id>}],"user_data":open("/tmp/ci.yaml").read(),"labels":{"project":"ais"}}))' > /tmp/create.json
+curl -H "$H" -H "Content-Type: application/json" -X POST $A/servers -d @/tmp/create.json
+ssh root@<ip> cloud-init status --wait
+hub/deploy/deploy.sh root@<ip>     # builds linux/amd64, scp, systemctl restart, /health
+```
+
+Redeploy after a code change: `hub/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0.215 journalctl -u hub -f`. `systemctl stop hub` snapshots the vessel cache and flushes the open archive hour before exit.
+
+## Still to do
+
+1. DNS in the Cloudflare zone `openwaters.io`: `ais` A → `2.29.0.215` and AAAA → `2a01:4f9:c015:e7ca::1`, proxied; `ingest` A → `2.29.0.215`, DNS only (UDP can't be proxied). WebSockets on for the zone.
+2. TLS at the origin: Caddy on the box (`apt install caddy`; Caddyfile `ais.openwaters.io { reverse_proxy localhost:8080 }`); Let's Encrypt HTTP-01 works through the Cloudflare proxy. Then Cloudflare SSL mode Full (strict), `ADDR=127.0.0.1:8080` in `/etc/hub.env`, drop 8080/tcp from the firewall. `/metrics` stays off the public hostname (Caddy doesn't route it; scrape over ssh).
+3. R2: an API token scoped to `ais-archive` → `R2_*` in `/etc/hub.env`, after replacing the wrangler shell-out with an S3 client (no node on the box). Until then the archive stays on the 160 GB disk (~7 GB/day gzipped at full rate).
+4. `FEEDER_KEYS` for the first volunteer stations; `AISSTREAM_API_KEY` if aisstream is to be an upstream on the box.
+5. Uptime monitor on `wss://ais.openwaters.io/v0/stream` with a real subscribe, not just a TCP check.

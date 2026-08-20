@@ -87,8 +87,9 @@ Compute and egress by host (list prices checked 2026-08-20, on-demand, Linux, ex
 
 | Host | Instance (4 vCPU class) | $/mo | Included egress | Overage | 65 TB/mo | 13 TB/mo | Caveats |
 |---|---|---|---|---|---|---|---|
-| Hetzner Cloud EU | CCX23 4 ded. / 16 GB | $50.49 + $0.60 IPv4 | 20 TB | $1.20/TB | $105 | $51 | EU locations only; Singapore overage $8.30/TB |
-| Hetzner Cloud US | CCX23 (ASH1/HIL1) | $50.99 + $0.60 | 1 TB | $1.20/TB | $128 | $66 | US/APAC bundle only 1 TB |
+| Hetzner Cloud EU | CCX23 4 ded. / 16 GB | €101.49 (Cloud API, hel1, 2026-08-20) | 20 TB | €1/TB | €146 | €101 | EU locations only; Singapore overage €7.40/TB |
+| Hetzner Cloud EU | CX43 8 shared / 16 GB | €18.49 (Cloud API, hel1) | 20 TB | €1/TB | €63 | €18 | what `ais-hub-1` runs on; CAX31 (ARM 8/16) €24.99, CCX13 (2 ded./8 GB) €50.49 |
+| Hetzner Cloud US | CCX23 (ASH/HIL) | €102.99 | 2 TB | €1/TB | €166 | €114 | US/APAC bundle only 2 TB |
 | OVHcloud Public Cloud | b3-16 4 / 16 GB | $82.64 | unmetered, 1 Gbps | n/a outside APAC | $83 | $83 | US (Vint Hill, Hillsboro), CA, EU |
 | OVHcloud VPS | VPS-2 4 / 8 GB | $8.50 | unmetered, 1 Gbps guaranteed | n/a outside APAC | $8.50 | $8.50 | no 16 GB VPS; APAC quota'd then throttled |
 | Scaleway | PRO2-XS 4 / 16 GB | €81.90 | included, 700 Mbps cap | n/a | €82 | €82 | EU only (PAR/AMS/WAW) |
@@ -101,7 +102,7 @@ Compute and egress by host (list prices checked 2026-08-20, on-demand, Linux, ex
 | GCP | n2-standard-4 | $142 | ~0 | $0.12→$0.08/GiB (Std tier $0.085→$0.045) | $5,784 (Std $4,656) | $1,524 (Std $1,195) | |
 | Azure | D4as_v5 | $126 | 100 GB | $0.087→$0.05/GB (Internet routing $0.08→$0.04) | $5,484 ($4,513) | $1,263 ($1,134) | |
 
-Sources: [Hetzner](https://www.hetzner.com/cloud/general-purpose/) (live price feed `live_data_prices.json`), [OVH VPS](https://us.ovhcloud.com/vps/) and [Public Cloud](https://www.ovhcloud.com/en/public-cloud/prices/), [Scaleway](https://www.scaleway.com/en/pricing/virtual-instances/), [Oracle](https://www.oracle.com/cloud/networking/pricing/), [Akamai](https://www.akamai.com/cloud/pricing/north-america), [Vultr](https://docs.vultr.com/support/platform/billing/what-is-the-bandwidth-overage-rate), [DigitalOcean](https://docs.digitalocean.com/platform/billing/bandwidth/), [Fly.io](https://fly.io/docs/about/pricing/), [AWS](https://aws.amazon.com/ec2/pricing/on-demand/) and [Lightsail](https://aws.amazon.com/lightsail/pricing/), [GCP](https://cloud.google.com/vpc/network-pricing), [Azure](https://azure.microsoft.com/en-us/pricing/details/bandwidth/).
+Sources: Hetzner from the Cloud API `GET /v1/server_types` on 2026-08-20 (the web price feed reading of $50.49 for CCX23 was CCX13), [OVH VPS](https://us.ovhcloud.com/vps/) and [Public Cloud](https://www.ovhcloud.com/en/public-cloud/prices/), [Scaleway](https://www.scaleway.com/en/pricing/virtual-instances/), [Oracle](https://www.oracle.com/cloud/networking/pricing/), [Akamai](https://www.akamai.com/cloud/pricing/north-america), [Vultr](https://docs.vultr.com/support/platform/billing/what-is-the-bandwidth-overage-rate), [DigitalOcean](https://docs.digitalocean.com/platform/billing/bandwidth/), [Fly.io](https://fly.io/docs/about/pricing/), [AWS](https://aws.amazon.com/ec2/pricing/on-demand/) and [Lightsail](https://aws.amazon.com/lightsail/pricing/), [GCP](https://cloud.google.com/vpc/network-pricing), [Azure](https://azure.microsoft.com/en-us/pricing/details/bandwidth/).
 
 Reading: the hyperscalers are 5–10× on egress and nothing in this workload needs them. The mid-tier VPS vendors (DO, Vultr, Linode) are fine for a beta and get uncomfortable past ~20 TB/mo. The cheap-bandwidth tier is Hetzner EU, OVH, Scaleway, and Oracle's 10 TB free. For a US node, Hetzner's 1 TB bundle makes OVH (Vint Hill/Hillsboro/Beauharnois), Oracle, or Linode the ones to price; OVH VPS-2 at $8.50 unmetered is the outlier worth testing for real sustained throughput before trusting it.
 
