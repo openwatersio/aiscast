@@ -269,14 +269,14 @@ func TestV1PublishAckAndReplay(t *testing.T) {
 		t.Fatalf("want ack and event, got %v", got)
 	}
 
-	// stale sentence (TAG c: an hour old): ack, counted as replayed, no event
+	// stale replayed sentence (TAG c: an hour old): ack, counted as replayed, no event
 	tag := fmt.Sprintf("c:%d", time.Now().Add(-time.Hour).Unix())
 	var sum byte
 	for i := 0; i < len(tag); i++ {
 		sum ^= tag[i]
 	}
 	stale := fmt.Sprintf(`\%s*%02X\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`, tag, sum)
-	body, _ := json.Marshal(map[string]any{"type": "publish", "nmea": []string{stale}})
+	body, _ := json.Marshal(map[string]any{"type": "publish", "replay": true, "nmea": []string{stale}})
 	c.Write(ctx, websocket.MessageText, body)
 	if m := read(); m["type"] != "ack" {
 		t.Fatalf("want ack, got %v", m)

@@ -13,6 +13,8 @@ import (
 	"github.com/coder/websocket"
 )
 
+const maxPublishFrame = 1000 // sentences per publish frame; the rest are dropped and counted
+
 var wsOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover}
 
 // ---- /v0/stream: aisstream.io wire protocol. Frozen; nothing here may deviate. ----
@@ -232,9 +234,10 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 // ponytail: minimal envelope of our own; revisit against NIP-01 before any second implementation exists.
 
 type v1Frame struct {
-	Type string   `json:"type"`           // "subscribe" | "unsubscribe" | "publish"
-	BBox []bbox   `json:"bbox,omitempty"` // subscribe: [minLat,minLon,maxLat,maxLon]...; empty = everything
-	NMEA []string `json:"nmea,omitempty"` // publish: tagged or bare sentences
+	Type   string   `json:"type"`             // "subscribe" | "unsubscribe" | "publish"
+	BBox   []bbox   `json:"bbox,omitempty"`   // subscribe: [minLat,minLon,maxLat,maxLon]...; empty = everything
+	NMEA   []string `json:"nmea,omitempty"`   // publish: tagged or bare sentences
+	Replay bool     `json:"replay,omitempty"` // publish: an offline backlog; stale TAG times are archived, not emitted
 }
 
 type v1Event struct {
@@ -325,10 +328,16 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				}
 				now := time.Now()
 				src := "v1:" + cl.Sub
+				n := 0
 				for _, line := range f.NMEA {
-					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line, Buffered: true})
+					if n >= maxPublishFrame || !publishLimit.allow(cl.Sub) {
+						p.stats.rateLimited.Add(1)
+						break
+					}
+					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line, Buffered: f.Replay})
+					n++
 				}
-				wsWriteJSON(ctx, c, map[string]any{"type": "ack", "n": len(f.NMEA)})
+				wsWriteJSON(ctx, c, map[string]any{"type": "ack", "n": n})
 			default:
 				wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "unknown type"})
 			}

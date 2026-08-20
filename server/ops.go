@@ -106,6 +106,7 @@ func (l *limiter) allow(key string) bool {
 
 var (
 	wsConnectLimit = newLimiter(envInt("WS_CONNECTS_PER_MIN", 60)) // per IP; raise for load tests from one host
+	publishLimit   = newLimiter(6000)                              // /v1/stream publish sentences per key per minute (a single receiver hears <75/s)
 	receiveLimit   = newLimiter(600)                               // /v1/receive posts per feeder per minute (AIS-catcher posts ~4/min)
 )
 

@@ -77,12 +77,13 @@ Client → server:
 ```json
 {"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0], [58.5, 9.5, 60.5, 11.5]]}
 {"type": "publish", "nmea": ["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23", "\\s:st1,c:1787234980*03\\!AIVDM,..."]}
+{"type": "publish", "replay": true, "nmea": ["\\c:1787234980123*2A\\!AIVDM,..."]}
 {"type": "unsubscribe"}
 ```
 
 - `subscribe`: `bbox` is a list of boxes; an empty list or no `bbox` means everything (only for tokens without an `area` cap). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 4 concurrent connections per address, 50 messages/s, 400 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
 - `unsubscribe`: stop receiving events; the socket stays open for publishing.
-- `publish`: needs a token (`personal`, `feeder`, `peer`, or `admin`). Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`, and every frame is answered in order with `{"type":"ack","n":<sentences>}`. A sentence whose TAG `c:` time is more than 60 s old is treated as an offline backlog being replayed: archived and counted, not emitted live and not folded into the vessel cache. Without a token: `{"type":"error","error":"publish requires a token"}`.
+- `publish`: needs a token (`personal`, `feeder`, `peer`, or `admin`). Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`, and every frame is answered in order with `{"type":"ack","n":<sentences accepted>}`. `replay: true` marks an offline backlog: sentences whose TAG `c:` time is more than 60 s old are then archived and counted, not emitted live and not folded into the vessel cache. At most 1000 sentences per frame and 6000 per minute per key; the rest are dropped (and not counted in `n`). Without a token: `{"type":"error","error":"publish requires a token"}`.
 
 aiscast → client, one frame per decoded message after deduplication:
 
