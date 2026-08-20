@@ -25,7 +25,11 @@ ssh root@<ip> cloud-init status --wait
 hub/deploy/deploy.sh root@<ip>     # builds linux/amd64, scp, systemctl restart, /health
 ```
 
-Redeploy after a code change: `hub/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0.215 journalctl -u hub -f`. `systemctl stop hub` snapshots the vessel cache and flushes the open archive hour before exit.
+## Continuous deployment
+
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml): every push and PR runs gofmt/vet/test and builds the linux/amd64 binary; a push to `main` then copies it to the box as the `deploy` user and restarts the service, failing the run if `/health` doesn't answer. The `deploy` user has its own ed25519 key (`/home/deploy/.ssh/authorized_keys`), owns `/opt/hub`, and can run only `sudo systemctl restart hub` / `is-active hub` (`/etc/sudoers.d/deploy`). Repository secrets: `DEPLOY_SSH_KEY` (that private key), `DEPLOY_HOST` (the box IP), `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan -t ed25519 <ip>`). The job uses the `production` environment, so approvals or branch rules can be added there.
+
+Manual redeploy after a code change: `hub/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0.215 journalctl -u hub -f`. `systemctl stop hub` snapshots the vessel cache and flushes the open archive hour before exit.
 
 ## Still to do
 
