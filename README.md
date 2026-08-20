@@ -14,7 +14,7 @@ This is a beta. No SLA, coverage is uneven, and the terms under which some sourc
 - `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon`: GeoJSON of every vessel currently in view (last position, name, type, course, speed, heading, when and from where it was last heard). No token.
 - `GET https://ais.openwaters.io/v1/stations`: every source the hub is hearing, with message counts and age.
 
-**Tokens.** `/v0/stream` needs a token. A personal token, good for 30 days with two concurrent connections, is self-serve: generate an Ed25519 keypair and `POST https://ais.openwaters.io/v1/keys` with `{"pubkey":"<base64url public key>"}`; the response is your token. For anything larger, or for commercial use, open an issue or write to brandon@opensoul.org.
+**Tokens.** `/v0/stream` needs a token. A personal token, good for 30 days with two concurrent connections, is self-serve: generate an Ed25519 keypair and `POST https://ais.openwaters.io/v1/keys` with `{"pubkey":"<base64url public key>"}`; the response is your token. For anything larger, or for commercial use, open an issue or write to hello@openwaters.io.
 
 Events carry a `source` so you can tell a live volunteer receiver from a government feed or an aggregate, and `synthesized: true` marks messages that were re-encoded from a non-NMEA source.
 
