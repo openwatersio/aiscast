@@ -157,7 +157,7 @@ Checklist: [ ] `server/openapi.json` + `/openapi.json` + route-coverage test [ ]
 
 Blockers and decisions before the pages can say what they need to say:
 
-1. **`/v0` keys are hand-issued** (`V0_API_KEYS` in `/etc/aiscast.env`); a docs page cannot hand out one. Decide: accept any key on `/v0` (per-IP and rate limits already enforce; `/v1` subscribe is anonymous anyway) or "email for a key". Lean: accept any key, log it, keep `V0_API_KEYS` as a later allowlist.
+1. Resolved: `/v0` is tokens-only and a docs page can hand out a token, because personal tokens are self-serve (`POST /v1/keys` with a device public key; 2 connections / 50 msg/s / 400 sq deg, 30 days). Larger keys are minted by hand (`aiscast-key`).
 2. **Signal K link target**: `signalk-aiscast` does not exist yet; `signalk-aisstream` (npm 0.9.1) is the launch-requirement client but is not yet verified against aiscast. Until verified, `/ais` links the Stage 3 section of this plan, not a package.
 3. **Contribute-a-receiver docs** are blocked on Stage 1 (feeder agreement, `FEEDER_KEYS`, registry); the page says so and offers an email, nothing more.
 4. **Terms line**: the free-tier wording ("free for non-commercial use; commercial use needs a paid key", see Sustainability) is undecided, so the page states source licenses and attribution only and carries no terms line until it is.
