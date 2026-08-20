@@ -1,6 +1,6 @@
-/hub
+/aiscast
 /archive/
-/hub.log
+/aiscast.log
 /vessels.json
 /vessels.json.tmp
 /.env

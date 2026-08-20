@@ -1,4 +1,4 @@
-// aiscast-key mints and inspects hub access tokens. The issuer private key never goes near the server.
+// aiscast-key mints and inspects aiscast access tokens. The issuer private key never goes near the server.
 //
 //	aiscast-key issuer                       # new issuer keypair: prints kid, public key (for ISSUER_PUBKEYS), seed
 //	aiscast-key new -seed <seed> -kid <kid> -sub station-42 -role feeder [-exp 8760h] [-bbox s,w,n,e]... [-cidr 203.0.113.0/24]... [-conns 2]
