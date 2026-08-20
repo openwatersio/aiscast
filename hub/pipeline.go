@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"reflect"
 	"strings"
@@ -58,6 +59,7 @@ type Pipeline struct {
 	encoder *aisnmea.NMEACodec // for synthesized events; has its own sequence counter
 	codecs  map[string]*aisnmea.NMEACodec
 	pending map[string][]string // per-station fragment lines awaiting assembly
+	ownOf   map[string]string   // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
 	seen    map[string]time.Time
 	nSeen   int
 
@@ -86,6 +88,7 @@ func newPipeline(arch *archive) *Pipeline {
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]string{},
+		ownOf:   map[string]string{},
 		seen:    map[string]time.Time{},
 		vessels: map[uint32]*vessel{},
 		subs:    map[*subscriber]struct{}{},
@@ -177,7 +180,22 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	if pkt.Channel == 2 {
 		ch = 'B'
 	}
-	p.emit(&Event{Time: t, Source: rx.Source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences})
+	// A UDP sender that transmits !AIVDO (own ship) has told us who it is: key it by MMSI from then on.
+	// Self-reported and spoofable, so this is an identity label, never a trust upgrade.
+	source := rx.Source
+	if strings.HasPrefix(source, "udp:") {
+		p.mu.Lock()
+		if vdm.Type == "VDO" {
+			if id := pkt.Packet.GetHeader().UserID; id != 0 {
+				p.ownOf[source] = fmt.Sprintf("mmsi:%d", id)
+			}
+		}
+		if own := p.ownOf[source]; own != "" {
+			source, station = own, own
+		}
+		p.mu.Unlock()
+	}
+	p.emit(&Event{Time: t, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences})
 }
 
 // ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).
