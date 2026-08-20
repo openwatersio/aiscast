@@ -45,7 +45,11 @@ func main() {
 		p.feeder = f
 	}
 	if u := os.Getenv("AISHUB_USERNAME"); u != "" {
-		go runAishub(p, u) // best effort, outside the health gate like aisstream
+		iv, err := time.ParseDuration(env("AISHUB_INTERVAL", "65s"))
+		if err != nil || iv < 60*time.Second {
+			iv = 65 * time.Second
+		}
+		go runAishub(p, u, iv) // best effort, outside the health gate like aisstream
 	}
 	go runUDP(p, env("UDP_ADDR", ":10110"))
 	go p.logStats()

@@ -166,7 +166,7 @@ func (p *Pipeline) ingestPacketAt(source, station string, t time.Time, pkt ais.P
 	p.ingestPacket(source, station, t, pkt)
 }
 
-func runAishub(p *Pipeline, username string) {
+func runAishub(p *Pipeline, username string, interval time.Duration) {
 	url := "https://data.aishub.net/ws.php?username=" + username + "&format=0&output=json&compress=2"
 	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
 	client := &http.Client{Timeout: 50 * time.Second}
@@ -196,7 +196,7 @@ func runAishub(p *Pipeline, username string) {
 		} else {
 			log.Printf("aishub: %d events from snapshot in %s", n, time.Since(start).Truncate(time.Millisecond))
 		}
-		// never faster than once a minute: AISHub returns nothing if polled more often
-		time.Sleep(max(65*time.Second-time.Since(start), 10*time.Second))
+		// never faster than once a minute: AISHub answers "Too frequent requests!" if polled more often
+		time.Sleep(max(interval-time.Since(start), 10*time.Second))
 	}
 }
