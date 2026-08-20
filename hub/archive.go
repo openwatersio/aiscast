@@ -13,7 +13,7 @@ import (
 )
 
 // license tag per source; goes in the object path so consumers can filter by terms.
-var licenses = map[string]string{"kystverket": "NLOD-2.0", "digitraffic": "CC-BY-4.0"}
+var licenses = map[string]string{"kystverket": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms"}
 
 type hourFile struct {
 	hour time.Time

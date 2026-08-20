@@ -33,6 +33,10 @@ func main() {
 		p.upstreams = append(p.upstreams, "digitraffic")
 		go runDigitraffic(p, env("DIGITRAFFIC_URL", "wss://meri.digitraffic.fi:443/mqtt"))
 	}
+	if key := os.Getenv("AISSTREAM_API_KEY"); key != "" {
+		p.upstreams = append(p.upstreams, "aisstream")
+		go runAisstream(p, env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream"), key, env("AISSTREAM_BBOX", "[[[-90,-180],[90,180]]]"))
+	}
 	go runUDP(p, env("UDP_ADDR", ":10110"))
 	go p.logStats()
 	go func() {

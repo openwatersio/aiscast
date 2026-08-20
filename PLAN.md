@@ -132,7 +132,7 @@ Code: [`viewer/`](viewer/README.md). Not yet deployed to Pages.
 - [x] Vessel-state snapshot every 10 s, restored on boot; SIGTERM snapshots and flushes/uploads the open archive hours.
 - [x] Tests against GPSD `sample.aivdm` (USCG trailing-field tolerance came out of it) and libais `tagblock.nmea`; `cmd/loadtest` Go generator; load test result in Assumptions.
 - [ ] Deploy on Hetzner with systemd (`hub/deploy/hub.service`), Cloudflare DNS (`ais.<domain>` proxied, `ingest.<domain>` unproxied), Origin CA cert. Needs: Hetzner account and box, the hostname decision (open question), an R2 API token for the hub (replace the wrangler shell-out with an S3 SigV4 PUT at that point), `V0_API_KEYS`/`FEEDER_KEYS` values.
-- [ ] aisstream.io as an upstream behind a flag for coverage while it lasts (pending the terms question); EuRIS overlay on `/v1` if anonymised positions are useful to the chart client.
+- [x] aisstream.io as an upstream when `AISSTREAM_API_KEY` is set (envelopes mapped back to structs, `synthesized`, dedupes against the open feeds; archived under `aisstream-io-terms/`). [ ] Verify live with a real key. [ ] EuRIS overlay on `/v1` if anonymised positions are useful to the chart client.
 
 Kystverket allows one TCP connection per source IP (a second connection makes both reconnect every few seconds): one hub per public IP, and the second node in Stage 4 must not also pull Kystverket from the same IP.
 

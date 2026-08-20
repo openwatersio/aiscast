@@ -17,12 +17,12 @@ Endpoints:
 - `GET /health` 503 when any configured upstream has been silent for 2 minutes.
 - `GET /metrics` Prometheus text: events, duplicates, parse/decode failures, client and archive drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age.
 
-Environment: `ADDR` (`:8080`), `UDP_ADDR` (`:10110`), `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`, `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`, `ARCHIVE_DIR` (`archive`), `R2_BUCKET` (unset = local only; uploads via `npx wrangler` on hourly rotation), `V0_API_KEYS` (comma list), `FEEDER_KEYS` (`id:secret,...`), `ALLOW_ANON=1` (accept any key/feeder; local development only), `SNAPSHOT` (`vessels.json`, vessel cache written every 10 s and restored on boot), `WS_CONNECTS_PER_MIN` (`60` per IP).
+Environment: `ADDR` (`:8080`), `UDP_ADDR` (`:10110`), `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`, `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`, `AISSTREAM_API_KEY` (set = aisstream.io upstream on), `AISSTREAM_BBOX` (world), `AISSTREAM_URL`, `ARCHIVE_DIR` (`archive`), `R2_BUCKET` (unset = local only; uploads via `npx wrangler` on hourly rotation), `V0_API_KEYS` (comma list), `FEEDER_KEYS` (`id:secret,...`), `ALLOW_ANON=1` (accept any key/feeder; local development only), `SNAPSHOT` (`vessels.json`, vessel cache written every 10 s and restored on boot), `WS_CONNECTS_PER_MIN` (`60` per IP).
 
 Kystverket allows one TCP connection per source IP: a second hub on the same IP makes both reconnect every few seconds. Run one hub per IP; for a second local instance set `KYSTVERKET=0`.
 
 Load test: `go run ./cmd/loadtest -clients 1000 -duration 30s` against a hub started with `WS_CONNECTS_PER_MIN=100000` (all clients come from one IP). SIGTERM snapshots the vessel cache and flushes and uploads the open archive hours before exit.
 
-Sources: Kystverket (Norway, NLOD, TCP NMEA) and Digitraffic (Finland, CC BY 4.0, MQTT JSON mapped to go-ais structs and re-encoded; events carry `synthesized: true`).
+Sources: Kystverket (Norway, NLOD, TCP NMEA), Digitraffic (Finland, CC BY 4.0, MQTT JSON mapped to go-ais structs and re-encoded; events carry `synthesized: true`), and aisstream.io when `AISSTREAM_API_KEY` is set (its `/v0` envelopes mapped back to structs, also `synthesized`; anything the open feeds already delivered dedupes).
 
 Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received.
