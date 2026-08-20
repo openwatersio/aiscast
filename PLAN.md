@@ -67,7 +67,7 @@ Decisions deliberately deferred: second node and the bus between nodes (until on
 | aisstream JSON per message | ~450–500 B | measured from samples |
 | Client bbox hit rate | unknown; 50 msg/s/client used for sizing | assumption; world-bbox clients see ~300 msg/s |
 | 1,000 clients × 50 msg/s × 500 B | 25 MB/s origin egress, 64.8 TB/mo uncompressed, ~13 TB/mo with deflate | arithmetic; compression ratio inferred |
-| Single-node fan-out capacity | 250k sends/s feasible with batching | extrapolated, not measured |
+| Single-node fan-out capacity | 1,000 clients × 68 msg/s = 68k sends/s, 37.7 MB/s, zero queue drops, 57 MB RSS, ~12% of one laptop core | measured 2026-08-20 with `cmd/loadtest` against the hub on an M-series laptop, uncompressed frames; 250k sends/s with batching still extrapolated |
 | Hetzner CCX23 price and overage | not machine-readable | verify before committing |
 
 Load testing with synthetic clients is a gate before the public beta, not a later nicety.
@@ -126,13 +126,15 @@ Code: [`viewer/`](viewer/README.md). Not yet deployed to Pages.
 
 ### Stage 0B, this week: public Nordic beta
 
-- Digitraffic MQTT adapter (`Digitraffic-User` header, gzip) mapped to structs with `synthesized: true`; originals archived.
-- Reconnect with backoff on every upstream; `/health` fails when any upstream is silent >2 min; `/metrics`; uptime monitor on the WS endpoint.
-- Bounded client queues with drop accounting; payload/line limits on all inputs; per-IP and per-key rate limits on ingest and WS.
-- Vessel-state snapshot/restore.
-- Tests against GPSD `sample.aivdm` and libais `tagblock.nmea`; load test with synthetic clients (AisVirtualNet or a Go generator) as the deployment gate.
-- Deploy on Hetzner with systemd, Cloudflare DNS (`ais.<domain>` proxied, `ingest.<domain>` unproxied), Origin CA cert.
-- aisstream.io as an upstream behind a flag for coverage while it lasts (pending the terms question); EuRIS overlay on `/v1` if anonymised positions are useful to the chart client.
+- [x] Digitraffic MQTT adapter (`Digitraffic-User` header) mapped to structs with `synthesized: true`, re-encoded to AIVDM so `/v1` events still carry a sentence; originals archived under `CC-BY-4.0/digitraffic/`.
+- [x] Reconnect with backoff on every upstream; `/health` fails when any upstream is silent >2 min; `/metrics`. [ ] Uptime monitor on the public WS endpoint (after deploy).
+- [x] Bounded client queues with drop accounting; payload/line limits on all inputs; per-IP WS connect and per-key ingest rate limits (fixed one-minute windows).
+- [x] Vessel-state snapshot every 10 s, restored on boot; SIGTERM snapshots and flushes/uploads the open archive hours.
+- [x] Tests against GPSD `sample.aivdm` (USCG trailing-field tolerance came out of it) and libais `tagblock.nmea`; `cmd/loadtest` Go generator; load test result in Assumptions.
+- [ ] Deploy on Hetzner with systemd (`hub/deploy/hub.service`), Cloudflare DNS (`ais.<domain>` proxied, `ingest.<domain>` unproxied), Origin CA cert. Needs: Hetzner account and box, the hostname decision (open question), an R2 API token for the hub (replace the wrangler shell-out with an S3 SigV4 PUT at that point), `V0_API_KEYS`/`FEEDER_KEYS` values.
+- [ ] aisstream.io as an upstream behind a flag for coverage while it lasts (pending the terms question); EuRIS overlay on `/v1` if anonymised positions are useful to the chart client.
+
+Kystverket allows one TCP connection per source IP (a second connection makes both reconnect every few seconds): one hub per public IP, and the second node in Stage 4 must not also pull Kystverket from the same IP.
 
 ### Stage 1: volunteer ingest
 

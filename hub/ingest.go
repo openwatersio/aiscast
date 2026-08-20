@@ -73,6 +73,9 @@ func (p *Pipeline) serveReceive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if p.limited(w, receiveLimit, id) {
+		return
+	}
 	var rd io.Reader = http.MaxBytesReader(w, r.Body, maxBody)
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(rd)

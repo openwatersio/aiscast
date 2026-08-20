@@ -135,6 +135,9 @@ func wsWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 }
 
 func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
+	if p.limited(w, wsConnectLimit, clientIP(r)) {
+		return
+	}
 	c, err := websocket.Accept(w, r, wsOpts)
 	if err != nil {
 		return
@@ -225,6 +228,9 @@ type v1Event struct {
 }
 
 func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
+	if p.limited(w, wsConnectLimit, clientIP(r)) {
+		return
+	}
 	c, err := websocket.Accept(w, r, wsOpts)
 	if err != nil {
 		return

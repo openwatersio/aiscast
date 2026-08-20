@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -19,14 +21,36 @@ func main() {
 	arch := newArchive(env("ARCHIVE_DIR", "archive"), os.Getenv("R2_BUCKET"))
 	p := newPipeline(arch)
 
+	snapshot := env("SNAPSHOT", "vessels.json")
+	if n, err := p.loadSnapshot(snapshot); err == nil {
+		log.Printf("restored %d vessels from %s", n, snapshot)
+	}
 	if env("KYSTVERKET", "1") == "1" {
+		p.upstreams = append(p.upstreams, "kystverket")
 		go runTCPSource(p, "kystverket", env("KYSTVERKET_ADDR", "153.44.253.27:5631"))
 	}
 	if env("DIGITRAFFIC", "1") == "1" {
+		p.upstreams = append(p.upstreams, "digitraffic")
 		go runDigitraffic(p, env("DIGITRAFFIC_URL", "wss://meri.digitraffic.fi:443/mqtt"))
 	}
 	go runUDP(p, env("UDP_ADDR", ":10110"))
 	go p.logStats()
+	go func() {
+		for range time.Tick(10 * time.Second) {
+			if err := p.saveSnapshot(snapshot); err != nil {
+				log.Printf("snapshot: %v", err)
+			}
+		}
+	}()
+	go func() { // SIGTERM/SIGINT: snapshot, flush and upload the open archive hours, exit
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+		<-sig
+		log.Printf("shutting down")
+		p.saveSnapshot(snapshot)
+		arch.shutdown()
+		os.Exit(0)
+	}()
 
 	addr := env("ADDR", ":8080")
 	log.Printf("listening on %s (udp %s)", addr, env("UDP_ADDR", ":10110"))
@@ -39,12 +63,7 @@ func httpHandler(p *Pipeline) http.Handler {
 	mux.HandleFunc("/v1/stream", p.serveV1)
 	mux.HandleFunc("/v1/receive", p.serveReceive)
 	mux.HandleFunc("/v1/vessels", p.serveVessels)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if time.Since(p.lastEvent()) > 2*time.Minute {
-			http.Error(w, "no events in 2 minutes", http.StatusServiceUnavailable)
-			return
-		}
-		w.Write([]byte("ok\n"))
-	})
+	mux.HandleFunc("/health", p.serveHealth)
+	mux.HandleFunc("/metrics", p.serveMetrics)
 	return mux
 }

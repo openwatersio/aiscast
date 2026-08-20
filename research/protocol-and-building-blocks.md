@@ -74,7 +74,7 @@ Compatibility quirks:
 2. `time_utc` is Go `time.Time.String()`: `2006-01-02 15:04:05.999999999 -0700 MST` → `"2023-10-22 22:47:36.94034384 +0000 UTC"`. Not RFC3339; fractional digits vary.
 3. `MetaData.ShipName` is untrimmed and padded; `""` when unknown.
 4. `ShipName` and `MetaData.latitude/longitude` come from a server-side per-MMSI cache, present even for positionless messages (types 5, 24). This is how bbox filtering routes static data: the server must keep a last-position cache per MMSI. Recent captures round MetaData lat/lon to 5 decimals.
-5. `Fixtype` (lowercase t) in `AidsToNavigationReport`; `FixType` elsewhere. `VenderIDModel`/`VenderIDSerial` vs `VendorIDName` in `StaticDataReport.ReportB`.
+5. `Fixtype` (lowercase t) in `AidsToNavigationReport`; `FixType` elsewhere. `VenderIDModel`/`VenderIDSerial` vs `VendorIDName` in `StaticDataReport.ReportB`. go-ais names the type-12 struct `AddessedSafetyMessage` while aisstream's documented enum says `AddressedSafetyMessage`; which spelling aisstream actually emits on the wire is unverified (capture a type 12 from aisstream to settle it).
 6. `MetaData` is schema-less (`map[string]interface{}` in the official Go client).
 7. No raw NMEA, station ID, or signal metrics are exposed. We can add fields (clients ignore unknown keys).
 8. `PositionReport` covers types 1, 2, 3 (`MessageID` disambiguates).

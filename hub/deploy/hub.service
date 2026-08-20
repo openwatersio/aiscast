@@ -1,0 +1,25 @@
+# /etc/systemd/system/hub.service — one hub per box. Binary at /opt/hub/hub, env in /etc/hub.env
+# (ADDR, UDP_ADDR, ARCHIVE_DIR, SNAPSHOT, R2_BUCKET, V0_API_KEYS, FEEDER_KEYS; never ALLOW_ANON).
+[Unit]
+Description=AIS hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hub
+Group=hub
+EnvironmentFile=/etc/hub.env
+WorkingDirectory=/var/lib/hub
+ExecStart=/opt/hub/hub
+Restart=always
+RestartSec=2
+# SIGTERM: snapshot + flush/upload open archive hours; give it time
+KillSignal=SIGTERM
+TimeoutStopSec=120
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hub
+
+[Install]
+WantedBy=multi-user.target

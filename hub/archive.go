@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,11 +26,14 @@ type hourFile struct {
 type archive struct {
 	dir, bucket string
 	ch          chan Reception
+	done        chan chan struct{} // shutdown request; replied to when files are closed and uploaded
+	drops       atomic.Int64
+	uploads     sync.WaitGroup
 }
 
 // newArchive with an empty dir is a no-op archive (tests).
 func newArchive(dir, bucket string) *archive {
-	a := &archive{dir: dir, bucket: bucket, ch: make(chan Reception, 8192)}
+	a := &archive{dir: dir, bucket: bucket, ch: make(chan Reception, 8192), done: make(chan chan struct{})}
 	if dir != "" {
 		go a.run()
 	}
@@ -41,7 +46,8 @@ func (a *archive) write(rx Reception) {
 	}
 	select {
 	case a.ch <- rx:
-	default: // ponytail: drop rather than stall ingest; count this when /metrics exists
+	default: // drop rather than stall ingest
+		a.drops.Add(1)
 	}
 }
 
@@ -70,7 +76,31 @@ func (a *archive) run() {
 			for _, hf := range files {
 				hf.gz.Flush()
 			}
+		case reply := <-a.done:
+			for _, hf := range files {
+				a.close(hf)
+			}
+			a.uploads.Wait()
+			reply <- struct{}{}
+			return
 		}
+	}
+}
+
+// shutdown closes open hours (uploading them) and waits up to 90 s.
+func (a *archive) shutdown() {
+	if a.dir == "" {
+		return
+	}
+	reply := make(chan struct{})
+	select {
+	case a.done <- reply:
+		select {
+		case <-reply:
+		case <-time.After(90 * time.Second):
+			log.Printf("archive: shutdown timed out waiting for uploads")
+		}
+	case <-time.After(5 * time.Second):
 	}
 }
 
@@ -104,7 +134,9 @@ func (a *archive) close(hf *hourFile) {
 		return
 	}
 	rel, _ := filepath.Rel(a.dir, hf.path)
+	a.uploads.Add(1)
 	go func() {
+		defer a.uploads.Done()
 		// ponytail: shell out to wrangler (already logged in); swap for an S3 SigV4 client when this runs unattended
 		out, err := exec.Command("npx", "-y", "wrangler", "r2", "object", "put", a.bucket+"/"+rel, "--file", hf.path, "--remote").CombinedOutput()
 		if err != nil {

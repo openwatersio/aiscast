@@ -67,9 +67,13 @@ type Pipeline struct {
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
 
-	last         atomic.Int64 // unix nanos of last event
-	lastBySource sync.Map     // source → time.Time of last event; /health and /metrics read it
-	stats        struct{ parseErr, decodeFail, dup, events atomic.Int64 }
+	upstreams    []string // configured upstream source names; /health watches them
+	last         atomic.Int64
+	lastBySource sync.Map // source → time.Time of last event; /health and /metrics read it
+	stats        struct {
+		parseErr, decodeFail, dup, events, clientDrops, rateLimited atomic.Int64
+		bySource                                                    sync.Map // source → *counterT
+	}
 }
 
 func newPipeline(arch *archive) *Pipeline {
@@ -88,7 +92,13 @@ func newPipeline(arch *archive) *Pipeline {
 
 func (p *Pipeline) lastEvent() time.Time { return time.Unix(0, p.last.Load()) }
 
-func (p *Pipeline) touch(source string) { p.lastBySource.Store(source, time.Now()) }
+type counterT = atomic.Int64
+
+func (p *Pipeline) touch(source string) {
+	p.lastBySource.Store(source, time.Now())
+	c, _ := p.stats.bySource.LoadOrStore(source, new(counterT))
+	c.(*counterT).Add(1)
+}
 
 // sourceAge returns how long since source last produced an event (or since boot if never).
 func (p *Pipeline) sourceAge(source string) time.Duration {
@@ -112,6 +122,7 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	if line == "" {
 		return
 	}
+	line = stripTrailingFields(line)
 	s, err := nmea.Parse(line)
 	if err != nil {
 		p.stats.parseErr.Add(1)
@@ -219,6 +230,19 @@ func (p *Pipeline) emit(ev *Event) {
 	p.broadcast(ev)
 }
 
+// stripTrailingFields drops USCG-style fields after the checksum (`…,0*5B,s36310,d-081,T59.0`), which
+// go-nmea would otherwise reject as a checksum mismatch.
+func stripTrailingFields(line string) string {
+	i := strings.LastIndexAny(line, "!$")
+	if i < 0 {
+		return line
+	}
+	if j := strings.IndexByte(line[i:], '*'); j >= 0 && len(line) > i+j+3 && line[i+j+3] == ',' {
+		return line[:i+j+3]
+	}
+	return line
+}
+
 const (
 	maxSkew      = 30 * time.Second
 	dedupeWindow = 10 * time.Second
@@ -245,13 +269,20 @@ func tagTime(v int64) time.Time {
 	}
 }
 
+// typeName is the aisstream MessageType: go-ais struct names, except where aisstream's documented enum
+// spells a name differently from go-ais (unverified against live aisstream output; see golden tests).
 func typeName(p ais.Packet) string {
 	t := reflect.TypeOf(p)
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
+	if n, ok := typeNameOverride[t.Name()]; ok {
+		return n
+	}
 	return t.Name()
 }
+
+var typeNameOverride = map[string]string{"AddessedSafetyMessage": "AddressedSafetyMessage"}
 
 func (p *Pipeline) subscribe() *subscriber {
 	s := &subscriber{ch: make(chan *Event, 1024)}
@@ -274,6 +305,7 @@ func (p *Pipeline) broadcast(ev *Event) {
 		case s.ch <- ev:
 		default:
 			s.overflow.Store(true) // slow client: its writer disconnects it
+			p.stats.clientDrops.Add(1)
 		}
 	}
 	p.smu.RUnlock()
