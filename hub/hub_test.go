@@ -208,3 +208,10 @@ func TestVesselsSnapshot(t *testing.T) {
 		t.Errorf("sweep left %d", n)
 	}
 }
+
+func TestUDPStationHidesIP(t *testing.T) {
+	a, b := udpStation("203.0.113.5"), udpStation("203.0.113.6")
+	if a == b || strings.Contains(a, "203") || len(a) != len("udp:")+12 || a != udpStation("203.0.113.5") {
+		t.Errorf("udp station ids: %s %s", a, b)
+	}
+}

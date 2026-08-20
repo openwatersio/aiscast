@@ -4,6 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -80,7 +84,25 @@ func (p *Pipeline) serveReceive(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// runUDP accepts raw NMEA datagrams. ponytail: station = sender IP; per-station ports/keys when real feeders arrive.
+// stationSalt keys the UDP station ids. STATION_SALT keeps them stable across restarts; unset = per-boot random.
+var stationSalt = func() []byte {
+	if s := os.Getenv("STATION_SALT"); s != "" {
+		return []byte(s)
+	}
+	b := make([]byte, 16)
+	rand.Read(b)
+	log.Printf("STATION_SALT unset: UDP station ids change on restart")
+	return b
+}()
+
+// udpStation names a UDP sender without exposing its address: station ids appear in public responses.
+func udpStation(ip string) string {
+	m := hmac.New(sha256.New, stationSalt)
+	m.Write([]byte(ip))
+	return "udp:" + hex.EncodeToString(m.Sum(nil)[:6])
+}
+
+// runUDP accepts raw NMEA datagrams. ponytail: station = keyed hash of sender IP; per-station ports/keys in Stage 1.
 func runUDP(p *Pipeline, addr string) {
 	pc, err := net.ListenPacket("udp", addr)
 	if err != nil {
@@ -95,7 +117,7 @@ func runUDP(p *Pipeline, addr string) {
 			return
 		}
 		ip, _, _ := net.SplitHostPort(from.String())
-		src := "udp:" + ip
+		src := udpStation(ip)
 		now := time.Now()
 		for _, line := range strings.Split(string(buf[:n]), "\n") {
 			p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line})
