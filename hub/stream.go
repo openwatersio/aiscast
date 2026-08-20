@@ -296,7 +296,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, Station: ev.Station, Channel: string(ev.Channel),
+			out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, Station: ev.Station, Channel: channelString(ev.Channel),
 				NMEA: ev.Sentences, MMSI: ev.MMSI, MsgType: ev.Type, Message: ev.Packet, Synthesized: ev.Synthesized}
 			if ev.HasPos {
 				out.Lat, out.Lon = &ev.Lat, &ev.Lon
@@ -309,3 +309,10 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 }
 
 func init() { log.SetFlags(log.LstdFlags | log.Lmicroseconds) }
+
+func channelString(c byte) string {
+	if c == 0 {
+		return ""
+	}
+	return string(c)
+}

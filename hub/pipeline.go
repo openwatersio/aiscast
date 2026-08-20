@@ -54,7 +54,8 @@ type Pipeline struct {
 	arch  *archive
 	codec *ais.Codec
 
-	mu      sync.Mutex // ponytail: one lock around parse+dedupe; shard per station if it shows up in profiles
+	mu      sync.Mutex         // ponytail: one lock around parse+dedupe; shard per station if it shows up in profiles
+	encoder *aisnmea.NMEACodec // for synthesized events; has its own sequence counter
 	codecs  map[string]*aisnmea.NMEACodec
 	pending map[string][]string // per-station fragment lines awaiting assembly
 	seen    map[string]time.Time
@@ -66,8 +67,9 @@ type Pipeline struct {
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
 
-	last  atomic.Int64 // unix nanos of last event
-	stats struct{ parseErr, decodeFail, dup, events atomic.Int64 }
+	last         atomic.Int64 // unix nanos of last event
+	lastBySource sync.Map     // source → time.Time of last event; /health and /metrics read it
+	stats        struct{ parseErr, decodeFail, dup, events atomic.Int64 }
 }
 
 func newPipeline(arch *archive) *Pipeline {
@@ -75,6 +77,7 @@ func newPipeline(arch *archive) *Pipeline {
 	c.DropSpace = true
 	return &Pipeline{
 		arch: arch, codec: c,
+		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]string{},
 		seen:    map[string]time.Time{},
@@ -84,6 +87,18 @@ func newPipeline(arch *archive) *Pipeline {
 }
 
 func (p *Pipeline) lastEvent() time.Time { return time.Unix(0, p.last.Load()) }
+
+func (p *Pipeline) touch(source string) { p.lastBySource.Store(source, time.Now()) }
+
+// sourceAge returns how long since source last produced an event (or since boot if never).
+func (p *Pipeline) sourceAge(source string) time.Duration {
+	if v, ok := p.lastBySource.Load(source); ok {
+		return time.Since(v.(time.Time))
+	}
+	return time.Since(bootTime)
+}
+
+var bootTime = time.Now()
 
 // Ingest archives a reception and feeds it to the pipeline.
 func (p *Pipeline) Ingest(rx Reception) {
@@ -145,15 +160,43 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	} else if !rx.SourceTime.IsZero() && absDur(rx.SourceTime.Sub(t)) <= maxSkew {
 		t = rx.SourceTime
 	}
+	ch := byte('A')
+	if pkt.Channel == 2 {
+		ch = 'B'
+	}
+	p.emit(&Event{Time: t, Source: rx.Source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences})
+}
 
-	key := string(pkt.Payload) + string(pkt.Channel)
+// ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).
+// The packet is re-encoded so dedupe, the event id, and the /v1 `nmea` field work exactly as for VHF receptions,
+// and decoded again so the struct is what a receiver would have produced (quantized lat/lon, sentinels).
+func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Packet) {
+	payload := p.codec.EncodePacket(pkt)
+	if payload == nil {
+		p.stats.decodeFail.Add(1)
+		return
+	}
+	decoded := p.codec.DecodePacket(payload)
+	if decoded == nil {
+		p.stats.decodeFail.Add(1)
+		return
+	}
 	p.mu.Lock()
-	if prev, ok := p.seen[key]; ok && absDur(t.Sub(prev)) < dedupeWindow {
+	sentences := p.encoder.EncodeSentence(aisnmea.VdmPacket{Channel: 'A', TalkerID: "AI", MessageType: "VDM", Payload: payload})
+	p.mu.Unlock()
+	p.emit(&Event{Time: t, Source: source, Station: station, Payload: payload, Packet: decoded, Sentences: sentences, Synthesized: true})
+}
+
+// emit is the common tail: dedupe on (payload, channel) within the window, then id, vessel cache, fan-out.
+func (p *Pipeline) emit(ev *Event) {
+	key := string(ev.Payload) + string(ev.Channel)
+	p.mu.Lock()
+	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
 		p.mu.Unlock()
 		p.stats.dup.Add(1)
 		return
 	}
-	p.seen[key] = t
+	p.seen[key] = ev.Time
 	p.nSeen++
 	if p.nSeen%4096 == 0 {
 		cutoff := time.Now().Add(-6 * dedupeWindow) // generous: canonical times can skew from wall clock
@@ -165,19 +208,14 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	}
 	p.mu.Unlock()
 
-	ch := byte('A')
-	if pkt.Channel == 2 {
-		ch = 'B'
-	}
 	sum := sha256.Sum256([]byte(key))
-	ev := &Event{
-		ID: hex.EncodeToString(sum[:16]), Time: t, Source: rx.Source, Station: station,
-		Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Type: typeName(pkt.Packet),
-		MMSI: pkt.Packet.GetHeader().UserID, Sentences: sentences,
-	}
+	ev.ID = hex.EncodeToString(sum[:16])
+	ev.Type = typeName(ev.Packet)
+	ev.MMSI = ev.Packet.GetHeader().UserID
 	p.updateVessel(ev)
 	p.stats.events.Add(1)
 	p.last.Store(time.Now().UnixNano())
+	p.touch(ev.Source)
 	p.broadcast(ev)
 }
 

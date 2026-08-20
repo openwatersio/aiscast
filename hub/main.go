@@ -22,6 +22,9 @@ func main() {
 	if env("KYSTVERKET", "1") == "1" {
 		go runTCPSource(p, "kystverket", env("KYSTVERKET_ADDR", "153.44.253.27:5631"))
 	}
+	if env("DIGITRAFFIC", "1") == "1" {
+		go runDigitraffic(p, env("DIGITRAFFIC_URL", "wss://meri.digitraffic.fi:443/mqtt"))
+	}
 	go runUDP(p, env("UDP_ADDR", ":10110"))
 	go p.logStats()
 

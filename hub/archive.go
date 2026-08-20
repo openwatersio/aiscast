@@ -11,7 +11,7 @@ import (
 )
 
 // license tag per source; goes in the object path so consumers can filter by terms.
-var licenses = map[string]string{"kystverket": "NLOD-2.0"}
+var licenses = map[string]string{"kystverket": "NLOD-2.0", "digitraffic": "CC-BY-4.0"}
 
 type hourFile struct {
 	hour time.Time
@@ -26,13 +26,19 @@ type archive struct {
 	ch          chan Reception
 }
 
+// newArchive with an empty dir is a no-op archive (tests).
 func newArchive(dir, bucket string) *archive {
 	a := &archive{dir: dir, bucket: bucket, ch: make(chan Reception, 8192)}
-	go a.run()
+	if dir != "" {
+		go a.run()
+	}
 	return a
 }
 
 func (a *archive) write(rx Reception) {
+	if a.dir == "" {
+		return
+	}
 	select {
 	case a.ch <- rx:
 	default: // ponytail: drop rather than stall ingest; count this when /metrics exists

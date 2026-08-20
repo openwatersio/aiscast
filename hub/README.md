@@ -16,6 +16,8 @@ Endpoints:
 - UDP `:10110` raw NMEA datagrams.
 - `GET /health` 503 when no event for 2 minutes.
 
-Environment: `ADDR` (`:8080`), `UDP_ADDR` (`:10110`), `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`, `ARCHIVE_DIR` (`archive`), `R2_BUCKET` (unset = local only; uploads via `npx wrangler` on hourly rotation), `V0_API_KEYS` (comma list), `FEEDER_KEYS` (`id:secret,...`), `ALLOW_ANON=1` (accept any key/feeder; local development only).
+Environment: `ADDR` (`:8080`), `UDP_ADDR` (`:10110`), `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`, `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`, `ARCHIVE_DIR` (`archive`), `R2_BUCKET` (unset = local only; uploads via `npx wrangler` on hourly rotation), `V0_API_KEYS` (comma list), `FEEDER_KEYS` (`id:secret,...`), `ALLOW_ANON=1` (accept any key/feeder; local development only).
+
+Sources: Kystverket (Norway, NLOD, TCP NMEA) and Digitraffic (Finland, CC BY 4.0, MQTT JSON mapped to go-ais structs and re-encoded; events carry `synthesized: true`).
 
 Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received.
