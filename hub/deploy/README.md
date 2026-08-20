@@ -5,10 +5,10 @@ One box, one binary. Cloudflare goes in front of the WebSocket/HTTP side once DN
 ## What exists
 
 - Hetzner Cloud server `ais-hub-1`: `cx43` (8 shared vCPU, 16 GB, 160 GB NVMe, 20 TB/mo traffic, €18.49/mo) in `hel1` (Helsinki), Ubuntu 24.04, IPv4 `2.29.0.215`, IPv6 `2a01:4f9:c015:e7ca::/64`, label `project=ais`. Resize to a dedicated-CPU type (`ccx23`, €101.49/mo) only if fan-out CPU shows up in `/metrics`; the load test ran 1,000 clients at ~12% of one core.
-- Firewall `ais-hub`: in 22/tcp, 80/tcp, 443/tcp, 8080/tcp (plain HTTP until TLS is in front; close it then), 10110/udp, ICMP.
+- Firewall `ais-hub`: in 22/tcp, 80/tcp, 443/tcp, 10110/udp, ICMP.
 - SSH key `bkeepers-ed25519` (the 1Password agent key); root login with it.
 - On the box (from [cloud-init.yaml](cloud-init.yaml)): user `hub`, `/opt/hub/hub`, `/var/lib/hub/{archive,vessels.json}`, `/etc/hub.env` (0600; holds `V0_API_KEYS`, also in the repo's untracked `.env` as `V0_API_KEY_PROD`), `/etc/systemd/system/hub.service` enabled.
-- Hub reachable at `http://2.29.0.215:8080/` (`/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, `/health`, `/metrics`) and `udp://2.29.0.215:10110`, with Kystverket and Digitraffic as upstreams.
+- Public: `https://ais.openwaters.io` (Cloudflare proxied → Caddy with a Let's Encrypt cert → hub on `127.0.0.1:8080`): `/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, `/health`; `/metrics` is only reachable on the box. UDP ingest at `2.29.0.215:10110` (to be `ingest.openwaters.io`, DNS only). Upstreams: Kystverket, Digitraffic, aisstream.io (best effort, not in the health gate). Archive hours upload to R2 `ais-archive` over the S3 API on rotation and on shutdown.
 
 ## How it was created
 
@@ -33,8 +33,7 @@ Manual redeploy after a code change: `hub/deploy/deploy.sh root@2.29.0.215`. Log
 
 ## Still to do
 
-1. DNS in the Cloudflare zone `openwaters.io`: `ais` A → `2.29.0.215` and AAAA → `2a01:4f9:c015:e7ca::1`, proxied; `ingest` A → `2.29.0.215`, DNS only (UDP can't be proxied). WebSockets on for the zone.
-2. TLS at the origin: Caddy is installed on the box (`/etc/caddy/Caddyfile`: `ais.openwaters.io` → `localhost:8080`, `/metrics` answered 404); Let's Encrypt HTTP-01 works through the Cloudflare proxy and Caddy keeps retrying until DNS points here. Once it has a cert: Cloudflare SSL mode Full (strict), `ADDR=127.0.0.1:8080` in `/etc/hub.env`, drop 8080/tcp from the firewall. `/metrics` is scraped over ssh.
-3. R2: an API token scoped to `ais-archive` → `R2_*` in `/etc/hub.env`, after replacing the wrangler shell-out with an S3 client (no node on the box). Until then the archive stays on the 160 GB disk (~7 GB/day gzipped at full rate).
-4. `FEEDER_KEYS` for the first volunteer stations; `AISSTREAM_API_KEY` if aisstream is to be an upstream on the box.
-5. Uptime monitor on `wss://ais.openwaters.io/v0/stream` with a real subscribe, not just a TCP check.
+1. DNS: `ingest` A → `2.29.0.215`, DNS only (UDP cannot be proxied).
+2. Confirm the Cloudflare SSL mode for the zone is Full (strict); Caddy has a valid Let's Encrypt cert, so strict works.
+3. `FEEDER_KEYS` for the first volunteer stations.
+4. Uptime monitor on `wss://ais.openwaters.io/v0/stream` with a real subscribe, not just a TCP check.

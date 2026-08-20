@@ -16,7 +16,7 @@ import (
 
 func testPipeline(t *testing.T) *Pipeline {
 	allowAnon = true
-	return newPipeline(newArchive("", ""))
+	return newPipeline(newArchive("", nil))
 }
 
 func TestFeederAuthFailsClosed(t *testing.T) {

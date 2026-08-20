@@ -18,7 +18,7 @@ func env(k, def string) string {
 }
 
 func main() {
-	arch := newArchive(env("ARCHIVE_DIR", "archive"), os.Getenv("R2_BUCKET"))
+	arch := newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv())
 	p := newPipeline(arch)
 
 	snapshot := env("SNAPSHOT", "vessels.json")
@@ -34,7 +34,7 @@ func main() {
 		go runDigitraffic(p, env("DIGITRAFFIC_URL", "wss://meri.digitraffic.fi:443/mqtt"))
 	}
 	if key := os.Getenv("AISSTREAM_API_KEY"); key != "" {
-		p.upstreams = append(p.upstreams, "aisstream")
+		// best effort: not in p.upstreams, so aisstream being down never fails our /health
 		go runAisstream(p, env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream"), key, env("AISSTREAM_BBOX", "[[[-90,-180],[90,180]]]"))
 	}
 	go runUDP(p, env("UDP_ADDR", ":10110"))

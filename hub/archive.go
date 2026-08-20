@@ -4,7 +4,6 @@ import (
 	"compress/gzip"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,16 +23,17 @@ type hourFile struct {
 
 // archive writes every reception source-native to hourly gzip files per source, then uploads to R2 when rotated.
 type archive struct {
-	dir, bucket string
-	ch          chan Reception
-	done        chan chan struct{} // shutdown request; replied to when files are closed and uploaded
-	drops       atomic.Int64
-	uploads     sync.WaitGroup
+	dir     string
+	s3      *s3Client // nil = keep files local only
+	ch      chan Reception
+	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
+	drops   atomic.Int64
+	uploads sync.WaitGroup
 }
 
 // newArchive with an empty dir is a no-op archive (tests).
-func newArchive(dir, bucket string) *archive {
-	a := &archive{dir: dir, bucket: bucket, ch: make(chan Reception, 8192), done: make(chan chan struct{})}
+func newArchive(dir string, s3 *s3Client) *archive {
+	a := &archive{dir: dir, s3: s3, ch: make(chan Reception, 8192), done: make(chan chan struct{})}
 	if dir != "" {
 		go a.run()
 	}
@@ -130,17 +130,15 @@ func (a *archive) open(source string, hour time.Time) *hourFile {
 func (a *archive) close(hf *hourFile) {
 	hf.gz.Close()
 	hf.f.Close()
-	if a.bucket == "" {
+	if a.s3 == nil {
 		return
 	}
 	rel, _ := filepath.Rel(a.dir, hf.path)
 	a.uploads.Add(1)
 	go func() {
 		defer a.uploads.Done()
-		// ponytail: shell out to wrangler (already logged in); swap for an S3 SigV4 client when this runs unattended
-		out, err := exec.Command("npx", "-y", "wrangler", "r2", "object", "put", a.bucket+"/"+rel, "--file", hf.path, "--remote").CombinedOutput()
-		if err != nil {
-			log.Printf("archive: upload %s: %v: %s", rel, err, out)
+		if err := a.s3.put(filepath.ToSlash(rel), hf.path); err != nil {
+			log.Printf("archive: upload %s: %v", rel, err) // file stays on disk; ponytail: no retry queue yet
 			return
 		}
 		log.Printf("archive: uploaded %s", rel)
