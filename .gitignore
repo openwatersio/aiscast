@@ -1,2 +1,6 @@
 .wrangler/
 .env
+
+# signalk-plugin
+signalk-plugin/node_modules/
+signalk-plugin/dist/

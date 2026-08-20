@@ -1,0 +1,308 @@
+import type { EventEmitter } from "node:events";
+import type { Plugin, ServerAPI } from "@signalk/server-api";
+import { Downlink, type ReceiveMode } from "./downlink.js";
+import {
+  forgetToken,
+  loadIdentity,
+  loadToken,
+  type Token,
+} from "./identity.js";
+import { Link } from "./link.js";
+import { n2kToSentence } from "./n2k.js";
+import { isAis, isOwnShip } from "./nmea.js";
+import { Uplink } from "./uplink.js";
+
+export const PLUGIN_ID = "signalk-aiscast";
+const DEFAULT_SERVER = "https://ais.openwaters.io";
+const STATUS_EVERY = 5_000;
+const TOKEN_CHECK_EVERY = 6 * 3600_000;
+
+export interface Config {
+  share?: { targets?: boolean; ownShip?: boolean };
+  receive?: { mode?: ReceiveMode; radiusNm?: number };
+  advanced?: { server?: string; token?: string };
+  // Pre-"Advanced" layout, still honoured when read.
+  server?: string;
+  token?: string;
+}
+
+export default function (app: ServerAPI): Plugin {
+  const events = app as unknown as EventEmitter;
+  let generation = 0; // bumped by stop(); a start() still in its awaits checks it and gives up
+  let teardown: (() => Promise<void>) | null = null;
+
+  const plugin: Plugin = {
+    id: PLUGIN_ID,
+    name: "AIScast",
+    description:
+      "Show nearby traffic without an AIS receiver and share your AIS data with the world.",
+    schema: {
+      type: "object",
+      properties: {
+        share: {
+          type: "object",
+          title: "Share",
+          properties: {
+            targets: {
+              type: "boolean",
+              title: "Other vessels (NMEA 0183 !AIVDM and NMEA 2000 AIS)",
+              default: true,
+            },
+            ownShip: {
+              type: "boolean",
+              title: "Own ship (!AIVDO)",
+              default: true,
+            },
+          },
+        },
+        receive: {
+          type: "object",
+          title: "Receive",
+          properties: {
+            mode: {
+              type: "string",
+              title: "Show traffic from aiscast",
+              enum: ["off", "auto", "always"],
+              enumNames: [
+                "Off",
+                "Auto (when no local receiver available)",
+                "Always (fills in beyond local VHF range)",
+              ],
+              default: "auto",
+            },
+            radiusNm: {
+              type: "number",
+              title: "Radius around the vessel (nautical miles)",
+              default: 50,
+              minimum: 5,
+              maximum: 200,
+            },
+          },
+        },
+        advanced: {
+          type: "object",
+          title: "Advanced",
+          properties: {
+            server: {
+              type: "string",
+              title: "Server",
+              default: DEFAULT_SERVER,
+            },
+            token: {
+              type: "string",
+              title: "Access token (optional)",
+              description:
+                "Leave empty: the plugin creates a keypair on first start and requests its own personal token. Paste a token from the aiscast operator to publish with a named station and higher limits.",
+            },
+          },
+        },
+      },
+    },
+    uiSchema: {
+      "ui:order": ["share", "receive", "advanced"],
+      advanced: { token: { "ui:widget": "password" } },
+    },
+
+    start(config: object) {
+      const gen = ++generation;
+      startAsync(config as Config, gen).catch((err) => {
+        app.setPluginError(`start failed: ${(err as Error).message}`);
+      });
+    },
+
+    async stop() {
+      generation++;
+      const t = teardown;
+      teardown = null;
+      await t?.();
+    },
+  };
+
+  async function startAsync(config: Config, gen: number): Promise<void> {
+    const server = (
+      config.advanced?.server ||
+      config.server ||
+      DEFAULT_SERVER
+    ).replace(/\/+$/, "");
+    const configuredToken = config.advanced?.token || config.token;
+    const wsBase = server.replace(/^http/, "ws");
+    const shareTargets = config.share?.targets ?? true;
+    const shareOwn = config.share?.ownShip ?? true;
+    const mode = config.receive?.mode ?? "auto";
+    const radiusNm = Math.min(200, Math.max(5, config.receive?.radiusNm ?? 50));
+    const dir = app.getDataDirPath();
+    const log = (msg: string) => app.debug(msg);
+    const live = () => gen === generation;
+
+    const identity = await loadIdentity(dir);
+    if (!live()) return;
+    let token: Token | null = null;
+    let publishRefused = false;
+    const selfSource = `v1:ed25519:${identity.pubkey}`;
+    const refreshToken = async (): Promise<void> => {
+      if (configuredToken) {
+        token = {
+          token: configuredToken,
+          exp: Infinity,
+          pubkey: identity.pubkey,
+          server,
+        };
+        return;
+      }
+      try {
+        token = await loadToken(dir, server, identity.pubkey);
+      } catch (err) {
+        token = null;
+        app.setPluginError(
+          `No token: ${(err as Error).message}. Receiving only; nothing is shared.`,
+        );
+      }
+    };
+    await refreshToken();
+    if (!live()) return;
+
+    // Token in a header, not the URL, so it stays out of proxy and server logs.
+    const l = new Link(
+      () => `${wsBase}/v1/stream`,
+      (): Record<string, string> =>
+        token ? { Authorization: `Bearer ${token.token}` } : {},
+      log,
+    );
+    const up = new Uplink(l, dir, log);
+    const down = new Downlink(
+      app,
+      l,
+      {
+        mode,
+        radiusNm,
+        source: `${PLUGIN_ID}.net`,
+        selfSource,
+        onReceived: (s) => up.noteReceived(s),
+      },
+      log,
+    );
+    const canShare = () =>
+      token !== null && !publishRefused && (shareTargets || shareOwn);
+    up.enabled = canShare();
+
+    l.on("open", () => {
+      publishRefused = false;
+      up.enabled = canShare();
+    });
+    l.on("error", (message) => {
+      if (/token/i.test(message) && !/publish/.test(message)) {
+        app.setPluginError(`aiscast refused the token: ${message}`);
+        if (!configuredToken) {
+          const refused = token?.token;
+          // A fresh token reconnects at once; the same token again waits out the refusal backoff.
+          forgetToken(dir)
+            .then(refreshToken)
+            .then(() => {
+              up.enabled = canShare();
+              if (token && token.token !== refused) l.reconnect();
+            })
+            .catch((err) => log(`token refresh: ${(err as Error).message}`));
+        }
+      } else if (/publish/.test(message)) {
+        publishRefused = true;
+        up.enabled = false;
+        app.setPluginError(`aiscast refused publishing: ${message}`);
+      } else if (/bbox/.test(message)) {
+        app.setPluginError(
+          `aiscast refused the subscription: ${message} (reduce the radius)`,
+        );
+      } else {
+        log(`aiscast: ${message}`);
+      }
+    });
+
+    await up.start();
+    if (!live()) {
+      await up.stop();
+      return;
+    }
+    down.start();
+    l.start();
+
+    const onSentence = (sentence: unknown, source?: string) => {
+      if (typeof sentence !== "string" || !isAis(sentence)) return;
+      const own = isOwnShip(sentence);
+      if (!own) down.localHeard();
+      if (own ? shareOwn : shareTargets) up.hear(sentence, Date.now(), source);
+    };
+    const onNmea = (sentence: unknown) => onSentence(sentence);
+    const onN2k = (msg: unknown) => {
+      const m = msg as
+        | { pgn?: number; fields?: Record<string, unknown> }
+        | undefined;
+      if (!m || typeof m.pgn !== "number") return;
+      try {
+        onSentence(
+          n2kToSentence(
+            app,
+            m as { pgn: number; fields?: Record<string, unknown> },
+          ),
+          "n2k",
+        );
+      } catch (err) {
+        log(`N2K PGN ${m.pgn}: ${(err as Error).message}`);
+      }
+    };
+    events.on("nmea0183", onNmea);
+    events.on("N2KAnalyzerOut", onN2k);
+
+    let lastSent = 0;
+    let lastAt = Date.now();
+    const timers = [
+      setInterval(() => {
+        const now = Date.now();
+        const perMin = Math.round(
+          ((up.stats.sent - lastSent) * 60_000) / (now - lastAt),
+        );
+        lastSent = up.stats.sent;
+        lastAt = now;
+        const key = identity.pubkey.slice(0, 8);
+        const upText = up.enabled
+          ? `↑ ${perMin}/min (queue ${up.stats.queued})`
+          : "↑ off";
+        const downText =
+          mode === "off"
+            ? "↓ off"
+            : down.stats.subscribed
+              ? `↓ ${down.stats.targets} targets`
+              : "↓ idle";
+        const linkText = l.open
+          ? "connected"
+          : l.lastRefusal
+            ? `refused: ${l.lastRefusal}`
+            : "reconnecting";
+        app.setPluginStatus(`key ${key}…  ${upText}  ${downText}  ${linkText}`);
+      }, STATUS_EVERY),
+      setInterval(() => {
+        const before = token?.token;
+        refreshToken()
+          .then(() => {
+            up.enabled = canShare();
+            if (token?.token !== before) l.reconnect();
+          })
+          .catch((err) => log(`token refresh: ${(err as Error).message}`));
+      }, TOKEN_CHECK_EVERY),
+    ];
+
+    teardown = async () => {
+      for (const t of timers) clearInterval(t);
+      events.removeListener("nmea0183", onNmea);
+      events.removeListener("N2KAnalyzerOut", onN2k);
+      down.stop();
+      await up.stop();
+      l.stop();
+    };
+    if (!live()) {
+      const t = teardown;
+      teardown = null;
+      await t();
+    }
+  }
+
+  return plugin;
+}

@@ -24,7 +24,7 @@ If you run an AIS receiver, send it here and it is re-served to everyone, dedupl
 
 - **AIS-catcher** (preferred: authenticated HTTP, works behind any NAT): `AIS-catcher ... -H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on INTERVAL 15`. Ask for a feeder token; it names your station and your data appears as `source: http:<station>`.
 - **UDP** (no token): AIS-catcher `-u ais.openwaters.io 10110`, [docker-shipfeeder](https://github.com/sdr-enthusiasts/docker-shipfeeder) with host `ais.openwaters.io` port `10110`, or any NMEA forwarder sending plain `!AIVDM` / `!AIVDO` sentences (TAG blocks welcome). Your station appears as `udp:<id>`, a keyed hash of your address, never the address itself; a sender whose `!AIVDO` sentences identify the vessel is keyed by that MMSI instead.
-- **Signal K**: add a UDP target `ais.openwaters.io:10110` in [`ais-forwarder`](https://github.com/hkapanen/ais-forwarder) (forward AIVDM and AIVDO). A dedicated plugin that uses a token over HTTP and reports the boat's own position is planned.
+- **Signal K**: add a UDP target `ais.openwaters.io:10110` in [`ais-forwarder`](https://github.com/hkapanen/ais-forwarder) (forward AIVDM and AIVDO). Or install the [`signalk-aiscast`](signalk-plugin/README.md) plugin: no token to paste, shares what your receiver hears (and your own position), and shows aiscast traffic when you have no receiver.
 
 `curl https://ais.openwaters.io/v1/stations` shows your station arriving, and the [map](https://openwatersio.github.io/aiscast/) shows `source`/`station` on every vessel.
 

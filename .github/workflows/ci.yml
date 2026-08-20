@@ -54,3 +54,20 @@ jobs:
           ssh deploy@"$DEPLOY_HOST" 'chmod 755 /opt/aiscast/aiscast.new && mv /opt/aiscast/aiscast.new /opt/aiscast/aiscast && sudo systemctl restart aiscast && sleep 3 && sudo systemctl is-active aiscast && curl -fsS localhost:8080/health'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+
+  signalk-plugin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: signalk-plugin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: signalk-plugin/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

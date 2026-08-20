@@ -1,0 +1,51 @@
+{
+  "name": "signalk-aiscast",
+  "version": "0.0.0",
+  "description": "Share the AIS your receiver hears with aiscast, and pull nearby traffic from it when you have no receiver.",
+  "license": "MIT",
+  "author": "Brandon Keepers <brandon@opensoul.org>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openwatersio/aiscast.git",
+    "directory": "signalk-plugin"
+  },
+  "homepage": "https://github.com/openwatersio/aiscast/tree/main/signalk-plugin#readme",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-ais",
+    "ais",
+    "aiscast"
+  ],
+  "signalk": {
+    "displayName": "AIScast"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@canboat/ts-pgns": "^1.11.18",
+    "@signalk/nmea0183-signalk": "^3.20.1",
+    "ggencoder": "^1.0.10",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@signalk/server-api": "^2.31.1",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}

@@ -38,7 +38,7 @@ Researched 2026-08-20 from published npm tarballs, `@signalk/server-api` types, 
 
 ## Rules distilled for our plugin
 
-1. Relay from `nmea0183` and `nmea0183out`, remove listeners on the same emitter in `stop()`, call `stop()` at the top of `start()`.
+1. Relay from `nmea0183` plus `N2KAnalyzerOut` (re-encode the AIS PGNs ourselves); do not listen on `nmea0183out`, where `signalk-vessels-to-ais` re-emits network-injected targets. Remove listeners on the same emitter in `stop()`, and make a late `start()` notice that `stop()` ran meanwhile.
 2. Exponential backoff with jitter, longer on 429/403, reset on first success; a silence watchdog, not just a connection check; status line shows last-received age.
 3. Filter own MMSI on every inbound path; drop our own echoes; guard the `signalk-n2kais-to-nmea0183` loop.
 4. Use the server's own parser for injected targets so paths, contexts, and types are byte-identical to VHF-received AIS (no `name` as a bare string, no wrong `eta` type).
