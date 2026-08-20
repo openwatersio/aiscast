@@ -122,11 +122,11 @@ Code: [`hub/`](hub/README.md). Simplifications to revisit in 0B: UDP station = s
 
 ### Stage 1: volunteer ingest
 
-Blocked until the feeder agreement, per-source licensing, privacy policy, station registry, and deletion/opt-out procedures are settled (see below).
+Blocked until the feeder agreement (including the funding terms in Sustainability), per-source licensing, privacy policy, station registry, and deletion/opt-out procedures are settled (see below).
 
 - Station registry issuing a key (and a UDP port for legacy setups); one-page setup (`AIS-catcher -H https://ais.<domain>/ingest USERPWD id:key GZIP on INTERVAL 15`, or `-u ingest.<domain> <port>`); per-station stats page, coverage map, offline alerts; opt-in only, stated plainly.
 - PR to `sdr-enthusiasts/docker-shipfeeder` so existing multi-feed stations add us with one env var.
-- Raw feed back to everyone: `/v1/nmea` WebSocket/TCP of deduped `!AIVDM` with TAG blocks, bbox-filterable, each sentence carrying its source's license tag.
+- Raw feed back to feeders: `/v1/nmea` WebSocket/TCP of deduped `!AIVDM` with TAG blocks, bbox-filterable, each sentence carrying its source's license tag. Reciprocity only in this stage: a feeder key unlocks it. Wider access (free for all vs. free for non-commercial use) is an open question; see Sustainability.
 
 ### Stage 2: history and reporting APIs
 
@@ -177,6 +177,21 @@ Decided before Stage 1, not after:
 ## Chart plugin implications
 
 The Open Waters chart plugin speaks bbox-subscribe over WebSocket regardless of who serves it; its core seams (`VIEW_CHANGED` event, `net` provenance flag) are provider-agnostic, so pointing it at this hub needs no core work. The bundled aisstream key moves server-side (aisstream throttles per key). The `net.ws` manifest allowlist holds up to 8 hosts, so the hub hostname and a backup can be pre-listed to avoid re-consent later.
+## Sustainability
+
+Goal: cover infrastructure (Hetzner box plus a growing R2 archive, on the order of $50–150/mo in year one) and make the time feel worthwhile, not build a company. Model: **open data, paid access.**
+
+- **The data is never relicensed.** NLOD forbids added terms, CC BY 4.0 forbids downstream restrictions, and ODbL on the volunteer aggregate permits commercial use by anyone. A non-commercial restriction on the data is unenforceable and breaks the feeder pitch. The permissive license is also the differentiator: no Kpler/S&P API allows redistribution.
+- **What is sold is the hosted service:** reliable bbox fan-out, history queries, SLA, and permission to use *this service* commercially. Precedents: Open-Meteo (open weather data, free API for non-commercial use, paid commercial plans), OpenSky Network (community ADS-B, free for non-commercial research, commercial license), OSM hosted by Mapbox/MapTiler.
+- **Tiers are metered on cost axes, not on judging intent:** bbox area, concurrent connections per key, update rate, history depth. A plotter needs 50 nm around the boat; a fleet tracker needs an ocean. The free tier carries a plain terms line ("free for non-commercial use; commercial use needs a paid key"); the technical limits do the enforcing.
+- **Feeders get the commercial tier free** (AISHub and FlightAware reciprocity). Growing the network is the coverage problem anyway.
+- **History is the natural paid product:** live stream at the free tier, `/v1/history`, tracks, and bulk queries paid. The raw reception archive on R2 can still be a public bucket (no egress fees); the query API is what costs money to run.
+- **The feeder agreement states the funding terms plainly:** the aggregate is open-licensed, the project charges for hosted access to fund operations, the feeder's license to the project is non-transferable to an acquirer. The ADS-B Exchange sale and feeder exodus is the failure mode this guards against.
+- **No global tier until coverage is global.** Nordic plus a few volunteers priced as global is a refund request.
+- **Sequence:** free tier with code-enforced limits, a terms line, a contact address for commercial keys, and a sponsors link now; keys hand-issued and invoiced manually until someone actually asks to pay; a merchant of record (Lemon Squeezy or Paddle, for EU VAT) issuing keys when they do; history tier and dedicated nodes later. Sole proprietor or LLC is fine at this scale; the open data and non-transferable feeder license protect the commons, not the entity type. NLnet NGI Zero is a plausible grant for the federation work.
+
+Open: whether the deduped global raw feed (`/v1/nmea`) is free for everyone or free for feeders and non-commercial use with commercial users paying. If free for all, the paid product is decoded stream, history, and SLA only. Until decided, `/v1/nmea` is reciprocity-only.
+
 
 ## Open questions
 
@@ -185,4 +200,5 @@ The Open Waters chart plugin speaks bbox-subscribe over WebSocket regardless of 
 - Whether EuRIS's anonymised positions are useful to the chart client.
 - Whether aisstream.io's terms allow using it as an upstream during bootstrap.
 - Event envelope: adopt Nostr NIP-01 semantics (ids, keys, signatures, tag filters, `g` geohash) so off-the-shelf libraries and relays interoperate, or a minimal envelope of our own. Lean: NIP-01-compatible envelope and subscription semantics, our own Go relay with bbox filters and the aisstream view.
-- Legal review of the feeder agreement, per-source licensing, and privacy policy before Stage 1.
+- Legal review of the feeder agreement, per-source licensing, privacy policy, and free-tier terms before Stage 1.
+- Access terms for `/v1/nmea` beyond feeders (see Sustainability).
