@@ -114,9 +114,13 @@ func envInt(k string, def int) int {
 	return def
 }
 
-// clientIP trusts Cloudflare's header when present (the proxied path), else the socket peer.
+// trustCFHeaders: TRUST_CF_HEADERS=1 when Cloudflare proxies the hostname; otherwise CF-Connecting-IP is
+// client-controlled and must not drive rate limiting.
+var trustCFHeaders = os.Getenv("TRUST_CF_HEADERS") == "1"
+
+// clientIP is the rate-limit key: Cloudflare's header when trusted, else the socket peer.
 func clientIP(r *http.Request) string {
-	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+	if ip := r.Header.Get("CF-Connecting-IP"); trustCFHeaders && ip != "" {
 		return ip
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
