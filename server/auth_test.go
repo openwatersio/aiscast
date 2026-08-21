@@ -220,7 +220,14 @@ func TestTiersAndTrust(t *testing.T) {
 	if c, err := p.auth.verify(forever, now.Add(10*365*24*time.Hour)); err != nil || c.Exp != 0 {
 		t.Errorf("token without exp: %v", err)
 	}
-	if _, err := p.auth.verify(forever[:len(forever)-1]+"A", now); err == nil {
+	tampered := []byte(forever)
+	i := len(tampered) - 20 // inside the signature; the last char's low bits can be padding and survive a flip
+	if tampered[i] == 'A' {
+		tampered[i] = 'B'
+	} else {
+		tampered[i] = 'A'
+	}
+	if _, err := p.auth.verify(string(tampered), now); err == nil {
 		t.Error("tampered token accepted")
 	}
 
