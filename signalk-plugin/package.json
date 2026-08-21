@@ -1,6 +1,6 @@
 {
   "name": "signalk-aiscast",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Share the AIS your receiver hears with aiscast, and pull nearby traffic from it when you have no receiver.",
   "license": "MIT",
   "author": "Brandon Keepers <brandon@opensoul.org>",
