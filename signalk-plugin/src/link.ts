@@ -79,7 +79,15 @@ export class Link extends EventEmitter<LinkEvents> {
     if (this.stopped) return;
     const url = this.url();
     this.log(`connecting to ${url}`);
-    const ws = new WebSocket(url, { headers: this.headers(), perMessageDeflate: true, handshakeTimeout: 30_000 });
+    const options = {
+      headers: this.headers(),
+      perMessageDeflate: true,
+      handshakeTimeout: 30_000,
+      // Node's default 250 ms happy-eyeballs attempt timeout aborts IPv4 connects on satellite/cellular RTTs
+      // and falls through to a usually-unroutable IPv6; the socket then fails ETIMEDOUT although curl works.
+      autoSelectFamilyAttemptTimeout: 3_000, // reaches net.connect via https.request; @types/node omits it here
+    };
+    const ws = new WebSocket(url, options);
     this.ws = ws;
     this.lastActivity = Date.now();
     ws.on("open", () => {
@@ -105,7 +113,14 @@ export class Link extends EventEmitter<LinkEvents> {
     ws.on("pong", () => {
       this.lastActivity = Date.now();
     });
-    ws.on("error", (err) => this.log(`socket error: ${err.message}`));
+    ws.on("error", (err) => {
+      // Node's happy-eyeballs wraps failed connects in an AggregateError with an empty message.
+      const e = err as Error & { code?: string; errors?: Error[] };
+      const detail = e.errors?.map((x) => x.message).join("; ") ?? e.code;
+      this.log(
+        `socket error: ${e.message || e.code}${detail ? ` (${detail})` : ""}`,
+      );
+    });
     ws.on("close", (code, reason) => {
       this.stopPing();
       if (this.ws === ws) this.ws = null;
@@ -118,7 +133,9 @@ export class Link extends EventEmitter<LinkEvents> {
 
   private scheduleReconnect(refused: boolean): void {
     if (this.stopped || this.timer) return;
-    const base = refused ? REFUSED_BACKOFF : Math.min(MAX_BACKOFF, MIN_BACKOFF * 2 ** this.attempt++);
+    const base = refused
+      ? REFUSED_BACKOFF
+      : Math.min(MAX_BACKOFF, MIN_BACKOFF * 2 ** this.attempt++);
     const delay = base * (0.8 + Math.random() * 0.4);
     this.log(`reconnecting in ${Math.round(delay / 1000)} s`);
     this.timer = setTimeout(() => {
