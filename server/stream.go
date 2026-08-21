@@ -44,7 +44,10 @@ const (
 	errMalformed = "Subscription Object Is Malformed"
 )
 
-const errBoxDenied = "Bounding Box Not Allowed For This Key"
+const (
+	errBoxDenied   = "Bounding Box Not Allowed For This Key"
+	errMMSIsDenied = "Too Many MMSI Filters For This Key"
+)
 
 // parseV0Sub validates an aisstream subscription against the token in APIKey. The claims come back so the
 // caller can enforce connection caps; with ALLOW_ANON any non-empty key is an anonymous admin.
@@ -84,8 +87,12 @@ func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, strin
 		}
 		f.boxes = append(f.boxes, b)
 	}
-	if !c.allowsArea(f.boxes) {
+	// an MMSI filter bounds the traffic by the list, not the box, so the area cap does not apply to it
+	if len(s.FiltersShipMMSI) == 0 && !c.allowsArea(f.boxes) {
 		return nil, nil, errBoxDenied
+	}
+	if !c.allowsMMSIs(len(s.FiltersShipMMSI)) {
+		return nil, nil, errMMSIsDenied
 	}
 	if len(s.FiltersShipMMSI) > 0 {
 		f.mmsi = map[uint32]bool{}
@@ -237,6 +244,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 type v1Frame struct {
 	Type   string   `json:"type"`             // "subscribe" | "unsubscribe" | "publish"
 	BBox   []bbox   `json:"bbox,omitempty"`   // subscribe: [minLat,minLon,maxLat,maxLon]...; empty = everything
+	MMSI   []uint32 `json:"mmsi,omitempty"`   // subscribe: vessels to follow wherever they are (ORed with bbox)
 	NMEA   []string `json:"nmea,omitempty"`   // publish: tagged or bare sentences
 	Replay bool     `json:"replay,omitempty"` // publish: an offline backlog; stale TAG times are archived, not emitted
 }
@@ -293,7 +301,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	}
 	canPublish := cl.may("publish")
 	pace := pacer{n: cl.Rate}
-	var boxes atomic.Pointer[[]bbox] // nil = not subscribed
+	var subscription atomic.Pointer[v1Sub] // nil = not subscribed
 	go func() {
 		defer cancel()
 		for {
@@ -309,7 +317,8 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			switch f.Type {
 			case "subscribe":
 				b := f.BBox
-				denied := !cl.allowsArea(b) || (len(b) == 0 && cl.Area > 0)
+				everything := len(b) == 0 && len(f.MMSI) == 0
+				denied := (everything && cl.Area > 0) || (len(b) > 0 && !cl.allowsArea(b))
 				for _, x := range b {
 					if !cl.allowsBox(x) {
 						denied = true
@@ -319,9 +328,20 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "bbox not allowed for this key"})
 					continue
 				}
-				boxes.Store(&b)
+				if !cl.allowsMMSIs(len(f.MMSI)) {
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "too many mmsi for this key"})
+					continue
+				}
+				s := &v1Sub{boxes: b, everything: everything}
+				if len(f.MMSI) > 0 {
+					s.mmsi = map[uint32]bool{}
+					for _, m := range f.MMSI {
+						s.mmsi[m] = true
+					}
+				}
+				subscription.Store(s)
 			case "unsubscribe":
-				boxes.Store(nil)
+				subscription.Store(nil)
 			case "publish":
 				if !canPublish {
 					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "publish requires a token"})
@@ -357,25 +377,13 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				c.Close(websocket.StatusPolicyViolation, "client too slow")
 				return
 			}
-			bp := boxes.Load()
-			if bp == nil {
+			sp := subscription.Load()
+			if sp == nil || !sp.match(ev) {
 				continue
 			}
 			if !pace.allow(time.Now()) {
 				p.stats.thinned.Add(1)
 				continue
-			}
-			if len(*bp) > 0 {
-				hit := false
-				for _, b := range *bp {
-					if ev.HasPos && b.contains(ev.Lat, ev.Lon) {
-						hit = true
-						break
-					}
-				}
-				if !hit {
-					continue
-				}
 			}
 			out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, Station: ev.Station, Channel: channelString(ev.Channel),
 				NMEA: ev.Sentences, MMSI: ev.MMSI, MsgType: ev.Type, Message: ev.Packet, Synthesized: ev.Synthesized}
@@ -390,6 +398,27 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 }
 
 func init() { log.SetFlags(log.LstdFlags | log.Lmicroseconds) }
+
+// v1Sub is one socket's subscription: everything, a set of boxes, a set of MMSIs, or boxes OR MMSIs.
+type v1Sub struct {
+	everything bool
+	boxes      []bbox
+	mmsi       map[uint32]bool
+}
+
+func (s *v1Sub) match(ev *Event) bool {
+	if s.everything || s.mmsi[ev.MMSI] {
+		return true
+	}
+	if ev.HasPos {
+		for _, b := range s.boxes {
+			if b.contains(ev.Lat, ev.Lon) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func channelString(c byte) string {
 	if c == 0 {

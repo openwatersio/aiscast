@@ -15,6 +15,7 @@ const (
 	personalConns, personalRate, personalArea = 2, 50, 400.0 // self-minted, no expiry
 	feederConns, feederRate                   = 5, 200       // earned: personal token whose station is feeding; area unlimited
 	feederMinEvents24h                        = 1000         // events credited to the token's stations in the last 24 h
+	anonMMSIs, personalMMSIs, feederMMSIs     = 10, 50, 200  // vessels that may be followed by MMSI per subscription
 	addrMaxStreams                            = 8            // concurrent streams per address across all tokens
 	httpPerMinute, keysPerMinute              = 120, 3       // per address
 	udpLinesPerMinute                         = 30000        // ≈500 sentences/s per source address
@@ -23,11 +24,11 @@ const (
 )
 
 func anonymousClaims(ip string) *Claims {
-	return &Claims{Sub: "anon:" + ip, Role: "anonymous", Conns: anonConns, Rate: anonRate, Area: anonArea}
+	return &Claims{Sub: "anon:" + ip, Role: "anonymous", Conns: anonConns, Rate: anonRate, Area: anonArea, MMSIs: anonMMSIs}
 }
 
 func personalClaims(kid, sub string, now time.Time) Claims {
-	return Claims{Kid: kid, Sub: sub, Role: "personal", Iat: now.Unix(), Conns: personalConns, Rate: personalRate, Area: personalArea}
+	return Claims{Kid: kid, Sub: sub, Role: "personal", Iat: now.Unix(), Conns: personalConns, Rate: personalRate, Area: personalArea, MMSIs: personalMMSIs}
 }
 
 // effective applies the earned feeder tier: a personal token whose stations delivered feederMinEvents24h in the
@@ -38,7 +39,7 @@ func (p *Pipeline) effective(c *Claims) *Claims {
 	}
 	e := *c
 	e.Feeder = true
-	e.Conns, e.Rate, e.Area = feederConns, feederRate, 0
+	e.Conns, e.Rate, e.Area, e.MMSIs = feederConns, feederRate, 0, feederMMSIs
 	return &e
 }
 

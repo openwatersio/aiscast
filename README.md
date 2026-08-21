@@ -10,8 +10,8 @@ This is a beta. No SLA, coverage is uneven, and the terms under which some sourc
 
 **Native API** ([full reference](docs/API.md)).
 
-- `wss://ais.openwaters.io/v1/stream`: send `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon]]}` and receive one JSON event per decoded AIS message with its source, station, receive time, raw sentence, and the decoded fields. Subscribing needs no token.
-- `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon`: GeoJSON of every vessel currently in view (last position, name, type, course, speed, heading, when and from where it was last heard). No token.
+- `wss://ais.openwaters.io/v1/stream`: send `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon]]}` or `{"type":"subscribe","mmsi":[368168720]}` (or both) and receive one JSON event per decoded AIS message with its source, station, receive time, raw sentence, and the decoded fields. Subscribing needs no token.
+- `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon` (or `?mmsi=a,b,c`): GeoJSON of every vessel currently in view (last position, name, type, course, speed, heading, when and from where it was last heard). No token.
 - `GET https://ais.openwaters.io/v1/stations`: every source aiscast is hearing, with message counts and age.
 
 **Tokens.** `/v0/stream` needs a token. A personal token is self-serve and never expires: use the [token page](https://openwatersio.github.io/aiscast/token.html), or generate an Ed25519 keypair and `POST https://ais.openwaters.io/v1/keys` with `{"pubkey":"<base64url public key>"}`; the response is your token. It carries the personal tier (2 streams, 50 messages/s, a 20°×20° area); feed data from the same token and it becomes a feeder token by itself. Tiers and limits are in [docs/limits.md](docs/limits.md); for more than the feeder tier, or for commercial use, write to hello@openwaters.io.

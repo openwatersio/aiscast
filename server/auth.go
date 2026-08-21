@@ -38,11 +38,15 @@ type Claims struct {
 	BBox  []bbox   `json:"bbox,omitempty"`
 	CIDR  []string `json:"cidr,omitempty"`
 	Conns int      `json:"conns,omitempty"`
-	Rate  int      `json:"rate,omitempty"` // messages per second per connection; excess is thinned, not disconnected
-	Area  float64  `json:"area,omitempty"` // max total subscribed bbox area, square degrees
+	Rate  int      `json:"rate,omitempty"`  // messages per second per connection; excess is thinned, not disconnected
+	Area  float64  `json:"area,omitempty"`  // max total subscribed bbox area, square degrees
+	MMSIs int      `json:"mmsis,omitempty"` // max vessels followed by MMSI per subscription (0 = unlimited)
 
 	Feeder bool `json:"-"` // earned for this connection: the token's station is feeding (see tiers.go)
 }
+
+// allowsMMSIs: a subscription may follow at most this many vessels by MMSI (0 = unlimited).
+func (c *Claims) allowsMMSIs(n int) bool { return c.MMSIs <= 0 || n <= c.MMSIs }
 
 // allowsArea: the total area of the requested boxes must not exceed the claim (0 = unlimited).
 func (c *Claims) allowsArea(boxes []bbox) bool {

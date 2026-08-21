@@ -28,7 +28,8 @@ Credentials are Ed25519-signed claim tokens, `ak1.<base64url claims>.<base64url 
 | `cidr` | optional list of source CIDRs/IPs the token may be used from |
 | `conns` | optional cap on concurrent WebSockets for this `sub` (on top of 8 per network address for everyone) |
 | `rate` | optional cap on messages per second per connection; excess events are thinned (skipped), the connection stays up |
-| `area` | optional cap on the total subscribed bounding-box area in square degrees (a 20°×20° box is 400) |
+| `area` | optional cap on the total subscribed bounding-box area in square degrees (a 20°×20° box is 400); does not apply to MMSI-filtered subscriptions |
+| `mmsis` | optional cap on vessels followed by MMSI per subscription |
 
 Where to put it: aisstream `APIKey` field, `Authorization: Bearer <token>`, HTTP Basic password (`anything:<token>`, which is what AIS-catcher's `USERPWD` sends), or `?key=<token>` on the URL. A token that is present but invalid, expired, revoked, used outside its `cidr`, or lacking the role for the action is refused; it never degrades to anonymous access.
 
@@ -57,7 +58,7 @@ Connect to `wss://ais.openwaters.io/v0/stream` and send one subscribe message wi
 
 - Keys are case-insensitive (`APIKey`, `Apikey`, `apikey`). `APIKey` and `BoundingBoxes` are required.
 - Each box is two `[lat, lon]` corners in any order; several boxes are OR-ed. Latitude −90…90, longitude −180…180.
-- `FiltersShipMMSI`: up to 50 nine-digit strings. `FilterMessageTypes`: any of the 24 aisstream type names; duplicates are rejected.
+- `FiltersShipMMSI`: up to 50 nine-digit strings; when present, the traffic is bounded by the list, so the token's `area` cap does not apply to the boxes (a world box plus an MMSI list is fine on a personal token); the tier's MMSI cap does (`Too Many MMSI Filters For This Key`). `FilterMessageTypes`: any of the 24 aisstream type names; duplicates are rejected.
 - Sending another subscribe message replaces the subscription.
 
 Each frame is one decoded message:
@@ -80,12 +81,14 @@ Client → server:
 
 ```json
 {"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0], [58.5, 9.5, 60.5, 11.5]]}
+{"type": "subscribe", "mmsi": [368168720, 257090090]}
+{"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0]], "mmsi": [368168720]}
 {"type": "publish", "nmea": ["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23", "\\s:st1,c:1787234980*03\\!AIVDM,..."]}
 {"type": "publish", "replay": true, "nmea": ["\\c:1787234980123*2A\\!AIVDM,..."]}
 {"type": "unsubscribe"}
 ```
 
-- `subscribe`: `bbox` is a list of boxes; an empty list or no `bbox` means everything (only for tokens without an `area` cap). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 2 concurrent connections per address, 20 messages/s, 100 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
+- `subscribe`: `bbox` is a list of boxes, `mmsi` a list of vessels to follow wherever they are; give either or both (an event matches if it is inside a box OR from a listed MMSI; MMSI matches include positionless messages such as static data). Neither means everything (only for tokens without an `area` cap). The `area` cap applies to the boxes, the tier's MMSI cap to the list (anonymous 10, personal 50, feeder 200; `{"type":"error","error":"too many mmsi for this key"}` otherwise). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 2 concurrent connections per address, 20 messages/s, 100 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
 - `unsubscribe`: stop receiving events; the socket stays open for publishing.
 - `publish`: needs a token (`personal`, `feeder`, `peer`, or `admin`). Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`, and every frame is answered in order with `{"type":"ack","n":<sentences accepted>}`. `replay: true` marks an offline backlog: sentences whose TAG `c:` time is more than 60 s old are then archived and counted, not emitted live and not folded into the vessel cache. At most 1000 sentences per frame and 6000 per minute per key; the rest are dropped (and not counted in `n`). Without a token: `{"type":"error","error":"publish requires a token"}`.
 
@@ -115,7 +118,7 @@ Other frames: `{"type":"error","error":"invalid token"}` followed by close 1008 
 
 ## `GET /v1/vessels`
 
-`GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon` (no `bbox` = all). GeoJSON `FeatureCollection`, one `Point` per vessel with a known position, seen within the last 30 minutes:
+`GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon` and/or `?mmsi=368168720,257090090` (either, both ORed, or neither for all). GeoJSON `FeatureCollection`, one `Point` per vessel with a known position, seen within the last 30 minutes:
 
 ```json
 {"type": "Feature", "id": 368168720, "geometry": {"type": "Point", "coordinates": [-70.63165, 41.680075]},
@@ -190,6 +193,7 @@ Defaults by tier (a minted token's claims override them); see [limits.md](limits
 | Concurrent streams | 2 per address | 2 | 5 | as minted |
 | Messages/s per stream (excess thinned) | 20 | 50 | 200 | as minted |
 | Subscribed area (sq °) | 100 | 400 | unlimited | as minted |
+| Vessels followed by MMSI per stream | 10 | 50 | 200 | as minted |
 | `/v1/nmea` | no | no | yes | yes |
 | Publish | no | 6,000 sentences/min, 1,000/frame, `/v1/receive` 600 posts/min and 1 MB | same | same |
 

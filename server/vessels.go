@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
@@ -193,10 +195,22 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		}
 		all = false
 	}
+	var want map[uint32]bool // ?mmsi=a,b,c: those vessels wherever they are (ORed with bbox)
+	if q := r.URL.Query().Get("mmsi"); q != "" {
+		want = map[uint32]bool{}
+		for _, s := range strings.Split(q, ",") {
+			if n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 32); err == nil {
+				want[uint32(n)] = true
+			}
+		}
+		if all {
+			all = false // mmsi alone: only those
+		}
+	}
 	features := []map[string]any{}
 	p.vmu.RLock()
 	for mmsi, v := range p.vessels {
-		if v.HasPos && (all || b.contains(v.Lat, v.Lon)) {
+		if v.HasPos && (all || want[mmsi] || (b != (bbox{}) && b.contains(v.Lat, v.Lon))) {
 			features = append(features, v.feature(mmsi))
 		}
 	}

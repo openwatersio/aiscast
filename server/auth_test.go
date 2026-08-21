@@ -332,3 +332,38 @@ func TestDedupedTrustedCopyCorroborates(t *testing.T) {
 		t.Error("UDP report after a deduplicated trusted copy should be corroborated")
 	}
 }
+
+func TestMMSISubscriptions(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, p)
+	tok, _ := signToken(priv, personalClaims(kid, "ed25519:m", time.Now()))
+	// /v0: a world bbox is fine when an MMSI filter bounds the traffic; too many MMSIs for the tier is refused
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,-180],[90,180]]],"FiltersShipMMSI":["227006760"]}`), "1.1.1.1"); msg != "" {
+		t.Errorf("world bbox with mmsi filter: %q", msg)
+	}
+	many := make([]string, 0, 51)
+	for i := 0; i < 51; i++ {
+		many = append(many, fmt.Sprintf("%09d", 200000000+i))
+	}
+	b, _ := json.Marshal(many)
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,-180],[90,180]]],"FiltersShipMMSI":`+string(b)+`}`), "1.1.1.1"); msg != errMalformed {
+		t.Errorf("51 mmsi on /v0 should be malformed (aisstream cap): %q", msg)
+	}
+	an := anonymousClaims("1.1.1.1")
+	if an.allowsMMSIs(anonMMSIs+1) || !an.allowsMMSIs(anonMMSIs) {
+		t.Error("anonymous mmsi cap")
+	}
+	// /v1 matching: mmsi alone, bbox alone, both
+	ev := &Event{MMSI: 1, HasPos: true, Lat: 50, Lon: 5}
+	if !(&v1Sub{mmsi: map[uint32]bool{1: true}}).match(ev) || (&v1Sub{mmsi: map[uint32]bool{2: true}}).match(ev) {
+		t.Error("mmsi-only subscription")
+	}
+	if !(&v1Sub{mmsi: map[uint32]bool{2: true}, boxes: []bbox{{49, 4, 51, 6}}}).match(ev) || (&v1Sub{boxes: []bbox{{0, 0, 1, 1}}}).match(ev) {
+		t.Error("mmsi OR bbox subscription")
+	}
+	if !(&v1Sub{mmsi: map[uint32]bool{1: true}}).match(&Event{MMSI: 1}) { // positionless static message still follows
+		t.Error("mmsi subscription should not require a position")
+	}
+}
