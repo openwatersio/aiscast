@@ -26,7 +26,7 @@ jobs:
           node-version: 24 # npm >= 11.5.1 for trusted publishing
           registry-url: https://registry.npmjs.org
           cache: npm
-          cache-dependency-path: signalk-plugin/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - run: npm ci
       - run: npm test

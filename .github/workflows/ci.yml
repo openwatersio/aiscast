@@ -66,7 +66,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: signalk-plugin/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
       - run: npm run typecheck
       - run: npm test

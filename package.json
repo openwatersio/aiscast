@@ -1,0 +1,11 @@
+{
+  "name": "aiscast",
+  "private": true,
+  "workspaces": [
+    "signalk-plugin"
+  ],
+  "scripts": {
+    "build": "npm run build -w signalk-plugin",
+    "test": "npm test -w signalk-plugin"
+  }
+}
