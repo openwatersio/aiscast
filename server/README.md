@@ -7,17 +7,7 @@ ALLOW_ANON=1 go run .          # Kystverket upstream on, HTTP :8080, UDP :10110,
 go test ./...
 ```
 
-Endpoints (full reference in [docs/API.md](../docs/API.md)):
-
-- `GET /v0/stream` WebSocket, aisstream.io protocol (subscribe JSON with `APIKey`, `BoundingBoxes`, `FiltersShipMMSI`, `FilterMessageTypes`). Frozen; nothing here may deviate.
-- `GET /v1/stream` WebSocket, bidirectional. Frames in: `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon],...]}` (empty bbox = everything; open), `{"type":"publish","nmea":["!AIVDM,..."]}` (needs a token via `?key=` or `Authorization: Bearer`; answered with `{"type":"ack","n":N}`; with `"replay":true`, sentences whose TAG `c:` is older than 60 s are archived only), `{"type":"unsubscribe"}`. Frames out: `{"type":"event", id, time, source, station, channel, nmea, mmsi, msg_type, lat, lon, message, synthesized}`.
-- `GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon` GeoJSON of current positions (all vessels without `bbox`); vessels unseen for 30 minutes are dropped. CORS open.
-- `POST /v1/receive` AIS-catcher HTTP output (`-H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on`): `jsonaiscatcher` JSON or plain NMEA lines, optional gzip; needs a feeder token.
-- UDP `:10110` raw NMEA datagrams; the station id is a keyed hash of the sender address (`udp:<hex>`, `STATION_SALT` keeps it stable), never the address itself; a sender that transmits `!AIVDO` own-ship sentences is keyed by that MMSI instead (`mmsi:<n>`, self-reported).
-- `GET /v1/stations` and `/v1/stations/{id}` per-station statistics (events, duplicates, vessels in 30 min, first/last seen, coverage bbox) and the station's vessels (public; how a contributor sees their feed arriving).
-- `GET /v1/nmea` WebSocket: the deduplicated stream as TAG-blocked NMEA (`s:` station, `c:` time, `t:` license) for feeders; token with role feeder/peer/partner/admin; `?bbox=` filter.
-- `GET /health` 503 when any configured upstream has been silent for 2 minutes.
-- `GET /metrics` Prometheus text: events, duplicates, parse/decode failures, client and archive drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age.
+Endpoints are documented in [docs/API.md](../docs/API.md). Operator-only: `GET /metrics` Prometheus text (events, duplicates, parse/decode failures, client and archive drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age).
 
 Environment: `ADDR` (`:8080`), `UDP_ADDR` (`:10110`), `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`, `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`, `AISSTREAM_API_KEY` (set = aisstream.io upstream on), `AISSTREAM_BBOX` (world), `AISSTREAM_URL`, `AISHUB_FEED` (`data.aishub.net:<port>`: forward received events to AISHub as plain `!AIVDM`), `AISHUB_USERNAME` (set = poll AISHub's aggregate snapshot), `AISHUB_INTERVAL` (`65s`; never below their one-minute limit), `ARCHIVE_DIR` (`archive`), `R2_BUCKET` + `R2_ACCOUNT_ID` + `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` (unset = archive stays local; otherwise each hour is PUT to R2 over the S3 API on rotation and on shutdown; `S3_ENDPOINT`/`S3_REGION` for non-R2 targets), `ISSUER_PUBKEYS` (`kid:base64url-pubkey,...`: issuers whose tokens are accepted), `PERSONAL_ISSUER_KEY` (`kid:base64url-seed`: lets `POST /v1/keys` mint personal-tier tokens), `REVOKED_SUBS` (comma list), `ALLOW_ANON=1` (no tokens needed; local development only), `SNAPSHOT` (`vessels.json`, vessel cache written every 10 s and restored on boot), `WS_CONNECTS_PER_MIN` (`60` per IP), `STATION_SALT` (keys the UDP station ids; set it on a public host), `TRUST_CF_HEADERS=1` (only when Cloudflare proxies the hostname; makes rate limits key on `CF-Connecting-IP`).
 

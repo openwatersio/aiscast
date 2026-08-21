@@ -8,6 +8,7 @@ Base: `https://ais.openwaters.io` (WebSocket: `wss://`). All responses are JSON;
 | `GET /v1/stream` (WebSocket) | none to subscribe; any token to publish | native event stream, both directions |
 | `GET /v1/vessels` | none | current positions as GeoJSON |
 | `GET /v1/stations`, `GET /v1/stations/{id}` | none | stations being heard, with per-station statistics |
+| `GET /v1/stats` | none | usage summary: stations, vessels, event rate, clients |
 | `GET /v1/nmea` (WebSocket) | feeder/peer/partner/admin token | deduplicated raw NMEA back to feeders |
 | `POST /v1/keys` | none | mint a personal token for a device key |
 | `POST /v1/receive` | feeder token | AIS-catcher style HTTP ingest |
@@ -136,6 +137,21 @@ Every station heard since the server started:
 `events` counts decoded messages credited to the station (first to deliver them); `duplicates` counts messages it delivered that another station had already delivered; `vessels` is distinct MMSIs heard in the last 30 minutes; `bbox` is the extent of positions heard (a rough coverage footprint). Volunteer UDP stations appear as a keyed hash, never an address.
 
 `GET /v1/stations/{id}` returns `{"station": {...same row...}, "vessels": <GeoJSON FeatureCollection of the vessels this station last updated>}`; `404` for an unknown id. The viewer shows it at `?station=<id>`.
+
+## `GET /v1/stats`
+
+A one-shot usage summary, for status pages and tracking growth:
+
+```json
+{"time": "2026-08-21T13:40:12Z", "uptime_s": 86122,
+ "stations": {"total": 14, "active": 11, "by_source": {"kystverket": 1, "digitraffic": 1, "udp": 7, "http": 3, "v1": 2}},
+ "vessels": {"total": 4812, "with_position": 4790, "by_kind": {"vessel": 4701, "aton": 88, "base": 19, "sar": 4}},
+ "events": {"total": 18230411, "duplicates": 2210560, "per_second": 212.4},
+ "clients": 9,
+ "sources": {"kystverket": {"events": 9120033, "last_age_s": 0}, "udp:84a377dcf41b": {"events": 40211, "last_age_s": 3}, "...": {}}}
+```
+
+`stations.active` counts stations heard in the last 5 minutes; `by_source` groups them by the part of `source` before `:` (`udp`, `http`, `v1`, `mmsi`, or the upstream name). `vessels` covers the 30-minute cache. `events.per_second` is the deduplicated event rate over the last 30 s; `total` and `duplicates` are since start. `clients` is open WebSocket subscriptions. `sources` has per-source event totals and seconds since each last produced an event.
 
 ## `GET /v1/nmea`: raw sentences back to feeders
 

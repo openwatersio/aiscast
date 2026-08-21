@@ -63,7 +63,9 @@ func (s *stationStats) event(ev *Event) {
 
 func (s *stationStats) dup(station, source string, now time.Time) {
 	s.mu.Lock()
-	s.get(station, source, now).Dups++
+	st := s.get(station, source, now)
+	st.Last = now // still heard, just beaten to it
+	st.Dups++
 	s.mu.Unlock()
 }
 

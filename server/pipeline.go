@@ -75,7 +75,8 @@ type Pipeline struct {
 	upstreams    []string   // configured upstream source names; /health watches them
 	feeder       *udpFeeder // optional: forward received (non-synthesized) events to an aggregator
 	last         atomic.Int64
-	lastBySource sync.Map // source → time.Time of last event; /health and /metrics read it
+	rate         rateSample // events/s over the last logStats interval; /v1/stats
+	lastBySource sync.Map   // source → time.Time of last event; /health and /metrics read it
 	stats        struct {
 		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned atomic.Int64
 		bySource                                                                       sync.Map // source → *counterT
@@ -356,6 +357,7 @@ func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
 		nv := p.sweepVessels(time.Now().Add(-vesselTTL))
 		p.stations.sweep(time.Now().Add(-vesselTTL))
+		p.sampleRate(time.Now())
 		p.smu.RLock()
 		ns := len(p.subs)
 		p.smu.RUnlock()
