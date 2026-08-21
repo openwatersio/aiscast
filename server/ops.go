@@ -178,26 +178,3 @@ func (p *Pipeline) loadSnapshot(path string) (int, error) {
 	p.vmu.Unlock()
 	return n, nil
 }
-
-// serveStations: GET /v1/stations → every source seen since boot with its event count and seconds since the
-// last event, so a contributor can see their data arriving without access to /metrics.
-func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	type row struct {
-		Source   string `json:"source"`
-		Events   int64  `json:"events"`
-		LastAgeS int64  `json:"last_age_s"`
-	}
-	var rows []row
-	p.stats.bySource.Range(func(k, v any) bool {
-		src := k.(string)
-		rows = append(rows, row{Source: src, Events: v.(*counterT).Load(), LastAgeS: int64(p.sourceAge(src).Seconds())})
-		return true
-	})
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Source < rows[j].Source })
-	if rows == nil {
-		rows = []row{}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(rows)
-}

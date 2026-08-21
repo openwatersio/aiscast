@@ -70,7 +70,8 @@ type Pipeline struct {
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
 
-	auth         *verifier  // issuer public keys for access tokens
+	auth         *verifier // issuer public keys for access tokens
+	stations     *stationStats
 	upstreams    []string   // configured upstream source names; /health watches them
 	feeder       *udpFeeder // optional: forward received (non-synthesized) events to an aggregator
 	last         atomic.Int64
@@ -85,7 +86,7 @@ func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
 	return &Pipeline{
-		arch: arch, codec: c, auth: verifierFromEnv(),
+		arch: arch, codec: c, auth: verifierFromEnv(), stations: newStationStats(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]string{},
@@ -239,6 +240,7 @@ func (p *Pipeline) emit(ev *Event) {
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
 		p.mu.Unlock()
 		p.stats.dup.Add(1)
+		p.stations.dup(ev.Station, ev.Source, ev.Time)
 		return
 	}
 	p.seen[key] = ev.Time
@@ -258,6 +260,7 @@ func (p *Pipeline) emit(ev *Event) {
 	ev.Type = typeName(ev.Packet)
 	ev.MMSI = ev.Packet.GetHeader().UserID
 	p.updateVessel(ev)
+	p.stations.event(ev)
 	p.stats.events.Add(1)
 	p.last.Store(time.Now().UnixNano())
 	p.touch(ev.Source)
@@ -352,6 +355,7 @@ func (p *Pipeline) broadcast(ev *Event) {
 func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
 		nv := p.sweepVessels(time.Now().Add(-vesselTTL))
+		p.stations.sweep(time.Now().Add(-vesselTTL))
 		p.smu.RLock()
 		ns := len(p.subs)
 		p.smu.RUnlock()

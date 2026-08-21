@@ -298,3 +298,28 @@ func TestV1PublishAckAndReplay(t *testing.T) {
 		t.Errorf("unexpected frame after unsubscribe: %s", msg)
 	}
 }
+
+func TestStationStats(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.Ingest(Reception{Source: "s1", Station: "s1", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	p.Ingest(Reception{Source: "s2", Station: "s2", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // same message, heard second
+	rows := p.stations.rows(now)
+	if len(rows) != 2 || rows[0].Station != "s1" || rows[0].Events != 1 || rows[0].Vessels != 1 || rows[0].Positions != 1 || rows[0].BBox == nil || rows[1].Dups != 1 || rows[1].Events != 0 {
+		t.Errorf("rows: %+v", rows)
+	}
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	res, _ := http.Get(srv.URL + "/v1/stations/s1")
+	var out struct {
+		Station stationRow
+		Vessels struct{ Features []any }
+	}
+	json.NewDecoder(res.Body).Decode(&out)
+	if out.Station.Station != "s1" || len(out.Vessels.Features) != 1 {
+		t.Errorf("station detail: %+v", out)
+	}
+	if res, _ := http.Get(srv.URL + "/v1/stations/nope"); res.StatusCode != 404 {
+		t.Errorf("unknown station: %d", res.StatusCode)
+	}
+}
