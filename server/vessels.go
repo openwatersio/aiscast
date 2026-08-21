@@ -129,6 +129,15 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	p.vmu.Unlock()
 }
 
+// markTrusted records that a trusted source heard the vessel's position at t (used when its copy was deduplicated).
+func (p *Pipeline) markTrusted(mmsi uint32, t time.Time) {
+	p.vmu.Lock()
+	if v := p.vessels[mmsi]; v != nil && t.After(v.TrustedAt) {
+		v.TrustedAt = t
+	}
+	p.vmu.Unlock()
+}
+
 // sweepVessels drops vessels unseen since cutoff and returns the remaining count.
 func (p *Pipeline) sweepVessels(cutoff time.Time) int {
 	p.vmu.Lock()

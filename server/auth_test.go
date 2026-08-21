@@ -304,3 +304,24 @@ func TestTiersAndTrust(t *testing.T) {
 		t.Errorf("expected corroborated low-trust event, got low=%v corroborated=%v", ev.LowTrust, ev.Corroborated)
 	}
 }
+
+// A trusted source repeating, within the dedupe window, a payload that UDP delivered first must still corroborate.
+func TestDedupedTrustedCopyCorroborates(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	now := time.Now()
+	udp := udpStation("203.0.113.77")
+	line := "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23" // 227006760
+	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now, Body: line})
+	if ev := <-sub.ch; ev.Corroborated {
+		t.Fatal("first UDP report should be uncorroborated")
+	}
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now.Add(time.Second), Body: line}) // identical payload: deduplicated
+	if len(sub.ch) != 0 {
+		t.Fatal("duplicate was emitted")
+	}
+	p.ingestPacket(udp, udp, now.Add(30*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.476, Longitude: 0.132, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	if ev := <-sub.ch; !ev.Corroborated {
+		t.Error("UDP report after a deduplicated trusted copy should be corroborated")
+	}
+}
