@@ -7,7 +7,8 @@ Base: `https://ais.openwaters.io` (WebSocket: `wss://`). All responses are JSON;
 | `GET /v0/stream` (WebSocket) | token as `APIKey` | aisstream.io-compatible stream |
 | `GET /v1/stream` (WebSocket) | none to subscribe; any token to publish | native event stream, both directions |
 | `GET /v1/vessels` | none | current positions as GeoJSON |
-| `GET /v1/stations` | none | sources being heard |
+| `GET /v1/stations`, `GET /v1/stations/{id}` | none | stations being heard, with per-station statistics |
+| `GET /v1/nmea` (WebSocket) | feeder/peer/partner/admin token | deduplicated raw NMEA back to feeders |
 | `POST /v1/keys` | none | mint a personal token for a device key |
 | `POST /v1/receive` | feeder token | AIS-catcher style HTTP ingest |
 | UDP `:10110` | none | raw NMEA ingest |
@@ -105,7 +106,7 @@ aiscast → client, one frame per decoded message after deduplication:
 - `nmea`: the sentences as received, or a re-encoded `!AIVDM` for synthesized events.
 - `lat`/`lon`: the vessel's last known position from the cache (present for static messages too); absent until a position has been heard.
 - `msg_type`: aisstream type name; `message`: go-ais decoded struct.
-- `synthesized`: `true` when the message was rebuilt from a non-NMEA source (Digitraffic JSON, AISaiscast rows, aisstream envelopes).
+- `synthesized`: `true` when the message was rebuilt from a non-NMEA source (Digitraffic JSON, AISHub rows, aisstream envelopes).
 
 Other frames: `{"type":"error","error":"invalid token"}` followed by close 1008 for a bad token; `{"type":"error","error":"bad frame"}` / `"unknown type"` for malformed input; `"concurrent connections per key exceeded"` then close. Frames in are limited to 256 KB. Slow clients are closed with 1008 "client too slow".
 
@@ -123,15 +124,30 @@ Other frames: `{"type":"error","error":"invalid token"}` followed by close 1008 
 
 ## `GET /v1/stations`
 
-Every source seen since aiscast started:
+Every station heard since the server started:
 
 ```json
-[{"source": "digitraffic", "events": 334, "last_age_s": 0},
- {"source": "kystverket", "events": 220, "last_age_s": 0},
- {"source": "udp:84a377dcf41b", "events": 64, "last_age_s": 1}]
+[{"station": "kystverket/2573010", "source": "kystverket", "events": 1812, "duplicates": 40, "vessels": 61, "positions": 1500,
+  "first_seen": "2026-08-20T16:57:47Z", "last_seen": "2026-08-21T03:10:32Z", "last_age_s": 2,
+  "bbox": [59.41, 10.31, 59.93, 10.78]},
+ {"station": "udp:84a377dcf41b", "source": "udp:84a377dcf41b", "events": 64, "duplicates": 2, "vessels": 53, "positions": 60, "...": "..."}]
 ```
 
-`events` counts decoded, deduplicated messages credited to the source; `last_age_s` is seconds since the last one. Volunteer UDP stations appear as a keyed hash, never an address.
+`events` counts decoded messages credited to the station (first to deliver them); `duplicates` counts messages it delivered that another station had already delivered; `vessels` is distinct MMSIs heard in the last 30 minutes; `bbox` is the extent of positions heard (a rough coverage footprint). Volunteer UDP stations appear as a keyed hash, never an address.
+
+`GET /v1/stations/{id}` returns `{"station": {...same row...}, "vessels": <GeoJSON FeatureCollection of the vessels this station last updated>}`; `404` for an unknown id. The viewer shows it at `?station=<id>`.
+
+## `GET /v1/nmea`: raw sentences back to feeders
+
+WebSocket. Token with role `feeder`, `peer`, `partner`, or `admin` (`?key=` or `Authorization: Bearer`); personal and anonymous are refused. Optional `?bbox=minLat,minLon,maxLat,maxLon` (repeatable) filters by the vessel's last known position; the token's `bbox`, `area`, `conns`, and `rate` claims apply.
+
+One text frame per deduplicated message, sentences joined by CRLF, each carrying a NMEA 4.10 TAG block with the station (`s:`, truncated to 15 characters), the canonical time (`c:`, unix seconds), and the source's license tag (`t:`):
+
+```
+\s:2573010,c:1787234980,t:NLOD-2.0*2E\!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43
+```
+
+Synthesized messages (Digitraffic, AISHub, aisstream) are delivered as re-encoded `!AIVDM` with `t:` naming their terms; filter on `t:` if you only want receiver data.
 
 ## `POST /v1/receive`
 
@@ -139,7 +155,7 @@ AIS-catcher's HTTP output: `AIS-catcher -H https://ais.openwaters.io/v1/receive 
 
 ## UDP `ais.openwaters.io:10110`
 
-Datagrams of newline-separated NMEA (`!AIVDM`/`!AIVDO`, `!BSVDM`…, TAG blocks allowed, lines ≤ 4 KB). No authentication. The sender is identified as `udp:<keyed hash of address>`; if it sends `!AIVDO`, as `mmsi:<own MMSI>` from then on. Anything received is forwarded to AISaiscast under aiscast's reciprocal feed.
+Datagrams of newline-separated NMEA (`!AIVDM`/`!AIVDO`, `!BSVDM`…, TAG blocks allowed, lines ≤ 4 KB). No authentication. The sender is identified as `udp:<keyed hash of address>`; if it sends `!AIVDO`, as `mmsi:<own MMSI>` from then on. Anything received is forwarded to AISHub under aiscast's reciprocal feed.
 
 ## Tolerances and dedupe
 
@@ -160,4 +176,4 @@ Accepted on every input: NMEA 4.10 TAG blocks (`s:` station, `c:` time in s/ms/�
 
 ## Health
 
-`GET /health` returns `ok` or `503` with the names of open-feed upstreams (Kystverket, Digitraffic) silent for more than two minutes. AISaiscast and aisstream are best-effort and never affect it.
+`GET /health` returns `ok` or `503` with the names of open-feed upstreams (Kystverket, Digitraffic) silent for more than two minutes. AISHub and aisstream are best-effort and never affect it.

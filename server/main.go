@@ -81,6 +81,7 @@ func httpHandler(p *Pipeline) http.Handler {
 	mux.HandleFunc("/v1/stream", p.serveV1)
 	mux.HandleFunc("/v1/receive", p.serveReceive)
 	mux.HandleFunc("/v1/keys", p.serveKeys)
+	mux.HandleFunc("/v1/nmea", p.serveNMEA)
 	mux.HandleFunc("/v1/stations", p.serveStations)
 	mux.HandleFunc("/v1/stations/", p.serveStations)
 	mux.HandleFunc("/v1/vessels", p.serveVessels)
