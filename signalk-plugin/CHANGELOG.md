@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Personal tokens minted by aiscast no longer expire; the plugin keeps a cached token with no expiry instead of minting a new one every start.
+- The npm package includes this changelog.
+
 ## 0.1.3
 
 - Fixes the plugin never connecting on high-latency links (Starlink in remote regions, satellite, some cellular): Node gave up on the IPv4 connection after 250 ms and fell back to an unroutable IPv6 address; each attempt now gets 3 s.
