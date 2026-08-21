@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	"github.com/BertoldVdb/go-ais"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -279,10 +281,26 @@ func TestTiersAndTrust(t *testing.T) {
 	for len(sub.ch) > 0 {
 		<-sub.ch
 	}
-	// a UDP report 3,000 nm away two seconds later is implausible and not emitted
+	// a UDP report putting the same vessel 3,000 nm away two seconds later is implausible: dropped, not emitted
 	before := p.stats.implausible.Load()
-	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now.Add(2 * time.Second), Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"}) // different MMSI, so not a jump
-	if p.stats.implausible.Load() != before {
+	p.ingestPacket(udp, udp, now.Add(2*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 0, Longitude: 0, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	if p.stats.implausible.Load() != before+1 || len(sub.ch) != 0 {
+		t.Errorf("implausible jump: count %d→%d, events %d", before, p.stats.implausible.Load(), len(sub.ch))
+	}
+	// a different vessel far away is not a jump
+	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now.Add(2 * time.Second), Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})
+	if p.stats.implausible.Load() != before+1 {
 		t.Error("different vessel counted as implausible")
+	}
+	// the same vessel, a plausible distance later, is accepted from UDP and is now corroborated
+	for len(sub.ch) > 0 {
+		<-sub.ch
+	}
+	p.ingestPacket(udp, udp, now.Add(10*time.Minute), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.5, Longitude: 0.2, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	if len(sub.ch) != 1 {
+		t.Fatalf("plausible UDP report not emitted (events=%d)", len(sub.ch))
+	}
+	if ev := <-sub.ch; !ev.LowTrust || !ev.Corroborated {
+		t.Errorf("expected corroborated low-trust event, got low=%v corroborated=%v", ev.LowTrust, ev.Corroborated)
 	}
 }

@@ -63,6 +63,7 @@ func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, strin
 		}
 		c = &Claims{Sub: "anon", Role: "admin"}
 	}
+	c = p.effective(c) // earned feeder tier applies on /v0 too
 	if !c.may("subscribe") || !c.allowsIP(ip) {
 		return nil, nil, errBadKey
 	}

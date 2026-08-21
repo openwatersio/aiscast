@@ -30,6 +30,7 @@ type vessel struct {
 	Station   string
 	MsgType   string
 	TrustedAt time.Time // last position from a source that is not low-trust
+	PosAt     time.Time // time of the last position folded in (Seen also moves on static messages)
 }
 
 func newVessel() *vessel {
@@ -92,14 +93,14 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// Low-trust (UDP) positions that imply an impossible speed from the vessel's last position are dropped:
 	// cheap poisoning defence; the reception is still archived.
 	if hasPos && !stale && ev.LowTrust && v.HasPos {
-		if dt := ev.Time.Sub(v.Seen).Seconds(); dt >= 1 && nm(v.Lat, v.Lon, u.Lat, u.Lon)/(dt/3600) > implausibleKnots {
+		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 && nm(v.Lat, v.Lon, u.Lat, u.Lon)/(dt/3600) > implausibleKnots {
 			ev.Implausible = true
 			p.vmu.Unlock()
 			return
 		}
 	}
 	if hasPos && !stale {
-		v.Lat, v.Lon, v.HasPos = u.Lat, u.Lon, true
+		v.Lat, v.Lon, v.HasPos, v.PosAt = u.Lat, u.Lon, true, ev.Time
 		v.Cog, v.Sog, v.Heading = u.Cog, u.Sog, u.Heading // sentinels from a position report are real "unknown"s
 		if !ev.LowTrust {
 			v.TrustedAt = ev.Time
