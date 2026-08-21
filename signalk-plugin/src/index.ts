@@ -15,7 +15,9 @@ import { Uplink } from "./uplink.js";
 export const PLUGIN_ID = "signalk-aiscast";
 const DEFAULT_SERVER = "https://ais.openwaters.io";
 const STATUS_EVERY = 5_000;
-const TOKEN_CHECK_EVERY = 6 * 3600_000;
+const TOKEN_CHECK_EVERY = 6 * 3600_000; // with a token: renew a few days before expiry
+const TOKEN_RETRY_MIN = 60_000; // without one (network not up yet at boot, server down): retry soon, backing off
+const TOKEN_RETRY_MAX = 30 * 60_000;
 
 export interface Config {
   share?: { targets?: boolean; ownShip?: boolean };
@@ -154,7 +156,7 @@ export default function (app: ServerAPI): Plugin {
       } catch (err) {
         token = null;
         app.setPluginError(
-          `No token: ${(err as Error).message}. Receiving only; nothing is shared.`,
+          `No token: ${describe(err)}. Receiving only; nothing is shared. Retrying.`,
         );
       }
     };
@@ -251,6 +253,29 @@ export default function (app: ServerAPI): Plugin {
     events.on("nmea0183", onNmea);
     events.on("N2KAnalyzerOut", onN2k);
 
+    // Token check: every 6 h once we have one; 1 → 30 min backoff while we don't.
+    let tokenTimer: NodeJS.Timeout | null = null;
+    let tokenRetry = TOKEN_RETRY_MIN;
+    const scheduleTokenCheck = (delay: number) => {
+      tokenTimer = setTimeout(() => {
+        const before = token?.token;
+        refreshToken()
+          .catch((err) => log(`token refresh: ${describe(err)}`))
+          .then(() => {
+            up.enabled = canShare();
+            if (token?.token !== before) l.reconnect();
+            if (token) {
+              tokenRetry = TOKEN_RETRY_MIN;
+              scheduleTokenCheck(TOKEN_CHECK_EVERY);
+            } else {
+              tokenRetry = Math.min(TOKEN_RETRY_MAX, tokenRetry * 2);
+              scheduleTokenCheck(tokenRetry);
+            }
+          });
+      }, delay);
+    };
+    scheduleTokenCheck(token ? TOKEN_CHECK_EVERY : TOKEN_RETRY_MIN);
+
     let lastSent = 0;
     let lastAt = Date.now();
     const timers = [
@@ -278,19 +303,11 @@ export default function (app: ServerAPI): Plugin {
             : "reconnecting";
         app.setPluginStatus(`key ${key}…  ${upText}  ${downText}  ${linkText}`);
       }, STATUS_EVERY),
-      setInterval(() => {
-        const before = token?.token;
-        refreshToken()
-          .then(() => {
-            up.enabled = canShare();
-            if (token?.token !== before) l.reconnect();
-          })
-          .catch((err) => log(`token refresh: ${(err as Error).message}`));
-      }, TOKEN_CHECK_EVERY),
     ];
 
     teardown = async () => {
       for (const t of timers) clearInterval(t);
+      if (tokenTimer) clearTimeout(tokenTimer);
       events.removeListener("nmea0183", onNmea);
       events.removeListener("N2KAnalyzerOut", onN2k);
       down.stop();
@@ -305,4 +322,11 @@ export default function (app: ServerAPI): Plugin {
   }
 
   return plugin;
+}
+
+// fetch's "fetch failed" hides the real reason (ECONNREFUSED, ENOTFOUND, a TLS error) in `cause`.
+function describe(err: unknown): string {
+  const e = err as { message?: string; cause?: { code?: string; message?: string } };
+  const cause = e.cause?.code ?? e.cause?.message;
+  return cause ? `${e.message} (${cause})` : (e.message ?? String(err));
 }
