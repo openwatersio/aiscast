@@ -120,6 +120,10 @@ func runUDP(p *Pipeline, addr string) {
 		src := udpStation(ip)
 		now := time.Now()
 		for _, line := range strings.Split(string(buf[:n]), "\n") {
+			if !udpLimit.allow(ip) {
+				p.stats.rateLimited.Add(1)
+				break
+			}
 			p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line})
 		}
 	}

@@ -26,6 +26,43 @@ type stationStat struct {
 	MaxLon     float64
 	vessels    map[uint32]time.Time
 	vesselsMax int
+	hourly     [24]int64 // events per clock hour, rolling; feeds the earned feeder tier
+	hourlyAt   int64     // unix hour of hourly[hourlyAt%24]
+}
+
+// bump counts an event in its clock-hour bucket; out-of-order times are fine, too-old ones are ignored.
+func (st *stationStat) bump(t time.Time) {
+	h := t.Unix() / 3600
+	switch {
+	case h > st.hourlyAt:
+		for i := st.hourlyAt + 1; i <= h && i-st.hourlyAt <= 24; i++ {
+			st.hourly[i%24] = 0
+		}
+		st.hourlyAt = h
+	case st.hourlyAt-h >= 24:
+		return
+	}
+	st.hourly[h%24]++
+}
+
+// events24h sums events over the given station ids in the 24 clock hours ending now.
+func (s *stationStats) events24h(ids []string, now time.Time) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h := now.Unix() / 3600
+	var n int64
+	for _, id := range ids {
+		st := s.m[id]
+		if st == nil || h-st.hourlyAt >= 24 {
+			continue
+		}
+		for i := int64(0); i < 24; i++ {
+			if hh := h - i; hh <= st.hourlyAt && st.hourlyAt-hh < 24 {
+				n += st.hourly[hh%24]
+			}
+		}
+	}
+	return n
 }
 
 type stationStats struct {
@@ -50,6 +87,7 @@ func (s *stationStats) event(ev *Event) {
 	st := s.get(ev.Station, ev.Source, ev.Time)
 	st.Last = ev.Time
 	st.Events++
+	st.bump(ev.Time)
 	st.vessels[ev.MMSI] = ev.Time
 	if len(st.vessels) > st.vesselsMax {
 		st.vesselsMax = len(st.vessels)

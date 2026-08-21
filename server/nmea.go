@@ -17,15 +17,13 @@ import (
 // Token required (feeder, peer, partner, admin); bbox via ?bbox=minLat,minLon,maxLat,maxLon (repeatable).
 
 // nmeaRoles: reciprocity. Feeders get the raw feed back; personal and anonymous do not (see PLAN, Stage 1).
-var nmeaRoles = map[string]bool{"feeder": true, "peer": true, "partner": true, "admin": true}
-
 func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 	if p.limited(w, wsConnectLimit, clientIP(r)) {
 		return
 	}
 	cl, err := p.socketClaims(r)
-	if err == nil && (cl == nil || !nmeaRoles[cl.Role]) {
-		err = fmt.Errorf("a feeder, peer, partner, or admin token is required")
+	if err == nil && (cl == nil || !cl.mayRaw()) {
+		err = fmt.Errorf("a feeder, peer, partner, or admin token is required (personal tokens earn it by feeding)")
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -44,7 +42,7 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bbox area exceeds your token", http.StatusBadRequest)
 		return
 	}
-	release, ok := conns.acquire(cl.Sub, cl.Conns)
+	release, ok := acquireStream(cl, clientIP(r))
 	if !ok {
 		http.Error(w, "concurrent connections per key exceeded", http.StatusTooManyRequests)
 		return
@@ -75,6 +73,9 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 			c.Close(websocket.StatusNormalClosure, "")
 			return
 		case ev := <-sub.ch:
+			if ev.LowTrust && !ev.Corroborated {
+				continue // UDP traffic nobody else has heard is not re-served raw
+			}
 			if sub.overflow.Load() {
 				c.Close(websocket.StatusPolicyViolation, "client too slow")
 				return

@@ -14,7 +14,7 @@ This is a beta. No SLA, coverage is uneven, and the terms under which some sourc
 - `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon`: GeoJSON of every vessel currently in view (last position, name, type, course, speed, heading, when and from where it was last heard). No token.
 - `GET https://ais.openwaters.io/v1/stations`: every source aiscast is hearing, with message counts and age.
 
-**Tokens.** `/v0/stream` needs a token. A personal token, good for 30 days with two concurrent connections, is self-serve: generate an Ed25519 keypair and `POST https://ais.openwaters.io/v1/keys` with `{"pubkey":"<base64url public key>"}`; the response is your token. For anything larger, or for commercial use, open an issue or write to hello@openwaters.io.
+**Tokens.** `/v0/stream` needs a token. A personal token is self-serve and never expires: use the [token page](https://openwatersio.github.io/aiscast/token.html), or generate an Ed25519 keypair and `POST https://ais.openwaters.io/v1/keys` with `{"pubkey":"<base64url public key>"}`; the response is your token. It carries the personal tier (2 streams, 50 messages/s, a 20°×20° area); feed data from the same token and it becomes a feeder token by itself. Tiers and limits are in [docs/limits.md](docs/limits.md); for more than the feeder tier, or for commercial use, write to hello@openwaters.io.
 
 Events carry a `source` so you can tell a live volunteer receiver from a government feed or an aggregate, and `synthesized: true` marks messages that were re-encoded from a non-NMEA source.
 

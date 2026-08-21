@@ -5,13 +5,13 @@ Base: `https://ais.openwaters.io` (WebSocket: `wss://`). All responses are JSON;
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `GET /v0/stream` (WebSocket) | token as `APIKey` | aisstream.io-compatible stream |
-| `GET /v1/stream` (WebSocket) | none to subscribe; any token to publish | native event stream, both directions |
+| `GET /v1/stream` (WebSocket) | none to subscribe (anonymous tier); any token to publish | native event stream, both directions |
 | `GET /v1/vessels` | none | current positions as GeoJSON |
 | `GET /v1/stations`, `GET /v1/stations/{id}` | none | stations being heard, with per-station statistics |
 | `GET /v1/stats` | none | usage summary: stations, vessels, event rate, clients |
-| `GET /v1/nmea` (WebSocket) | feeder/peer/partner/admin token | deduplicated raw NMEA back to feeders |
+| `GET /v1/nmea` (WebSocket) | feeder tier (earned or minted), peer, partner, admin | deduplicated raw NMEA back to feeders |
 | `POST /v1/keys` | none | mint a personal token for a device key |
-| `POST /v1/receive` | feeder token | AIS-catcher style HTTP ingest |
+| `POST /v1/receive` | personal, feeder, peer, or admin token | AIS-catcher style HTTP ingest |
 | UDP `:10110` | none | raw NMEA ingest |
 | `GET /health` | none | 503 when an open-feed upstream is silent |
 
@@ -23,10 +23,10 @@ Credentials are Ed25519-signed claim tokens, `ak1.<base64url claims>.<base64url 
 |---|---|
 | `sub` | who: a station name, partner name, or `ed25519:<pubkey>` / `mmsi:<n>` for a device |
 | `role` | `personal` (subscribe + publish as the device key, small limits), `feeder` (publish), `peer` (publish + subscribe), `partner` (subscribe), `admin` (everything) |
-| `exp`, `iat` | unix seconds |
+| `exp`, `iat` | unix seconds; `exp` is optional and absent on personal tokens (they never expire; misuse is revoked) |
 | `bbox` | optional list of `[minLat,minLon,maxLat,maxLon]`; every subscription box must fit inside one of them |
 | `cidr` | optional list of source CIDRs/IPs the token may be used from |
-| `conns` | optional cap on concurrent WebSockets for this `sub` |
+| `conns` | optional cap on concurrent WebSockets for this `sub` (on top of 8 per network address for everyone) |
 | `rate` | optional cap on messages per second per connection; excess events are thinned (skipped), the connection stays up |
 | `area` | optional cap on the total subscribed bounding-box area in square degrees (a 20°×20° box is 400) |
 
@@ -36,12 +36,14 @@ Where to put it: aisstream `APIKey` field, `Authorization: Bearer <token>`, HTTP
 
 ```
 POST /v1/keys
-{"pubkey": "<base64url-encoded Ed25519 public key, 32 bytes>"}
+{"pubkey": "<base64url-encoded Ed25519 public key, 32 bytes>", "bind_ip": false}
 
-200 {"token": "ak1....", "claims": {"kid": "...", "sub": "ed25519:<pubkey>", "role": "personal", "exp": ..., "iat": ..., "conns": 2}}
+200 {"token": "ak1....", "claims": {"kid": "...", "sub": "ed25519:<pubkey>", "role": "personal", "iat": ..., "conns": 2, "rate": 50, "area": 400}}
 ```
 
-30 days, two concurrent connections, 50 messages/s per connection, 400 square degrees of subscribed area; request a new one before it expires. Minted tokens raise or drop any of these. A personal token may publish: receptions are credited to `v1:ed25519:<pubkey>`, an identity label with no trust attached (the Signal K plugin contributes this way). 10 requests per minute per IP. `501` if aiscast has no personal issuer configured. The token is a bearer token naming your key; there is no proof-of-possession handshake yet. Feeder, peer, partner, and admin tokens are minted offline by the operator.
+No expiry. Two concurrent connections, 50 messages/s per connection, 400 square degrees of subscribed area; publishing allowed (receptions are credited to `v1:ed25519:<pubkey>` / `http:ed25519:<pubkey>`, an identity label with no trust attached; the Signal K plugin contributes this way). `bind_ip: true` adds the requester's address as a `cidr` claim so a UDP station at that address counts as this token's (the token then only works from that address). 3 requests per minute per address: one token is all a client needs. `501` if aiscast has no personal issuer configured. The token is a bearer token naming your key; there is no proof-of-possession handshake yet. Feeder, peer, partner, and admin tokens are minted offline by the operator.
+
+**Tiers.** Limits come from the token's claims; the tiers in [limits.md](limits.md) are the defaults. A personal token whose stations (`v1:<sub>`, `http:<sub>`, and any bound UDP address) delivered at least 1,000 events in the last 24 hours is treated as **feeder** on each connection it makes: 5 connections, 200 messages/s, no area cap, and access to `/v1/nmea`. Nothing to request; it lapses when the station stops and returns when it resumes. Without a token, `/v1/stream` and `/v1/nmea`'s HTTP siblings use the **anonymous** tier keyed by address: 2 connections, 20 messages/s, 100 square degrees, subscribe only.
 
 ## `/v0/stream`: aisstream.io compatibility
 
@@ -68,7 +70,7 @@ Each frame is one decoded message:
 
 `Message` is keyed by the type name and holds the decoded fields with go-ais naming (`UserID` is the MMSI, `Valid`, sentinel values such as `TrueHeading: 511`, `Cog: 360`, `Sog: 102.3`). `MetaData.ShipName` is the cached, untrimmed name; `MetaData.latitude/longitude` come from the last known position, which is how positionless messages (static data, types 5 and 24) are routed to your bounding box. `time_utc` is Go's `time.Time.String()` format. Messages with no known position are not delivered.
 
-Error frames close the connection: `{"error": "Api Key Is Not Valid"}`, `{"error": "Subscription Object Is Malformed"}`, `{"error": "Bounding Box Not Allowed For This Key"}` (outside the token's `bbox`), `{"error": "concurrent connections per user exceeded"}` (token's `conns`). A client that cannot keep up is disconnected with close code 1008 "client too slow". Connects are limited to 60 per minute per IP.
+Error frames close the connection: `{"error": "Api Key Is Not Valid"}`, `{"error": "Subscription Object Is Malformed"}`, `{"error": "Bounding Box Not Allowed For This Key"}` (outside the token's `bbox`), `{"error": "concurrent connections per user exceeded"}` (token's `conns`). A client that cannot keep up is disconnected with close code 1008 "client too slow". Connects are limited to 20 per minute per address.
 
 ## `/v1/stream`: native stream, both directions
 
@@ -83,7 +85,7 @@ Client → server:
 {"type": "unsubscribe"}
 ```
 
-- `subscribe`: `bbox` is a list of boxes; an empty list or no `bbox` means everything (only for tokens without an `area` cap). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 4 concurrent connections per address, 50 messages/s, 400 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
+- `subscribe`: `bbox` is a list of boxes; an empty list or no `bbox` means everything (only for tokens without an `area` cap). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 2 concurrent connections per address, 20 messages/s, 100 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
 - `unsubscribe`: stop receiving events; the socket stays open for publishing.
 - `publish`: needs a token (`personal`, `feeder`, `peer`, or `admin`). Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`, and every frame is answered in order with `{"type":"ack","n":<sentences accepted>}`. `replay: true` marks an offline backlog: sentences whose TAG `c:` time is more than 60 s old are then archived and counted, not emitted live and not folded into the vessel cache. At most 1000 sentences per frame and 6000 per minute per key; the rest are dropped (and not counted in `n`). Without a token: `{"type":"error","error":"publish requires a token"}`.
 
@@ -155,7 +157,7 @@ A one-shot usage summary, for status pages and tracking growth:
 
 ## `GET /v1/nmea`: raw sentences back to feeders
 
-WebSocket. Token with role `feeder`, `peer`, `partner`, or `admin` (`?key=` or `Authorization: Bearer`); personal and anonymous are refused. Optional `?bbox=minLat,minLon,maxLat,maxLon` (repeatable) filters by the vessel's last known position; the token's `bbox`, `area`, `conns`, and `rate` claims apply.
+WebSocket. Token with role `feeder`, `peer`, `partner`, or `admin`, or a personal token that has earned the feeder tier by contributing (`?key=` or `Authorization: Bearer`); anonymous is refused. Low-trust (UDP) events that no trusted source has corroborated are not included. Optional `?bbox=minLat,minLon,maxLat,maxLon` (repeatable) filters by the vessel's last known position; the token's `bbox`, `area`, `conns`, and `rate` claims apply.
 
 One text frame per deduplicated message, sentences joined by CRLF, each carrying a NMEA 4.10 TAG block with the station (`s:`, truncated to 15 characters), the canonical time (`c:`, unix seconds), and the source's license tag (`t:`):
 
@@ -167,11 +169,13 @@ Synthesized messages (Digitraffic, AISHub, aisstream) are delivered as re-encode
 
 ## `POST /v1/receive`
 
-AIS-catcher's HTTP output: `AIS-catcher -H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on INTERVAL 15`. Body is either AIS-catcher's `jsonaiscatcher` envelope (`{"msgs":[{"nmea":["!AIVDM,..."],"rxtime":"20260820111900","channel":"A"}, ...]}`) or plain newline-separated NMEA; `Content-Encoding: gzip` is accepted; 1 MB limit before and after decompression. Needs a `feeder` (or `peer`/`admin`) token; the token's `sub` becomes the station (`source: http:<sub>`). `rxtime` is used as the message time when within 30 s of arrival. 600 posts per minute per station. Responses: `200` empty, `401` with a reason, `413`, `429`.
+AIS-catcher's HTTP output: `AIS-catcher -H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on INTERVAL 15`. Body is either AIS-catcher's `jsonaiscatcher` envelope (`{"msgs":[{"nmea":["!AIVDM,..."],"rxtime":"20260820111900","channel":"A"}, ...]}`) or plain newline-separated NMEA; `Content-Encoding: gzip` is accepted; 1 MB limit before and after decompression. Needs a token that may publish (`personal`, `feeder`, `peer`, `admin`); the token's `sub` becomes the station (`source: http:<sub>`). `rxtime` is used as the message time when within 30 s of arrival. 600 posts per minute per station. Responses: `200` empty, `401` with a reason, `413`, `429`.
 
 ## UDP `ais.openwaters.io:10110`
 
-Datagrams of newline-separated NMEA (`!AIVDM`/`!AIVDO`, `!BSVDM`…, TAG blocks allowed, lines ≤ 4 KB). No authentication. The sender is identified as `udp:<keyed hash of address>`; if it sends `!AIVDO`, as `mmsi:<own MMSI>` from then on. Anything received is forwarded to AISHub under aiscast's reciprocal feed.
+Datagrams of newline-separated NMEA (`!AIVDM`/`!AIVDO`, `!BSVDM`…, TAG blocks allowed, lines ≤ 4 KB). No authentication, 500 sentences per second per source address. The sender is identified as `udp:<keyed hash of address>`; if it sends `!AIVDO`, as `mmsi:<own MMSI>` from then on; if a personal token was minted with `bind_ip` from the same address, the station counts toward that token's feeder tier.
+
+UDP is the lowest-trust path: events from it are shown on the map and in `/v1/stream` (with their `source`), but they never raise a vessel's trust, a position that implies more than 120 knots from the vessel's last known position is dropped (archived, not emitted), and they are forwarded to AISHub and `/v1/nmea` only while a trusted source (an open feed, an authenticated station) has heard the same vessel within the last hour. Anything received is archived with its source so a bad source can be purged.
 
 ## Tolerances and dedupe
 
@@ -179,16 +183,17 @@ Accepted on every input: NMEA 4.10 TAG blocks (`s:` station, `c:` time in s/ms/�
 
 ## Limits
 
-| What | Limit |
-|---|---|
-| WebSocket connects | 60 per minute per IP (`/v0` and `/v1`) |
-| Concurrent WebSockets per token | the token's `conns` claim (2 for personal tokens, 4 per address anonymous on `/v1`) |
-| Messages per second per connection | the token's `rate` claim (50 for personal and anonymous); excess thinned |
-| Subscribed area | the token's `area` claim (400 square degrees for personal and anonymous) |
-| Subscribe deadline on `/v0` | 3 s |
-| `/v1/receive` | 600 posts/min per station, 1 MB per post |
-| `/v1/keys` | 10 per minute per IP |
-| Per-client send queue | 1024 events; overflow disconnects the client |
+Defaults by tier (a minted token's claims override them); see [limits.md](limits.md) for the reasoning.
+
+| | Anonymous | Personal | Feeder (earned or minted) | Partner / admin |
+|---|---|---|---|---|
+| Concurrent streams | 2 per address | 2 | 5 | as minted |
+| Messages/s per stream (excess thinned) | 20 | 50 | 200 | as minted |
+| Subscribed area (sq °) | 100 | 400 | unlimited | as minted |
+| `/v1/nmea` | no | no | yes | yes |
+| Publish | no | 6,000 sentences/min, 1,000/frame, `/v1/receive` 600 posts/min and 1 MB | same | same |
+
+Everyone: at most 8 concurrent streams per network address across all tokens; 20 WebSocket connects per minute per address (`/v0/stream`, `/v1/stream`, `/v1/nmea`); 120 requests per minute per address on `/v1/vessels`, `/v1/stations`, `/v1/stats`; 3 per minute on `/v1/keys`; 500 UDP sentences/s per source address; 3 s subscribe deadline on `/v0`; a 1,024-event send queue, after which the client is disconnected.
 
 ## Health
 

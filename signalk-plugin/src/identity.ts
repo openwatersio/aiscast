@@ -24,7 +24,7 @@ export async function loadIdentity(dir: string): Promise<Identity> {
 
 export interface Token {
   token: string;
-  exp: number; // unix seconds
+  exp: number; // unix seconds; 0 = never
   pubkey: string;
   server: string;
 }
@@ -36,7 +36,8 @@ export async function loadToken(dir: string, server: string, pubkey: string, now
   const file = join(dir, "token.json");
   try {
     const t = JSON.parse(await readFile(file, "utf8")) as Token;
-    if (t.pubkey === pubkey && t.server === server && t.exp - now / 1000 > RENEW_BEFORE) return t;
+    // exp 0 = the token never expires (personal tokens are revoked, not expired)
+    if (t.pubkey === pubkey && t.server === server && (t.exp === 0 || t.exp - now / 1000 > RENEW_BEFORE)) return t;
   } catch {
     // none cached
   }
@@ -57,6 +58,6 @@ export async function mintToken(server: string, pubkey: string): Promise<Token> 
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`POST /v1/keys: ${res.status} ${(await res.text()).trim()}`);
-  const body = (await res.json()) as { token: string; claims: { exp: number } };
-  return { token: body.token, exp: body.claims.exp, pubkey, server };
+  const body = (await res.json()) as { token: string; claims: { exp?: number } };
+  return { token: body.token, exp: body.claims.exp ?? 0, pubkey, server };
 }

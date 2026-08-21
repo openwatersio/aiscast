@@ -11,7 +11,7 @@
 </style>
 <h1>Get an aiscast token</h1>
 <p>A token lets you <strong>send</strong> your AIS receiver's data to <code>ais.openwaters.io</code> and <strong>read</strong> the live stream with any aisstream.io client. This page makes an Ed25519 key in your browser, asks the server for a 30-day personal token bound to it, and keeps both in this browser's local storage so the same key is renewed next time.</p>
-<p class="muted">Personal tokens: 2 concurrent connections, 50 messages/s per connection, 400 square degrees of subscribed area, 30 days. Need more, or a named station? <a href="mailto:hello@openwaters.io">hello@openwaters.io</a>.</p>
+<p class="muted">Personal tokens: 2 concurrent connections, 50 messages/s per connection, 400 square degrees of subscribed area, no expiry. Feed data from it and it becomes a feeder token on its own (5 connections, 200 messages/s, any area, raw NMEA feed). Need more, or a named station? <a href="mailto:hello@openwaters.io">hello@openwaters.io</a>.</p>
 <p><button id="go">Get token</button> <span id="status" class="muted"></span></p>
 <div id="out" hidden>
   <h2>Your token</h2>
@@ -43,7 +43,7 @@
   function show(token, claims) {
     $("token").textContent = token;
     $("sub").textContent = claims.sub;
-    $("exp").textContent = new Date(claims.exp * 1000).toISOString().slice(0, 10);
+    $("exp").textContent = claims.exp ? new Date(claims.exp * 1000).toISOString().slice(0, 10) : "never";
     $("stlink").href = `./?station=${encodeURIComponent("http:" + claims.sub)}`;
     $("cmd-aiscatcher").textContent = `AIS-catcher -d:0 -H ${server}/v1/receive USERPWD x:${token} GZIP on INTERVAL 15`;
     $("cmd-ws").textContent = `websocat wss://ais.openwaters.io/v0/stream\n{"APIKey":"${token}","BoundingBoxes":[[[41,-71.5],[42.5,-69.5]]]}`;
@@ -65,5 +65,5 @@
     }
   };
   const prev = localStorage.getItem("aiscast.token");
-  if (prev) { const { token, claims } = JSON.parse(prev); if (claims.exp * 1000 > Date.now()) { show(token, claims); $("status").textContent = "existing token"; } }
+  if (prev) { const { token, claims } = JSON.parse(prev); if (!claims.exp || claims.exp * 1000 > Date.now()) { show(token, claims); $("status").textContent = "existing token"; } }
 </script>

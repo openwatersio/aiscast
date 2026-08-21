@@ -28,20 +28,23 @@ type Reception struct {
 
 // Event is one decoded AIS message after reassembly and dedupe.
 type Event struct {
-	ID          string
-	Time        time.Time // canonical: validated source time, else receive time
-	Source      string
-	Station     string
-	Channel     byte // 'A' or 'B'
-	Payload     []byte
-	Packet      ais.Packet
-	Type        string // go-ais struct name == aisstream MessageType
-	MMSI        uint32
-	Name        string // from vessel cache, untrimmed
-	Lat, Lon    float64
-	HasPos      bool
-	Sentences   []string
-	Synthesized bool
+	ID           string
+	Time         time.Time // canonical: validated source time, else receive time
+	Source       string
+	Station      string
+	Channel      byte // 'A' or 'B'
+	Payload      []byte
+	Packet       ais.Packet
+	Type         string // go-ais struct name == aisstream MessageType
+	MMSI         uint32
+	Name         string // from vessel cache, untrimmed
+	Lat, Lon     float64
+	HasPos       bool
+	Sentences    []string
+	Synthesized  bool
+	LowTrust     bool // from a source that cannot be authenticated (UDP)
+	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
+	Implausible  bool // low-trust position implying an impossible speed; archived, not emitted
 
 	v0Once sync.Once
 	v0     []byte
@@ -78,8 +81,8 @@ type Pipeline struct {
 	rate         rateSample // events/s over the last logStats interval; /v1/stats
 	lastBySource sync.Map   // source → time.Time of last event; /health and /metrics read it
 	stats        struct {
-		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned atomic.Int64
-		bySource                                                                       sync.Map // source → *counterT
+		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, uncorroborated atomic.Int64
+		bySource                                                                                                    sync.Map // source → *counterT
 	}
 }
 
@@ -260,7 +263,12 @@ func (p *Pipeline) emit(ev *Event) {
 	ev.ID = hex.EncodeToString(sum[:16])
 	ev.Type = typeName(ev.Packet)
 	ev.MMSI = ev.Packet.GetHeader().UserID
+	ev.LowTrust = lowTrust(ev.Source)
 	p.updateVessel(ev)
+	if ev.Implausible {
+		p.stats.implausible.Add(1)
+		return
+	}
 	p.stations.event(ev)
 	p.stats.events.Add(1)
 	p.last.Store(time.Now().UnixNano())

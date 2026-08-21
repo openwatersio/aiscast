@@ -61,7 +61,7 @@ func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, strin
 		if !allowAnon {
 			return nil, nil, errBadKey
 		}
-		c = &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}
+		c = &Claims{Sub: "anon", Role: "admin"}
 	}
 	if !c.may("subscribe") || !c.allowsIP(ip) {
 		return nil, nil, errBadKey
@@ -179,7 +179,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 		f, cl, msg := p.parseV0Sub(data, ip)
 		if msg == "" && release == nil {
 			var ok bool
-			if release, ok = conns.acquire(cl.Sub, cl.Conns); !ok {
+			if release, ok = acquireStream(cl, ip); !ok {
 				msg = "concurrent connections per user exceeded" // aisstream's wording
 			}
 			pace.n = cl.Rate
@@ -279,12 +279,12 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	}
 	if cl == nil {
 		if allowAnon {
-			cl = &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}
+			cl = &Claims{Sub: "anon", Role: "admin"}
 		} else {
 			cl = anonymousClaims(clientIP(r)) // personal-tier limits, keyed by address
 		}
 	}
-	if release, ok := conns.acquire(cl.Sub, cl.Conns); ok {
+	if release, ok := acquireStream(cl, clientIP(r)); ok {
 		defer release()
 	} else {
 		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "concurrent connections per key exceeded"})

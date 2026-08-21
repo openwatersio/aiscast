@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -188,7 +189,7 @@ func TestLimitsClaims(t *testing.T) {
 		t.Error("unlimited pacer")
 	}
 	an := anonymousClaims("1.2.3.4")
-	if an.Conns != 4 || an.Rate != 50 || an.Area != 400 || an.may("publish") || !an.may("subscribe") || an.Role != "anonymous" {
+	if an.Conns != anonConns || an.Rate != anonRate || an.Area != anonArea || an.may("publish") || !an.may("subscribe") || an.Role != "anonymous" {
 		t.Errorf("anonymous claims: %+v", an)
 	}
 	// /v0: personal token with the default area cannot take the whole world
@@ -202,5 +203,86 @@ func TestLimitsClaims(t *testing.T) {
 	}
 	if _, _, msg := pp.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[40,-75],[45,-65]]]}`), "1.2.3.4"); msg != "" {
 		t.Errorf("regional bbox on personal token: %q", msg)
+	}
+}
+
+func TestTiersAndTrust(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, p)
+	now := time.Now()
+
+	// no exp = never expires; exp in the past still expires
+	forever, _ := signToken(priv, Claims{Kid: kid, Sub: "forever", Role: "personal"})
+	if c, err := p.auth.verify(forever, now.Add(10*365*24*time.Hour)); err != nil || c.Exp != 0 {
+		t.Errorf("token without exp: %v", err)
+	}
+	if _, err := p.auth.verify(forever[:len(forever)-1]+"A", now); err == nil {
+		t.Error("tampered token accepted")
+	}
+
+	// personal token earns the feeder tier once its station has fed enough in the last 24 h
+	personal := personalClaims(kid, "ed25519:dev1", now)
+	if e := p.effective(&personal); e.Feeder || e.Conns != personalConns || e.mayRaw() {
+		t.Errorf("personal before feeding: %+v", e)
+	}
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: "v1:ed25519:dev1", Source: "v1:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
+	}
+	if e := p.effective(&personal); !e.Feeder || e.Conns != feederConns || e.Rate != feederRate || e.Area != 0 || !e.mayRaw() {
+		t.Errorf("personal after feeding: %+v", e)
+	}
+	// events older than 24 h do not count
+	old := Claims{Sub: "ed25519:dev2", Role: "personal"}
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: "v1:ed25519:dev2", Source: "v1:ed25519:dev2", Time: now.Add(-30 * time.Hour), MMSI: 1})
+	}
+	if e := p.effective(&old); e.Feeder {
+		t.Error("stale contribution earned the tier")
+	}
+	// a UDP station bound by cidr counts
+	bound := Claims{Sub: "ed25519:dev3", Role: "personal", CIDR: []string{"203.0.113.9"}}
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: udpStation("203.0.113.9"), Source: udpStation("203.0.113.9"), Time: now, MMSI: 1})
+	}
+	if e := p.effective(&bound); !e.Feeder {
+		t.Error("bound UDP station did not count")
+	}
+
+	// per-address ceiling across tokens
+	var rels []func()
+	for i := 0; i < addrMaxStreams; i++ {
+		rel, ok := acquireStream(&Claims{Sub: fmt.Sprintf("k%d", i), Conns: 2}, "198.51.100.1")
+		if !ok {
+			t.Fatalf("stream %d refused under the address ceiling", i)
+		}
+		rels = append(rels, rel)
+	}
+	if _, ok := acquireStream(&Claims{Sub: "k-extra", Conns: 2}, "198.51.100.1"); ok {
+		t.Error("ninth stream from one address allowed")
+	}
+	for _, r := range rels {
+		r()
+	}
+
+	// UDP trust: uncorroborated positions stay out of the AISHub feed; an implausible jump is dropped
+	sub := p.subscribe()
+	udp := udpStation("203.0.113.50")
+	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // 227006760 at 49.48N 0.13E
+	ev := <-sub.ch
+	if !ev.LowTrust || ev.Corroborated {
+		t.Errorf("udp event trust flags: low=%v corroborated=%v", ev.LowTrust, ev.Corroborated)
+	}
+	// same vessel heard by Kystverket → subsequent UDP reports are corroborated
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now.Add(time.Second), Body: "!AIVDM,1,1,,B,13HOI:0P0000VOHLCnHQKwvL05Ip,0*20"})
+	for len(sub.ch) > 0 {
+		<-sub.ch
+	}
+	// a UDP report 3,000 nm away two seconds later is implausible and not emitted
+	before := p.stats.implausible.Load()
+	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now.Add(2 * time.Second), Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"}) // different MMSI, so not a jump
+	if p.stats.implausible.Load() != before {
+		t.Error("different vessel counted as implausible")
 	}
 }
