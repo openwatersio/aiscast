@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>aiscast token</title>
+<style>
+  body { margin: 0 auto; max-width: 44em; padding: 2em 1em; font: 15px/1.5 system-ui, sans-serif; color: #222; }
+  h1 { font-size: 1.5em; } h2 { font-size: 1.1em; margin-top: 2em; }
+  button { font: inherit; padding: .5em 1em; } code, pre { font: 13px/1.4 ui-monospace, monospace; }
+  pre { background: #f4f4f4; padding: .8em; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .muted { color: #666; } .err { color: #b00020; }
+</style>
+<h1>Get an aiscast token</h1>
+<p>A token lets you <strong>send</strong> your AIS receiver's data to <code>ais.openwaters.io</code> and <strong>read</strong> the live stream with any aisstream.io client. This page makes an Ed25519 key in your browser, asks the server for a 30-day personal token bound to it, and keeps both in this browser's local storage so the same key is renewed next time.</p>
+<p class="muted">Personal tokens: 2 concurrent connections, 50 messages/s per connection, 400 square degrees of subscribed area, 30 days. Need more, or a named station? <a href="mailto:hello@openwaters.io">hello@openwaters.io</a>.</p>
+<p><button id="go">Get token</button> <span id="status" class="muted"></span></p>
+<div id="out" hidden>
+  <h2>Your token</h2>
+  <pre id="token"></pre>
+  <p class="muted">Station id: <code id="sub"></code>, expires <span id="exp"></span>. Your data appears as <code>source: http:&lt;station id&gt;</code>; check it at <a id="stlink" href="#">the live map</a> or <code>/v1/stations</code>.</p>
+  <h2>Send your receiver's data</h2>
+  <p><strong>AIS-catcher</strong> (HTTP, works behind any NAT):</p>
+  <pre id="cmd-aiscatcher"></pre>
+  <p><strong>docker-shipfeeder</strong> / any UDP forwarder: host <code>ais.openwaters.io</code>, port <code>10110</code> (no token; appears as an anonymous <code>udp:…</code> station).</p>
+  <p><strong>Signal K</strong>: install <code>signalk-aiscast</code> from the app store; it makes its own token.</p>
+  <h2>Read the stream</h2>
+  <p>Any aisstream.io client: hostname <code>ais.openwaters.io</code>, API key = the token above. Or:</p>
+  <pre id="cmd-ws"></pre>
+</div>
+<script>
+  const server = new URLSearchParams(location.search).get("server") || "https://ais.openwaters.io";
+  const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const $ = (id) => document.getElementById(id);
+  async function deviceKey() {
+    const saved = localStorage.getItem("aiscast.device");
+    if (saved) return JSON.parse(saved);
+    const kp = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    const pub = b64url(await crypto.subtle.exportKey("raw", kp.publicKey));
+    const priv = await crypto.subtle.exportKey("jwk", kp.privateKey);
+    const dev = { pub, priv };
+    localStorage.setItem("aiscast.device", JSON.stringify(dev));
+    return dev;
+  }
+  function show(token, claims) {
+    $("token").textContent = token;
+    $("sub").textContent = claims.sub;
+    $("exp").textContent = new Date(claims.exp * 1000).toISOString().slice(0, 10);
+    $("stlink").href = `./?station=${encodeURIComponent("http:" + claims.sub)}`;
+    $("cmd-aiscatcher").textContent = `AIS-catcher -d:0 -H ${server}/v1/receive USERPWD x:${token} GZIP on INTERVAL 15`;
+    $("cmd-ws").textContent = `websocat wss://ais.openwaters.io/v0/stream\n{"APIKey":"${token}","BoundingBoxes":[[[41,-71.5],[42.5,-69.5]]]}`;
+    $("out").hidden = false;
+  }
+  $("go").onclick = async () => {
+    $("status").textContent = "…";
+    try {
+      if (!crypto?.subtle) throw new Error("this browser has no WebCrypto");
+      const dev = await deviceKey();
+      const res = await fetch(`${server}/v1/keys`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pubkey: dev.pub }) });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      const { token, claims } = await res.json();
+      localStorage.setItem("aiscast.token", JSON.stringify({ token, claims }));
+      show(token, claims);
+      $("status").textContent = "";
+    } catch (e) {
+      $("status").innerHTML = `<span class="err">${String(e.message || e).replace(/</g, "&lt;")}</span>` + (String(e).includes("Ed25519") ? " (Ed25519 WebCrypto needs a current Chrome, Firefox, or Safari)" : "");
+    }
+  };
+  const prev = localStorage.getItem("aiscast.token");
+  if (prev) { const { token, claims } = JSON.parse(prev); if (claims.exp * 1000 > Date.now()) { show(token, claims); $("status").textContent = "existing token"; } }
+</script>

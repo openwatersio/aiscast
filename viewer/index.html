@@ -21,6 +21,7 @@
   let server = params.get("server") || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "localhost:8080" : "ais.openwaters.io");
   if (!server.includes("://")) server = (location.protocol === "https:" ? "https://" : "http://") + server;
   const WS = server.replace(/^http/, "ws") + "/v1/stream";
+  const station = params.get("station"); // ?station=<id>: highlight that station's vessels and show its stats
   const TTL = 30 * 60e3; // drop after 30 min unseen, same as aiscast
 
   // Per-source attribution; licensing is per source, so only sources actually seen are credited.
@@ -153,12 +154,30 @@
         type: "Feature",
         id: mmsi,
         geometry: { type: "Point", coordinates: [v.lon, v.lat] },
-        properties: { mmsi, name: v.name || "", hdg, hasHdg: hdg != null, cls: shipClass(v.kind, v.type), opacity: ageMin < 3 ? 1 : ageMin < 10 ? 0.6 : 0.3 },
+        properties: { mmsi, name: v.name || "", hdg, hasHdg: hdg != null, cls: shipClass(v.kind, v.type), opacity: (ageMin < 3 ? 1 : ageMin < 10 ? 0.6 : 0.3) * (station && v.station !== station ? 0.15 : 1) },
       });
     }
     map.getSource("ais")?.setData({ type: "FeatureCollection", features });
-    document.getElementById("stats").innerHTML = `<b>${esc(wsState)}</b> ${eventsPerSec} msg/s<br><b>${inView}</b> in view, ${vessels.size} tracked`;
+    document.getElementById("stats").innerHTML = `<b>${esc(wsState)}</b> ${eventsPerSec} msg/s<br><b>${inView}</b> in view, ${vessels.size} tracked` + stationHTML;
   }
+
+  // ---- station view: GET /v1/stations/{id}, refreshed every 30 s; its vessels stay bright, everyone else fades ----
+  let stationHTML = "";
+  async function refreshStation() {
+    if (!station) return;
+    try {
+      const res = await fetch(`${server}/v1/stations/${encodeURIComponent(station)}`);
+      if (!res.ok) { stationHTML = `<br><b>station</b> ${esc(station)}: not heard yet`; return; }
+      const { station: st } = await res.json();
+      const age = st.last_age_s < 90 ? `${st.last_age_s}s ago` : `${Math.round(st.last_age_s / 60)} min ago`;
+      const span = st.bbox ? `${(st.bbox[2] - st.bbox[0]).toFixed(2)}° × ${(st.bbox[3] - st.bbox[1]).toFixed(2)}°` : "no positions";
+      stationHTML = `<br><b>station</b> ${esc(station)}<br><b>${st.vessels}</b> vessels (30 min), ${st.events} msgs, ${st.duplicates} heard elsewhere first<br><b>last</b> ${age}; span ${span}`;
+      if (st.bbox && !map._stationFitted) { map._stationFitted = true; map.fitBounds([[st.bbox[1], st.bbox[0]], [st.bbox[3], st.bbox[2]]], { padding: 40, maxZoom: 11 }); }
+    } catch (e) { console.warn("station failed", e); }
+    dirty = true;
+  }
+  refreshStation();
+  setInterval(refreshStation, 30e3);
   setInterval(() => { eventsPerSec = eventCount; eventCount = 0; if (dirty) { dirty = false; render(); } }, 1000);
   setInterval(render, 15e3); // age fading without events
 
