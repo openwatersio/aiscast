@@ -140,6 +140,16 @@ export default function (app: ServerAPI): Plugin {
     if (!live()) return;
     let token: Token | null = null;
     let publishRefused = false;
+    let errorShown = false; // the server keeps a plugin's last error on the Dashboard until the status entry is reset
+    const reportError = (msg: string) => {
+      errorShown = true;
+      app.setPluginError(msg);
+    };
+    const clearError = () => {
+      if (!errorShown) return;
+      errorShown = false;
+      app.setPluginStatus(""); // an empty status deletes the entry, lastError included
+    };
     const selfSource = `v1:ed25519:${identity.pubkey}`;
     const refreshToken = async (): Promise<void> => {
       if (configuredToken) {
@@ -153,9 +163,10 @@ export default function (app: ServerAPI): Plugin {
       }
       try {
         token = await loadToken(dir, server, identity.pubkey);
+        clearError();
       } catch (err) {
         token = null;
-        app.setPluginError(
+        reportError(
           `No token: ${describe(err)}. Receiving only; nothing is shared. Retrying.`,
         );
       }
@@ -188,12 +199,13 @@ export default function (app: ServerAPI): Plugin {
     up.enabled = canShare();
 
     l.on("open", () => {
+      if (publishRefused) clearError();
       publishRefused = false;
       up.enabled = canShare();
     });
     l.on("error", (message) => {
       if (/token/i.test(message) && !/publish/.test(message)) {
-        app.setPluginError(`aiscast refused the token: ${message}`);
+        reportError(`aiscast refused the token: ${message}`);
         if (!configuredToken) {
           const refused = token?.token;
           // A fresh token reconnects at once; the same token again waits out the refusal backoff.
@@ -208,9 +220,9 @@ export default function (app: ServerAPI): Plugin {
       } else if (/publish/.test(message)) {
         publishRefused = true;
         up.enabled = false;
-        app.setPluginError(`aiscast refused publishing: ${message}`);
+        reportError(`aiscast refused publishing: ${message}`);
       } else if (/bbox/.test(message)) {
-        app.setPluginError(
+        reportError(
           `aiscast refused the subscription: ${message} (reduce the radius)`,
         );
       } else {
