@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
@@ -29,6 +31,8 @@ type vessel struct {
 	Source    string
 	Station   string
 	MsgType   string
+	TrustedAt time.Time // last position from a source that is not low-trust
+	PosAt     time.Time // time of the last position folded in (Seen also moves on static messages)
 }
 
 func newVessel() *vessel {
@@ -88,10 +92,23 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// A late-arriving report (AISHub lags minutes behind VHF) must not drag the vessel back along its track;
 	// only static fields fold in. Whole-second source stamps make ties and sub-second skew meaningless.
 	stale := v.HasPos && ev.Time.Before(v.Seen.Add(-time.Second))
-	if hasPos && !stale {
-		v.Lat, v.Lon, v.HasPos = u.Lat, u.Lon, true
-		v.Cog, v.Sog, v.Heading = u.Cog, u.Sog, u.Heading // sentinels from a position report are real "unknown"s
+	// Low-trust (UDP) positions that imply an impossible speed from the vessel's last position are dropped:
+	// cheap poisoning defence; the reception is still archived.
+	if hasPos && !stale && ev.LowTrust && v.HasPos {
+		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 && nm(v.Lat, v.Lon, u.Lat, u.Lon)/(dt/3600) > implausibleKnots {
+			ev.Implausible = true
+			p.vmu.Unlock()
+			return
+		}
 	}
+	if hasPos && !stale {
+		v.Lat, v.Lon, v.HasPos, v.PosAt = u.Lat, u.Lon, true, ev.Time
+		v.Cog, v.Sog, v.Heading = u.Cog, u.Sog, u.Heading // sentinels from a position report are real "unknown"s
+		if !ev.LowTrust {
+			v.TrustedAt = ev.Time
+		}
+	}
+	ev.Corroborated = !ev.LowTrust || ev.Time.Sub(v.TrustedAt) < corroborationWindow
 	if u.NavStatus != 15 && !stale {
 		v.NavStatus = u.NavStatus
 	}
@@ -110,6 +127,15 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	ev.Name, ev.Lat, ev.Lon, ev.HasPos = v.Name, v.Lat, v.Lon, v.HasPos
 	if stale && hasPos { // the event still carries its own position; only the cache ignores it
 		ev.Lat, ev.Lon = u.Lat, u.Lon
+	}
+	p.vmu.Unlock()
+}
+
+// markTrusted records that a trusted source heard the vessel's position at t (used when its copy was deduplicated).
+func (p *Pipeline) markTrusted(mmsi uint32, t time.Time) {
+	p.vmu.Lock()
+	if v := p.vessels[mmsi]; v != nil && t.After(v.TrustedAt) {
+		v.TrustedAt = t
 	}
 	p.vmu.Unlock()
 }
@@ -169,14 +195,35 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		}
 		all = false
 	}
+	var want map[uint32]bool // ?mmsi=a,b,c: those vessels wherever they are (ORed with bbox)
+	if q := r.URL.Query().Get("mmsi"); q != "" {
+		want = map[uint32]bool{}
+		for _, s := range strings.Split(q, ",") {
+			if n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 32); err == nil {
+				want[uint32(n)] = true
+			}
+		}
+		if all {
+			all = false // mmsi alone: only those
+		}
+	}
 	features := []map[string]any{}
 	p.vmu.RLock()
 	for mmsi, v := range p.vessels {
-		if v.HasPos && (all || b.contains(v.Lat, v.Lon)) {
+		if v.HasPos && (all || want[mmsi] || (b != (bbox{}) && b.contains(v.Lat, v.Lon))) {
 			features = append(features, v.feature(mmsi))
 		}
 	}
 	p.vmu.RUnlock()
 	w.Header().Set("Content-Type", "application/geo+json")
 	json.NewEncoder(w).Encode(map[string]any{"type": "FeatureCollection", "features": features})
+}
+
+// nm is the great-circle distance in nautical miles.
+func nm(lat1, lon1, lat2, lon2 float64) float64 {
+	const r = 3440.065 // earth radius, nm
+	φ1, φ2 := lat1*math.Pi/180, lat2*math.Pi/180
+	dφ, dλ := (lat2-lat1)*math.Pi/180, (lon2-lon1)*math.Pi/180
+	a := math.Sin(dφ/2)*math.Sin(dφ/2) + math.Cos(φ1)*math.Cos(φ2)*math.Sin(dλ/2)*math.Sin(dλ/2)
+	return 2 * r * math.Asin(math.Sqrt(a))
 }

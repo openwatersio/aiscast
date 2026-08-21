@@ -4,6 +4,9 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+
+	"github.com/BertoldVdb/go-ais"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -188,7 +191,7 @@ func TestLimitsClaims(t *testing.T) {
 		t.Error("unlimited pacer")
 	}
 	an := anonymousClaims("1.2.3.4")
-	if an.Conns != 4 || an.Rate != 50 || an.Area != 400 || an.may("publish") || !an.may("subscribe") || an.Role != "anonymous" {
+	if an.Conns != anonConns || an.Rate != anonRate || an.Area != anonArea || an.may("publish") || !an.may("subscribe") || an.Role != "anonymous" {
 		t.Errorf("anonymous claims: %+v", an)
 	}
 	// /v0: personal token with the default area cannot take the whole world
@@ -202,5 +205,165 @@ func TestLimitsClaims(t *testing.T) {
 	}
 	if _, _, msg := pp.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[40,-75],[45,-65]]]}`), "1.2.3.4"); msg != "" {
 		t.Errorf("regional bbox on personal token: %q", msg)
+	}
+}
+
+func TestTiersAndTrust(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, p)
+	now := time.Now()
+
+	// no exp = never expires; exp in the past still expires
+	forever, _ := signToken(priv, Claims{Kid: kid, Sub: "forever", Role: "personal"})
+	if c, err := p.auth.verify(forever, now.Add(10*365*24*time.Hour)); err != nil || c.Exp != 0 {
+		t.Errorf("token without exp: %v", err)
+	}
+	tampered := []byte(forever)
+	i := len(tampered) - 20 // inside the signature; the last char's low bits can be padding and survive a flip
+	if tampered[i] == 'A' {
+		tampered[i] = 'B'
+	} else {
+		tampered[i] = 'A'
+	}
+	if _, err := p.auth.verify(string(tampered), now); err == nil {
+		t.Error("tampered token accepted")
+	}
+
+	// personal token earns the feeder tier once its station has fed enough in the last 24 h
+	personal := personalClaims(kid, "ed25519:dev1", now)
+	if e := p.effective(&personal); e.Feeder || e.Conns != personalConns || e.mayRaw() {
+		t.Errorf("personal before feeding: %+v", e)
+	}
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: "v1:ed25519:dev1", Source: "v1:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
+	}
+	if e := p.effective(&personal); !e.Feeder || e.Conns != feederConns || e.Rate != feederRate || e.Area != 0 || !e.mayRaw() {
+		t.Errorf("personal after feeding: %+v", e)
+	}
+	// events older than 24 h do not count
+	old := Claims{Sub: "ed25519:dev2", Role: "personal"}
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: "v1:ed25519:dev2", Source: "v1:ed25519:dev2", Time: now.Add(-30 * time.Hour), MMSI: 1})
+	}
+	if e := p.effective(&old); e.Feeder {
+		t.Error("stale contribution earned the tier")
+	}
+	// a UDP station bound by cidr counts
+	bound := Claims{Sub: "ed25519:dev3", Role: "personal", CIDR: []string{"203.0.113.9"}}
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: udpStation("203.0.113.9"), Source: udpStation("203.0.113.9"), Time: now, MMSI: 1})
+	}
+	if e := p.effective(&bound); !e.Feeder {
+		t.Error("bound UDP station did not count")
+	}
+
+	// per-address ceiling across tokens
+	var rels []func()
+	for i := 0; i < addrMaxStreams; i++ {
+		rel, ok := acquireStream(&Claims{Sub: fmt.Sprintf("k%d", i), Conns: 2}, "198.51.100.1")
+		if !ok {
+			t.Fatalf("stream %d refused under the address ceiling", i)
+		}
+		rels = append(rels, rel)
+	}
+	if _, ok := acquireStream(&Claims{Sub: "k-extra", Conns: 2}, "198.51.100.1"); ok {
+		t.Error("ninth stream from one address allowed")
+	}
+	for _, r := range rels {
+		r()
+	}
+
+	// UDP trust: uncorroborated positions stay out of the AISHub feed; an implausible jump is dropped
+	sub := p.subscribe()
+	udp := udpStation("203.0.113.50")
+	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // 227006760 at 49.48N 0.13E
+	ev := <-sub.ch
+	if !ev.LowTrust || ev.Corroborated {
+		t.Errorf("udp event trust flags: low=%v corroborated=%v", ev.LowTrust, ev.Corroborated)
+	}
+	// same vessel heard by Kystverket → subsequent UDP reports are corroborated
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now.Add(time.Second), Body: "!AIVDM,1,1,,B,13HOI:0P0000VOHLCnHQKwvL05Ip,0*20"})
+	for len(sub.ch) > 0 {
+		<-sub.ch
+	}
+	// a UDP report putting the same vessel 3,000 nm away two seconds later is implausible: dropped, not emitted
+	before := p.stats.implausible.Load()
+	p.ingestPacket(udp, udp, now.Add(2*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 0, Longitude: 0, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	if p.stats.implausible.Load() != before+1 || len(sub.ch) != 0 {
+		t.Errorf("implausible jump: count %d→%d, events %d", before, p.stats.implausible.Load(), len(sub.ch))
+	}
+	// a different vessel far away is not a jump
+	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now.Add(2 * time.Second), Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})
+	if p.stats.implausible.Load() != before+1 {
+		t.Error("different vessel counted as implausible")
+	}
+	// the same vessel, a plausible distance later, is accepted from UDP and is now corroborated
+	for len(sub.ch) > 0 {
+		<-sub.ch
+	}
+	p.ingestPacket(udp, udp, now.Add(10*time.Minute), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.5, Longitude: 0.2, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	if len(sub.ch) != 1 {
+		t.Fatalf("plausible UDP report not emitted (events=%d)", len(sub.ch))
+	}
+	if ev := <-sub.ch; !ev.LowTrust || !ev.Corroborated {
+		t.Errorf("expected corroborated low-trust event, got low=%v corroborated=%v", ev.LowTrust, ev.Corroborated)
+	}
+}
+
+// A trusted source repeating, within the dedupe window, a payload that UDP delivered first must still corroborate.
+func TestDedupedTrustedCopyCorroborates(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	now := time.Now()
+	udp := udpStation("203.0.113.77")
+	line := "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23" // 227006760
+	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now, Body: line})
+	if ev := <-sub.ch; ev.Corroborated {
+		t.Fatal("first UDP report should be uncorroborated")
+	}
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now.Add(time.Second), Body: line}) // identical payload: deduplicated
+	if len(sub.ch) != 0 {
+		t.Fatal("duplicate was emitted")
+	}
+	p.ingestPacket(udp, udp, now.Add(30*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.476, Longitude: 0.132, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	if ev := <-sub.ch; !ev.Corroborated {
+		t.Error("UDP report after a deduplicated trusted copy should be corroborated")
+	}
+}
+
+func TestMMSISubscriptions(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, p)
+	tok, _ := signToken(priv, personalClaims(kid, "ed25519:m", time.Now()))
+	// /v0: a world bbox is fine when an MMSI filter bounds the traffic; too many MMSIs for the tier is refused
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,-180],[90,180]]],"FiltersShipMMSI":["227006760"]}`), "1.1.1.1"); msg != "" {
+		t.Errorf("world bbox with mmsi filter: %q", msg)
+	}
+	many := make([]string, 0, 51)
+	for i := 0; i < 51; i++ {
+		many = append(many, fmt.Sprintf("%09d", 200000000+i))
+	}
+	b, _ := json.Marshal(many)
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,-180],[90,180]]],"FiltersShipMMSI":`+string(b)+`}`), "1.1.1.1"); msg != errMalformed {
+		t.Errorf("51 mmsi on /v0 should be malformed (aisstream cap): %q", msg)
+	}
+	an := anonymousClaims("1.1.1.1")
+	if an.allowsMMSIs(anonMMSIs+1) || !an.allowsMMSIs(anonMMSIs) {
+		t.Error("anonymous mmsi cap")
+	}
+	// /v1 matching: mmsi alone, bbox alone, both
+	ev := &Event{MMSI: 1, HasPos: true, Lat: 50, Lon: 5}
+	if !(&v1Sub{mmsi: map[uint32]bool{1: true}}).match(ev) || (&v1Sub{mmsi: map[uint32]bool{2: true}}).match(ev) {
+		t.Error("mmsi-only subscription")
+	}
+	if !(&v1Sub{mmsi: map[uint32]bool{2: true}, boxes: []bbox{{49, 4, 51, 6}}}).match(ev) || (&v1Sub{boxes: []bbox{{0, 0, 1, 1}}}).match(ev) {
+		t.Error("mmsi OR bbox subscription")
+	}
+	if !(&v1Sub{mmsi: map[uint32]bool{1: true}}).match(&Event{MMSI: 1}) { // positionless static message still follows
+		t.Error("mmsi subscription should not require a position")
 	}
 }

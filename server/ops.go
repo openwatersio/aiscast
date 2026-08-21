@@ -46,6 +46,8 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("aiscast_archive_drops_total", "receptions dropped because the archive queue was full", p.arch.drops.Load())
 	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
 	counter("aiscast_thinned_total", "events withheld from connections over their per-second rate", p.stats.thinned.Load())
+	counter("aiscast_implausible_total", "low-trust positions dropped for implying an impossible speed", p.stats.implausible.Load())
+	counter("aiscast_uncorroborated_total", "low-trust events kept local because no trusted source has heard the vessel", p.stats.uncorroborated.Load())
 
 	p.vmu.RLock()
 	nv := len(p.vessels)
@@ -105,7 +107,9 @@ func (l *limiter) allow(key string) bool {
 }
 
 var (
-	wsConnectLimit = newLimiter(envInt("WS_CONNECTS_PER_MIN", 60)) // per IP; raise for load tests from one host
+	wsConnectLimit = newLimiter(envInt("WS_CONNECTS_PER_MIN", 20)) // per address; a working client connects once; raise for load tests
+	httpLimit      = newLimiter(httpPerMinute)                     // per address, every HTTP GET endpoint
+	udpLimit       = newLimiter(udpLinesPerMinute)                 // per source address
 	publishLimit   = newLimiter(6000)                              // /v1/stream publish sentences per key per minute (a single receiver hears <75/s)
 	receiveLimit   = newLimiter(600)                               // /v1/receive posts per feeder per minute (AIS-catcher posts ~4/min)
 )
@@ -131,6 +135,16 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// rateLimited wraps a public HTTP handler with the per-address request limit.
+func (p *Pipeline) rateLimited(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if p.limited(w, httpLimit, clientIP(r)) {
+			return
+		}
+		h(w, r)
+	}
 }
 
 func (p *Pipeline) limited(w http.ResponseWriter, l *limiter, key string) bool {

@@ -46,6 +46,10 @@ func (f *udpFeeder) send(p *Pipeline, ev *Event) {
 	if ev.Synthesized || ev.Packet == nil {
 		return
 	}
+	if ev.LowTrust && !ev.Corroborated { // UDP traffic nobody else has heard stays local until corroborated
+		p.stats.uncorroborated.Add(1)
+		return
+	}
 	ch := ev.Channel
 	if ch == 0 {
 		ch = 'A'

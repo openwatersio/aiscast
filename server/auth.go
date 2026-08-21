@@ -13,7 +13,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -39,9 +38,15 @@ type Claims struct {
 	BBox  []bbox   `json:"bbox,omitempty"`
 	CIDR  []string `json:"cidr,omitempty"`
 	Conns int      `json:"conns,omitempty"`
-	Rate  int      `json:"rate,omitempty"` // messages per second per connection; excess is thinned, not disconnected
-	Area  float64  `json:"area,omitempty"` // max total subscribed bbox area, square degrees
+	Rate  int      `json:"rate,omitempty"`  // messages per second per connection; excess is thinned, not disconnected
+	Area  float64  `json:"area,omitempty"`  // max total subscribed bbox area, square degrees
+	MMSIs int      `json:"mmsis,omitempty"` // max vessels followed by MMSI per subscription (0 = unlimited)
+
+	Feeder bool `json:"-"` // earned for this connection: the token's station is feeding (see tiers.go)
 }
+
+// allowsMMSIs: a subscription may follow at most this many vessels by MMSI (0 = unlimited).
+func (c *Claims) allowsMMSIs(n int) bool { return c.MMSIs <= 0 || n <= c.MMSIs }
 
 // allowsArea: the total area of the requested boxes must not exceed the claim (0 = unlimited).
 func (c *Claims) allowsArea(boxes []bbox) bool {
@@ -53,11 +58,6 @@ func (c *Claims) allowsArea(boxes []bbox) bool {
 		total += (b[2] - b[0]) * (b[3] - b[1])
 	}
 	return total <= c.Area
-}
-
-// anonymousClaims is what a socket without a token gets on /v1: personal-tier limits keyed by address.
-func anonymousClaims(ip string) *Claims {
-	return &Claims{Sub: "anon:" + ip, Role: "anonymous", Exp: 1 << 62, Conns: 4, Rate: 50, Area: 400}
 }
 
 // pacer thins a connection to at most n events per second. ponytail: fixed one-second window.
@@ -92,6 +92,15 @@ func (c *Claims) may(action string) bool {
 	return false
 }
 
+// mayRaw: the deduplicated raw feed is for feeders (minted, or earned by contribution), peers, partners, admins.
+func (c *Claims) mayRaw() bool {
+	switch c.Role {
+	case "feeder", "peer", "partner", "admin":
+		return true
+	}
+	return c.Feeder
+}
+
 // allowsBox: the requested box must lie inside one of the claim's boxes (no claim boxes = anywhere).
 func (c *Claims) allowsBox(b bbox) bool {
 	if len(c.BBox) == 0 {
@@ -124,8 +133,8 @@ func (c *Claims) allowsIP(ip string) bool {
 var validSub = regexp.MustCompile(`^[A-Za-z0-9_.:=/+-]{1,128}$`).MatchString
 
 func signToken(priv ed25519.PrivateKey, c Claims) (string, error) {
-	if !validSub(c.Sub) || c.Role == "" || c.Exp == 0 {
-		return "", errors.New("claims need sub, role, exp")
+	if !validSub(c.Sub) || c.Role == "" {
+		return "", errors.New("claims need sub and role")
 	}
 	body, err := json.Marshal(c)
 	if err != nil {
@@ -192,7 +201,7 @@ func (v *verifier) verify(token string, now time.Time) (*Claims, error) {
 	if !ok || !ed25519.Verify(pub, []byte(tokenPrefix+b64), sig) {
 		return nil, errBadToken
 	}
-	if now.Unix() > c.Exp {
+	if c.Exp != 0 && now.Unix() > c.Exp { // no exp = never expires; misuse is handled by revocation
 		return nil, errors.New("token expired")
 	}
 	if v.revoked[c.Sub] {
@@ -224,10 +233,11 @@ func (p *Pipeline) authorize(r *http.Request, action string) (*Claims, error) {
 	c, err := p.auth.verify(tok, time.Now())
 	if err != nil {
 		if allowAnon {
-			return &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}, nil
+			return &Claims{Sub: "anon", Role: "admin"}, nil
 		}
 		return nil, err
 	}
+	c = p.effective(c)
 	if !c.may(action) {
 		return nil, fmt.Errorf("role %s may not %s", c.Role, action)
 	}
@@ -247,41 +257,14 @@ func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
 	c, err := p.auth.verify(tok, time.Now())
 	if err != nil {
 		if allowAnon {
-			return &Claims{Sub: "anon", Role: "admin", Exp: 1 << 62}, nil
+			return &Claims{Sub: "anon", Role: "admin"}, nil
 		}
 		return nil, err
 	}
 	if !c.allowsIP(clientIP(r)) {
 		return nil, errors.New("token not valid from this address")
 	}
-	return c, nil
-}
-
-// ---- concurrent connection caps per sub ----
-
-type connCounter struct {
-	mu sync.Mutex
-	n  map[string]int
-}
-
-var conns = &connCounter{n: map[string]int{}}
-
-// acquire returns false when sub already has its allowed number of connections; release with the returned func.
-func (cc *connCounter) acquire(sub string, max int) (func(), bool) {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	if max > 0 && cc.n[sub] >= max {
-		return nil, false
-	}
-	cc.n[sub]++
-	return func() {
-		cc.mu.Lock()
-		cc.n[sub]--
-		if cc.n[sub] == 0 {
-			delete(cc.n, sub)
-		}
-		cc.mu.Unlock()
-	}, true
+	return p.effective(c), nil
 }
 
 // ---- personal tokens: POST /v1/keys {"pubkey": "<base64 ed25519 public key>"} ----
@@ -301,11 +284,7 @@ var personalIssuer = func() (string, ed25519.PrivateKey) {
 	return kid, ed25519.NewKeyFromSeed(b)
 }
 
-var keysLimit = newLimiter(10) // personal-token requests per IP per minute
-
-func personalClaims(kid, sub string, now time.Time) Claims {
-	return Claims{Kid: kid, Sub: sub, Role: "personal", Iat: now.Unix(), Exp: now.Add(30 * 24 * time.Hour).Unix(), Conns: 2, Rate: 50, Area: 400}
-}
+var keysLimit = newLimiter(keysPerMinute) // personal-token requests per address per minute: one is all a client needs
 
 func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -325,7 +304,10 @@ func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
 	if p.limited(w, keysLimit, clientIP(r)) {
 		return
 	}
-	var req struct{ Pubkey string }
+	var req struct {
+		Pubkey string
+		BindIP bool `json:"bind_ip"` // also bind the requester's address, so its UDP station counts as this token's
+	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req) != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
@@ -337,6 +319,9 @@ func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	// ponytail: no proof of possession yet; the token is a bearer token whose sub names the device key
 	c := personalClaims(kid, "ed25519:"+req.Pubkey, time.Now())
+	if req.BindIP {
+		c.CIDR = []string{clientIP(r)}
+	}
 	tok, err := signToken(priv, c)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
