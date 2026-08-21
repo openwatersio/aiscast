@@ -85,11 +85,14 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		v = newVessel()
 		p.vessels[ev.MMSI] = v
 	}
-	if hasPos {
+	// A late-arriving report (AISHub lags minutes behind VHF) must not drag the vessel back along its track;
+	// only static fields fold in. Whole-second source stamps make ties and sub-second skew meaningless.
+	stale := v.HasPos && ev.Time.Before(v.Seen.Add(-time.Second))
+	if hasPos && !stale {
 		v.Lat, v.Lon, v.HasPos = u.Lat, u.Lon, true
 		v.Cog, v.Sog, v.Heading = u.Cog, u.Sog, u.Heading // sentinels from a position report are real "unknown"s
 	}
-	if u.NavStatus != 15 {
+	if u.NavStatus != 15 && !stale {
 		v.NavStatus = u.NavStatus
 	}
 	if u.Name != "" {
@@ -101,8 +104,13 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if u.Kind != "vessel" {
 		v.Kind = u.Kind
 	}
-	v.Seen, v.Source, v.Station, v.MsgType = ev.Time, ev.Source, ev.Station, ev.Type
+	if !stale {
+		v.Seen, v.Source, v.Station, v.MsgType = ev.Time, ev.Source, ev.Station, ev.Type
+	}
 	ev.Name, ev.Lat, ev.Lon, ev.HasPos = v.Name, v.Lat, v.Lon, v.HasPos
+	if stale && hasPos { // the event still carries its own position; only the cache ignores it
+		ev.Lat, ev.Lon = u.Lat, u.Lon
+	}
 	p.vmu.Unlock()
 }
 

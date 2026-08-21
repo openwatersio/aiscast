@@ -117,14 +117,17 @@
   function onEvent(ev) {
     const m = ev.message || {};
     const v = vessels.get(ev.mmsi) || { kind: "vessel" };
-    if (ev.lat != null) { v.lat = ev.lat; v.lon = ev.lon; }
-    if (POSITION_TYPES.has(ev.msg_type)) {
+    const t = Date.parse(ev.time);
+    // late arrivals (AISHub lags minutes) fold in static fields only, so the marker never jumps backwards
+    const stale = v.lat != null && t < v.seen - 1000;
+    if (ev.lat != null && !stale) { v.lat = ev.lat; v.lon = ev.lon; }
+    if (POSITION_TYPES.has(ev.msg_type) && !stale) {
       const lr = ev.msg_type === "LongRangeAisBroadcastMessage";
       v.cog = m.Cog != null && m.Cog < (lr ? 511 : 360) ? m.Cog : undefined;
       v.sog = m.Sog != null && m.Sog < (lr ? 63 : 102.3) ? m.Sog : undefined;
       v.heading = m.TrueHeading != null && m.TrueHeading < 511 ? m.TrueHeading : undefined;
     }
-    if (m.NavigationalStatus != null && m.NavigationalStatus !== 15) v.nav_status = m.NavigationalStatus;
+    if (m.NavigationalStatus != null && m.NavigationalStatus !== 15 && !stale) v.nav_status = m.NavigationalStatus;
     const name = m.Name || m.ReportA?.Name;
     if (name) v.name = name;
     const type = m.Type || m.ReportB?.ShipType;
@@ -132,7 +135,7 @@
     if (ev.msg_type === "AidsToNavigationReport") v.kind = "aton";
     else if (ev.msg_type === "BaseStationReport") v.kind = "base";
     else if (ev.msg_type === "StandardSearchAndRescueAircraftReport") v.kind = "sar";
-    Object.assign(v, { seen: Date.parse(ev.time), source: ev.source, station: ev.station, msg_type: ev.msg_type, nmea: ev.nmea });
+    if (!stale) Object.assign(v, { seen: t, source: ev.source, station: ev.station, msg_type: ev.msg_type, nmea: ev.nmea });
     vessels.set(ev.mmsi, v);
     noteSource(ev.source);
     dirty = true;
