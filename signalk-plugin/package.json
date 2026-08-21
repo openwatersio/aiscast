@@ -1,6 +1,6 @@
 {
   "name": "signalk-aiscast",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Show nearby traffic without an AIS receiver and share your AIS data with the world.",
   "license": "MIT",
   "author": "Brandon Keepers <brandon@opensoul.org>",
