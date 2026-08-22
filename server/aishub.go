@@ -17,7 +17,7 @@ import (
 	"github.com/BertoldVdb/go-ais"
 )
 
-// AISHub is reciprocal: we feed them our deduplicated open-feed stream over UDP (their assigned port), and poll
+// AISHub is reciprocal: we feed them our volunteer receivers' stream over UDP (their assigned port), and poll
 // their aggregate snapshot (all stations, positions downsampled to ≤60 s) once a minute. Their terms grant "use"
 // only, so this source is flagged in `source`/archive tags and can be switched off and purged; see PLAN.md.
 
@@ -40,10 +40,18 @@ func newUDPFeeder(addr string) (*udpFeeder, error) {
 	return &udpFeeder{conn: c}, nil
 }
 
-// send re-encodes the event as plain !AIVDM (no TAG block, AI talker) so any aggregator accepts it. Synthesized
-// events are skipped: AISHub wants receiver data, and re-feeding aisstream or their own snapshot would loop.
-func (f *udpFeeder) send(p *Pipeline, ev *Event) {
+// feedable: only data received directly from volunteer stations goes to AISHub. Their terms prohibit feeding
+// synthesized data and data from public AIS sources (Kystverket, Digitraffic, aisstream, their own snapshot).
+func feedable(ev *Event) bool {
 	if ev.Synthesized || ev.Packet == nil {
+		return false
+	}
+	return strings.HasPrefix(ev.Source, "udp:") || strings.HasPrefix(ev.Source, "http:") || strings.HasPrefix(ev.Source, "v1:")
+}
+
+// send re-encodes the event as plain !AIVDM (no TAG block, AI talker) so any aggregator accepts it.
+func (f *udpFeeder) send(p *Pipeline, ev *Event) {
+	if !feedable(ev) {
 		return
 	}
 	if ev.LowTrust && !ev.Corroborated { // UDP traffic nobody else has heard stays local until corroborated
