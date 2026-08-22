@@ -38,7 +38,7 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 		}
 		boxes = append(boxes, b)
 	}
-	if !cl.allowsArea(boxes) || (len(boxes) == 0 && cl.Area > 0) {
+	if !cl.allowsArea(boxes) || (len(boxes) == 0 && cl.Area != 0) {
 		http.Error(w, "bbox area exceeds your token", http.StatusBadRequest)
 		return
 	}

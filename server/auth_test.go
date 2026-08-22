@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
 	"github.com/BertoldVdb/go-ais"
+	"github.com/coder/websocket"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -365,5 +367,66 @@ func TestMMSISubscriptions(t *testing.T) {
 	}
 	if !(&v1Sub{mmsi: map[uint32]bool{1: true}}).match(&Event{MMSI: 1}) { // positionless static message still follows
 		t.Error("mmsi subscription should not require a position")
+	}
+}
+
+// negative area: the key may only follow vessels by MMSI; no bbox or whole-world subscription on any endpoint.
+func TestMMSIOnlyKey(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, p)
+	tok, _ := signToken(priv, Claims{Kid: kid, Sub: "fleet", Role: "partner", Area: -1, MMSIs: 230, Exp: time.Now().Add(time.Hour).Unix()})
+	many := make([]string, 0, 230)
+	for i := 0; i < 230; i++ {
+		many = append(many, fmt.Sprintf("%09d", 200000000+i))
+	}
+	b, _ := json.Marshal(many)
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,-180],[90,180]]],"FiltersShipMMSI":`+string(b)+`}`), "1.1.1.1"); msg != "" {
+		t.Errorf("/v0 230 mmsi with a 230 claim: %q", msg)
+	}
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[49,0],[50,1]]]}`), "1.1.1.1"); msg != errBoxDenied {
+		t.Errorf("/v0 bbox without mmsi on an mmsi-only key: %q", msg)
+	}
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,0],[90,0]]]}`), "1.1.1.1"); msg != errBoxDenied {
+		t.Errorf("/v0 zero-area line box on an mmsi-only key: %q", msg)
+	}
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+	for _, q := range []string{"", "&bbox=-90,0,90,0"} {
+		if _, res, err := websocket.Dial(ctx, base+"/v1/nmea?key="+tok+q, nil); err == nil || res == nil || res.StatusCode != 400 {
+			t.Errorf("/v1/nmea%s open to an mmsi-only key: %v", q, err)
+		}
+	}
+	c, _, err := websocket.Dial(ctx, base+"/v1/stream?key="+tok, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	reply := func(frame string) string { // everything the server says about frame; an unknown type marks the end
+		c.Write(ctx, websocket.MessageText, []byte(frame))
+		c.Write(ctx, websocket.MessageText, []byte(`{"type":"end"}`))
+		var out string
+		for {
+			_, msg, err := c.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(msg), "unknown type") {
+				return out
+			}
+			out += string(msg)
+		}
+	}
+	for _, f := range []string{`{"type":"subscribe"}`, `{"type":"subscribe","bbox":[[49,0,50,1]]}`, `{"type":"subscribe","bbox":[[49,0,50,1]],"mmsi":[1]}`, `{"type":"subscribe","bbox":[[-90,0,90,0]]}`} {
+		if r := reply(f); !strings.Contains(r, "bbox not allowed") {
+			t.Errorf("%s on an mmsi-only key: %s", f, r)
+		}
+	}
+	if r := reply(`{"type":"subscribe","mmsi":[1,2,3]}`); strings.Contains(r, "error") {
+		t.Errorf("mmsi subscribe on an mmsi-only key: %s", r)
 	}
 }

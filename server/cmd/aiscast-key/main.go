@@ -1,7 +1,7 @@
 // aiscast-key mints and inspects aiscast access tokens. The issuer private key never goes near the server.
 //
 //	aiscast-key issuer                       # new issuer keypair: prints kid, public key (for ISSUER_PUBKEYS), seed
-//	aiscast-key new -seed <seed> -kid <kid> -sub station-42 -role feeder [-exp 8760h] [-bbox s,w,n,e]... [-cidr 203.0.113.0/24]... [-conns 2] [-rate 50] [-area 400] [-mmsis 50]
+//	aiscast-key new -seed <seed> -kid <kid> -sub station-42 -role feeder [-exp 8760h] [-bbox s,w,n,e]... [-cidr 203.0.113.0/24]... [-conns 2] [-rate 50] [-area 400|-1] [-mmsis 50]
 //	aiscast-key inspect <token>              # claims without verification
 package main
 
@@ -56,7 +56,7 @@ func main() {
 		exp := fs.Duration("exp", 365*24*time.Hour, "lifetime")
 		conns := fs.Int("conns", 0, "max concurrent WebSockets (0 = unlimited)")
 		rate := fs.Int("rate", 0, "max messages per second per connection, excess thinned (0 = unlimited)")
-		area := fs.Float64("area", 0, "max total subscribed bbox area in square degrees (0 = unlimited)")
+		area := fs.Float64("area", 0, "max total subscribed bbox area in square degrees (0 = unlimited, -1 = MMSI subscriptions only)")
 		mmsis := fs.Int("mmsis", 0, "max vessels followed by MMSI per subscription (0 = unlimited)")
 		var boxes, cidrs multi
 		fs.Var(&boxes, "bbox", "allowed bbox minLat,minLon,maxLat,maxLon (repeatable)")

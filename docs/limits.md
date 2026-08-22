@@ -26,7 +26,7 @@ Limits are enforced per token, and on top of that per network address: no more t
 
 **Feeder** is earned, not applied for. When the station behind a personal token has delivered at least 1,000 messages in the last 24 hours, every connection that token makes is treated as a feeder: five streams, 200 messages a second, any area, the raw NMEA feed, and history when it exists. Stop feeding and the tier lapses after a day; start again and it is back. Nobody has to email anyone. If you feed by UDP only, switch your receiver to the authenticated path (AIS-catcher `-H` with your token, or the Signal K plugin) and the same station counts. Bind a fixed UDP source address to your token on the token page and UDP counts too.
 
-**Commercial** is for products and fleets: anything that needs more than the feeder tier, or wants it without running a receiver, or wants an agreement and a contact. Terms are per arrangement; the point of the tier is to sustain the project, not to gate data.
+**Commercial** is for products and fleets: anything that needs more than the feeder tier, or wants it without running a receiver, or wants an agreement and a contact. Terms are per arrangement; the point of the tier is to sustain the project, not to gate data. A fleet token can be minted to follow only its own vessels: any number of MMSIs world-wide, no bounding-box or whole-world subscriptions.
 
 ## Sending data
 
