@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +15,7 @@ func TestAishubSnapshot(t *testing.T) {
 	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
 	now := time.Unix(1625826600, 0)
 	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"NAVSTAT":8,"IMO":0,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"","ETA":1596}]]`
-	n, err := p.ingestAishub([]byte(body), now, st)
+	n, err := p.ingestAishub([]byte(body), now, st, 0)
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -34,12 +36,12 @@ func TestAishubSnapshot(t *testing.T) {
 		t.Errorf("static: %+v", sd)
 	}
 	// same snapshot again: nothing new (TIME and static unchanged)
-	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute), st)
+	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute), st, 0)
 	if n != 0 || len(sub.ch) != 0 {
 		t.Errorf("repeat snapshot produced %d events", n)
 	}
 	// error envelope
-	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now, st); err == nil {
+	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now, st, 0); err == nil {
 		t.Error("error envelope not reported")
 	}
 }
@@ -64,5 +66,24 @@ func TestFeedableExcludesPublicSources(t *testing.T) {
 	}
 	if feedable(&Event{Source: "udp:abc", Packet: pkt, Synthesized: true}) {
 		t.Error("synthesized event feedable")
+	}
+}
+
+func TestAishubPacing(t *testing.T) {
+	p := testPipeline(t)
+	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
+	rows := make([]string, 20)
+	for i := range rows {
+		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
+	}
+	body := "[[" + strings.Join(rows, ",") + "]]"
+	start := time.Now()
+	n, err := p.ingestAishub([]byte(body), start, st, 200*time.Millisecond)
+	if err != nil || n != 20 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	// 20 rows over 200 ms: ≤ 100/s; the last row waits 190 ms, so anything under that means no pacing
+	if el := time.Since(start); el < 190*time.Millisecond || el > 400*time.Millisecond {
+		t.Errorf("20 rows over 200ms took %s", el)
 	}
 }
