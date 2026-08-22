@@ -20,7 +20,7 @@ Events carry a `source` so you can tell a live volunteer receiver from a governm
 
 ## Contributing data
 
-If you run an AIS receiver, send it here and it is re-served to everyone, deduplicated against the open feeds and every other station, and forwarded to AISHub as part of our reciprocal feed. Volunteer terms proper come with the next stage; until then treat this as a beta in both directions.
+If you run an AIS receiver, send it here and it is re-served to everyone, deduplicated against the open feeds and every other station, and forwarded to AISHub as part of our reciprocal feed (only volunteer receptions go there; public feeds are never relayed, per their terms). Volunteer terms proper come with the next stage; until then treat this as a beta in both directions.
 
 - **AIS-catcher** (preferred: authenticated HTTP, works behind any NAT): get a token at [openwatersio.github.io/aiscast/token.html](https://openwatersio.github.io/aiscast/token.html) (one click, stays in your browser), then `AIS-catcher ... -H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on INTERVAL 15`. Your data appears as `source: http:<station id>`. Named stations with higher limits: ask.
 - **UDP** (no token): AIS-catcher `-u ais.openwaters.io 10110`, [docker-shipfeeder](https://github.com/sdr-enthusiasts/docker-shipfeeder) with host `ais.openwaters.io` port `10110`, or any NMEA forwarder sending plain `!AIVDM` / `!AIVDO` sentences (TAG blocks welcome). Your station appears as `udp:<id>`, a keyed hash of your address, never the address itself; a sender whose `!AIVDO` sentences identify the vessel is keyed by that MMSI instead.
