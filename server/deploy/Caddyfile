@@ -1,0 +1,7 @@
+# TLS for the hub. Let's Encrypt HTTP-01 works through the Cloudflare proxy; ACME retries until DNS points here.
+ais.openwaters.io {
+	@metrics path /metrics
+	respond @metrics 404
+	encode zstd gzip
+	reverse_proxy localhost:8080
+}
