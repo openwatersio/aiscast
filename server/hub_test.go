@@ -389,17 +389,22 @@ func TestPingTimeoutReleasesSlots(t *testing.T) {
 	}
 	defer c.CloseNow()
 	// The client never calls Read, so it never answers the server's pings: a link that went dead without a FIN.
+	held := func() string {
+		conns.mu.Lock()
+		defer conns.mu.Unlock()
+		addrConns.mu.Lock()
+		defer addrConns.mu.Unlock()
+		if len(conns.n)+len(addrConns.n) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("conns=%v addr=%v", conns.n, addrConns.n)
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		conns.mu.Lock()
-		addrConns.mu.Lock()
-		held := len(conns.n) + len(addrConns.n)
-		conns.mu.Unlock()
-		addrConns.mu.Unlock()
-		if held == 0 && p.stats.pingTimeouts.Load() == 1 {
+		if held() == "" && p.stats.pingTimeouts.Load() == 1 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("slots still held after ping timeout: conns=%v addr=%v timeouts=%d", conns.n, addrConns.n, p.stats.pingTimeouts.Load())
+	t.Fatalf("slots still held after ping timeout: %s timeouts=%d", held(), p.stats.pingTimeouts.Load())
 }
