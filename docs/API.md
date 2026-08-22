@@ -1,3 +1,5 @@
+
+JSON responses are compressed (`zstd` or `gzip`) when the request sends `Accept-Encoding`; the full `/v1/vessels` snapshot is ~16 MB plain and ~2.5 MB gzipped, so send it.
 # aiscast API
 
 Base: `https://ais.openwaters.io` (WebSocket: `wss://`). All responses are JSON; CORS is open (`Access-Control-Allow-Origin: *`) on the HTTP endpoints. Times are UTC. Bounding boxes in `/v1` are `[minLat, minLon, maxLat, maxLon]`; in `/v0` they follow aisstream.io's `[[lat, lon], [lat, lon]]` corner pairs.
