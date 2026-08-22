@@ -261,20 +261,42 @@ func TestTiersAndTrust(t *testing.T) {
 		t.Error("bound UDP station did not count")
 	}
 
-	// per-address ceiling across tokens
+	// per-address ceiling across tokens, with the refusal naming the cap that was hit
 	var rels []func()
 	for i := 0; i < addrMaxStreams; i++ {
-		rel, ok := acquireStream(&Claims{Sub: fmt.Sprintf("k%d", i), Conns: 2}, "198.51.100.1")
-		if !ok {
-			t.Fatalf("stream %d refused under the address ceiling", i)
+		rel, err := acquireStream(&Claims{Sub: fmt.Sprintf("k%d", i), Conns: 2}, "198.51.100.1")
+		if err != nil {
+			t.Fatalf("stream %d refused under the address ceiling: %v", i, err)
 		}
 		rels = append(rels, rel)
 	}
-	if _, ok := acquireStream(&Claims{Sub: "k-extra", Conns: 2}, "198.51.100.1"); ok {
-		t.Error("ninth stream from one address allowed")
+	if _, err := acquireStream(&Claims{Sub: "k-extra", Conns: 2}, "198.51.100.1"); err == nil || err.Error() != "concurrent streams per address exceeded" {
+		t.Errorf("stream %d from one address: %v", addrMaxStreams+1, err)
 	}
 	for _, r := range rels {
 		r()
+	}
+	tok := &Claims{Sub: "k-one", Conns: 2}
+	for i := 0; i < 2; i++ {
+		if rel, err := acquireStream(tok, "198.51.100.1"); err != nil {
+			t.Fatal(err)
+		} else {
+			defer rel()
+		}
+	}
+	if _, err := acquireStream(tok, "198.51.100.2"); err == nil || err.Error() != "concurrent connections per key exceeded" {
+		t.Errorf("third stream on one token: %v", err)
+	}
+	anon := anonymousClaims("198.51.100.3")
+	for i := 0; i < anonConns; i++ {
+		if rel, err := acquireStream(anon, "198.51.100.3"); err != nil {
+			t.Fatal(err)
+		} else {
+			defer rel()
+		}
+	}
+	if _, err := acquireStream(anon, "198.51.100.3"); err == nil || err.Error() != "concurrent streams per address exceeded" {
+		t.Errorf("third anonymous stream from one address: %v", err)
 	}
 
 	// UDP trust: uncorroborated positions stay out of the AISHub feed; an implausible jump is dropped

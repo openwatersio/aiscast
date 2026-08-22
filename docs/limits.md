@@ -16,7 +16,7 @@ aiscast is free to use and free to feed. Tokens exist to keep the service health
 | Sending data                      | no                                   | yes                                                                                                                       | yes                                                 | yes                                 |
 | Expiry                            | —                                    | never                                                                                                                     | never                                               | as agreed                           |
 
-Limits are enforced per token, and on top of that per network address: no more than 8 concurrent streams from one address no matter how many tokens are behind it (2 without a token). That is what makes minting many tokens pointless. Going over a per-second rate thins the stream (you get fewer messages, the connection stays up); going over a connection, area, or MMSI-list limit is refused with a message that says so. Following vessels by MMSI is bounded by the list, not by area, so a world-wide MMSI subscription is allowed in every tier.
+Limits are enforced per token, and on top of that per network address: no more than 32 concurrent streams from one address no matter how many tokens are behind it (2 without a token), roomy enough for a marina, a carrier-grade NAT, or a VPN exit, and still what makes minting many tokens pointless. Going over a per-second rate thins the stream (you get fewer messages, the connection stays up); going over a connection, area, or MMSI-list limit is refused with a message that says so. Following vessels by MMSI is bounded by the list, not by area, so a world-wide MMSI subscription is allowed in every tier.
 
 ## What each tier is for
 
@@ -37,7 +37,7 @@ Bad data is not blocked by tokens; it is caught by rate caps, plausibility check
 
 ## Everything else
 
-Every HTTP endpoint is rate-limited per network address: 120 requests per minute for `/v1/vessels`, `/v1/stations`, `/v1/stats`; 3 per minute for `/v1/keys` (one token is all a client ever needs); 20 WebSocket connections per minute across `/v0/stream`, `/v1/stream`, `/v1/nmea` (a working client connects once and reconnects only on failure). A client that cannot keep up with its stream (1,024 queued events) is disconnected with a close reason.
+Every HTTP endpoint is rate-limited per network address: 120 requests per minute for `/v1/vessels`, `/v1/stations`, `/v1/stats`; 10 per minute for `/v1/keys` (one token is all a client ever needs, and a shared address may hold several clients); 20 WebSocket connections per minute across `/v0/stream`, `/v1/stream`, `/v1/nmea`, counted per token on `/v1/stream` and `/v1/nmea` when one is presented and per address otherwise, including `/v0/stream` whose token arrives after the handshake (a working client connects once and reconnects only on failure). Behind the proxy the client address is the last hop of `X-Forwarded-For`. A client that cannot keep up with its stream (1,024 queued events) is disconnected with a close reason.
 
 ## Revocation
 

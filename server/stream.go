@@ -215,8 +215,8 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 		}
 		f, cl, msg := p.parseV0Sub(data, ip)
 		if msg == "" && release == nil {
-			var ok bool
-			if release, ok = acquireStream(cl, ip); !ok {
+			var err error
+			if release, err = acquireStream(cl, ip); err != nil {
 				msg = "concurrent connections per user exceeded" // aisstream's wording
 			}
 			pace.n = cl.Rate
@@ -295,7 +295,10 @@ type v1Event struct {
 }
 
 func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
-	if p.limited(w, wsConnectLimit, clientIP(r)) {
+	// Anonymous sockets may subscribe (the viewer), never publish. A supplied token must verify, and its
+	// claims (cidr, conns, bbox) bind the socket whatever its role; publishing needs a publish role.
+	cl, claimsErr := p.socketClaims(r)
+	if p.limited(w, wsConnectLimit, connectKey(cl, r)) {
 		return
 	}
 	c, err := websocket.Accept(w, r, wsOpts)
@@ -308,10 +311,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	go p.pingLoop(ctx, c, cancel)
 
-	// Anonymous sockets may subscribe (the viewer), never publish. A supplied token must verify, and its
-	// claims (cidr, conns, bbox) bind the socket whatever its role; publishing needs a publish role.
-	cl, err := p.socketClaims(r)
-	if err != nil {
+	if err := claimsErr; err != nil {
 		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
 		c.Close(websocket.StatusPolicyViolation, "invalid token")
 		return
@@ -323,10 +323,10 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			cl = anonymousClaims(clientIP(r)) // personal-tier limits, keyed by address
 		}
 	}
-	if release, ok := acquireStream(cl, clientIP(r)); ok {
+	if release, err := acquireStream(cl, clientIP(r)); err == nil {
 		defer release()
 	} else {
-		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "concurrent connections per key exceeded"})
+		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
 		return
 	}
 	canPublish := cl.may("publish")

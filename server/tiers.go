@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -16,8 +17,8 @@ const (
 	feederConns, feederRate                   = 5, 200       // earned: personal token whose station is feeding; area unlimited
 	feederMinEvents24h                        = 1000         // events credited to the token's stations in the last 24 h
 	anonMMSIs, personalMMSIs, feederMMSIs     = 10, 50, 200  // vessels that may be followed by MMSI per subscription
-	addrMaxStreams                            = 8            // concurrent streams per address across all tokens
-	httpPerMinute, keysPerMinute              = 120, 3       // per address
+	addrMaxStreams                            = 32           // concurrent streams per address across all tokens; roomy for a shared egress (CGNAT, marina wifi)
+	httpPerMinute, keysPerMinute              = 120, 10      // per address
 	udpLinesPerMinute                         = 30000        // ≈500 sentences/s per source address
 	corroborationWindow                       = time.Hour    // a low-trust position counts as corroborated this long after a trusted source heard the vessel
 	implausibleKnots                          = 120.0        // low-trust positions implying faster than this are dropped
@@ -90,16 +91,20 @@ func (cc *connCounter) acquire(key string, max int) (func(), bool) {
 	}, true
 }
 
-// acquireStream takes both the token's and the address's slot; either cap refuses the stream.
-func acquireStream(c *Claims, ip string) (func(), bool) {
+// acquireStream takes both the token's and the address's slot; either cap refuses the stream with a message
+// naming the cap. Anonymous claims are keyed by address, so their per-key cap is an address cap too.
+func acquireStream(c *Claims, ip string) (func(), error) {
 	relAddr, ok := addrConns.acquire(ip, addrMaxStreams)
 	if !ok {
-		return nil, false
+		return nil, errors.New("concurrent streams per address exceeded")
 	}
 	relSub, ok := conns.acquire(c.Sub, c.Conns)
 	if !ok {
 		relAddr()
-		return nil, false
+		if c.Role == "anonymous" {
+			return nil, errors.New("concurrent streams per address exceeded")
+		}
+		return nil, errors.New("concurrent connections per key exceeded")
 	}
-	return func() { relSub(); relAddr() }, true
+	return func() { relSub(); relAddr() }, nil
 }
