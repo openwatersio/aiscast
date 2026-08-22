@@ -25,7 +25,8 @@ import (
 // Roles: personal (subscribe, small limits), feeder (publish/receive), peer (publish+subscribe), partner
 // (subscribe, negotiated limits), admin (everything). bbox limits what may be subscribed; cidr limits where
 // from; conns caps concurrent WebSockets per sub; rate thins each connection to n msg/s; area caps the total
-// subscribed bbox area in square degrees. Unset claims are unlimited; personal tokens get 2/50/400.
+// subscribed bbox area in square degrees (negative = no bbox subscriptions at all, only MMSI lists). Unset claims
+// are unlimited; personal tokens get 2/50/400.
 
 const tokenPrefix = "ak1."
 
@@ -39,7 +40,7 @@ type Claims struct {
 	CIDR  []string `json:"cidr,omitempty"`
 	Conns int      `json:"conns,omitempty"`
 	Rate  int      `json:"rate,omitempty"`  // messages per second per connection; excess is thinned, not disconnected
-	Area  float64  `json:"area,omitempty"`  // max total subscribed bbox area, square degrees
+	Area  float64  `json:"area,omitempty"`  // max total subscribed bbox area, square degrees; 0 = unlimited, <0 = MMSI-only
 	MMSIs int      `json:"mmsis,omitempty"` // max vessels followed by MMSI per subscription (0 = unlimited)
 
 	Feeder bool `json:"-"` // earned for this connection: the token's station is feeding (see tiers.go)
@@ -48,10 +49,13 @@ type Claims struct {
 // allowsMMSIs: a subscription may follow at most this many vessels by MMSI (0 = unlimited).
 func (c *Claims) allowsMMSIs(n int) bool { return c.MMSIs <= 0 || n <= c.MMSIs }
 
-// allowsArea: the total area of the requested boxes must not exceed the claim (0 = unlimited).
+// allowsArea: the total area of the requested boxes must not exceed the claim (0 = unlimited, <0 = no boxes).
 func (c *Claims) allowsArea(boxes []bbox) bool {
-	if c.Area <= 0 {
+	if c.Area == 0 {
 		return true
+	}
+	if c.Area < 0 { // MMSI-only: no boxes at all, so a zero-area line box cannot slip under the cap
+		return len(boxes) == 0
 	}
 	total := 0.0
 	for _, b := range boxes {

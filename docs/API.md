@@ -28,7 +28,7 @@ Credentials are Ed25519-signed claim tokens, `ak1.<base64url claims>.<base64url 
 | `cidr` | optional list of source CIDRs/IPs the token may be used from |
 | `conns` | optional cap on concurrent WebSockets for this `sub` (on top of 8 per network address for everyone) |
 | `rate` | optional cap on messages per second per connection; excess events are thinned (skipped), the connection stays up |
-| `area` | optional cap on the total subscribed bounding-box area in square degrees (a 20°×20° box is 400); does not apply to MMSI-filtered subscriptions |
+| `area` | optional cap on the total subscribed bounding-box area in square degrees (a 20°×20° box is 400); does not apply to MMSI-filtered subscriptions. A negative value (`-1`) means no bounding-box subscriptions at all: the token can only follow vessels by MMSI (`/v0` with `FiltersShipMMSI`, `/v1` with `mmsi` and no `bbox`), and `/v1/nmea` is refused |
 | `mmsis` | optional cap on vessels followed by MMSI per subscription |
 
 Where to put it: aisstream `APIKey` field, `Authorization: Bearer <token>`, HTTP Basic password (`anything:<token>`, which is what AIS-catcher's `USERPWD` sends), or `?key=<token>` on the URL. A token that is present but invalid, expired, revoked, used outside its `cidr`, or lacking the role for the action is refused; it never degrades to anonymous access.
@@ -58,7 +58,7 @@ Connect to `wss://ais.openwaters.io/v0/stream` and send one subscribe message wi
 
 - Keys are case-insensitive (`APIKey`, `Apikey`, `apikey`). `APIKey` and `BoundingBoxes` are required.
 - Each box is two `[lat, lon]` corners in any order; several boxes are OR-ed. Latitude −90…90, longitude −180…180.
-- `FiltersShipMMSI`: up to 50 nine-digit strings; when present, the traffic is bounded by the list, so the token's `area` cap does not apply to the boxes (a world box plus an MMSI list is fine on a personal token); the tier's MMSI cap does (`Too Many MMSI Filters For This Key`). `FilterMessageTypes`: any of the 24 aisstream type names; duplicates are rejected.
+- `FiltersShipMMSI`: up to 50 nine-digit strings (more if the token's `mmsis` claim allows); when present, the traffic is bounded by the list, so the token's `area` cap does not apply to the boxes (a world box plus an MMSI list is fine on a personal token); the tier's MMSI cap does (`Too Many MMSI Filters For This Key`). `FilterMessageTypes`: any of the 24 aisstream type names; duplicates are rejected.
 - Sending another subscribe message replaces the subscription.
 
 Each frame is one decoded message:
@@ -88,7 +88,7 @@ Client → server:
 {"type": "unsubscribe"}
 ```
 
-- `subscribe`: `bbox` is a list of boxes, `mmsi` a list of vessels to follow wherever they are; give either or both (an event matches if it is inside a box OR from a listed MMSI; MMSI matches include positionless messages such as static data). Neither means everything (only for tokens without an `area` cap). The `area` cap applies to the boxes, the tier's MMSI cap to the list (anonymous 10, personal 50, feeder 200; `{"type":"error","error":"too many mmsi for this key"}` otherwise). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 2 concurrent connections per address, 20 messages/s, 100 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
+- `subscribe`: `bbox` is a list of boxes, `mmsi` a list of vessels to follow wherever they are; give either or both (an event matches if it is inside a box OR from a listed MMSI; MMSI matches include positionless messages such as static data). Neither means everything (only for tokens without an `area` cap); a token with a negative `area` must send `mmsi` and no `bbox`. The `area` cap applies to the boxes, the tier's MMSI cap to the list (anonymous 10, personal 50, feeder 200; `{"type":"error","error":"too many mmsi for this key"}` otherwise). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 2 concurrent connections per address, 20 messages/s, 100 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
 - `unsubscribe`: stop receiving events; the socket stays open for publishing.
 - `publish`: needs a token (`personal`, `feeder`, `peer`, or `admin`). Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`, and every frame is answered in order with `{"type":"ack","n":<sentences accepted>}`. `replay: true` marks an offline backlog: sentences whose TAG `c:` time is more than 60 s old are then archived and counted, not emitted live and not folded into the vessel cache. At most 1000 sentences per frame and 6000 per minute per key; the rest are dropped (and not counted in `n`). Without a token: `{"type":"error","error":"publish requires a token"}`.
 

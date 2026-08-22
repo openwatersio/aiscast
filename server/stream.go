@@ -98,7 +98,7 @@ func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, strin
 	if !c.may("subscribe") || !c.allowsIP(ip) {
 		return nil, nil, errBadKey
 	}
-	if len(s.BoundingBoxes) == 0 || len(s.FiltersShipMMSI) > 50 {
+	if len(s.BoundingBoxes) == 0 || (len(s.FiltersShipMMSI) > 50 && c.MMSIs <= 50) { // aisstream caps the list at 50 unless the token's mmsis claim raises it
 		return nil, nil, errMalformed
 	}
 	f := &v0Filter{}
@@ -348,7 +348,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			case "subscribe":
 				b := f.BBox
 				everything := len(b) == 0 && len(f.MMSI) == 0
-				denied := (everything && cl.Area > 0) || (len(b) > 0 && !cl.allowsArea(b))
+				denied := (everything && cl.Area != 0) || (len(b) > 0 && !cl.allowsArea(b))
 				for _, x := range b {
 					if !cl.allowsBox(x) {
 						denied = true

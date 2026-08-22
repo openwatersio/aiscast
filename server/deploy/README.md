@@ -33,5 +33,5 @@ Manual redeploy after a code change: `server/deploy/deploy.sh root@2.29.0.215`. 
 
 ## Still to do
 
-1. Mint feeder tokens for the first volunteer stations: `go run ./cmd/aiscast-key new -sub <station> -role feeder -exp 8760h` (seed/kid from `.env`).
+1. Mint feeder tokens for the first volunteer stations: `go run ./cmd/aiscast-key new -sub <station> -role feeder -exp 8760h` (seed/kid from `.env`). A fleet customer gets `-role partner -area -1 -mmsis <n> -conns 10`: MMSI subscriptions only, no bbox.
 2. Uptime monitor on `wss://ais.openwaters.io/v0/stream` with a real subscribe, not just a TCP check.
