@@ -129,7 +129,9 @@ func envInt(k string, def int) int {
 // client-controlled and must not drive rate limiting.
 var trustCFHeaders = os.Getenv("TRUST_CF_HEADERS") == "1"
 
-// clientIP is the rate-limit key: Cloudflare's header when trusted, else the socket peer.
+// clientIP is the rate-limit key: Cloudflare's header when trusted, else the last X-Forwarded-For hop when the
+// peer is loopback (only Caddy and a local browser ever are), else the socket peer. Non-loopback peers never get
+// to name their own address via the header.
 func clientIP(r *http.Request) string {
 	if ip := r.Header.Get("CF-Connecting-IP"); trustCFHeaders && ip != "" {
 		return ip
@@ -138,7 +140,22 @@ func clientIP(r *http.Request) string {
 	if err != nil {
 		return r.RemoteAddr
 	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && net.ParseIP(host).IsLoopback() {
+		hops := strings.Split(xff, ",")
+		if last := strings.TrimSpace(hops[len(hops)-1]); last != "" {
+			return last
+		}
+	}
 	return host
+}
+
+// connectKey keys the WebSocket connect limit by token sub when one verified, by address otherwise, so a
+// neighbour behind the same egress cannot lock a token out of reconnecting.
+func connectKey(c *Claims, r *http.Request) string {
+	if c != nil {
+		return c.Sub
+	}
+	return clientIP(r)
 }
 
 // rateLimited wraps a public HTTP handler with the per-address request limit.

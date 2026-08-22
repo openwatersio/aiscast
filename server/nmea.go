@@ -18,10 +18,10 @@ import (
 
 // nmeaRoles: reciprocity. Feeders get the raw feed back; personal and anonymous do not (see PLAN, Stage 1).
 func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
-	if p.limited(w, wsConnectLimit, clientIP(r)) {
+	cl, err := p.socketClaims(r)
+	if p.limited(w, wsConnectLimit, connectKey(cl, r)) {
 		return
 	}
-	cl, err := p.socketClaims(r)
 	if err == nil && (cl == nil || !cl.mayRaw()) {
 		err = fmt.Errorf("a feeder, peer, partner, or admin token is required (personal tokens earn it by feeding)")
 	}
@@ -46,9 +46,9 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bbox required, and its total area must fit your token's area cap", http.StatusBadRequest)
 		return
 	}
-	release, ok := acquireStream(cl, clientIP(r))
-	if !ok {
-		http.Error(w, "concurrent connections per key exceeded", http.StatusTooManyRequests)
+	release, err := acquireStream(cl, clientIP(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusTooManyRequests)
 		return
 	}
 	defer release()
