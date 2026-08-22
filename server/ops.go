@@ -43,6 +43,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("aiscast_replayed_total", "buffered sentences archived without live emit (TAG time older than 60 s)", p.stats.replayed.Load())
 	counter("aiscast_decode_failures_total", "sentences that did not decode to an AIS message", p.stats.decodeFail.Load())
 	counter("aiscast_client_drops_total", "events dropped because a client queue was full", p.stats.clientDrops.Load())
+	counter("aiscast_ping_timeouts_total", "stream connections closed because the client stopped answering pings", p.stats.pingTimeouts.Load())
 	counter("aiscast_archive_drops_total", "receptions dropped because the archive queue was full", p.arch.drops.Load())
 	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
 	counter("aiscast_thinned_total", "events withheld from connections over their per-second rate", p.stats.thinned.Load())

@@ -81,8 +81,8 @@ type Pipeline struct {
 	rate         rateSample // events/s over the last logStats interval; /v1/stats
 	lastBySource sync.Map   // source → time.Time of last event; /health and /metrics read it
 	stats        struct {
-		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, uncorroborated atomic.Int64
-		bySource                                                                                                    sync.Map // source → *counterT
+		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, uncorroborated, pingTimeouts atomic.Int64
+		bySource                                                                                                                  sync.Map // source → *counterT
 	}
 }
 

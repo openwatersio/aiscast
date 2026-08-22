@@ -374,3 +374,37 @@ func TestNMEAFeed(t *testing.T) {
 		t.Errorf("tag block checksum: %s", tb)
 	}
 }
+
+func TestPingTimeoutReleasesSlots(t *testing.T) {
+	pingEvery, pingTimeout = 50*time.Millisecond, 50*time.Millisecond
+	defer func() { pingEvery, pingTimeout = 30*time.Second, 10*time.Second }()
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	// The client never calls Read, so it never answers the server's pings: a link that went dead without a FIN.
+	held := func() string {
+		conns.mu.Lock()
+		defer conns.mu.Unlock()
+		addrConns.mu.Lock()
+		defer addrConns.mu.Unlock()
+		if len(conns.n)+len(addrConns.n) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("conns=%v addr=%v", conns.n, addrConns.n)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if held() == "" && p.stats.pingTimeouts.Load() == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("slots still held after ping timeout: %s timeouts=%d", held(), p.stats.pingTimeouts.Load())
+}

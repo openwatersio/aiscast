@@ -17,6 +17,34 @@ const maxPublishFrame = 1000 // sentences per publish frame; the rest are droppe
 
 var wsOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover}
 
+var pingEvery, pingTimeout = 30 * time.Second, 10 * time.Second // vars so tests can shrink them
+
+// pingLoop ends the handler when the peer stops answering pings, so a dropped link (NAT/VPN timeout, half-open
+// socket behind a proxy) releases its stream slots instead of holding them until TCP gives up. Ping only
+// completes while the handler's Read loop is running; every stream handler has one.
+func (p *Pipeline) pingLoop(ctx context.Context, c *websocket.Conn, cancel context.CancelFunc) {
+	defer cancel()
+	t := time.NewTicker(pingEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, pc := context.WithTimeout(ctx, pingTimeout)
+			err := c.Ping(pctx)
+			pc()
+			if err != nil {
+				if ctx.Err() == nil { // peer is gone; skip the close handshake it would never answer
+					p.stats.pingTimeouts.Add(1)
+					c.CloseNow()
+				}
+				return
+			}
+		}
+	}
+}
+
 // ---- /v0/stream: aisstream.io wire protocol. Frozen; nothing here may deviate. ----
 
 // aisstream's subscription object; encoding/json matches keys case-insensitively, as aisstream does.
@@ -163,6 +191,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(64 << 10)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	go p.pingLoop(ctx, c, cancel)
 
 	var filter atomic.Pointer[v0Filter]
 	var pace pacer
@@ -277,6 +306,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(256 << 10)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	go p.pingLoop(ctx, c, cancel)
 
 	// Anonymous sockets may subscribe (the viewer), never publish. A supplied token must verify, and its
 	// claims (cidr, conns, bbox) bind the socket whatever its role; publishing needs a publish role.
