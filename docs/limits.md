@@ -37,7 +37,7 @@ Bad data is not blocked by tokens; it is caught by rate caps, plausibility check
 
 ## Everything else
 
-Every HTTP endpoint is rate-limited per network address: 120 requests per minute for `/v1/vessels`, `/v1/stations`, `/v1/stats`; 10 per minute for `/v1/keys` (one token is all a client ever needs, and a shared address may hold several clients); 20 WebSocket connections per minute across `/v0/stream`, `/v1/stream`, `/v1/nmea`, counted per token when one is presented and per address otherwise (a working client connects once and reconnects only on failure). Behind the proxy the client address is the last hop of `X-Forwarded-For`. A client that cannot keep up with its stream (1,024 queued events) is disconnected with a close reason.
+Every HTTP endpoint is rate-limited per network address: 120 requests per minute for `/v1/vessels`, `/v1/stations`, `/v1/stats`; 10 per minute for `/v1/keys` (one token is all a client ever needs, and a shared address may hold several clients); 20 WebSocket connections per minute across `/v0/stream`, `/v1/stream`, `/v1/nmea`, counted per token on `/v1/stream` and `/v1/nmea` when one is presented and per address otherwise, including `/v0/stream` whose token arrives after the handshake (a working client connects once and reconnects only on failure). Behind the proxy the client address is the last hop of `X-Forwarded-For`. A client that cannot keep up with its stream (1,024 queued events) is disconnected with a close reason.
 
 ## Revocation
 

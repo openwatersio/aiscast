@@ -21,8 +21,8 @@ In `clientIP`, when the peer is a loopback address and the request carries `X-Fo
 
 With real addresses in place, the remaining per-address limits are right for a single household but tight for a shared egress (carrier-grade NAT on cellular and Starlink, marina wifi, a VPN), where a dozen plotters can share one IPv4. Once the proxy fix is live:
 
-- Count `addrMaxStreams` only for streams without a valid token; token-bearing streams are bounded by their own `Conns`. If a ceiling for tokens per address is still wanted, make it large (32) and name it in the refusal: `concurrent streams per address exceeded`.
-- Key `wsConnectLimit` by token sub when a valid token is presented, by address otherwise, so one neighbour cannot lock a token out of reconnecting.
+- Raise `addrMaxStreams` to 32 so a dozen plotters behind one address all fit while minting many tokens stays pointless, and name the cap in the refusal: `concurrent streams per address exceeded` for the address ceiling and for anonymous streams (their key is the address), `concurrent connections per key exceeded` for a token's own `Conns`. `/v0/stream` keeps aisstream's `concurrent connections per user exceeded` for client compatibility.
+- Key `wsConnectLimit` by token sub when a valid token is presented on `/v1/stream` and `/v1/nmea`, by address otherwise (`/v0/stream` receives its token after the handshake), so one neighbour cannot lock a token out of reconnecting.
 - Raise `keysPerMinute` to 10 so a first install behind a shared address is not refused because a neighbour minted a token a minute ago; the plugin caches its token so it mints once.
 - Update [docs/limits.md](../docs/limits.md) to match.
 

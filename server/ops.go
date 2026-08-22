@@ -142,7 +142,7 @@ func clientIP(r *http.Request) string {
 	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && net.ParseIP(host).IsLoopback() {
 		hops := strings.Split(xff, ",")
-		if last := strings.TrimSpace(hops[len(hops)-1]); last != "" {
+		if last := strings.TrimSpace(hops[len(hops)-1]); net.ParseIP(last) != nil {
 			return last
 		}
 	}

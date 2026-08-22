@@ -12,6 +12,7 @@ func TestClientIP(t *testing.T) {
 		{"[::1]:1234", "203.0.113.9", "203.0.113.9"},
 		{"198.51.100.7:1234", "203.0.113.9", "198.51.100.7"}, // a public peer cannot name its own address
 		{"127.0.0.1:1234", "", "127.0.0.1"},
+		{"127.0.0.1:1234", "unknown", "127.0.0.1"}, // a hop that is not an address falls back to the peer
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest("GET", "/", nil)
