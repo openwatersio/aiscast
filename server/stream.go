@@ -70,7 +70,7 @@ func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, strin
 	if !c.may("subscribe") || !c.allowsIP(ip) {
 		return nil, nil, errBadKey
 	}
-	if len(s.BoundingBoxes) == 0 || len(s.FiltersShipMMSI) > max(50, c.MMSIs) { // aisstream caps the list at 50; a minted mmsis claim may raise it
+	if len(s.BoundingBoxes) == 0 || (len(s.FiltersShipMMSI) > 50 && c.MMSIs <= 50) { // aisstream caps the list at 50 unless the token's mmsis claim raises it
 		return nil, nil, errMalformed
 	}
 	f := &v0Filter{}

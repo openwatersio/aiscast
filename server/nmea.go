@@ -38,8 +38,12 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 		}
 		boxes = append(boxes, b)
 	}
-	if !cl.allowsArea(boxes) || (len(boxes) == 0 && cl.Area != 0) {
-		http.Error(w, "bbox area exceeds your token", http.StatusBadRequest)
+	if cl.Area < 0 {
+		http.Error(w, "this token may only follow vessels by MMSI; /v1/nmea is not available to it", http.StatusBadRequest)
+		return
+	}
+	if !cl.allowsArea(boxes) || (len(boxes) == 0 && cl.Area > 0) {
+		http.Error(w, "bbox required, and its total area must fit your token's area cap", http.StatusBadRequest)
 		return
 	}
 	release, ok := acquireStream(cl, clientIP(r))

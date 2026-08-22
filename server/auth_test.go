@@ -385,6 +385,10 @@ func TestMMSIOnlyKey(t *testing.T) {
 	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,-180],[90,180]]],"FiltersShipMMSI":`+string(b)+`}`), "1.1.1.1"); msg != "" {
 		t.Errorf("/v0 230 mmsi with a 230 claim: %q", msg)
 	}
+	b, _ = json.Marshal(append(many, "200000230"))
+	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[-90,-180],[90,180]]],"FiltersShipMMSI":`+string(b)+`}`), "1.1.1.1"); msg != errMMSIsDenied {
+		t.Errorf("/v0 231 mmsi with a 230 claim should be over the key's cap, not malformed: %q", msg)
+	}
 	if _, _, msg := p.parseV0Sub([]byte(`{"APIKey":"`+tok+`","BoundingBoxes":[[[49,0],[50,1]]]}`), "1.1.1.1"); msg != errBoxDenied {
 		t.Errorf("/v0 bbox without mmsi on an mmsi-only key: %q", msg)
 	}
