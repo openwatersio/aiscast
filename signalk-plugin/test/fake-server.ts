@@ -6,7 +6,7 @@ export interface FakeServer {
   url: string; // http://127.0.0.1:port
   frames: Record<string, unknown>[]; // every frame any client sent
   keyRequests: { pubkey: string }[];
-  clients: WebSocket[];
+  clients: WebSocket[]; // sockets the client side has confirmed open (it answered our ping)
   ack: boolean; // answer publish frames with ack (default true)
   keysStatus: number; // response code for POST /v1/keys
   send(frame: unknown): void; // to every connected client
@@ -42,7 +42,9 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
   });
   const wss = new WebSocketServer({ server: http, path: "/v1/stream" });
   wss.on("connection", (ws) => {
-    clients.push(ws);
+    // The client's readyState flips to OPEN after the server sees the connection; a pong proves it has.
+    ws.ping();
+    ws.once("pong", () => clients.push(ws));
     ws.on("message", (data) => {
       const f = JSON.parse(data.toString()) as Record<string, unknown>;
       frames.push(f);
@@ -52,7 +54,10 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
         else waiters.push(w);
       }
     });
-    ws.on("close", () => clients.splice(clients.indexOf(ws), 1));
+    ws.on("close", () => {
+      const i = clients.indexOf(ws);
+      if (i >= 0) clients.splice(i, 1);
+    });
   });
 
   const fake: FakeServer = {
@@ -80,7 +85,7 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
       });
     },
     close() {
-      for (const c of clients) c.terminate();
+      for (const c of wss.clients) c.terminate();
       wss.close();
       return new Promise((resolve) => http.close(() => resolve()));
     },
