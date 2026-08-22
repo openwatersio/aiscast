@@ -106,7 +106,7 @@ aiscast → client, one frame per decoded message after deduplication:
  "synthesized": false}
 ```
 
-- `id`: hash of the payload and channel; the same transmission heard by several stations produces one event.
+- `id`: content id, not an event id: hex of the first 16 bytes of SHA-256 over the decoded payload bits (one byte per bit, fill bits dropped) followed by the channel letter. Identical payloads share an id, whether that is the same transmission heard late by a second station or a static message (Type 5/24) rebroadcast unchanged every few minutes. Use `(id, time)` as the event key; dedupe on `id` alone drops the rebroadcasts.
 - `time`: canonical time: the source's timestamp when it is within 30 s of our receive time, else our receive time.
 - `source`: `kystverket`, `digitraffic`, `aishub`, `aisstream`, `http:<station>`, `udp:<hash>`, `mmsi:<n>` (a UDP sender identified by its own AIVDO), `v1:<sub>`. `station` refines it (Kystverket base station id). `channel` is `A`/`B`, or empty for synthesized events.
 - `nmea`: the sentences as received, or a re-encoded `!AIVDM` for synthesized events.
