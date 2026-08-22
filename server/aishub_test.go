@@ -57,7 +57,7 @@ func TestReencodeKeepsChannel(t *testing.T) {
 
 func TestFeedableExcludesPublicSources(t *testing.T) {
 	pkt := ais.PositionReport{}
-	for src, want := range map[string]bool{"udp:abc": true, "http:station-1": true, "v1:ed25519:k": true, "kystverket": false, "digitraffic": false, "aisstream": false, "aishub": false} {
+	for src, want := range map[string]bool{"udp:abc": true, "mmsi:368168720": true, "http:station-1": true, "v1:ed25519:k": true, "kystverket": false, "digitraffic": false, "aisstream": false, "aishub": false} {
 		if got := feedable(&Event{Source: src, Packet: pkt}); got != want {
 			t.Errorf("feedable(%s) = %v, want %v", src, got, want)
 		}

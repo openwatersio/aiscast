@@ -46,7 +46,12 @@ func feedable(ev *Event) bool {
 	if ev.Synthesized || ev.Packet == nil {
 		return false
 	}
-	return strings.HasPrefix(ev.Source, "udp:") || strings.HasPrefix(ev.Source, "http:") || strings.HasPrefix(ev.Source, "v1:")
+	for _, pfx := range []string{"udp:", "mmsi:", "http:", "v1:"} { // mmsi: is a UDP station re-keyed by its !AIVDO
+		if strings.HasPrefix(ev.Source, pfx) {
+			return true
+		}
+	}
+	return false
 }
 
 // send re-encodes the event as plain !AIVDM (no TAG block, AI talker) so any aggregator accepts it.
