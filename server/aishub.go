@@ -160,8 +160,10 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 	n := 0
 	t0 := time.Now()
 	for i, r := range rows {
-		if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(rows)))); d > 0 {
-			time.Sleep(d)
+		if budget > 0 {
+			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(rows)))); d > 0 {
+				time.Sleep(d)
+			}
 		}
 		if r.MMSI == 0 {
 			continue

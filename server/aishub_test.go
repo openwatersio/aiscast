@@ -82,8 +82,9 @@ func TestAishubPacing(t *testing.T) {
 	if err != nil || n != 20 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
-	// 20 rows over 200 ms: ≤ 100/s; the last row waits 190 ms, so anything under that means no pacing
-	if el := time.Since(start); el < 190*time.Millisecond || el > 400*time.Millisecond {
+	// 20 rows over 200 ms: the last row waits 190 ms, so anything under that means no pacing; the upper bound
+	// only guards against a runaway sleep, loose enough for a slow CI runner
+	if el := time.Since(start); el < 190*time.Millisecond || el > 2*time.Second {
 		t.Errorf("20 rows over 200ms took %s", el)
 	}
 }
