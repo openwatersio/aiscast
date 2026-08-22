@@ -24,6 +24,9 @@ func (p *Pipeline) serveHealth(w http.ResponseWriter, r *http.Request) {
 			silent = append(silent, fmt.Sprintf("%s silent %s", s, p.sourceAge(s).Truncate(time.Second)))
 		}
 	}
+	if last := p.probeLast.Load(); last != 0 && time.Since(time.Unix(last, 0)) > upstreamSilence {
+		silent = append(silent, fmt.Sprintf("no events delivered to subscribers for %s", time.Since(time.Unix(last, 0)).Truncate(time.Second)))
+	}
 	if len(silent) > 0 {
 		http.Error(w, strings.Join(silent, "; "), http.StatusServiceUnavailable)
 		return

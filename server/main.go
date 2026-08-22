@@ -72,6 +72,7 @@ func main() {
 
 	addr := env("ADDR", ":8080")
 	log.Printf("listening on %s (udp %s)", addr, env("UDP_ADDR", ":10110"))
+	go p.runProbe(probeURL(addr))
 	log.Fatal(http.ListenAndServe(addr, httpHandler(p)))
 }
 

@@ -13,7 +13,7 @@ Base: `https://ais.openwaters.io` (WebSocket: `wss://`). All responses are JSON;
 | `POST /v1/keys` | none | mint a personal token for a device key |
 | `POST /v1/receive` | personal, feeder, peer, or admin token | AIS-catcher style HTTP ingest |
 | UDP `:10110` | none | raw NMEA ingest |
-| `GET /health` | none | 503 when an open-feed upstream is silent |
+| `GET /health` | none | 503 when an open-feed upstream is silent or nothing is reaching subscribers |
 
 ## Tokens
 
@@ -201,4 +201,4 @@ Everyone: at most 8 concurrent streams per network address across all tokens; 20
 
 ## Health
 
-`GET /health` returns `ok` or `503` with the names of open-feed upstreams (Kystverket, Digitraffic) silent for more than two minutes. AISHub and aisstream are best-effort and never affect it.
+`GET /health` returns `ok` or `503` with the reasons: open-feed upstreams (Kystverket, Digitraffic) silent for more than two minutes, or the server's own loopback `/v1/stream` subscriber receiving nothing for two minutes (ingest without delivery). AISHub and aisstream are best-effort and never affect it. Uptime history is on [status.openwaters.io](https://status.openwaters.io).

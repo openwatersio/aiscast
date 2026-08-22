@@ -78,8 +78,9 @@ type Pipeline struct {
 	upstreams    []string   // configured upstream source names; /health watches them
 	feeder       *udpFeeder // optional: forward received (non-synthesized) events to an aggregator
 	last         atomic.Int64
-	rate         rateSample // events/s over the last logStats interval; /v1/stats
-	lastBySource sync.Map   // source → time.Time of last event; /health and /metrics read it
+	probeLast    atomic.Int64 // unix time of the last event the loopback probe received; 0 = probe not running
+	rate         rateSample   // events/s over the last logStats interval; /v1/stats
+	lastBySource sync.Map     // source → time.Time of last event; /health and /metrics read it
 	stats        struct {
 		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, uncorroborated, pingTimeouts atomic.Int64
 		bySource                                                                                                                  sync.Map // source → *counterT

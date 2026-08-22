@@ -128,7 +128,7 @@ Code: [`viewer/`](viewer/README.md). Not yet deployed to Pages.
 ### Stage 0B, this week: public Nordic beta
 
 - [x] Digitraffic MQTT adapter (`Digitraffic-User` header) mapped to structs with `synthesized: true`, re-encoded to AIVDM so `/v1` events still carry a sentence; originals archived under `CC-BY-4.0/digitraffic/`.
-- [x] Reconnect with backoff on every upstream; `/health` fails when any open-feed upstream is silent >2 min; `/metrics`. [ ] Uptime monitor on the public WS endpoint.
+- [x] Reconnect with backoff on every upstream; `/health` fails when any open-feed upstream is silent >2 min; `/metrics`. [x] Uptime monitor and status page: [status.openwaters.io](https://status.openwaters.io) ([openwatersio/status](https://github.com/openwatersio/status), Upptime) checks `/health`, a `/v1/stream` WebSocket connect, `/v1/vessels`, the viewer and the site every 5 minutes from GitHub Actions and opens an issue on downtime; `/health` itself fails when a loopback subscriber on `/v1/stream` has received nothing for two minutes, so the monitor covers delivery, not just ingest.
 - [x] Bounded client queues with drop accounting; payload/line limits on all inputs; per-IP WS connect and per-key ingest rate limits (fixed one-minute windows).
 - [x] Vessel-state snapshot every 10 s, restored on boot; SIGTERM snapshots and flushes/uploads the open archive hours.
 - [x] Tests against GPSD `sample.aivdm` (USCG trailing-field tolerance came out of it) and libais `tagblock.nmea`; `cmd/loadtest` Go generator; load test result in Assumptions.
@@ -167,7 +167,7 @@ This repo:
 - **Viewer**: `cooperativeGestures: window.self !== window.top` so the embedded map does not capture page scroll; nothing else changes.
 - **docs/API.md** is now user-facing on the site: keep it current with every `/v1` change (CONTRIBUTING already asks for this).
 
-Checklist: [ ] viewer `cooperativeGestures` [ ] site: nav + footer + homepage card [ ] site: `/ais` page [ ] site: `/api/ais` loader + page, "AIS API" section on `/api` [ ] verify `signalk-aisstream` unmodified against `wss://ais.openwaters.io/v0/stream` with a personal token (the launch requirement's last unchecked client) [ ] uptime monitor on `/v0/stream` with a real subscribe (0B leftover; until it exists the hero promises nothing about availability and links `/health`).
+Checklist: [ ] viewer `cooperativeGestures` [ ] site: nav + footer + homepage card [ ] site: `/ais` page [ ] site: `/api/ais` loader + page, "AIS API" section on `/api` [ ] verify `signalk-aisstream` unmodified against `wss://ais.openwaters.io/v0/stream` with a personal token (the launch requirement's last unchecked client) [x] uptime monitor and status page (0B) [ ] link [status.openwaters.io](https://status.openwaters.io) from the site footer and the `/ais` page.
 
 ### Stage 1: volunteer ingest
 

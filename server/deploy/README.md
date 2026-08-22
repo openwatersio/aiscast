@@ -34,4 +34,4 @@ Manual redeploy after a code change: `server/deploy/deploy.sh root@2.29.0.215`. 
 ## Still to do
 
 1. Mint feeder tokens for the first volunteer stations: `go run ./cmd/aiscast-key new -sub <station> -role feeder -exp 8760h` (seed/kid from `.env`). A fleet customer gets `-role partner -area -1 -mmsis <n> -conns 10`: MMSI subscriptions only, no bbox.
-2. Uptime monitor on `wss://ais.openwaters.io/v0/stream` with a real subscribe, not just a TCP check.
+2. Monitoring: [status.openwaters.io](https://status.openwaters.io) ([openwatersio/status](https://github.com/openwatersio/status), Upptime on GitHub Actions) checks `/health`, `/v1/stream`, `/v1/vessels` and the viewer every 5 minutes and opens an issue (assigned, so it emails) when something is down. `/health` is the end-to-end signal: it fails when an open-feed upstream is silent or when the server's own loopback `/v1/stream` subscriber has received nothing for two minutes. `/metrics` is still box-local; scrape it with a Prometheus/Grafana Cloud agent if capacity questions come up.

@@ -2,7 +2,7 @@
 
 Live AIS vessel traffic, streamed by bounding box, from open government feeds and volunteer receivers. Part of [Open Waters](https://openwaters.io). The public instance is `ais.openwaters.io`; a live map is at [openwatersio.github.io/aiscast](https://openwatersio.github.io/aiscast/).
 
-This is a beta. No SLA, coverage is uneven, and the terms under which some sources are re-served are still being settled (see [Coverage](#coverage)).
+This is a beta. No SLA, coverage is uneven, and the terms under which some sources are re-served are still being settled (see [Coverage](#coverage)). Live status and uptime history: [status.openwaters.io](https://status.openwaters.io).
 
 ## Usage
 
