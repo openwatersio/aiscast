@@ -44,3 +44,16 @@ func TestStats(t *testing.T) {
 		t.Errorf("sources: %+v", out.Sources)
 	}
 }
+
+func TestRootRedirect(t *testing.T) {
+	srv := httptest.NewServer(httpHandler(testPipeline(t)))
+	defer srv.Close()
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, _ := c.Get(srv.URL + "/")
+	if res.StatusCode != http.StatusFound || res.Header.Get("Location") != "https://openwaters.io/ais/" {
+		t.Fatalf("got %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	if res, _ = c.Get(srv.URL + "/nope"); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("/nope: got %d, want 404", res.StatusCode)
+	}
+}
