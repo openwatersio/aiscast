@@ -56,6 +56,7 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	go p.pingLoop(ctx, c, cancel)
 	go func() { // drain client frames (pings, closes); nothing is expected
 		defer cancel()
 		for {
