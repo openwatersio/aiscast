@@ -33,11 +33,16 @@ func (p *Pipeline) sampleRate(now time.Time) {
 	p.rate.at, p.rate.events = now, n
 }
 
-// hourRing counts per clock hour over the last 7 days. Exported fields so rings survive restarts via the usage file.
-type hourRing struct {
-	mu sync.Mutex
+// ringState is the persisted part of an hourRing: per-hour counts over the last 7 days.
+type ringState struct {
 	At int64         // unix hour of B[At%len(B)]
 	B  [7 * 24]int64 // per-hour counts
+}
+
+// hourRing counts per clock hour over the last 7 days.
+type hourRing struct {
+	mu sync.Mutex
+	ringState
 }
 
 func (r *hourRing) add(now time.Time) {
@@ -75,45 +80,68 @@ func (r *hourRing) windows(now time.Time) map[string]int64 {
 	return map[string]int64{"last_24h": r.sum(now, 24), "last_7d": r.sum(now, 7*24)}
 }
 
-func (r *hourRing) snapshot() *hourRing {
+func (r *hourRing) state() ringState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return &hourRing{At: r.At, B: r.B}
+	return r.ringState
 }
 
-func (r *hourRing) restore(from *hourRing) {
-	if from == nil {
-		return
-	}
+func (r *hourRing) restore(s ringState) {
 	r.mu.Lock()
-	r.At, r.B = from.At, from.B
+	r.ringState = s
 	r.mu.Unlock()
 }
 
 // usageCounters are the rolling counters behind /v1/stats. Totals since start are not kept: deploys restart the
 // server, so they would measure time since the last deploy. The rings persist in a JSON file next to the vessel snapshot.
 type usageCounters struct {
-	Events   hourRing // deduplicated events
-	Dups     hourRing // duplicates dropped
-	Streams  hourRing // WebSocket streams opened (/v0/stream, /v1/stream, /v1/nmea)
-	Requests hourRing // HTTP API requests (everything but streams, /health, /metrics)
+	events   hourRing // deduplicated events
+	dups     hourRing // duplicates dropped
+	streams  hourRing // WebSocket streams opened (/v0/stream, /v1/stream, /v1/nmea)
+	requests hourRing // HTTP API requests (everything but streams, /health, /metrics)
 
 	smu     sync.Mutex
-	Sources map[string]*hourRing // events per source
+	sources map[string]*hourRing // events per source
 }
 
 func (u *usageCounters) source(name string) *hourRing {
 	u.smu.Lock()
 	defer u.smu.Unlock()
-	if u.Sources == nil {
-		u.Sources = map[string]*hourRing{}
+	if u.sources == nil {
+		u.sources = map[string]*hourRing{}
 	}
-	r := u.Sources[name]
+	r := u.sources[name]
 	if r == nil {
 		r = &hourRing{}
-		u.Sources[name] = r
+		u.sources[name] = r
 	}
 	return r
+}
+
+// sourceNames lists sources with a ring, dropping ones silent for the whole window so UDP station churn (ids
+// change per boot without STATION_SALT) cannot grow the map, the usage file, or the /v1/stats response forever.
+func (u *usageCounters) sourceNames(now time.Time) []string {
+	h := now.Unix() / 3600
+	u.smu.Lock()
+	defer u.smu.Unlock()
+	names := make([]string, 0, len(u.sources))
+	for k, r := range u.sources {
+		r.mu.Lock()
+		stale := h-r.At >= int64(len(r.B))
+		r.mu.Unlock()
+		if stale {
+			delete(u.sources, k)
+			continue
+		}
+		names = append(names, k)
+	}
+	return names
+}
+
+// usageFile is the on-disk form: plain state, no locks.
+type usageFile struct {
+	Events, Dups, Streams, Requests ringState
+	Sources                         map[string]ringState
 }
 
 // usagePath derives the usage file from the vessel snapshot path: vessels.json → vessels-usage.json.
@@ -123,12 +151,10 @@ func usagePath(snapshot string) string {
 
 func (p *Pipeline) saveUsage(path string) error {
 	u := &p.usage
-	out := usageCounters{Events: *u.Events.snapshot(), Dups: *u.Dups.snapshot(), Streams: *u.Streams.snapshot(), Requests: *u.Requests.snapshot(), Sources: map[string]*hourRing{}}
-	u.smu.Lock()
-	for k, r := range u.Sources {
-		out.Sources[k] = r.snapshot()
+	out := usageFile{Events: u.events.state(), Dups: u.dups.state(), Streams: u.streams.state(), Requests: u.requests.state(), Sources: map[string]ringState{}}
+	for _, k := range u.sourceNames(time.Now()) {
+		out.Sources[k] = u.source(k).state()
 	}
-	u.smu.Unlock()
 	b, err := json.Marshal(&out)
 	if err != nil {
 		return err
@@ -145,17 +171,17 @@ func (p *Pipeline) loadUsage(path string) error {
 	if err != nil {
 		return err
 	}
-	var in usageCounters
+	var in usageFile
 	if err := json.Unmarshal(b, &in); err != nil {
 		return err
 	}
 	u := &p.usage
-	u.Events.restore(&in.Events)
-	u.Dups.restore(&in.Dups)
-	u.Streams.restore(&in.Streams)
-	u.Requests.restore(&in.Requests)
-	for k, r := range in.Sources {
-		u.source(k).restore(r)
+	u.events.restore(in.Events)
+	u.dups.restore(in.Dups)
+	u.streams.restore(in.Streams)
+	u.requests.restore(in.Requests)
+	for k, s := range in.Sources {
+		u.source(k).restore(s)
 	}
 	return nil
 }
@@ -166,7 +192,7 @@ func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v0/stream", "/v1/stream", "/v1/nmea", "/health", "/metrics":
 		default:
-			p.usage.Requests.add(time.Now())
+			p.usage.requests.add(time.Now())
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -205,17 +231,18 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	p.smu.RLock()
 	streams := len(p.subs)
 	p.smu.RUnlock()
-	clients := map[string]any{"streams": streams, "streams_opened": p.usage.Streams.windows(now), "requests": p.usage.Requests.windows(now)}
+	clients := map[string]any{"streams": streams, "streams_opened": p.usage.streams.windows(now), "requests": p.usage.requests.windows(now)}
 
 	sources := map[string]any{}
 	vbs := p.stations.vesselsBySource()
-	p.usage.smu.Lock()
-	names := make([]string, 0, len(p.usage.Sources))
-	for k := range p.usage.Sources {
-		names = append(names, k)
+	names := map[string]bool{}
+	for _, k := range p.usage.sourceNames(now) {
+		names[k] = true
 	}
-	p.usage.smu.Unlock()
-	for _, k := range names {
+	for k := range vbs { // a source that only ever duplicated others still hears vessels
+		names[k] = true
+	}
+	for k := range names {
 		vs := vbs[k]
 		sources[k] = map[string]any{"events": p.usage.source(k).windows(now), "last_age_s": int64(p.sourceAge(k).Seconds()),
 			"vessels": vs[0], "vessels_exclusive": vs[1]} // distinct MMSIs heard in the last vesselTTL; exclusive = no other source heard them
@@ -229,7 +256,7 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 		"time":     now.UTC(),
 		"stations": stations,
 		"vessels":  map[string]any{"total": nv, "with_position": withPos, "by_kind": byKind},
-		"events":   map[string]any{"per_second": perSec, "last_24h": p.usage.Events.sum(now, 24), "last_7d": p.usage.Events.sum(now, 7*24), "duplicates": p.usage.Dups.windows(now)},
+		"events":   map[string]any{"per_second": perSec, "last_24h": p.usage.events.sum(now, 24), "last_7d": p.usage.events.sum(now, 7*24), "duplicates": p.usage.dups.windows(now)},
 		"clients":  clients,
 		"sources":  sources,
 	})

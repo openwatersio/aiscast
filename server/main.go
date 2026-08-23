@@ -28,6 +28,8 @@ func main() {
 	usage := usagePath(snapshot)
 	if err := p.loadUsage(usage); err == nil {
 		log.Printf("restored usage counters from %s", usage)
+	} else if !os.IsNotExist(err) {
+		log.Printf("usage: %v (counters start empty)", err)
 	}
 	if env("KYSTVERKET", "1") == "1" {
 		p.upstreams = append(p.upstreams, "kystverket")
@@ -49,9 +51,9 @@ func main() {
 		p.feeder = f
 	}
 	if u := os.Getenv("AISHUB_USERNAME"); u != "" {
-		iv, err := time.ParseDuration(env("AISHUB_INTERVAL", "65s"))
-		if err != nil || iv < 60*time.Second {
-			iv = 65 * time.Second
+		iv, err := time.ParseDuration(env("AISHUB_INTERVAL", "20s"))
+		if err != nil || iv < 20*time.Second {
+			iv = 20 * time.Second
 		}
 		go runAishub(p, u, iv) // best effort, outside the health gate like aisstream
 	}
