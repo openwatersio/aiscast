@@ -99,12 +99,46 @@ func (s *stationStats) event(ev *Event) {
 	}
 }
 
-func (s *stationStats) dup(station, source string, now time.Time) {
+func (s *stationStats) dup(station, source string, mmsi uint32, now time.Time) {
 	s.mu.Lock()
 	st := s.get(station, source, now)
 	st.Last = now // still heard, just beaten to it
 	st.Dups++
+	st.vessels[mmsi] = now // the station did hear the vessel; per-source vessel counts must not depend on who was first
 	s.mu.Unlock()
+}
+
+// vesselsBySource returns, per source, how many distinct vessels its stations heard within the window and how
+// many of those no other source heard.
+func (s *stationStats) vesselsBySource() map[string][2]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sets := map[string]map[uint32]struct{}{}
+	heardBy := map[uint32]int{}
+	for _, st := range s.m {
+		set := sets[st.Source]
+		if set == nil {
+			set = map[uint32]struct{}{}
+			sets[st.Source] = set
+		}
+		for m := range st.vessels {
+			if _, ok := set[m]; !ok {
+				set[m] = struct{}{}
+				heardBy[m]++
+			}
+		}
+	}
+	out := map[string][2]int{}
+	for src, set := range sets {
+		excl := 0
+		for m := range set {
+			if heardBy[m] == 1 {
+				excl++
+			}
+		}
+		out[src] = [2]int{len(set), excl}
+	}
+	return out
 }
 
 // sweep forgets vessels a station has not heard since cutoff.

@@ -25,6 +25,12 @@ func main() {
 	if n, err := p.loadSnapshot(snapshot); err == nil {
 		log.Printf("restored %d vessels from %s", n, snapshot)
 	}
+	usage := usagePath(snapshot)
+	if err := p.loadUsage(usage); err == nil {
+		log.Printf("restored usage counters from %s", usage)
+	} else if !os.IsNotExist(err) {
+		log.Printf("usage: %v (counters start empty)", err)
+	}
 	if env("KYSTVERKET", "1") == "1" {
 		p.upstreams = append(p.upstreams, "kystverket")
 		go runTCPSource(p, "kystverket", env("KYSTVERKET_ADDR", "153.44.253.27:5631"))
@@ -45,9 +51,9 @@ func main() {
 		p.feeder = f
 	}
 	if u := os.Getenv("AISHUB_USERNAME"); u != "" {
-		iv, err := time.ParseDuration(env("AISHUB_INTERVAL", "65s"))
-		if err != nil || iv < 60*time.Second {
-			iv = 65 * time.Second
+		iv, err := time.ParseDuration(env("AISHUB_INTERVAL", "20s"))
+		if err != nil || iv < 20*time.Second {
+			iv = 20 * time.Second
 		}
 		go runAishub(p, u, iv) // best effort, outside the health gate like aisstream
 	}
@@ -58,6 +64,9 @@ func main() {
 			if err := p.saveSnapshot(snapshot); err != nil {
 				log.Printf("snapshot: %v", err)
 			}
+			if err := p.saveUsage(usage); err != nil {
+				log.Printf("usage: %v", err)
+			}
 		}
 	}()
 	go func() { // SIGTERM/SIGINT: snapshot, flush and upload the open archive hours, exit
@@ -66,6 +75,7 @@ func main() {
 		<-sig
 		log.Printf("shutting down")
 		p.saveSnapshot(snapshot)
+		p.saveUsage(usage)
 		arch.shutdown()
 		os.Exit(0)
 	}()
@@ -90,5 +100,5 @@ func httpHandler(p *Pipeline) http.Handler {
 	mux.HandleFunc("/health", p.serveHealth)
 	mux.HandleFunc("/metrics", p.serveMetrics)
 	mux.Handle("/{$}", http.RedirectHandler("https://openwaters.io/ais/", http.StatusFound))
-	return mux
+	return p.countRequests(mux)
 }
