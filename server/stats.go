@@ -31,6 +31,60 @@ func (p *Pipeline) sampleRate(now time.Time) {
 	p.rate.at, p.rate.events = now, n
 }
 
+// minuteRing counts events per clock minute over the last hour, plus a running total.
+type minuteRing struct {
+	mu    sync.Mutex
+	at    int64 // unix minute of buckets[at%60]
+	b     [60]int64
+	total int64
+}
+
+func (r *minuteRing) add(now time.Time) {
+	m := now.Unix() / 60
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.total++
+	if m > r.at {
+		for i := r.at + 1; i <= m && i-r.at <= 60; i++ {
+			r.b[i%60] = 0
+		}
+		r.at = m
+	}
+	if r.at-m < 60 {
+		r.b[m%60]++
+	}
+}
+
+// lastHour returns the total and the count over the 60 minutes ending now.
+func (r *minuteRing) lastHour(now time.Time) (total, hour int64) {
+	m := now.Unix() / 60
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.b {
+		if mm := r.at - int64(i); mm > m-60 && mm <= m {
+			hour += r.b[mm%60]
+		}
+	}
+	return r.total, hour
+}
+
+type usageCounters struct {
+	streams  minuteRing // WebSocket streams opened (/v0/stream, /v1/stream, /v1/nmea)
+	requests minuteRing // HTTP API requests (everything but streams, /health, /metrics)
+}
+
+// countRequests wraps the mux so API requests are counted once, whatever handler serves them.
+func (p *Pipeline) countRequests(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/stream", "/v1/stream", "/v1/nmea", "/health", "/metrics":
+		default:
+			p.usage.requests.add(time.Now())
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
@@ -62,8 +116,11 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	p.vmu.RUnlock()
 
 	p.smu.RLock()
-	clients := len(p.subs)
+	streams := len(p.subs)
 	p.smu.RUnlock()
+	st, sh := p.usage.streams.lastHour(now)
+	rt, rh := p.usage.requests.lastHour(now)
+	clients := map[string]any{"streams": streams, "streams_opened": map[string]int64{"total": st, "last_hour": sh}, "requests": map[string]int64{"total": rt, "last_hour": rh}}
 
 	sources := map[string]any{}
 	vbs := p.stations.vesselsBySource()

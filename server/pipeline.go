@@ -80,7 +80,8 @@ type Pipeline struct {
 	last         atomic.Int64
 	probeLast    atomic.Int64 // unix time of the last event the loopback probe received; 0 = probe not running
 	rate         rateSample   // events/s over the last logStats interval; /v1/stats
-	lastBySource sync.Map     // source → time.Time of last event; /health and /metrics read it
+	usage        usageCounters
+	lastBySource sync.Map // source → time.Time of last event; /health and /metrics read it
 	stats        struct {
 		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, uncorroborated, pingTimeouts atomic.Int64
 		bySource                                                                                                                  sync.Map // source → *counterT
@@ -337,6 +338,7 @@ func typeName(p ais.Packet) string {
 var typeNameOverride = map[string]string{"AddessedSafetyMessage": "AddressedSafetyMessage"}
 
 func (p *Pipeline) subscribe() *subscriber {
+	p.usage.streams.add(time.Now())
 	s := &subscriber{ch: make(chan *Event, 1024)}
 	p.smu.Lock()
 	p.subs[s] = struct{}{}
