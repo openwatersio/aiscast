@@ -26,48 +26,26 @@ type stationStat struct {
 	MaxLon     float64
 	vessels    map[uint32]time.Time
 	vesselsMax int
-	hourly     [24]int64 // events per clock hour, rolling; feeds the earned feeder tier
-	hourlyAt   int64     // unix hour of hourly[hourlyAt%24]
-}
-
-// bump counts an event in its clock-hour bucket; out-of-order times are fine, too-old ones are ignored.
-func (st *stationStat) bump(t time.Time) {
-	h := t.Unix() / 3600
-	switch {
-	case h > st.hourlyAt:
-		for i := st.hourlyAt + 1; i <= h && i-st.hourlyAt <= 24; i++ {
-			st.hourly[i%24] = 0
-		}
-		st.hourlyAt = h
-	case st.hourlyAt-h >= 24:
-		return
-	}
-	st.hourly[h%24]++
+	ring       hourRing // events per clock hour over 7 days; feeds /v1/stations and the earned feeder tier
 }
 
 // events24h sums events over the given station ids in the 24 clock hours ending now.
 func (s *stationStats) events24h(ids []string, now time.Time) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	h := now.Unix() / 3600
 	var n int64
 	for _, id := range ids {
-		st := s.m[id]
-		if st == nil || h-st.hourlyAt >= 24 {
-			continue
-		}
-		for i := int64(0); i < 24; i++ {
-			if hh := h - i; hh <= st.hourlyAt && st.hourlyAt-hh < 24 {
-				n += st.hourly[hh%24]
-			}
+		if st := s.m[id]; st != nil {
+			n += st.ring.sum(now, 24)
 		}
 	}
 	return n
 }
 
 type stationStats struct {
-	mu sync.Mutex
-	m  map[string]*stationStat
+	mu       sync.Mutex
+	m        map[string]*stationStat
+	restored map[string]ringState // rings from the usage file, claimed when a station is heard again after a restart
 }
 
 func newStationStats() *stationStats { return &stationStats{m: map[string]*stationStat{}} }
@@ -76,9 +54,38 @@ func (s *stationStats) get(station, source string, now time.Time) *stationStat {
 	st := s.m[station]
 	if st == nil {
 		st = &stationStat{Source: source, First: now, MinLat: 91, MinLon: 181, MaxLat: -91, MaxLon: -181, vessels: map[uint32]time.Time{}}
+		if r, ok := s.restored[station]; ok {
+			st.ring.restore(r)
+			delete(s.restored, station)
+		}
 		s.m[station] = st
 	}
 	return st
+}
+
+// rings returns every station's ring state (for the usage file), including restored ones not yet heard again.
+func (s *stationStats) rings(now time.Time) map[string]ringState {
+	h := now.Unix() / 3600
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]ringState{}
+	for id, st := range s.m {
+		if r := st.ring.state(); h-r.At < int64(len(r.B)) {
+			out[id] = r
+		}
+	}
+	for id, r := range s.restored {
+		if h-r.At < int64(len(r.B)) {
+			out[id] = r
+		}
+	}
+	return out
+}
+
+func (s *stationStats) restoreRings(m map[string]ringState) {
+	s.mu.Lock()
+	s.restored = m
+	s.mu.Unlock()
 }
 
 func (s *stationStats) event(ev *Event) {
@@ -87,7 +94,7 @@ func (s *stationStats) event(ev *Event) {
 	st := s.get(ev.Station, ev.Source, ev.Time)
 	st.Last = ev.Time
 	st.Events++
-	st.bump(ev.Time)
+	st.ring.add(ev.Time)
 	st.vessels[ev.MMSI] = ev.Time
 	if len(st.vessels) > st.vesselsMax {
 		st.vesselsMax = len(st.vessels)
@@ -108,18 +115,26 @@ func (s *stationStats) dup(station, source string, mmsi uint32, now time.Time) {
 	s.mu.Unlock()
 }
 
-// vesselsBySource returns, per source, how many distinct vessels its stations heard within the window and how
-// many of those no other source heard.
+// sourceKind groups sources for public stats: every API client, UDP sender or HTTP feeder is one kind
+// (v1, udp, http, mmsi); upstreams keep their name.
+func sourceKind(source string) string {
+	kind, _, _ := strings.Cut(source, ":")
+	return kind
+}
+
+// vesselsBySource returns, per source kind, how many distinct vessels its stations heard within the window and
+// how many of those no other kind heard.
 func (s *stationStats) vesselsBySource() map[string][2]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sets := map[string]map[uint32]struct{}{}
 	heardBy := map[uint32]int{}
 	for _, st := range s.m {
-		set := sets[st.Source]
+		kind := sourceKind(st.Source)
+		set := sets[kind]
 		if set == nil {
 			set = map[uint32]struct{}{}
-			sets[st.Source] = set
+			sets[kind] = set
 		}
 		for m := range st.vessels {
 			if _, ok := set[m]; !ok {
@@ -163,16 +178,16 @@ func isPositionType(t string) bool {
 }
 
 type stationRow struct {
-	Station   string      `json:"station"`
-	Source    string      `json:"source"`
-	Events    int64       `json:"events"`
-	Dups      int64       `json:"duplicates"`
-	Vessels   int         `json:"vessels"` // distinct MMSIs heard within the last 30 min
-	Positions int64       `json:"positions"`
-	FirstSeen time.Time   `json:"first_seen"`
-	LastSeen  time.Time   `json:"last_seen"`
-	LastAgeS  int64       `json:"last_age_s"`
-	BBox      *[4]float64 `json:"bbox,omitempty"` // minLat, minLon, maxLat, maxLon of positions heard
+	Station   string           `json:"station"`
+	Source    string           `json:"source"`
+	Events    map[string]int64 `json:"events"` // last_24h, last_7d
+	Dups      int64            `json:"duplicates"`
+	Vessels   int              `json:"vessels"` // distinct MMSIs heard within the last 30 min
+	Positions int64            `json:"positions"`
+	FirstSeen time.Time        `json:"first_seen"`
+	LastSeen  time.Time        `json:"last_seen"`
+	LastAgeS  int64            `json:"last_age_s"`
+	BBox      *[4]float64      `json:"bbox,omitempty"` // minLat, minLon, maxLat, maxLon of positions heard
 }
 
 func (s *stationStats) rows(now time.Time) []stationRow {
@@ -180,7 +195,7 @@ func (s *stationStats) rows(now time.Time) []stationRow {
 	defer s.mu.Unlock()
 	rows := make([]stationRow, 0, len(s.m))
 	for id, st := range s.m {
-		r := stationRow{Station: id, Source: st.Source, Events: st.Events, Dups: st.Dups, Vessels: len(st.vessels), Positions: st.Positions,
+		r := stationRow{Station: id, Source: st.Source, Events: st.ring.windows(now), Dups: st.Dups, Vessels: len(st.vessels), Positions: st.Positions,
 			FirstSeen: st.First.UTC(), LastSeen: st.Last.UTC(), LastAgeS: int64(now.Sub(st.Last).Seconds())}
 		if st.Positions > 0 {
 			r.BBox = &[4]float64{st.MinLat, st.MinLon, st.MaxLat, st.MaxLon}
