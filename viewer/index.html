@@ -174,7 +174,7 @@
       const { station: st } = await res.json();
       const age = st.last_age_s < 90 ? `${st.last_age_s}s ago` : `${Math.round(st.last_age_s / 60)} min ago`;
       const span = st.bbox ? `${(st.bbox[2] - st.bbox[0]).toFixed(2)}° × ${(st.bbox[3] - st.bbox[1]).toFixed(2)}°` : "no positions";
-      stationHTML = `<br><b>station</b> ${esc(station)}<br><b>${st.vessels}</b> vessels (30 min), ${st.events} msgs, ${st.duplicates} heard elsewhere first<br><b>last</b> ${age}; span ${span}`;
+      stationHTML = `<br><b>station</b> ${esc(station)}<br><b>${st.vessels}</b> vessels (30 min), ${st.events.last_24h} msgs (24 h), ${st.duplicates} heard elsewhere first<br><b>last</b> ${age}; span ${span}`;
       if (st.bbox && !map._stationFitted) { map._stationFitted = true; map.fitBounds([[st.bbox[1], st.bbox[0]], [st.bbox[3], st.bbox[2]]], { padding: 40, maxZoom: 11 }); }
     } catch (e) { console.warn("station failed", e); }
     dirty = true;

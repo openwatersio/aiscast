@@ -320,7 +320,7 @@ func TestStationStats(t *testing.T) {
 	p.Ingest(Reception{Source: "s1", Station: "s1", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
 	p.Ingest(Reception{Source: "s2", Station: "s2", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // same message, heard second
 	rows := p.stations.rows(now)
-	if len(rows) != 2 || rows[0].Station != "s1" || rows[0].Events != 1 || rows[0].Vessels != 1 || rows[0].Positions != 1 || rows[0].BBox == nil || rows[1].Dups != 1 || rows[1].Events != 0 {
+	if len(rows) != 2 || rows[0].Station != "s1" || rows[0].Events["last_24h"] != 1 || rows[0].Events["last_7d"] != 1 || rows[0].Vessels != 1 || rows[0].Positions != 1 || rows[0].BBox == nil || rows[1].Dups != 1 || rows[1].Events["last_24h"] != 0 {
 		t.Errorf("rows: %+v", rows)
 	}
 	srv := httptest.NewServer(httpHandler(p))

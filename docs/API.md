@@ -135,13 +135,13 @@ Other frames: `{"type":"error","error":"invalid token"}` followed by close 1008 
 Every station heard since the server started:
 
 ```json
-[{"station": "kystverket/2573010", "source": "kystverket", "events": 1812, "duplicates": 40, "vessels": 61, "positions": 1500,
+[{"station": "kystverket/2573010", "source": "kystverket", "events": {"last_24h": 41812, "last_7d": 280112}, "duplicates": 40, "vessels": 61, "positions": 1500,
   "first_seen": "2026-08-20T16:57:47Z", "last_seen": "2026-08-21T03:10:32Z", "last_age_s": 2,
   "bbox": [59.41, 10.31, 59.93, 10.78]},
- {"station": "udp:84a377dcf41b", "source": "udp:84a377dcf41b", "events": 64, "duplicates": 2, "vessels": 53, "positions": 60, "...": "..."}]
+ {"station": "udp:84a377dcf41b", "source": "udp:84a377dcf41b", "events": {"last_24h": 1064, "last_7d": 6210}, "duplicates": 2, "vessels": 53, "positions": 60, "...": "..."}]
 ```
 
-`events` counts decoded messages credited to the station (first to deliver them); `duplicates` counts messages it delivered that another station had already delivered; `vessels` is distinct MMSIs heard in the last 30 minutes; `bbox` is the extent of positions heard (a rough coverage footprint). Volunteer UDP stations appear as a keyed hash, never an address.
+`events` counts decoded messages credited to the station (first to deliver them) over the last 24 hours and 7 days, in hourly buckets that survive restarts; `duplicates` and `positions` count since the station was first heard after the last restart; `vessels` is distinct MMSIs heard in the last 30 minutes; `bbox` is the extent of positions heard (a rough coverage footprint). Volunteer UDP stations appear as a keyed hash, never an address.
 
 `GET /v1/stations/{id}` returns `{"station": {...same row...}, "vessels": <GeoJSON FeatureCollection of the vessels this station last updated>}`; `404` for an unknown id. The viewer shows it at `?station=<id>`.
 
@@ -156,10 +156,10 @@ A one-shot usage summary, for status pages and tracking growth. Counts are rolli
  "events": {"per_second": 212.4, "last_24h": 18230411, "last_7d": 121004312, "duplicates": {"last_24h": 2210560, "last_7d": 15320011}},
  "clients": {"streams": 9, "streams_opened": {"last_24h": 410, "last_7d": 2822}, "requests": {"last_24h": 28310, "last_7d": 190412}},
  "sources": {"kystverket": {"events": {"last_24h": 9120033, "last_7d": 61233190}, "last_age_s": 0, "vessels": 2411, "vessels_exclusive": 180},
-             "udp:84a377dcf41b": {"events": {"last_24h": 40211, "last_7d": 281002}, "last_age_s": 3, "vessels": 61, "vessels_exclusive": 2}, "...": {}}}
+             "v1": {"events": {"last_24h": 40211, "last_7d": 281002}, "last_age_s": 3, "vessels": 61, "vessels_exclusive": 2}, "...": {}}}
 ```
 
-`stations.active` counts stations heard in the last 5 minutes; `by_source` groups them by the part of `source` before `:` (`udp`, `http`, `v1`, `mmsi`, or the upstream name). `vessels` covers the 30-minute cache. `events.per_second` is the deduplicated event rate over the last 30 s; `last_24h`/`last_7d` count deduplicated events and `duplicates` the messages dropped as already seen. `clients.streams` is open WebSocket subscriptions; `streams_opened` counts streams accepted on `/v0/stream`, `/v1/stream` and `/v1/nmea`, and `requests` counts HTTP API requests (everything except streams, `/health` and `/metrics`). `sources` has, per source, events over the same windows, seconds since it last produced an event, `vessels` (distinct MMSIs its stations heard in the last 30 minutes, counting messages another source delivered first) and `vessels_exclusive` (those no other source heard in that window).
+`stations.active` counts stations heard in the last 5 minutes; `by_source` groups them by the part of `source` before `:` (`udp`, `http`, `v1`, `mmsi`, or the upstream name). `vessels` covers the 30-minute cache. `events.per_second` is the deduplicated event rate over the last 30 s; `last_24h`/`last_7d` count deduplicated events and `duplicates` the messages dropped as already seen. `clients.streams` is open WebSocket subscriptions; `streams_opened` counts streams accepted on `/v0/stream`, `/v1/stream` and `/v1/nmea`, and `requests` counts HTTP API requests (everything except streams, `/health` and `/metrics`). `sources` is keyed by source kind: each upstream by name, and all API publishers as `v1`, all UDP senders as `udp`, all HTTP feeders as `http`, UDP senders identified by their own `!AIVDO` as `mmsi`. Per kind: events over the same windows, seconds since any member last produced an event, `vessels` (distinct MMSIs its stations heard in the last 30 minutes, counting messages another kind delivered first) and `vessels_exclusive` (those no other kind heard in that window).
 
 ## `GET /v1/nmea`: raw sentences back to feeders
 

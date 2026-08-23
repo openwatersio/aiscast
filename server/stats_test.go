@@ -51,7 +51,8 @@ func TestStats(t *testing.T) {
 		Sources map[string]struct {
 			Events           windows
 			Vessels          int
-			VesselsExclusive int `json:"vessels_exclusive"`
+			VesselsExclusive int   `json:"vessels_exclusive"`
+			LastAgeS         int64 `json:"last_age_s"`
 		}
 	}
 	json.NewDecoder(res.Body).Decode(&out)
@@ -64,11 +65,14 @@ func TestStats(t *testing.T) {
 	if c := out.Clients; c.Streams != 1 || c.StreamsOpened.Last24h != 1 || c.StreamsOpened.Last7d != 1 || c.Requests.Last24h != 2 || c.Requests.Last7d != 2 {
 		t.Errorf("clients: %+v", c)
 	}
-	if d, ok := out.Sources["digitraffic"]; !ok || d.Events.Last24h != 0 || d.Vessels != 1 {
+	if d, ok := out.Sources["digitraffic"]; !ok || d.Events.Last24h != 0 || d.Vessels != 1 || d.LastAgeS > 5 {
 		t.Errorf("dup-only source should still list its vessels: %+v", out.Sources["digitraffic"])
 	}
 	// udp heard 1 vessel, shared; kystverket heard it too (as a dup) plus one of its own.
-	if u, k := out.Sources["udp:abc"], out.Sources["kystverket"]; u.Events.Last24h != 1 || u.Vessels != 1 || u.VesselsExclusive != 0 || k.Events.Last7d != 1 || k.Vessels != 2 || k.VesselsExclusive != 1 {
+	if u := out.Sources["udp"]; u.LastAgeS > 5 {
+		t.Errorf("udp kind last_age_s should be fresh, got %d", u.LastAgeS)
+	}
+	if u, k := out.Sources["udp"], out.Sources["kystverket"]; u.Events.Last24h != 1 || u.Vessels != 1 || u.VesselsExclusive != 0 || k.Events.Last7d != 1 || k.Vessels != 2 || k.VesselsExclusive != 1 {
 		t.Errorf("sources: %+v", out.Sources)
 	}
 }
@@ -118,5 +122,26 @@ func TestUsageSurvivesRestart(t *testing.T) {
 	}
 	if names := q.usage.sourceNames(now); len(names) != 1 || names[0] != "kystverket" {
 		t.Errorf("stale source not pruned: %v", names)
+	}
+}
+
+func TestStationRingSurvivesRestart(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	path := usagePath(t.TempDir() + "/vessels.json")
+	if err := p.saveUsage(path); err != nil {
+		t.Fatal(err)
+	}
+	q := testPipeline(t)
+	if err := q.loadUsage(path); err != nil {
+		t.Fatal(err)
+	}
+	if rows := q.stations.rows(now); len(rows) != 0 { // not heard yet since restart: not listed
+		t.Errorf("restored station listed before it reports: %+v", rows)
+	}
+	q.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})
+	if rows := q.stations.rows(now); len(rows) != 1 || rows[0].Events["last_24h"] != 2 {
+		t.Errorf("station ring after restore: %+v", rows)
 	}
 }

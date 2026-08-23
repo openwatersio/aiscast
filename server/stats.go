@@ -101,7 +101,7 @@ type usageCounters struct {
 	requests hourRing // HTTP API requests (everything but streams, /health, /metrics)
 
 	smu     sync.Mutex
-	sources map[string]*hourRing // events per source
+	sources map[string]*hourRing // events per source kind (see sourceKind)
 }
 
 func (u *usageCounters) source(name string) *hourRing {
@@ -141,7 +141,7 @@ func (u *usageCounters) sourceNames(now time.Time) []string {
 // usageFile is the on-disk form: plain state, no locks.
 type usageFile struct {
 	Events, Dups, Streams, Requests ringState
-	Sources                         map[string]ringState
+	Sources, Stations               map[string]ringState
 }
 
 // usagePath derives the usage file from the vessel snapshot path: vessels.json → vessels-usage.json.
@@ -152,9 +152,11 @@ func usagePath(snapshot string) string {
 func (p *Pipeline) saveUsage(path string) error {
 	u := &p.usage
 	out := usageFile{Events: u.events.state(), Dups: u.dups.state(), Streams: u.streams.state(), Requests: u.requests.state(), Sources: map[string]ringState{}}
-	for _, k := range u.sourceNames(time.Now()) {
+	now := time.Now()
+	for _, k := range u.sourceNames(now) {
 		out.Sources[k] = u.source(k).state()
 	}
+	out.Stations = p.stations.rings(now)
 	b, err := json.Marshal(&out)
 	if err != nil {
 		return err
@@ -183,6 +185,7 @@ func (p *Pipeline) loadUsage(path string) error {
 	for k, s := range in.Sources {
 		u.source(k).restore(s)
 	}
+	p.stations.restoreRings(in.Stations)
 	return nil
 }
 
@@ -211,8 +214,7 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 		if now.Sub(s.LastSeen) < stationActive {
 			active++
 		}
-		kind, _, _ := strings.Cut(s.Source, ":") // udp:<hash>, http:<id>, v1:<id>, kystverket, ...
-		bySource[kind]++
+		bySource[sourceKind(s.Source)]++
 	}
 	stations["total"], stations["active"], stations["by_source"] = len(rows), active, bySource
 
@@ -242,10 +244,21 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	for k := range vbs { // a source that only ever duplicated others still hears vessels
 		names[k] = true
 	}
+	age := map[string]time.Duration{} // youngest station of each kind; station rows also see duplicate-only activity
+	for _, s := range rows {
+		kind, a := sourceKind(s.Source), now.Sub(s.LastSeen)
+		if cur, ok := age[kind]; !ok || a < cur {
+			age[kind] = a
+		}
+	}
 	for k := range names {
 		vs := vbs[k]
-		sources[k] = map[string]any{"events": p.usage.source(k).windows(now), "last_age_s": int64(p.sourceAge(k).Seconds()),
-			"vessels": vs[0], "vessels_exclusive": vs[1]} // distinct MMSIs heard in the last vesselTTL; exclusive = no other source heard them
+		a, ok := age[k]
+		if !ok {
+			a = now.Sub(bootTime)
+		}
+		sources[k] = map[string]any{"events": p.usage.source(k).windows(now), "last_age_s": int64(a.Seconds()),
+			"vessels": vs[0], "vessels_exclusive": vs[1]} // distinct MMSIs heard in the last vesselTTL; exclusive = no other kind heard them
 	}
 
 	p.rate.mu.Lock()

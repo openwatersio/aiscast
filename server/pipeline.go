@@ -112,7 +112,7 @@ func (p *Pipeline) touch(source string) {
 	p.lastBySource.Store(source, now)
 	c, _ := p.stats.bySource.LoadOrStore(source, new(counterT))
 	c.(*counterT).Add(1)
-	p.usage.source(source).add(now)
+	p.usage.source(sourceKind(source)).add(now)
 }
 
 // sourceAge returns how long since source last produced an event (or since boot if never).
