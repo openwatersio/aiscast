@@ -25,6 +25,10 @@ func main() {
 	if n, err := p.loadSnapshot(snapshot); err == nil {
 		log.Printf("restored %d vessels from %s", n, snapshot)
 	}
+	usage := usagePath(snapshot)
+	if err := p.loadUsage(usage); err == nil {
+		log.Printf("restored usage counters from %s", usage)
+	}
 	if env("KYSTVERKET", "1") == "1" {
 		p.upstreams = append(p.upstreams, "kystverket")
 		go runTCPSource(p, "kystverket", env("KYSTVERKET_ADDR", "153.44.253.27:5631"))
@@ -58,6 +62,9 @@ func main() {
 			if err := p.saveSnapshot(snapshot); err != nil {
 				log.Printf("snapshot: %v", err)
 			}
+			if err := p.saveUsage(usage); err != nil {
+				log.Printf("usage: %v", err)
+			}
 		}
 	}()
 	go func() { // SIGTERM/SIGINT: snapshot, flush and upload the open archive hours, exit
@@ -66,6 +73,7 @@ func main() {
 		<-sig
 		log.Printf("shutting down")
 		p.saveSnapshot(snapshot)
+		p.saveUsage(usage)
 		arch.shutdown()
 		os.Exit(0)
 	}()

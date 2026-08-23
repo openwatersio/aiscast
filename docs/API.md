@@ -147,18 +147,19 @@ Every station heard since the server started:
 
 ## `GET /v1/stats`
 
-A one-shot usage summary, for status pages and tracking growth:
+A one-shot usage summary, for status pages and tracking growth. Counts are rolling windows over the last 24 hours and 7 days (hourly buckets, kept across restarts), never since-start totals:
 
 ```json
-{"time": "2026-08-21T13:40:12Z", "uptime_s": 86122,
+{"time": "2026-08-21T13:40:12Z",
  "stations": {"total": 14, "active": 11, "by_source": {"kystverket": 1, "digitraffic": 1, "udp": 7, "http": 3, "v1": 2}},
  "vessels": {"total": 4812, "with_position": 4790, "by_kind": {"vessel": 4701, "aton": 88, "base": 19, "sar": 4}},
- "events": {"total": 18230411, "duplicates": 2210560, "per_second": 212.4},
- "clients": {"streams": 9, "streams_opened": {"total": 1822, "last_hour": 41}, "requests": {"total": 90312, "last_hour": 1180}},
- "sources": {"kystverket": {"events": 9120033, "last_age_s": 0, "vessels": 2411, "vessels_exclusive": 180}, "udp:84a377dcf41b": {"events": 40211, "last_age_s": 3, "vessels": 61, "vessels_exclusive": 2}, "...": {}}}
+ "events": {"per_second": 212.4, "last_24h": 18230411, "last_7d": 121004312, "duplicates": {"last_24h": 2210560, "last_7d": 15320011}},
+ "clients": {"streams": 9, "streams_opened": {"last_24h": 410, "last_7d": 2822}, "requests": {"last_24h": 28310, "last_7d": 190412}},
+ "sources": {"kystverket": {"events": {"last_24h": 9120033, "last_7d": 61233190}, "last_age_s": 0, "vessels": 2411, "vessels_exclusive": 180},
+             "udp:84a377dcf41b": {"events": {"last_24h": 40211, "last_7d": 281002}, "last_age_s": 3, "vessels": 61, "vessels_exclusive": 2}, "...": {}}}
 ```
 
-`stations.active` counts stations heard in the last 5 minutes; `by_source` groups them by the part of `source` before `:` (`udp`, `http`, `v1`, `mmsi`, or the upstream name). `vessels` covers the 30-minute cache. `events.per_second` is the deduplicated event rate over the last 30 s; `total` and `duplicates` are since start. `clients.streams` is open WebSocket subscriptions; `streams_opened` counts streams accepted on `/v0/stream`, `/v1/stream` and `/v1/nmea`, and `requests` counts HTTP API requests (everything except streams, `/health` and `/metrics`), each since start and over the last 60 minutes. `sources` has, per source, event totals since start, seconds since it last produced an event, `vessels` (distinct MMSIs its stations heard in the last 30 minutes, counting messages another source delivered first) and `vessels_exclusive` (those no other source heard in that window).
+`stations.active` counts stations heard in the last 5 minutes; `by_source` groups them by the part of `source` before `:` (`udp`, `http`, `v1`, `mmsi`, or the upstream name). `vessels` covers the 30-minute cache. `events.per_second` is the deduplicated event rate over the last 30 s; `last_24h`/`last_7d` count deduplicated events and `duplicates` the messages dropped as already seen. `clients.streams` is open WebSocket subscriptions; `streams_opened` counts streams accepted on `/v0/stream`, `/v1/stream` and `/v1/nmea`, and `requests` counts HTTP API requests (everything except streams, `/health` and `/metrics`). `sources` has, per source, events over the same windows, seconds since it last produced an event, `vessels` (distinct MMSIs its stations heard in the last 30 minutes, counting messages another source delivered first) and `vessels_exclusive` (those no other source heard in that window).
 
 ## `GET /v1/nmea`: raw sentences back to feeders
 

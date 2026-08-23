@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,46 +33,131 @@ func (p *Pipeline) sampleRate(now time.Time) {
 	p.rate.at, p.rate.events = now, n
 }
 
-// minuteRing counts events per clock minute over the last hour, plus a running total.
-type minuteRing struct {
-	mu    sync.Mutex
-	at    int64 // unix minute of buckets[at%60]
-	b     [60]int64
-	total int64
+// hourRing counts per clock hour over the last 7 days. Exported fields so rings survive restarts via the usage file.
+type hourRing struct {
+	mu sync.Mutex
+	At int64         // unix hour of B[At%len(B)]
+	B  [7 * 24]int64 // per-hour counts
 }
 
-func (r *minuteRing) add(now time.Time) {
-	m := now.Unix() / 60
+func (r *hourRing) add(now time.Time) {
+	h := now.Unix() / 3600
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.total++
-	if m > r.at {
-		for i := r.at + 1; i <= m && i-r.at <= 60; i++ {
-			r.b[i%60] = 0
+	n := int64(len(r.B))
+	if h > r.At {
+		for i := r.At + 1; i <= h && i-r.At <= n; i++ {
+			r.B[i%n] = 0
 		}
-		r.at = m
+		r.At = h
 	}
-	if r.at-m < 60 {
-		r.b[m%60]++
+	if r.At-h < n {
+		r.B[h%n]++
 	}
 }
 
-// lastHour returns the total and the count over the 60 minutes ending now.
-func (r *minuteRing) lastHour(now time.Time) (total, hour int64) {
-	m := now.Unix() / 60
+// sum returns the count over the `hours` clock hours ending now (the current partial hour included).
+func (r *hourRing) sum(now time.Time, hours int) (total int64) {
+	h := now.Unix() / 3600
+	n := int64(len(r.B))
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for i := range r.b {
-		if mm := r.at - int64(i); mm > m-60 && mm <= m {
-			hour += r.b[mm%60]
+	for i := 0; i < hours && int64(i) < n; i++ {
+		if hh := h - int64(i); hh <= r.At && r.At-hh < n {
+			total += r.B[hh%n]
 		}
 	}
-	return r.total, hour
+	return total
 }
 
+// windows is the JSON shape of one rolling counter.
+func (r *hourRing) windows(now time.Time) map[string]int64 {
+	return map[string]int64{"last_24h": r.sum(now, 24), "last_7d": r.sum(now, 7*24)}
+}
+
+func (r *hourRing) snapshot() *hourRing {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return &hourRing{At: r.At, B: r.B}
+}
+
+func (r *hourRing) restore(from *hourRing) {
+	if from == nil {
+		return
+	}
+	r.mu.Lock()
+	r.At, r.B = from.At, from.B
+	r.mu.Unlock()
+}
+
+// usageCounters are the rolling counters behind /v1/stats. Totals since start are not kept: deploys restart the
+// server, so they would measure time since the last deploy. The rings persist in a JSON file next to the vessel snapshot.
 type usageCounters struct {
-	streams  minuteRing // WebSocket streams opened (/v0/stream, /v1/stream, /v1/nmea)
-	requests minuteRing // HTTP API requests (everything but streams, /health, /metrics)
+	Events   hourRing // deduplicated events
+	Dups     hourRing // duplicates dropped
+	Streams  hourRing // WebSocket streams opened (/v0/stream, /v1/stream, /v1/nmea)
+	Requests hourRing // HTTP API requests (everything but streams, /health, /metrics)
+
+	smu     sync.Mutex
+	Sources map[string]*hourRing // events per source
+}
+
+func (u *usageCounters) source(name string) *hourRing {
+	u.smu.Lock()
+	defer u.smu.Unlock()
+	if u.Sources == nil {
+		u.Sources = map[string]*hourRing{}
+	}
+	r := u.Sources[name]
+	if r == nil {
+		r = &hourRing{}
+		u.Sources[name] = r
+	}
+	return r
+}
+
+// usagePath derives the usage file from the vessel snapshot path: vessels.json → vessels-usage.json.
+func usagePath(snapshot string) string {
+	return strings.TrimSuffix(snapshot, filepath.Ext(snapshot)) + "-usage.json"
+}
+
+func (p *Pipeline) saveUsage(path string) error {
+	u := &p.usage
+	out := usageCounters{Events: *u.Events.snapshot(), Dups: *u.Dups.snapshot(), Streams: *u.Streams.snapshot(), Requests: *u.Requests.snapshot(), Sources: map[string]*hourRing{}}
+	u.smu.Lock()
+	for k, r := range u.Sources {
+		out.Sources[k] = r.snapshot()
+	}
+	u.smu.Unlock()
+	b, err := json.Marshal(&out)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (p *Pipeline) loadUsage(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var in usageCounters
+	if err := json.Unmarshal(b, &in); err != nil {
+		return err
+	}
+	u := &p.usage
+	u.Events.restore(&in.Events)
+	u.Dups.restore(&in.Dups)
+	u.Streams.restore(&in.Streams)
+	u.Requests.restore(&in.Requests)
+	for k, r := range in.Sources {
+		u.source(k).restore(r)
+	}
+	return nil
 }
 
 // countRequests wraps the mux so API requests are counted once, whatever handler serves them.
@@ -79,7 +166,7 @@ func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v0/stream", "/v1/stream", "/v1/nmea", "/health", "/metrics":
 		default:
-			p.usage.requests.add(time.Now())
+			p.usage.Requests.add(time.Now())
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -118,18 +205,21 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	p.smu.RLock()
 	streams := len(p.subs)
 	p.smu.RUnlock()
-	st, sh := p.usage.streams.lastHour(now)
-	rt, rh := p.usage.requests.lastHour(now)
-	clients := map[string]any{"streams": streams, "streams_opened": map[string]int64{"total": st, "last_hour": sh}, "requests": map[string]int64{"total": rt, "last_hour": rh}}
+	clients := map[string]any{"streams": streams, "streams_opened": p.usage.Streams.windows(now), "requests": p.usage.Requests.windows(now)}
 
 	sources := map[string]any{}
 	vbs := p.stations.vesselsBySource()
-	p.stats.bySource.Range(func(k, v any) bool {
-		vs := vbs[k.(string)]
-		sources[k.(string)] = map[string]any{"events": v.(*counterT).Load(), "last_age_s": int64(p.sourceAge(k.(string)).Seconds()),
+	p.usage.smu.Lock()
+	names := make([]string, 0, len(p.usage.Sources))
+	for k := range p.usage.Sources {
+		names = append(names, k)
+	}
+	p.usage.smu.Unlock()
+	for _, k := range names {
+		vs := vbs[k]
+		sources[k] = map[string]any{"events": p.usage.source(k).windows(now), "last_age_s": int64(p.sourceAge(k).Seconds()),
 			"vessels": vs[0], "vessels_exclusive": vs[1]} // distinct MMSIs heard in the last vesselTTL; exclusive = no other source heard them
-		return true
-	})
+	}
 
 	p.rate.mu.Lock()
 	perSec := p.rate.perSec
@@ -137,10 +227,9 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]any{
 		"time":     now.UTC(),
-		"uptime_s": int64(now.Sub(bootTime).Seconds()),
 		"stations": stations,
 		"vessels":  map[string]any{"total": nv, "with_position": withPos, "by_kind": byKind},
-		"events":   map[string]any{"total": p.stats.events.Load(), "duplicates": p.stats.dup.Load(), "per_second": perSec},
+		"events":   map[string]any{"per_second": perSec, "last_24h": p.usage.Events.sum(now, 24), "last_7d": p.usage.Events.sum(now, 7*24), "duplicates": p.usage.Dups.windows(now)},
 		"clients":  clients,
 		"sources":  sources,
 	})

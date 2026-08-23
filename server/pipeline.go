@@ -108,9 +108,11 @@ func (p *Pipeline) lastEvent() time.Time { return time.Unix(0, p.last.Load()) }
 type counterT = atomic.Int64
 
 func (p *Pipeline) touch(source string) {
-	p.lastBySource.Store(source, time.Now())
+	now := time.Now()
+	p.lastBySource.Store(source, now)
 	c, _ := p.stats.bySource.LoadOrStore(source, new(counterT))
 	c.(*counterT).Add(1)
+	p.usage.source(source).add(now)
 }
 
 // sourceAge returns how long since source last produced an event (or since boot if never).
@@ -246,6 +248,7 @@ func (p *Pipeline) emit(ev *Event) {
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
 		p.mu.Unlock()
 		p.stats.dup.Add(1)
+		p.usage.Dups.add(time.Now())
 		p.stations.dup(ev.Station, ev.Source, ev.Packet.GetHeader().UserID, ev.Time)
 		// A trusted source repeating what a UDP station delivered first still corroborates the vessel.
 		if !lowTrust(ev.Source) && isPositionType(typeName(ev.Packet)) {
@@ -277,6 +280,7 @@ func (p *Pipeline) emit(ev *Event) {
 	}
 	p.stations.event(ev)
 	p.stats.events.Add(1)
+	p.usage.Events.add(time.Now())
 	p.last.Store(time.Now().UnixNano())
 	p.touch(ev.Source)
 	p.broadcast(ev)
@@ -338,7 +342,7 @@ func typeName(p ais.Packet) string {
 var typeNameOverride = map[string]string{"AddessedSafetyMessage": "AddressedSafetyMessage"}
 
 func (p *Pipeline) subscribe() *subscriber {
-	p.usage.streams.add(time.Now())
+	p.usage.Streams.add(time.Now())
 	s := &subscriber{ch: make(chan *Event, 1024)}
 	p.smu.Lock()
 	p.subs[s] = struct{}{}
