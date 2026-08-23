@@ -18,7 +18,7 @@ import (
 )
 
 // AISHub is reciprocal: we feed them our volunteer receivers' stream over UDP (their assigned port), and poll
-// their aggregate snapshot (all stations, positions downsampled to ≤60 s) once a minute. Their terms grant "use"
+// their aggregate snapshot (all stations, positions downsampled to ≤60 s) every 20 s. Their terms grant "use"
 // with no stated restriction and no stated term, i.e. revocable at will, so this source is flagged in
 // `source`/archive tags and can be switched off and purged; see PLAN.md.
 
@@ -223,7 +223,8 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 				lastHash = h
 			}
 			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
-			return p.ingestAishub(body, start, st, interval*3/4) // the rest of the interval covers the fetch
+			// paced independently of the poll interval: a new snapshot only appears every ~5 min, so ingest can outlast a poll
+			return p.ingestAishub(body, start, st, 45*time.Second)
 		}()
 		switch {
 		case err != nil:
@@ -231,7 +232,7 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 		case n >= 0:
 			log.Printf("aishub: %d events from new snapshot in %s", n, time.Since(start).Truncate(time.Millisecond))
 		}
-		// never faster than once a minute: AISHub answers "Too frequent requests!" if polled more often
+		// AISHub answers "Too frequent requests!" when polled faster than its limit (20 s for our account)
 		time.Sleep(max(interval-time.Since(start), 10*time.Second))
 	}
 }
