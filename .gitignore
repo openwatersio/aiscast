@@ -1,8 +1,5 @@
 .wrangler/
 .env
-
 node_modules/
 signalk-plugin/dist/
-
-# local notes with personal contact details, never committed
-*.local.md
+spec
