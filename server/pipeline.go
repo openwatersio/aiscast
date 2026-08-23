@@ -245,7 +245,7 @@ func (p *Pipeline) emit(ev *Event) {
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
 		p.mu.Unlock()
 		p.stats.dup.Add(1)
-		p.stations.dup(ev.Station, ev.Source, ev.Time)
+		p.stations.dup(ev.Station, ev.Source, ev.Packet.GetHeader().UserID, ev.Time)
 		// A trusted source repeating what a UDP station delivered first still corroborates the vessel.
 		if !lowTrust(ev.Source) && isPositionType(typeName(ev.Packet)) {
 			p.markTrusted(ev.Packet.GetHeader().UserID, ev.Time)

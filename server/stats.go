@@ -66,8 +66,11 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	p.smu.RUnlock()
 
 	sources := map[string]any{}
+	vbs := p.stations.vesselsBySource()
 	p.stats.bySource.Range(func(k, v any) bool {
-		sources[k.(string)] = map[string]any{"events": v.(*counterT).Load(), "last_age_s": int64(p.sourceAge(k.(string)).Seconds())}
+		vs := vbs[k.(string)]
+		sources[k.(string)] = map[string]any{"events": v.(*counterT).Load(), "last_age_s": int64(p.sourceAge(k.(string)).Seconds()),
+			"vessels": vs[0], "vessels_exclusive": vs[1]} // distinct MMSIs heard in the last vesselTTL; exclusive = no other source heard them
 		return true
 	})
 

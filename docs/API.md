@@ -155,10 +155,10 @@ A one-shot usage summary, for status pages and tracking growth:
  "vessels": {"total": 4812, "with_position": 4790, "by_kind": {"vessel": 4701, "aton": 88, "base": 19, "sar": 4}},
  "events": {"total": 18230411, "duplicates": 2210560, "per_second": 212.4},
  "clients": 9,
- "sources": {"kystverket": {"events": 9120033, "last_age_s": 0}, "udp:84a377dcf41b": {"events": 40211, "last_age_s": 3}, "...": {}}}
+ "sources": {"kystverket": {"events": 9120033, "last_age_s": 0, "vessels": 2411, "vessels_exclusive": 180}, "udp:84a377dcf41b": {"events": 40211, "last_age_s": 3, "vessels": 61, "vessels_exclusive": 2}, "...": {}}}
 ```
 
-`stations.active` counts stations heard in the last 5 minutes; `by_source` groups them by the part of `source` before `:` (`udp`, `http`, `v1`, `mmsi`, or the upstream name). `vessels` covers the 30-minute cache. `events.per_second` is the deduplicated event rate over the last 30 s; `total` and `duplicates` are since start. `clients` is open WebSocket subscriptions. `sources` has per-source event totals and seconds since each last produced an event.
+`stations.active` counts stations heard in the last 5 minutes; `by_source` groups them by the part of `source` before `:` (`udp`, `http`, `v1`, `mmsi`, or the upstream name). `vessels` covers the 30-minute cache. `events.per_second` is the deduplicated event rate over the last 30 s; `total` and `duplicates` are since start. `clients` is open WebSocket subscriptions. `sources` has, per source, event totals since start, seconds since it last produced an event, `vessels` (distinct MMSIs its stations heard in the last 30 minutes, counting messages another source delivered first) and `vessels_exclusive` (those no other source heard in that window).
 
 ## `GET /v1/nmea`: raw sentences back to feeders
 

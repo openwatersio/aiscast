@@ -14,6 +14,7 @@ func TestStats(t *testing.T) {
 	p.sampleRate(now.Add(-10 * time.Second))
 	p.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
 	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // dup
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"}) // only kystverket hears this one
 	p.sampleRate(now)
 	srv := httptest.NewServer(httpHandler(p))
 	defer srv.Close()
@@ -31,16 +32,20 @@ func TestStats(t *testing.T) {
 			Total, Duplicates int
 			PerSecond         float64 `json:"per_second"`
 		}
-		Sources map[string]struct{ Events int }
+		Sources map[string]struct {
+			Events, Vessels  int
+			VesselsExclusive int `json:"vessels_exclusive"`
+		}
 	}
 	json.NewDecoder(res.Body).Decode(&out)
 	if out.Stations.Total != 2 || out.Stations.Active != 2 || out.Stations.BySource["udp"] != 1 || out.Stations.BySource["kystverket"] != 1 {
 		t.Errorf("stations: %+v", out.Stations)
 	}
-	if out.Vessels.Total != 1 || out.Events.Total != 1 || out.Events.Duplicates != 1 || out.Events.PerSecond != 0.1 {
+	if out.Vessels.Total != 2 || out.Events.Total != 2 || out.Events.Duplicates != 1 || out.Events.PerSecond != 0.2 {
 		t.Errorf("vessels/events: %+v %+v", out.Vessels, out.Events)
 	}
-	if out.Sources["udp:abc"].Events != 1 {
+	// udp heard 1 vessel, shared; kystverket heard it too (as a dup) plus one of its own.
+	if u, k := out.Sources["udp:abc"], out.Sources["kystverket"]; u.Events != 1 || u.Vessels != 1 || u.VesselsExclusive != 0 || k.Vessels != 2 || k.VesselsExclusive != 1 {
 		t.Errorf("sources: %+v", out.Sources)
 	}
 }
