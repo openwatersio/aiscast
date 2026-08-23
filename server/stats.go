@@ -244,14 +244,13 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	for k := range vbs { // a source that only ever duplicated others still hears vessels
 		names[k] = true
 	}
-	age := map[string]time.Duration{}
-	p.lastBySource.Range(func(k, v any) bool { // youngest member of each kind
-		kind, a := sourceKind(k.(string)), now.Sub(v.(time.Time))
+	age := map[string]time.Duration{} // youngest station of each kind; station rows also see duplicate-only activity
+	for _, s := range rows {
+		kind, a := sourceKind(s.Source), now.Sub(s.LastSeen)
 		if cur, ok := age[kind]; !ok || a < cur {
 			age[kind] = a
 		}
-		return true
-	})
+	}
 	for k := range names {
 		vs := vbs[k]
 		a, ok := age[k]

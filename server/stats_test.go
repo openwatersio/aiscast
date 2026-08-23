@@ -51,7 +51,8 @@ func TestStats(t *testing.T) {
 		Sources map[string]struct {
 			Events           windows
 			Vessels          int
-			VesselsExclusive int `json:"vessels_exclusive"`
+			VesselsExclusive int   `json:"vessels_exclusive"`
+			LastAgeS         int64 `json:"last_age_s"`
 		}
 	}
 	json.NewDecoder(res.Body).Decode(&out)
@@ -64,10 +65,13 @@ func TestStats(t *testing.T) {
 	if c := out.Clients; c.Streams != 1 || c.StreamsOpened.Last24h != 1 || c.StreamsOpened.Last7d != 1 || c.Requests.Last24h != 2 || c.Requests.Last7d != 2 {
 		t.Errorf("clients: %+v", c)
 	}
-	if d, ok := out.Sources["digitraffic"]; !ok || d.Events.Last24h != 0 || d.Vessels != 1 {
+	if d, ok := out.Sources["digitraffic"]; !ok || d.Events.Last24h != 0 || d.Vessels != 1 || d.LastAgeS > 5 {
 		t.Errorf("dup-only source should still list its vessels: %+v", out.Sources["digitraffic"])
 	}
 	// udp heard 1 vessel, shared; kystverket heard it too (as a dup) plus one of its own.
+	if u := out.Sources["udp"]; u.LastAgeS > 5 {
+		t.Errorf("udp kind last_age_s should be fresh, got %d", u.LastAgeS)
+	}
 	if u, k := out.Sources["udp"], out.Sources["kystverket"]; u.Events.Last24h != 1 || u.Vessels != 1 || u.VesselsExclusive != 0 || k.Events.Last7d != 1 || k.Vessels != 2 || k.VesselsExclusive != 1 {
 		t.Errorf("sources: %+v", out.Sources)
 	}
