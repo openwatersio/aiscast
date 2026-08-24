@@ -10,6 +10,7 @@ import {
 import { Link } from "./link.js";
 import { n2kToSentence } from "./n2k.js";
 import { isAis, isOwnShip } from "./nmea.js";
+import { OwnShip, SOURCE_TAG } from "./ownship.js";
 import { Uplink } from "./uplink.js";
 
 export const PLUGIN_ID = "signalk-aiscast";
@@ -20,7 +21,7 @@ const TOKEN_RETRY_MIN = 60_000; // without one (network not up yet at boot, serv
 const TOKEN_RETRY_MAX = 30 * 60_000;
 
 export interface Config {
-  share?: { targets?: boolean; ownShip?: boolean };
+  share?: { targets?: boolean; ownShip?: boolean; position?: boolean };
   receive?: { mode?: ReceiveMode; radiusNm?: number };
   advanced?: { server?: string; token?: string };
   // Pre-"Advanced" layout, still honoured when read.
@@ -47,12 +48,17 @@ export default function (app: ServerAPI): Plugin {
           properties: {
             targets: {
               type: "boolean",
-              title: "Other vessels (NMEA 0183 !AIVDM and NMEA 2000 AIS)",
+              title: "Share AIS targets I receive",
               default: true,
             },
             ownShip: {
               type: "boolean",
-              title: "Own ship (!AIVDO)",
+              title: "Share my own ship's AIS transponder data",
+              default: true,
+            },
+            position: {
+              type: "boolean",
+              title: "Fallback to self-reported AIS position",
               default: true,
             },
           },
@@ -100,10 +106,32 @@ export default function (app: ServerAPI): Plugin {
         },
       },
     },
-    uiSchema: {
+    // A function so the MMSI check runs fresh on every config-page load.
+    uiSchema: () => ({
       "ui:order": ["share", "receive", "advanced"],
+      share: {
+        // the checkbox widget puts schema descriptions above the label; ui:help renders below
+        targets: {
+          "ui:help":
+            "Other vessels visible from a connected NMEA 0183/2000 AIS receiver.",
+        },
+        ownShip: {
+          "ui:help":
+            "Forward what the AIS transponder broadcasts; it is already public on VHF.",
+        },
+        position: app.getSelfPath("mmsi")
+          ? {
+              "ui:help":
+                "When an AIS transponder is not available, but GPS position is, synthesize class B AIS reports from Signal K data.",
+            }
+          : {
+              "ui:disabled": true,
+              "ui:help": "Needs an MMSI in Vessel settings.",
+            },
+      },
+      receive: { mode: { "ui:widget": "radio" } },
       advanced: { token: { "ui:widget": "password" } },
-    },
+    }),
 
     start(config: object) {
       const gen = ++generation;
@@ -130,6 +158,9 @@ export default function (app: ServerAPI): Plugin {
     const wsBase = server.replace(/^http/, "ws");
     const shareTargets = config.share?.targets ?? true;
     const shareOwn = config.share?.ownShip ?? true;
+    // Absent from a config saved before the setting existed: off, so an upgrade never enables it silently.
+    const sharePosition = config.share?.position ?? false;
+    if (sharePosition && !app.getSelfPath("mmsi")) app.debug("self-reported position is on but no MMSI is set; nothing will be synthesized");
     const mode = config.receive?.mode ?? "auto";
     const radiusNm = Math.min(200, Math.max(5, config.receive?.radiusNm ?? 50));
     const dir = app.getDataDirPath();
@@ -182,6 +213,7 @@ export default function (app: ServerAPI): Plugin {
       log,
     );
     const up = new Uplink(l, dir, log);
+    const own = new OwnShip(app, (s, now) => up.hear(s, now, SOURCE_TAG));
     const down = new Downlink(
       app,
       l,
@@ -195,7 +227,7 @@ export default function (app: ServerAPI): Plugin {
       log,
     );
     const canShare = () =>
-      token !== null && !publishRefused && (shareTargets || shareOwn);
+      token !== null && !publishRefused && (shareTargets || shareOwn || sharePosition);
     up.enabled = canShare();
 
     l.on("open", () => {
@@ -237,12 +269,15 @@ export default function (app: ServerAPI): Plugin {
     }
     down.start();
     l.start();
+    if (sharePosition) own.start();
 
     const onSentence = (sentence: unknown, source?: string) => {
       if (typeof sentence !== "string" || !isAis(sentence)) return;
-      const own = isOwnShip(sentence);
-      if (!own) down.localHeard();
-      if (own ? shareOwn : shareTargets) up.hear(sentence, Date.now(), source);
+      const now = Date.now();
+      const isOwn = isOwnShip(sentence);
+      if (isOwn) own.heard(now);
+      else down.localHeard(now);
+      if (isOwn ? shareOwn : shareTargets) up.hear(sentence, now, source);
     };
     const onNmea = (sentence: unknown) => onSentence(sentence);
     const onN2k = (msg: unknown) => {
@@ -322,6 +357,7 @@ export default function (app: ServerAPI): Plugin {
       if (tokenTimer) clearTimeout(tokenTimer);
       events.removeListener("nmea0183", onNmea);
       events.removeListener("N2KAnalyzerOut", onN2k);
+      own.stop();
       down.stop();
       await up.stop();
       l.stop();
@@ -338,7 +374,10 @@ export default function (app: ServerAPI): Plugin {
 
 // fetch's "fetch failed" hides the real reason (ECONNREFUSED, ENOTFOUND, a TLS error) in `cause`.
 function describe(err: unknown): string {
-  const e = err as { message?: string; cause?: { code?: string; message?: string } };
+  const e = err as {
+    message?: string;
+    cause?: { code?: string; message?: string };
+  };
   const cause = e.cause?.code ?? e.cause?.message;
   return cause ? `${e.message} (${cause})` : (e.message ?? String(err));
 }

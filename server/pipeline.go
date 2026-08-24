@@ -209,7 +209,9 @@ func (p *Pipeline) ingestLine(rx Reception) {
 		}
 		p.mu.Unlock()
 	}
-	p.emit(&Event{Time: t, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences})
+	// TAG s:self on an own-ship sentence is signalk-aiscast building reports from GPS on a boat with no
+	// transponder: not a VHF reception. VDO-only, so the tag cannot mislabel received traffic as synthesized.
+	p.emit(&Event{Time: t, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self"})
 }
 
 // ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).
