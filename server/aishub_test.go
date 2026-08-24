@@ -80,6 +80,12 @@ func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
 	if feedable(ev) {
 		t.Error("self-reported own ship fed to AISHub")
 	}
+	// The tag only marks own-ship sentences: a received !AIVDM carrying s:self stays a real reception.
+	p.Ingest(Reception{Source: "v1:ed25519:k", Station: "v1:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`})
+	ev = <-sub.ch
+	if ev.Synthesized {
+		t.Error("received VDM misclassified as synthesized")
+	}
 }
 
 func TestAishubPacing(t *testing.T) {

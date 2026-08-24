@@ -111,7 +111,7 @@ aiscast → client, one frame per decoded message after deduplication:
 - `id`: content id, not an event id: hex of the first 16 bytes of SHA-256 over the decoded payload bits (one byte per bit, fill bits dropped) followed by the channel letter. Identical payloads share an id, whether that is the same transmission heard late by a second station or a static message (Type 5/24) rebroadcast unchanged every few minutes. Use `(id, time)` as the event key; dedupe on `id` alone drops the rebroadcasts.
 - `time`: canonical time: the source's timestamp when it is within 30 s of our receive time, else our receive time.
 - `source`: `kystverket`, `digitraffic`, `aishub`, `aisstream`, `http:<station>`, `udp:<hash>`, `mmsi:<n>` (a UDP sender identified by its own AIVDO), `v1:<sub>`. `station` refines it (Kystverket base station id). `channel` is `A`/`B`, or empty for events rebuilt from a non-NMEA source.
-- `nmea`: the sentences as received, or a re-encoded `!AIVDM` for synthesized events.
+- `nmea`: the sentences as received, or a re-encoded `!AIVDM` for events rebuilt from a non-NMEA source (self-reported `s:self` events keep their as-received `!AIVDO`).
 - `lat`/`lon`: the vessel's last known position from the cache (present for static messages too); absent until a position has been heard.
 - `msg_type`: aisstream type name; `message`: go-ais decoded struct.
 - `synthesized`: `true` when the message was not heard over VHF: rebuilt from a non-NMEA source (Digitraffic JSON, AISHub rows, aisstream envelopes), or an own-ship report a vessel built from its GPS (`signalk-aiscast` with TAG `s:self`, station `v1:<sub>/self`). Never fed to AISHub.
