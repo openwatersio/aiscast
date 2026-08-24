@@ -69,6 +69,19 @@ func TestFeedableExcludesPublicSources(t *testing.T) {
 	}
 }
 
+func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	p.Ingest(Reception{Source: "v1:ed25519:k", Station: "v1:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDO,1,1,,A,B1mg=5@3wh<?d@8TIb3Q3wv00000,0*39`})
+	ev := <-sub.ch
+	if !ev.Synthesized || ev.Station != "v1:ed25519:k/self" {
+		t.Errorf("synthesized=%v station=%q", ev.Synthesized, ev.Station)
+	}
+	if feedable(ev) {
+		t.Error("self-reported own ship fed to AISHub")
+	}
+}
+
 func TestAishubPacing(t *testing.T) {
 	p := testPipeline(t)
 	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}

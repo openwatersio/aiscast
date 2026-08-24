@@ -83,6 +83,12 @@ describe("uplink", () => {
     expect((f.nmea as string[]).map((s) => s.replace(/^\\[^\\]*\\/, ""))).toEqual([VDM]);
   });
 
+  it("shares a position report built from Signal K when asked, tagged s:self, independent of the transponder switch", async () => {
+    await start({ share: { ownShip: false, position: true } });
+    const f = await server.waitForFrame((f) => f.type === "publish");
+    expect((f.nmea as string[])[0]).toMatch(/^\\s:self,c:\d{13}\*[0-9A-F]{2}\\!AIVDO,/);
+  });
+
   it("queues to disk while offline and replays oldest-first on reconnect", async () => {
     await start();
     const port = Number(new URL(server.url).port);
@@ -161,6 +167,18 @@ describe("uplink", () => {
     app.emit("nmea0183", VDM2);
     const f = await server.waitForFrame((f) => f.type === "publish");
     expect((f.nmea as string[]).map((s) => s.replace(/^\\[^\\]*\\/, ""))).toEqual([VDM2]);
+  });
+});
+
+describe("config UI", () => {
+  it("disables the GPS position option without an MMSI and says why", () => {
+    type Ui = { share: { position: Record<string, unknown> } };
+    const ui = (createPlugin(app).uiSchema as () => Ui)();
+    expect(ui.share.position["ui:disabled"]).toBeUndefined();
+    const bare = fakeApp({ mmsi: undefined });
+    const noMmsi = (createPlugin(bare).uiSchema as () => Ui)();
+    expect(noMmsi.share.position["ui:disabled"]).toBe(true);
+    expect(noMmsi.share.position["ui:help"]).toMatch(/MMSI/);
   });
 });
 

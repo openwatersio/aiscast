@@ -2,6 +2,7 @@ import type { Delta, ServerAPI } from "@signalk/server-api";
 import { Parser } from "@signalk/nmea0183-signalk";
 import type { Frame, Link } from "./link.js";
 import { stripTag } from "./nmea.js";
+import { ownPosition } from "./ownship.js";
 
 export type ReceiveMode = "off" | "auto" | "always";
 
@@ -23,11 +24,6 @@ const LOCAL_QUIET = 90_000; // auto: no local AIS for this long → subscribe
 const RESUBSCRIBE_FRACTION = 0.25; // re-send the box after moving this fraction of the radius
 const VHF_WINS = 60_000; // always: leave a target alone when another source updated it this recently
 const TARGET_TTL = 10 * 60_000;
-
-interface Position {
-  latitude: number;
-  longitude: number;
-}
 
 interface Box {
   lat: number;
@@ -96,14 +92,6 @@ export class Downlink {
     }
   }
 
-  private ownPosition(): Position | null {
-    const p = this.app.getSelfPath("navigation.position") as { value?: Position } | Position | undefined;
-    const v = p && "value" in p ? p.value : (p as Position | undefined);
-    if (!v || typeof v.latitude !== "number" || typeof v.longitude !== "number") return null;
-    if (Math.abs(v.latitude) < 1e-6 && Math.abs(v.longitude) < 1e-6) return null; // Null Island
-    return v;
-  }
-
   tick(now = Date.now()): void {
     if (!this.link.open) return;
     if (!this.wanted(now)) {
@@ -114,7 +102,7 @@ export class Downlink {
       }
       return;
     }
-    const pos = this.ownPosition();
+    const pos = ownPosition(this.app);
     if (!pos) return; // never subscribe without a position: an empty bbox is the whole world
     const moved = this.box
       ? distanceNm(pos.latitude, pos.longitude, this.box.lat, this.box.lon) > this.box.radiusNm * RESUBSCRIBE_FRACTION ||
@@ -134,9 +122,12 @@ export class Downlink {
     if (f.type !== "event") return;
     const ev = f as unknown as AisEvent;
     if (!Array.isArray(ev.nmea) || ev.nmea.length === 0) return;
-    for (const s of ev.nmea) this.opts.onReceived?.(s);
+    // Own-vessel echoes (our publishes, or another station hearing our transmission) skip the loop guard:
+    // marking them seen would swallow our own future uplink of an identical payload (re-synthesized s:self
+    // position, type 24 rebroadcast unchanged every few minutes). Self is never injected, so there is no loop.
     if (this.opts.selfSource && ev.source === this.opts.selfSource) return;
     if (!ev.mmsi || String(ev.mmsi) === this.selfMmsi) return;
+    for (const s of ev.nmea) this.opts.onReceived?.(s);
     if (POSITION_TYPES.has(ev.msg_type ?? "") && (ev.lat == null || ev.lon == null)) return; // aiscast rejected the position
 
     let delta: Delta | null = null;
