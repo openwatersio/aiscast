@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Action majors move fast and Node runtime deprecations arrive as CI warnings.
+  # One grouped PR a month beats noticing them in a run log.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
