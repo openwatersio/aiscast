@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - New Share setting: *Fallback to self-reported AIS position*. When an AIS transponder is not available, the plugin builds class B position and static reports from Signal K (like `@signalk/aisreporter`) and publishes them as `!AIVDO` tagged `s:self`, so a boat with only a GPS shows up on aiscast as self-reported. Synthesis pauses while a real `!AIVDO` is heard. Checked by default when the config form is saved; configs saved before this setting existed stay off until re-saved. The checkbox is disabled until an MMSI is set in Vessel settings.
 - Each Share setting explains itself below its label, and Receive mode renders as radio buttons instead of a dropdown.
