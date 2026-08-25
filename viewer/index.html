@@ -78,23 +78,6 @@
     return [clamp(b.getSouth(), -90, 90), clamp(b.getWest(), -180, 180), clamp(b.getNorth(), -90, 90), clamp(b.getEast(), -180, 180)];
   }
 
-  async function refresh() {
-    try {
-      const res = await fetch(`${server}/v1/vessels?bbox=${bboxParam().join(",")}`);
-      const fc = await res.json();
-      for (const f of fc.features) {
-        const p = f.properties;
-        const v = vessels.get(p.mmsi) || {};
-        Object.assign(v, p, { lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], seen: Date.parse(p.seen) });
-        vessels.set(p.mmsi, v);
-        noteSource(p.source);
-      }
-      dirty = true;
-    } catch (e) {
-      console.warn("snapshot failed", e);
-    }
-  }
-
   // ---- live stream ----
   let ws, wsState = "connecting", backoff = 1000, eventCount = 0, eventsPerSec = 0;
   function connect() {
@@ -110,7 +93,7 @@
     };
   }
   function subscribe() {
-    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: "subscribe", bbox: [bboxParam()] }));
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: "subscribe", bbox: [bboxParam()], snapshot: true }));
   }
 
   const POSITION_TYPES = new Set(["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "LongRangeAisBroadcastMessage", "StandardSearchAndRescueAircraftReport", "BaseStationReport", "AidsToNavigationReport"]);
@@ -216,12 +199,11 @@
       map.on("mouseleave", layer, () => (map.getCanvas().style.cursor = ""));
       map.on("click", layer, (e) => popup(e.features[0].properties.mmsi, e.lngLat));
     }
-    refresh();
     connect();
   });
 
   let moveTimer;
-  map.on("moveend", () => { clearTimeout(moveTimer); moveTimer = setTimeout(() => { refresh(); subscribe(); }, 300); });
+  map.on("moveend", () => { clearTimeout(moveTimer); moveTimer = setTimeout(subscribe, 300); });
 
   function popup(mmsi, lngLat) {
     const v = vessels.get(mmsi);

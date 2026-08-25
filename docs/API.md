@@ -85,12 +85,14 @@ Client → server:
 {"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0], [58.5, 9.5, 60.5, 11.5]]}
 {"type": "subscribe", "mmsi": [368168720, 257090090]}
 {"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0]], "mmsi": [368168720]}
+{"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0]], "snapshot": true}
 {"type": "publish", "nmea": ["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23", "\\s:st1,c:1787234980*03\\!AIVDM,..."]}
 {"type": "publish", "replay": true, "nmea": ["\\c:1787234980123*2A\\!AIVDM,..."]}
 {"type": "unsubscribe"}
 ```
 
 - `subscribe`: `bbox` is a list of boxes, `mmsi` a list of vessels to follow wherever they are; give either or both (an event matches if it is inside a box OR from a listed MMSI; MMSI matches include positionless messages such as static data). Neither means everything (only for tokens without an `area` cap); a token with a negative `area` must send `mmsi` and no `bbox`. The `area` cap applies to the boxes, the tier's MMSI cap to the list (anonymous 10, personal 50, feeder 200; `{"type":"error","error":"too many mmsi for this key"}` otherwise). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 2 concurrent connections per address, 20 messages/s, 100 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
+- `snapshot`: with `true`, the subscription starts by replaying the last known messages for every vessel it already matches (positions held up to 30 minutes, and a static message when a name or ship type is known), then live traffic follows. Replayed frames carry their original `time`. Most are the messages as received; when the original is no longer held (the vessel survived a server restart) the frame is a reconstruction from the vessel cache, marked `synthesized: true` with no `nmea` and no `id`. A vessel can appear in both the replay and the live stream; there is no gap between them. The replay is not counted against the connection's messages/s rate.
 - `unsubscribe`: stop receiving events; the socket stays open for publishing.
 - `publish`: needs a token (`personal`, `feeder`, `peer`, or `admin`). Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`, and every frame is answered in order with `{"type":"ack","n":<sentences accepted>}`. `replay: true` marks an offline backlog: sentences whose TAG `c:` time is more than 60 s old are then archived and counted, not emitted live and not folded into the vessel cache. At most 1000 sentences per frame and 6000 per minute per key; the rest are dropped (and not counted in `n`). Without a token: `{"type":"error","error":"publish requires a token"}`.
 
