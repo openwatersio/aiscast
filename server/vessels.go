@@ -78,7 +78,6 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	case ais.ShipStaticData:
 		u.Name, u.ShipType, isStatic = m.Name, m.Type, true
 	case ais.StaticDataReport:
-		isStatic = true
 		if m.ReportA.Valid {
 			u.Name = m.ReportA.Name
 		}
@@ -128,6 +127,8 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if u.Kind != "vessel" {
 		v.Kind = u.Kind
 	}
+	// Type 24 halves (name in A, ship type in B) are not retained: replaying only the latest half would
+	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
 	if isStatic { // names don't move, so a stale static is still worth keeping
 		v.lastStatic = ev
 	}
@@ -271,8 +272,8 @@ func (v *vessel) synthPos(mmsi uint32) *Event {
 			UtcHour: uint8(t.Hour()), UtcMinute: uint8(t.Minute()), UtcSecond: uint8(t.Second()),
 			Latitude: lat, Longitude: lon}
 	case "sar":
-		sog := uint16(1023) // type 9 encodes SOG n/a as 1023, not 102.3
-		if v.Sog < 102.3 {
+		sog := uint16(1023) // type 9 SOG is whole knots, n/a 1023; the cache holds it unscaled
+		if v.Sog != 102.3 && v.Sog < 1023 {
 			sog = uint16(math.Round(v.Sog))
 		}
 		pkt = ais.StandardSearchAndRescueAircraftReport{Header: ais.Header{MessageID: 9, UserID: mmsi}, Valid: true,

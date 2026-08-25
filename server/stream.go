@@ -281,12 +281,12 @@ type v1Frame struct {
 
 type v1Event struct {
 	Type        string     `json:"type"`
-	ID          string     `json:"id"`
+	ID          string     `json:"id,omitempty"` // absent on synthesized snapshot reconstructions
 	Time        time.Time  `json:"time"`
 	Source      string     `json:"source"`
 	Station     string     `json:"station"`
 	Channel     string     `json:"channel"`
-	NMEA        []string   `json:"nmea"`
+	NMEA        []string   `json:"nmea,omitempty"` // absent on synthesized snapshot reconstructions
 	MMSI        uint32     `json:"mmsi"`
 	MsgType     string     `json:"msg_type"`
 	Lat         *float64   `json:"lat,omitempty"`
@@ -333,6 +333,10 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	canPublish := cl.may("publish")
 	pace := pacer{n: cl.Rate}
 	var subscription atomic.Pointer[v1Sub] // nil = not subscribed
+	// Register with the fan-out before frames are read: an event broadcast between a snapshot replay
+	// and a later registration would be in neither.
+	sub := p.subscribe()
+	defer p.unsubscribe(sub)
 	go func() {
 		defer cancel()
 		for {
@@ -403,8 +407,6 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	sub := p.subscribe()
-	defer p.unsubscribe(sub)
 	for {
 		select {
 		case <-ctx.Done():

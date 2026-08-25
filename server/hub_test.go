@@ -357,6 +357,12 @@ func TestV1SnapshotSubscribe(t *testing.T) {
 		if m["synthesized"] != true {
 			t.Fatalf("want synthesized, got %v", m)
 		}
+		if _, ok := m["id"]; ok {
+			t.Fatalf("id present on reconstruction: %v", m)
+		}
+		if _, ok := m["nmea"]; ok {
+			t.Fatalf("nmea present on reconstruction: %v", m)
+		}
 		types[m["msg_type"].(string)] = true
 	}
 	if !types["PositionReport"] || !types["ShipStaticData"] {
