@@ -271,21 +271,22 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 // ponytail: minimal envelope of our own; revisit against NIP-01 before any second implementation exists.
 
 type v1Frame struct {
-	Type   string   `json:"type"`             // "subscribe" | "unsubscribe" | "publish"
-	BBox   []bbox   `json:"bbox,omitempty"`   // subscribe: [minLat,minLon,maxLat,maxLon]...; empty = everything
-	MMSI   []uint32 `json:"mmsi,omitempty"`   // subscribe: vessels to follow wherever they are (ORed with bbox)
-	NMEA   []string `json:"nmea,omitempty"`   // publish: tagged or bare sentences
-	Replay bool     `json:"replay,omitempty"` // publish: an offline backlog; stale TAG times are archived, not emitted
+	Type     string   `json:"type"`               // "subscribe" | "unsubscribe" | "publish"
+	BBox     []bbox   `json:"bbox,omitempty"`     // subscribe: [minLat,minLon,maxLat,maxLon]...; empty = everything
+	MMSI     []uint32 `json:"mmsi,omitempty"`     // subscribe: vessels to follow wherever they are (ORed with bbox)
+	NMEA     []string `json:"nmea,omitempty"`     // publish: tagged or bare sentences
+	Replay   bool     `json:"replay,omitempty"`   // publish: an offline backlog; stale TAG times are archived, not emitted
+	Snapshot bool     `json:"snapshot,omitempty"` // subscribe: first replay the last known events for vessels already tracked
 }
 
 type v1Event struct {
 	Type        string     `json:"type"`
-	ID          string     `json:"id"`
+	ID          string     `json:"id,omitempty"` // absent on synthesized snapshot reconstructions
 	Time        time.Time  `json:"time"`
 	Source      string     `json:"source"`
 	Station     string     `json:"station"`
 	Channel     string     `json:"channel"`
-	NMEA        []string   `json:"nmea"`
+	NMEA        []string   `json:"nmea,omitempty"` // absent on synthesized snapshot reconstructions
 	MMSI        uint32     `json:"mmsi"`
 	MsgType     string     `json:"msg_type"`
 	Lat         *float64   `json:"lat,omitempty"`
@@ -332,6 +333,10 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	canPublish := cl.may("publish")
 	pace := pacer{n: cl.Rate}
 	var subscription atomic.Pointer[v1Sub] // nil = not subscribed
+	// Register with the fan-out before frames are read: an event broadcast between a snapshot replay
+	// and a later registration would be in neither.
+	sub := p.subscribe()
+	defer p.unsubscribe(sub)
 	go func() {
 		defer cancel()
 		for {
@@ -370,6 +375,13 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				subscription.Store(s)
+				if f.Snapshot { // replay after storing the live sub: a duplicate is possible, a gap is not
+					for _, ev := range p.snapshotEvents(s) { // unpaced; bounded by the area claim like /v1/vessels
+						if wsWriteJSON(ctx, c, renderV1(ev)) != nil {
+							return
+						}
+					}
+				}
 			case "unsubscribe":
 				subscription.Store(nil)
 			case "publish":
@@ -395,8 +407,6 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	sub := p.subscribe()
-	defer p.unsubscribe(sub)
 	for {
 		select {
 		case <-ctx.Done():
@@ -415,12 +425,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				p.stats.thinned.Add(1)
 				continue
 			}
-			out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, Station: ev.Station, Channel: channelString(ev.Channel),
-				NMEA: ev.Sentences, MMSI: ev.MMSI, MsgType: ev.Type, Message: ev.Packet, Synthesized: ev.Synthesized}
-			if ev.HasPos {
-				out.Lat, out.Lon = &ev.Lat, &ev.Lon
-			}
-			if err := wsWriteJSON(ctx, c, out); err != nil {
+			if err := wsWriteJSON(ctx, c, renderV1(ev)); err != nil {
 				return
 			}
 		}
@@ -448,6 +453,15 @@ func (s *v1Sub) match(ev *Event) bool {
 		}
 	}
 	return false
+}
+
+func renderV1(ev *Event) v1Event {
+	out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, Station: ev.Station, Channel: channelString(ev.Channel),
+		NMEA: ev.Sentences, MMSI: ev.MMSI, MsgType: ev.Type, Message: ev.Packet, Synthesized: ev.Synthesized}
+	if ev.HasPos {
+		out.Lat, out.Lon = &ev.Lat, &ev.Lon
+	}
+	return out
 }
 
 func channelString(c byte) string {

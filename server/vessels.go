@@ -33,6 +33,11 @@ type vessel struct {
 	MsgType   string
 	TrustedAt time.Time // last position from a source that is not low-trust
 	PosAt     time.Time // time of the last position folded in (Seen also moves on static messages)
+
+	// last events heard, replayed by snapshot subscriptions; unexported so the vessel snapshot file skips
+	// them — nil after a restore, and then a reconstruction is synthesized instead.
+	lastPos    *Event
+	lastStatic *Event
 }
 
 func newVessel() *vessel {
@@ -43,7 +48,7 @@ func newVessel() *vessel {
 // so positionless messages (5, 24) can be bbox-routed and carry MetaData like aisstream.
 func (p *Pipeline) updateVessel(ev *Event) {
 	u := newVessel() // fields at sentinel = "not in this message"
-	var hasPos bool
+	var hasPos, isStatic bool
 	switch m := ev.Packet.(type) {
 	case ais.PositionReport:
 		u.Lat, u.Lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
@@ -71,7 +76,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	case ais.AidsToNavigationReport:
 		u.Lat, u.Lon, hasPos, u.Name, u.Kind, u.ShipType = float64(m.Latitude), float64(m.Longitude), true, m.Name, "aton", m.Type
 	case ais.ShipStaticData:
-		u.Name, u.ShipType = m.Name, m.Type
+		u.Name, u.ShipType, isStatic = m.Name, m.Type, true
 	case ais.StaticDataReport:
 		if m.ReportA.Valid {
 			u.Name = m.ReportA.Name
@@ -104,6 +109,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if hasPos && !stale {
 		v.Lat, v.Lon, v.HasPos, v.PosAt = u.Lat, u.Lon, true, ev.Time
 		v.Cog, v.Sog, v.Heading = u.Cog, u.Sog, u.Heading // sentinels from a position report are real "unknown"s
+		v.lastPos = ev
 		if !ev.LowTrust {
 			v.TrustedAt = ev.Time
 		}
@@ -120,6 +126,11 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	}
 	if u.Kind != "vessel" {
 		v.Kind = u.Kind
+	}
+	// Type 24 halves (name in A, ship type in B) are not retained: replaying only the latest half would
+	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
+	if isStatic { // names don't move, so a stale static is still worth keeping
+		v.lastStatic = ev
 	}
 	if !stale {
 		v.Seen, v.Source, v.Station, v.MsgType = ev.Time, ev.Source, ev.Station, ev.Type
@@ -217,6 +228,73 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	p.vmu.RUnlock()
 	w.Header().Set("Content-Type", "application/geo+json")
 	json.NewEncoder(w).Encode(map[string]any{"type": "FeatureCollection", "features": features})
+}
+
+// ---- snapshot subscriptions: replay the cache so a new client starts with the vessels already tracked ----
+
+// snapshotEvents returns replayable events for every cached vessel matching s: the retained originals
+// when available, else reconstructions from the folded state (vessels restored from disk).
+func (p *Pipeline) snapshotEvents(s *v1Sub) []*Event {
+	var out []*Event
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	for mmsi, v := range p.vessels {
+		if !s.match(&Event{MMSI: mmsi, Lat: v.Lat, Lon: v.Lon, HasPos: v.HasPos}) {
+			continue
+		}
+		if v.lastPos != nil {
+			out = append(out, v.lastPos)
+		} else if v.HasPos {
+			out = append(out, v.synthPos(mmsi))
+		}
+		if v.lastStatic != nil {
+			out = append(out, v.lastStatic)
+		} else if (v.Kind == "vessel" || v.Kind == "sar") && (v.Name != "" || v.ShipType != 0) {
+			out = append(out, v.synthStatic(mmsi))
+		}
+	}
+	return out
+}
+
+// synthPos reconstructs a position message from the folded state. The cache's n/a sentinels (COG 360,
+// SOG 102.3, heading 511, nav status 15) are already the AIS encodings, so fields pass through.
+func (v *vessel) synthPos(mmsi uint32) *Event {
+	lat, lon := ais.FieldLatLonFine(v.Lat), ais.FieldLatLonFine(v.Lon)
+	var pkt ais.Packet
+	switch v.Kind {
+	case "aton":
+		pkt = ais.AidsToNavigationReport{Header: ais.Header{MessageID: 21, UserID: mmsi}, Valid: true,
+			Type: v.ShipType, Name: v.Name, Latitude: lat, Longitude: lon, Timestamp: 60}
+	case "base":
+		t := v.PosAt.UTC()
+		pkt = ais.BaseStationReport{Header: ais.Header{MessageID: 4, UserID: mmsi}, Valid: true,
+			UtcYear: uint16(t.Year()), UtcMonth: uint8(t.Month()), UtcDay: uint8(t.Day()),
+			UtcHour: uint8(t.Hour()), UtcMinute: uint8(t.Minute()), UtcSecond: uint8(t.Second()),
+			Latitude: lat, Longitude: lon}
+	case "sar":
+		sog := uint16(1023) // type 9 SOG is whole knots, n/a 1023; the cache holds it unscaled
+		if v.Sog != 102.3 && v.Sog < 1023 {
+			sog = uint16(math.Round(v.Sog))
+		}
+		pkt = ais.StandardSearchAndRescueAircraftReport{Header: ais.Header{MessageID: 9, UserID: mmsi}, Valid: true,
+			Altitude: 4095, Sog: sog, Latitude: lat, Longitude: lon, Cog: ais.Field10(v.Cog), Timestamp: uint8(v.PosAt.Second())}
+	default:
+		pkt = ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: mmsi}, Valid: true,
+			NavigationalStatus: v.NavStatus, RateOfTurn: -128, Sog: ais.Field10(v.Sog),
+			Latitude: lat, Longitude: lon, Cog: ais.Field10(v.Cog), TrueHeading: v.Heading,
+			Timestamp: uint8(v.PosAt.Second())}
+	}
+	return v.synthEvent(mmsi, pkt, v.PosAt)
+}
+
+func (v *vessel) synthStatic(mmsi uint32) *Event {
+	return v.synthEvent(mmsi, ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: mmsi}, Valid: true,
+		Name: v.Name, Type: v.ShipType}, v.Seen)
+}
+
+func (v *vessel) synthEvent(mmsi uint32, pkt ais.Packet, t time.Time) *Event {
+	return &Event{Time: t, Source: v.Source, Station: v.Station, Packet: pkt, Type: typeName(pkt),
+		MMSI: mmsi, Name: v.Name, Lat: v.Lat, Lon: v.Lon, HasPos: v.HasPos, Synthesized: true}
 }
 
 // nm is the great-circle distance in nautical miles.

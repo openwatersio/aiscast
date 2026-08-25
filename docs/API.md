@@ -85,12 +85,14 @@ Client → server:
 {"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0], [58.5, 9.5, 60.5, 11.5]]}
 {"type": "subscribe", "mmsi": [368168720, 257090090]}
 {"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0]], "mmsi": [368168720]}
+{"type": "subscribe", "bbox": [[41.2, -71.2, 42.0, -70.0]], "snapshot": true}
 {"type": "publish", "nmea": ["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23", "\\s:st1,c:1787234980*03\\!AIVDM,..."]}
 {"type": "publish", "replay": true, "nmea": ["\\c:1787234980123*2A\\!AIVDM,..."]}
 {"type": "unsubscribe"}
 ```
 
 - `subscribe`: `bbox` is a list of boxes, `mmsi` a list of vessels to follow wherever they are; give either or both (an event matches if it is inside a box OR from a listed MMSI; MMSI matches include positionless messages such as static data). Neither means everything (only for tokens without an `area` cap); a token with a negative `area` must send `mmsi` and no `bbox`. The `area` cap applies to the boxes, the tier's MMSI cap to the list (anonymous 10, personal 50, feeder 200; `{"type":"error","error":"too many mmsi for this key"}` otherwise). Re-sending replaces the subscription. Nothing is sent until the first subscribe. Without a token the socket has the anonymous tier: 2 concurrent connections per address, 20 messages/s, 100 square degrees, subscribe only. If the token carries `bbox`, every requested box must fit inside, and the total area must fit `area`; otherwise `{"type":"error","error":"bbox not allowed for this key"}` and the subscription is unchanged.
+- `snapshot`: with `true`, the subscription starts by replaying the last known messages for every vessel it already matches (positions held up to 30 minutes, and a static message when a name or ship type is known). Replayed frames carry their original `time`; live events can arrive interleaved with the replay, and a vessel can appear in both, but nothing falls in the gap between them. Most replayed frames are the messages as received; when the original is no longer held (the vessel survived a server restart, or its static data arrived as type 24 halves) the frame is a reconstruction from the vessel cache, marked `synthesized: true` with no `nmea` and no `id`. The replay is not counted against the connection's messages/s rate.
 - `unsubscribe`: stop receiving events; the socket stays open for publishing.
 - `publish`: needs a token (`personal`, `feeder`, `peer`, or `admin`). Sentences are ingested exactly like UDP input (TAG blocks honoured, multipart reassembled per sender, deduplicated) with `source: v1:<sub>`, and every frame is answered in order with `{"type":"ack","n":<sentences accepted>}`. `replay: true` marks an offline backlog: sentences whose TAG `c:` time is more than 60 s old are then archived and counted, not emitted live and not folded into the vessel cache. At most 1000 sentences per frame and 6000 per minute per key; the rest are dropped (and not counted in `n`). Without a token: `{"type":"error","error":"publish requires a token"}`.
 
@@ -108,13 +110,13 @@ aiscast → client, one frame per decoded message after deduplication:
  "synthesized": false}
 ```
 
-- `id`: content id, not an event id: hex of the first 16 bytes of SHA-256 over the decoded payload bits (one byte per bit, fill bits dropped) followed by the channel letter. Identical payloads share an id, whether that is the same transmission heard late by a second station or a static message (Type 5/24) rebroadcast unchanged every few minutes. Use `(id, time)` as the event key; dedupe on `id` alone drops the rebroadcasts.
+- `id`: content id, not an event id: hex of the first 16 bytes of SHA-256 over the decoded payload bits (one byte per bit, fill bits dropped) followed by the channel letter. Identical payloads share an id, whether that is the same transmission heard late by a second station or a static message (Type 5/24) rebroadcast unchanged every few minutes. Use `(id, time)` as the event key; dedupe on `id` alone drops the rebroadcasts. Absent on snapshot reconstructions.
 - `time`: canonical time: the source's timestamp when it is within 30 s of our receive time, else our receive time.
 - `source`: `kystverket`, `digitraffic`, `aishub`, `aisstream`, `http:<station>`, `udp:<hash>`, `mmsi:<n>` (a UDP sender identified by its own AIVDO), `v1:<sub>`. `station` refines it (Kystverket base station id). `channel` is `A`/`B`, or empty for events rebuilt from a non-NMEA source.
-- `nmea`: the sentences as received, or a re-encoded `!AIVDM` for events rebuilt from a non-NMEA source (self-reported `s:self` events keep their as-received `!AIVDO`).
+- `nmea`: the sentences as received, or a re-encoded `!AIVDM` for events rebuilt from a non-NMEA source (self-reported `s:self` events keep their as-received `!AIVDO`). Absent on snapshot reconstructions, which never had sentences.
 - `lat`/`lon`: the vessel's last known position from the cache (present for static messages too); absent until a position has been heard.
 - `msg_type`: aisstream type name; `message`: go-ais decoded struct.
-- `synthesized`: `true` when the message was not heard over VHF: rebuilt from a non-NMEA source (Digitraffic JSON, AISHub rows, aisstream envelopes), or an own-ship report a vessel built from its GPS (`signalk-aiscast` with TAG `s:self`, station `v1:<sub>/self`). Never fed to AISHub.
+- `synthesized`: `true` when the message was not heard over VHF: rebuilt from a non-NMEA source (Digitraffic JSON, AISHub rows, aisstream envelopes), an own-ship report a vessel built from its GPS (`signalk-aiscast` with TAG `s:self`, station `v1:<sub>/self`), or a snapshot reconstruction from the vessel cache. Never fed to AISHub.
 
 Other frames: `{"type":"error","error":"invalid token"}` followed by close 1008 for a bad token; `{"type":"error","error":"bad frame"}` / `"unknown type"` for malformed input; `"concurrent connections per key exceeded"` then close. Frames in are limited to 256 KB. Slow clients are closed with 1008 "client too slow".
 

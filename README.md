@@ -10,7 +10,7 @@ This is a beta. No SLA, coverage is uneven, and the terms under which some sourc
 
 **Native API** ([full reference](docs/API.md)).
 
-- `wss://ais.openwaters.io/v1/stream`: send `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon]]}` or `{"type":"subscribe","mmsi":[368168720]}` (or both) and receive one JSON event per decoded AIS message with its source, station, receive time, raw sentence, and the decoded fields. Subscribing needs no token.
+- `wss://ais.openwaters.io/v1/stream`: send `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon]]}` or `{"type":"subscribe","mmsi":[368168720]}` (or both) and receive one JSON event per decoded AIS message with its source, station, receive time, raw sentence, and the decoded fields. Add `"snapshot":true` to first get the last known messages for every vessel already tracked in the subscription, then live traffic. Subscribing needs no token.
 - `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon` (or `?mmsi=a,b,c`): GeoJSON of every vessel currently in view (last position, name, type, course, speed, heading, when and from where it was last heard). No token.
 - `GET https://ais.openwaters.io/v1/stations`: every source aiscast is hearing, with message counts and age.
 

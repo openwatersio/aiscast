@@ -314,6 +314,70 @@ func TestV1PublishAckAndReplay(t *testing.T) {
 	}
 }
 
+// /v1/stream subscribe with snapshot:true replays cached vessels: retained originals when held,
+// synthesized reconstructions after a restore from disk, nothing outside the subscription.
+func TestV1SnapshotSubscribe(t *testing.T) {
+	p := testPipeline(t)
+	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // 227006760 at 49.4756N 0.1314E
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	read := func() map[string]any {
+		_, msg, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		json.Unmarshal(msg, &m)
+		return m
+	}
+
+	// retained original: real NMEA, not synthesized
+	c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","bbox":[[49,0,50,1]],"snapshot":true}`))
+	if m := read(); m["type"] != "event" || m["mmsi"] != float64(227006760) || m["synthesized"] == true || m["nmea"] == nil {
+		t.Fatalf("want retained event, got %v", m)
+	}
+
+	// restored-from-disk vessel (no retained events): synthesized position and static
+	p.vmu.Lock()
+	v := p.vessels[227006760]
+	v.lastPos, v.lastStatic = nil, nil
+	v.Name, v.ShipType = "TEST", 70
+	p.vmu.Unlock()
+	c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","mmsi":[227006760],"snapshot":true}`))
+	types := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		m := read()
+		if m["synthesized"] != true {
+			t.Fatalf("want synthesized, got %v", m)
+		}
+		if _, ok := m["id"]; ok {
+			t.Fatalf("id present on reconstruction: %v", m)
+		}
+		if _, ok := m["nmea"]; ok {
+			t.Fatalf("nmea present on reconstruction: %v", m)
+		}
+		types[m["msg_type"].(string)] = true
+	}
+	if !types["PositionReport"] || !types["ShipStaticData"] {
+		t.Fatalf("want position and static, got %v", types)
+	}
+
+	// bbox elsewhere: nothing replayed (reading past the timeout closes the socket, so this check is last)
+	c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","bbox":[[60,10,61,11]],"snapshot":true}`))
+	rctx, rcancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer rcancel()
+	if _, msg, err := c.Read(rctx); err == nil {
+		t.Fatalf("unexpected frame: %s", msg)
+	}
+}
+
 func TestStationStats(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Now()
