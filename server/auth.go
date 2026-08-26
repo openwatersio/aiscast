@@ -335,12 +335,16 @@ func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok, c, msg := mintPersonal(clientIP(r), req.Pubkey, req.BindIP)
-	if msg == "personal tokens not enabled" {
+	switch msg {
+	case "":
+	case "personal tokens not enabled":
 		http.Error(w, msg, http.StatusNotImplemented)
 		return
-	}
-	if msg != "" {
+	case "pubkey must be a base64url ed25519 public key":
 		http.Error(w, msg, http.StatusBadRequest)
+		return
+	default: // a signing failure is ours, not the client's
+		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
