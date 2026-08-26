@@ -91,20 +91,29 @@ func (cc *connCounter) acquire(key string, max int) (func(), bool) {
 	}, true
 }
 
-// acquireStream takes both the token's and the address's slot; either cap refuses the stream with a message
-// naming the cap. Anonymous claims are keyed by address, so their per-key cap is an address cap too.
-func acquireStream(c *Claims, ip string) (func(), error) {
+// acquireStreamSlots takes both the token's and the address's slot; either cap refuses the stream with a
+// message naming the cap. Anonymous claims are keyed by address, so their per-key cap is an address cap too.
+// The slots come back separately so an in-place tier upgrade can re-key the sub slot alone.
+func acquireStreamSlots(c *Claims, ip string) (relSub, relAddr func(), err error) {
 	relAddr, ok := addrConns.acquire(ip, addrMaxStreams)
 	if !ok {
-		return nil, errors.New("concurrent streams per address exceeded")
+		return nil, nil, errors.New("concurrent streams per address exceeded")
 	}
-	relSub, ok := conns.acquire(c.Sub, c.Conns)
+	relSub, ok = conns.acquire(c.Sub, c.Conns)
 	if !ok {
 		relAddr()
 		if c.Role == "anonymous" {
-			return nil, errors.New("concurrent streams per address exceeded")
+			return nil, nil, errors.New("concurrent streams per address exceeded")
 		}
-		return nil, errors.New("concurrent connections per key exceeded")
+		return nil, nil, errors.New("concurrent connections per key exceeded")
+	}
+	return relSub, relAddr, nil
+}
+
+func acquireStream(c *Claims, ip string) (func(), error) {
+	relSub, relAddr, err := acquireStreamSlots(c, ip)
+	if err != nil {
+		return nil, err
 	}
 	return func() { relSub(); relAddr() }, nil
 }

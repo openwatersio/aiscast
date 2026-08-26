@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,21 +18,25 @@ const maxPublishFrame = 1000 // sentences per publish frame; the rest are droppe
 
 var wsOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover}
 
-var pingEvery, pingTimeout = 30 * time.Second, 10 * time.Second // vars so tests can shrink them
+// Vars so tests can shrink them; atomic because a handler's pingLoop can outlive its test and read while
+// the next test writes.
+var pingEvery, pingTimeout atomic.Int64
+
+func init() { pingEvery.Store(int64(30 * time.Second)); pingTimeout.Store(int64(10 * time.Second)) }
 
 // pingLoop ends the handler when the peer stops answering pings, so a dropped link (NAT/VPN timeout, half-open
 // socket behind a proxy) releases its stream slots instead of holding them until TCP gives up. Ping only
 // completes while the handler's Read loop is running; every stream handler has one.
 func (p *Pipeline) pingLoop(ctx context.Context, c *websocket.Conn, cancel context.CancelFunc) {
 	defer cancel()
-	t := time.NewTicker(pingEvery)
+	t := time.NewTicker(time.Duration(pingEvery.Load()))
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			pctx, pc := context.WithTimeout(ctx, pingTimeout)
+			pctx, pc := context.WithTimeout(ctx, time.Duration(pingTimeout.Load()))
 			err := c.Ping(pctx)
 			pc()
 			if err != nil {
@@ -271,12 +276,37 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 // ponytail: minimal envelope of our own; revisit against NIP-01 before any second implementation exists.
 
 type v1Frame struct {
-	Type     string   `json:"type"`               // "subscribe" | "unsubscribe" | "publish"
+	Type     string   `json:"type"`               // "subscribe" | "unsubscribe" | "publish" | "register"
 	BBox     []bbox   `json:"bbox,omitempty"`     // subscribe: [minLat,minLon,maxLat,maxLon]...; empty = everything
 	MMSI     []uint32 `json:"mmsi,omitempty"`     // subscribe: vessels to follow wherever they are (ORed with bbox)
 	NMEA     []string `json:"nmea,omitempty"`     // publish: tagged or bare sentences
 	Replay   bool     `json:"replay,omitempty"`   // publish: an offline backlog; stale TAG times are archived, not emitted
 	Snapshot bool     `json:"snapshot,omitempty"` // subscribe: first replay the last known events for vessels already tracked
+	Pubkey   string   `json:"pubkey,omitempty"`   // register: base64url ed25519 public key
+	BindIP   bool     `json:"bind_ip,omitempty"`  // register: bind the token to this connection's address (as /v1/keys bind_ip)
+}
+
+// v1Welcome is the first frame on every /v1/stream socket: the tier in effect for this connection, so a
+// client can size its bbox, pace itself, and back off reconnects without discovering the limits by error.
+type v1Welcome struct {
+	Type   string   `json:"type"` // "welcome"
+	Sub    string   `json:"sub"`
+	Role   string   `json:"role"`
+	Feeder bool     `json:"feeder,omitempty"` // personal token currently earning the feeder tier
+	Limits v1Limits `json:"limits"`
+}
+
+// v1Limits: absent/0 = unlimited; area < 0 = MMSI-only subscriptions. Same semantics as the token claims.
+type v1Limits struct {
+	Conns          int     `json:"conns,omitempty"`
+	Rate           int     `json:"rate,omitempty"`
+	Area           float64 `json:"area,omitempty"`
+	MMSIs          int     `json:"mmsis,omitempty"`
+	BBox           []bbox  `json:"bbox,omitempty"` // subscriptions must fit inside one of these
+	Publish        bool    `json:"publish"`
+	PublishPerMin  int     `json:"publish_per_min,omitempty"`
+	PublishFrame   int     `json:"publish_frame,omitempty"` // sentences accepted per publish frame
+	ConnectsPerMin int     `json:"connects_per_min"`
 }
 
 type v1Event struct {
@@ -324,14 +354,31 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			cl = anonymousClaims(clientIP(r)) // personal-tier limits, keyed by address
 		}
 	}
-	if release, err := acquireStream(cl, clientIP(r)); err == nil {
-		defer release()
-	} else {
+	ip := clientIP(r)
+	relSub, relAddr, err := acquireStreamSlots(cl, ip)
+	if err != nil {
 		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
 		return
 	}
+	// The exit release runs before cancel()/CloseNow() (defer LIFO), so the reader can be mid-register;
+	// the mutex + closed flag make release-old and release-at-exit exactly-once.
+	var slotMu sync.Mutex
+	closed := false
+	defer func() { slotMu.Lock(); closed = true; relSub(); relAddr(); slotMu.Unlock() }()
 	canPublish := cl.may("publish")
-	pace := pacer{n: cl.Rate}
+	sendWelcome := func() error {
+		lim := v1Limits{Conns: cl.Conns, Rate: cl.Rate, Area: cl.Area, MMSIs: cl.MMSIs, BBox: cl.BBox,
+			Publish: canPublish, ConnectsPerMin: wsConnectLimit.max}
+		if canPublish {
+			lim.PublishPerMin, lim.PublishFrame = publishLimit.max, maxPublishFrame
+		}
+		return wsWriteJSON(ctx, c, v1Welcome{Type: "welcome", Sub: cl.Sub, Role: cl.Role, Feeder: cl.Feeder, Limits: lim})
+	}
+	if sendWelcome() != nil {
+		return
+	}
+	var pace atomic.Pointer[pacer] // pointer, not value: register swaps it from the reader while the writer paces
+	pace.Store(&pacer{n: cl.Rate})
 	var subscription atomic.Pointer[v1Sub] // nil = not subscribed
 	// Register with the fan-out before frames are read: an event broadcast between a snapshot replay
 	// and a later registration would be in neither.
@@ -401,6 +448,46 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					n++
 				}
 				wsWriteJSON(ctx, c, map[string]any{"type": "ack", "n": n})
+			case "register":
+				// In-band twin of POST /v1/keys, for clients that can't POST (sandboxed plugins). Mints a
+				// personal token and upgrades this connection in place, so no reconnect is needed.
+				errf := func(msg string) { wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": msg}) }
+				if cl.Role != "anonymous" && !(allowAnon && cl.Sub == "anon") { // the ALLOW_ANON admin socket may still register (local dev)
+					errf("already registered")
+					continue
+				}
+				if !keysLimit.allow(ip) { // before the mint, so spammed frames don't pay key derivation
+					p.stats.rateLimited.Add(1)
+					errf("rate limited")
+					continue
+				}
+				tok, nc, msg := mintPersonal(ip, f.Pubkey, f.BindIP)
+				if msg != "" {
+					errf(msg)
+					continue
+				}
+				ncl := p.effective(&nc) // an already-feeding bound station earns the feeder tier now, as a reconnect would
+				// Only the sub slot is re-keyed; the addr slot is kept, since the upgrade adds no stream.
+				rel, ok := conns.acquire(ncl.Sub, ncl.Conns)
+				if !ok { // keep the anonymous claims and slot
+					errf("concurrent connections per key exceeded")
+					continue
+				}
+				slotMu.Lock()
+				if closed { // handler exited and released while we were minting; give the new slot back
+					slotMu.Unlock()
+					rel()
+					return
+				}
+				relSub()
+				relSub = rel
+				slotMu.Unlock()
+				cl, canPublish = ncl, ncl.may("publish")
+				pace.Store(&pacer{n: cl.Rate})
+				wsWriteJSON(ctx, c, map[string]any{"type": "key", "token": tok, "claims": nc})
+				if sendWelcome() != nil {
+					return
+				}
 			default:
 				wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "unknown type"})
 			}
@@ -421,7 +508,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			if sp == nil || !sp.match(ev) {
 				continue
 			}
-			if !pace.allow(time.Now()) {
+			if !pace.Load().allow(time.Now()) {
 				p.stats.thinned.Add(1)
 				continue
 			}

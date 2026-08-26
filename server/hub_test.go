@@ -271,6 +271,9 @@ func TestV1PublishAckAndReplay(t *testing.T) {
 		json.Unmarshal(msg, &m)
 		return m
 	}
+	if m := read(); m["type"] != "welcome" {
+		t.Fatalf("want welcome, got %v", m)
+	}
 	c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","bbox":[]}`))
 	time.Sleep(50 * time.Millisecond)
 
@@ -336,6 +339,10 @@ func TestV1SnapshotSubscribe(t *testing.T) {
 		var m map[string]any
 		json.Unmarshal(msg, &m)
 		return m
+	}
+
+	if m := read(); m["type"] != "welcome" {
+		t.Fatalf("want welcome, got %v", m)
 	}
 
 	// retained original: real NMEA, not synthesized
@@ -440,8 +447,9 @@ func TestNMEAFeed(t *testing.T) {
 }
 
 func TestPingTimeoutReleasesSlots(t *testing.T) {
-	pingEvery, pingTimeout = 50*time.Millisecond, 50*time.Millisecond
-	defer func() { pingEvery, pingTimeout = 30*time.Second, 10*time.Second }()
+	pingEvery.Store(int64(50 * time.Millisecond))
+	pingTimeout.Store(int64(50 * time.Millisecond))
+	defer func() { pingEvery.Store(int64(30 * time.Second)); pingTimeout.Store(int64(10 * time.Second)) }()
 	p := testPipeline(t)
 	srv := httptest.NewServer(httpHandler(p))
 	defer srv.Close()

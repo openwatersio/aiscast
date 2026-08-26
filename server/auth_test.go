@@ -23,6 +23,53 @@ func testIssuer(t *testing.T, p *Pipeline) (string, ed25519.PrivateKey) {
 	return "t", ed25519.NewKeyFromSeed(sb)
 }
 
+// /v1/stream greets every socket with its effective limits before anything else.
+func TestV1Welcome(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, p)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	base := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/stream"
+
+	welcome := func(url string) v1Welcome {
+		c, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.CloseNow()
+		_, msg, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var w v1Welcome
+		if json.Unmarshal(msg, &w) != nil || w.Type != "welcome" {
+			t.Fatalf("first frame not a welcome: %s", msg)
+		}
+		return w
+	}
+
+	w := welcome(base) // no token: anonymous tier
+	if w.Role != "anonymous" || w.Limits.Conns != anonConns || w.Limits.Rate != anonRate || w.Limits.Area != anonArea || w.Limits.MMSIs != anonMMSIs || w.Limits.Publish || w.Limits.PublishFrame != 0 || w.Limits.ConnectsPerMin <= 0 {
+		t.Errorf("anonymous welcome: %+v", w)
+	}
+
+	tok, _ := signToken(priv, personalClaims(kid, "ed25519:abc", time.Now()))
+	w = welcome(base + "?key=" + tok)
+	if w.Role != "personal" || w.Sub != "ed25519:abc" || w.Feeder || w.Limits.Rate != personalRate || w.Limits.Area != personalArea || !w.Limits.Publish || w.Limits.PublishFrame != maxPublishFrame || w.Limits.PublishPerMin <= 0 {
+		t.Errorf("personal welcome: %+v", w)
+	}
+
+	scoped, _ := signToken(priv, Claims{Kid: kid, Sub: "acme", Role: "partner", Area: -1, BBox: []bbox{{55, 5, 65, 15}}, Exp: time.Now().Add(time.Hour).Unix()})
+	w = welcome(base + "?key=" + scoped)
+	if w.Role != "partner" || w.Limits.Area != -1 || len(w.Limits.BBox) != 1 || w.Limits.Publish {
+		t.Errorf("scoped welcome: %+v", w)
+	}
+}
+
 func TestTokens(t *testing.T) {
 	p := testPipeline(t)
 	allowAnon = false
@@ -147,6 +194,172 @@ func TestPersonalKeys(t *testing.T) {
 }
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+// registerConn opens an anonymous /v1/stream socket against a pipeline with a personal issuer, consumes the
+// anonymous welcome, and returns write/read helpers for in-band register tests. keysPerMin swaps in a fresh
+// limiter before the server exists (a swap after dialing would race the handler's reads).
+func registerConn(t *testing.T, keysPerMin int) (*Pipeline, func(string), func() map[string]any) {
+	t.Helper()
+	p := testPipeline(t)
+	allowAnon = false
+	t.Cleanup(func() { allowAnon = true })
+	pub, seed := newIssuerKey()
+	t.Setenv("PERSONAL_ISSUER_KEY", "p:"+seed)
+	pb, _ := base64.RawURLEncoding.DecodeString(pub)
+	p.auth = &verifier{keys: map[string]ed25519.PublicKey{"p": ed25519.PublicKey(pb)}, revoked: map[string]bool{}}
+	old := keysLimit
+	keysLimit = newLimiter(keysPerMin) // fresh window: the loopback address is shared across the package
+	t.Cleanup(func() { keysLimit = old })
+	srv := httptest.NewServer(httpHandler(p))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.CloseNow() })
+	write := func(frame string) {
+		if err := c.Write(ctx, websocket.MessageText, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() map[string]any {
+		_, msg, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(msg, &m); err != nil {
+			t.Fatalf("bad frame %s: %v", msg, err)
+		}
+		return m
+	}
+	if m := read(); m["type"] != "welcome" || m["role"] != "anonymous" {
+		t.Fatalf("first frame: %v", m)
+	}
+	return p, write, read
+}
+
+func TestV1Register(t *testing.T) {
+	p, write, read := registerConn(t, keysPerMinute)
+	devPub, _ := newIssuerKey()
+
+	write(`{"type":"register","pubkey":"nope"}`)
+	if m := read(); m["error"] != "pubkey must be a base64url ed25519 public key" {
+		t.Fatalf("bad pubkey: %v", m)
+	}
+	write(`{"type":"publish","nmea":[]}`)
+	if m := read(); m["error"] != "publish requires a token" {
+		t.Fatalf("still anonymous after bad pubkey: %v", m)
+	}
+
+	write(`{"type":"register","pubkey":"` + devPub + `"}`)
+	key := read()
+	if key["type"] != "key" {
+		t.Fatalf("key frame: %v", key)
+	}
+	cl, err := p.auth.verify(key["token"].(string), time.Now())
+	if err != nil || cl.Role != "personal" || cl.Sub != "ed25519:"+devPub || cl.Conns != personalConns {
+		t.Errorf("minted token: %+v %v", cl, err)
+	}
+	w := read()
+	if w["type"] != "welcome" || w["role"] != "personal" || w["sub"] != "ed25519:"+devPub {
+		t.Errorf("second welcome: %v", w)
+	}
+	if lim, _ := w["limits"].(map[string]any); lim["publish"] != true || lim["rate"] != float64(personalRate) {
+		t.Errorf("second welcome limits: %v", w["limits"])
+	}
+	conns.mu.Lock()
+	n, anon := conns.n["ed25519:"+devPub], conns.n["anon:127.0.0.1"]
+	conns.mu.Unlock()
+	if n != 1 || anon != 0 {
+		t.Errorf("slot not re-keyed: key=%d anon=%d", n, anon)
+	}
+	write(`{"type":"publish","nmea":[]}`)
+	if m := read(); m["type"] != "ack" {
+		t.Errorf("publish after register: %v", m)
+	}
+	write(`{"type":"register","pubkey":"` + devPub + `"}`)
+	if m := read(); m["error"] != "already registered" {
+		t.Errorf("second register: %v", m)
+	}
+}
+
+func TestV1RegisterDisabled(t *testing.T) {
+	_, write, read := registerConn(t, keysPerMinute)
+	t.Setenv("PERSONAL_ISSUER_KEY", "")
+	write(`{"type":"register","pubkey":"x"}`)
+	if m := read(); m["error"] != "personal tokens not enabled" {
+		t.Fatalf("issuer unset: %v", m)
+	}
+	write(`{"type":"end"}`) // connection survives the error
+	if m := read(); m["error"] != "unknown type" {
+		t.Errorf("connection after disabled register: %v", m)
+	}
+}
+
+func TestV1RegisterRateLimited(t *testing.T) {
+	_, write, read := registerConn(t, 1)
+	write(`{"type":"register","pubkey":"bad"}`) // limiter check precedes pubkey decode
+	if m := read(); m["error"] != "pubkey must be a base64url ed25519 public key" {
+		t.Fatalf("first register: %v", m)
+	}
+	write(`{"type":"register","pubkey":"bad"}`)
+	if m := read(); m["error"] != "rate limited" {
+		t.Errorf("second register: %v", m)
+	}
+}
+
+func TestV1RegisterSlotFull(t *testing.T) {
+	_, write, read := registerConn(t, keysPerMinute)
+	devPub, _ := newIssuerKey()
+	rel1, _ := conns.acquire("ed25519:"+devPub, 0)
+	rel2, _ := conns.acquire("ed25519:"+devPub, 0) // personalConns live entries: the upgrade slot is refused
+	write(`{"type":"register","pubkey":"` + devPub + `"}`)
+	if m := read(); m["error"] != "concurrent connections per key exceeded" {
+		t.Fatalf("register with full slots: %v", m)
+	}
+	write(`{"type":"publish","nmea":[]}`)
+	if m := read(); m["error"] != "publish requires a token" {
+		t.Errorf("connection should stay anonymous: %v", m)
+	}
+	rel1()
+	rel2()
+	write(`{"type":"register","pubkey":"` + devPub + `"}`)
+	if m := read(); m["type"] != "key" {
+		t.Errorf("register after slots freed: %v", m)
+	}
+	if m := read(); m["type"] != "welcome" || m["role"] != "personal" {
+		t.Errorf("welcome after retry: %v", m)
+	}
+}
+
+// The upgrade re-keys only the sub slot, so an address already at its stream cap can still register in place.
+func TestV1RegisterAtAddressCap(t *testing.T) {
+	_, write, read := registerConn(t, keysPerMinute)
+	for i := 0; i < addrMaxStreams-1; i++ { // the open socket holds the address's first slot
+		rel, ok := addrConns.acquire("127.0.0.1", addrMaxStreams)
+		if !ok {
+			t.Fatalf("slot %d refused", i)
+		}
+		t.Cleanup(rel)
+	}
+	devPub, _ := newIssuerKey()
+	write(`{"type":"register","pubkey":"` + devPub + `"}`)
+	if m := read(); m["type"] != "key" {
+		t.Fatalf("register at address cap: %v", m)
+	}
+	if m := read(); m["type"] != "welcome" || m["role"] != "personal" {
+		t.Errorf("welcome at address cap: %v", m)
+	}
+	addrConns.mu.Lock()
+	n := addrConns.n["127.0.0.1"]
+	addrConns.mu.Unlock()
+	if n != addrMaxStreams {
+		t.Errorf("address count %d after upgrade, want %d", n, addrMaxStreams)
+	}
+}
 
 func TestV1SocketTokenScope(t *testing.T) {
 	p := testPipeline(t)
