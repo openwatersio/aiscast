@@ -290,6 +290,29 @@ var personalIssuer = func() (string, ed25519.PrivateKey) {
 
 var keysLimit = newLimiter(keysPerMinute) // personal-token requests per address per minute: one is all a client needs
 
+// mintPersonal is the one mint path behind both POST /v1/keys and /v1/stream's register frame, so the two
+// transports cannot drift (same claims, same bind_ip behaviour, same client-safe error strings).
+func mintPersonal(ip, pubkey string, bindIP bool) (token string, c Claims, errMsg string) {
+	kid, priv := personalIssuer()
+	if priv == nil {
+		return "", Claims{}, "personal tokens not enabled"
+	}
+	pk, err := base64.RawURLEncoding.DecodeString(pubkey)
+	if err != nil || len(pk) != ed25519.PublicKeySize {
+		return "", Claims{}, "pubkey must be a base64url ed25519 public key"
+	}
+	// ponytail: no proof of possession yet; the token is a bearer token whose sub names the device key
+	c = personalClaims(kid, "ed25519:"+pubkey, time.Now())
+	if bindIP {
+		c.CIDR = []string{ip}
+	}
+	token, err = signToken(priv, c)
+	if err != nil {
+		return "", Claims{}, err.Error()
+	}
+	return token, c, ""
+}
+
 func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -298,11 +321,6 @@ func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST {\"pubkey\": \"<base64url ed25519 public key>\"}", http.StatusMethodNotAllowed)
-		return
-	}
-	kid, priv := personalIssuer()
-	if priv == nil {
-		http.Error(w, "personal tokens not enabled", http.StatusNotImplemented)
 		return
 	}
 	if p.limited(w, keysLimit, clientIP(r)) {
@@ -316,19 +334,13 @@ func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	pk, err := base64.RawURLEncoding.DecodeString(req.Pubkey)
-	if err != nil || len(pk) != ed25519.PublicKeySize {
-		http.Error(w, "pubkey must be a base64url ed25519 public key", http.StatusBadRequest)
+	tok, c, msg := mintPersonal(clientIP(r), req.Pubkey, req.BindIP)
+	if msg == "personal tokens not enabled" {
+		http.Error(w, msg, http.StatusNotImplemented)
 		return
 	}
-	// ponytail: no proof of possession yet; the token is a bearer token whose sub names the device key
-	c := personalClaims(kid, "ed25519:"+req.Pubkey, time.Now())
-	if req.BindIP {
-		c.CIDR = []string{clientIP(r)}
-	}
-	tok, err := signToken(priv, c)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
