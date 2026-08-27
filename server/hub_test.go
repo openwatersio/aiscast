@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -620,5 +621,94 @@ func TestV1SSEReleasesSlots(t *testing.T) {
 			t.Fatalf("slot never released: %d still held", n)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// gatedWriter releases exactly one Write per token, so a test can step the SSE handler frame by frame with
+// no socket or bufio buffering in between.
+type gatedWriter struct {
+	h      http.Header
+	gate   chan struct{}
+	writes chan string
+}
+
+func (g *gatedWriter) Header() http.Header              { return g.h }
+func (g *gatedWriter) WriteHeader(int)                  {}
+func (g *gatedWriter) Flush()                           {}
+func (g *gatedWriter) SetWriteDeadline(time.Time) error { return nil }
+
+// A closed gate ends the handler, so its deferred slot releases run instead of leaking into later tests.
+func (g *gatedWriter) Write(p []byte) (int, error) {
+	if _, ok := <-g.gate; !ok {
+		return 0, errors.New("gated writer closed")
+	}
+	g.writes <- string(p)
+	return len(p), nil
+}
+
+// A replay must keep draining the fan-out while it goes out. The subscriber queue holds global events, not
+// the ones a subscription matches, so a replay written as one uninterrupted burst overflows a queue nobody
+// is reading and disconnects the very client that asked for the snapshot. The socket avoids this by
+// replaying on its reader goroutine while its writer drains; SSE writes from a single goroutine.
+func TestV1SSESnapshotUnderLoad(t *testing.T) {
+	p := testPipeline(t)
+	defer func(n int) { subBuffer = n }(subBuffer)
+	subBuffer = 8
+
+	const vessels = 50 // 2 replay frames each: a position and a static reconstruction
+	now := time.Now()
+	p.vmu.Lock()
+	for i := uint32(0); i < vessels; i++ {
+		v := newVessel()
+		v.HasPos, v.Lat, v.Lon, v.Seen, v.PosAt = true, 49.5, 0.5, now, now
+		v.Name, v.Source, v.Station = "TESTVESSEL", "t", "t"
+		p.vessels[200000000+i] = v
+	}
+	p.vmu.Unlock()
+
+	w := &gatedWriter{h: http.Header{}, gate: make(chan struct{}), writes: make(chan string, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer close(w.gate) // unwind the handler even if the test fails mid-frame
+	r := httptest.NewRequest("GET", "/v1/stream?bbox=49,0,50,1&snapshot=1", nil).WithContext(ctx)
+	go p.serveV1SSE(w, r)
+
+	step := func() string {
+		t.Helper()
+		select {
+		case w.gate <- struct{}{}:
+		case <-time.After(5 * time.Second):
+			t.Fatal("handler never reached its next write")
+		}
+		select {
+		case s := <-w.writes:
+			if strings.Contains(s, "client too slow") {
+				t.Fatalf("disconnected: the replay stalled its own fan-out queue")
+			}
+			return s
+		case <-time.After(5 * time.Second):
+			t.Fatal("write never completed")
+			return ""
+		}
+	}
+
+	if s := step(); !strings.Contains(s, `"type":"welcome"`) {
+		t.Fatalf("first frame %q", s)
+	}
+	// One event per replay frame written: a rate any reading client sustains, never bursting past the
+	// queue depth. Only a replay that ignores its queue lets these pile up.
+	sent := 4 * subBuffer
+	for i := 0; i < sent; i++ {
+		p.broadcast(&Event{MMSI: 42, Time: now, Type: "PositionReport"}) // matches no bbox: drained, not written
+		step()
+	}
+	for i := sent; i < 2*vessels; i++ { // rest of the replay
+		step()
+	}
+	// Replay done. A matching event must now arrive as an event: a handler that ignored its queue has
+	// overflow set and cuts the client off instead, which is the failure this test exists to catch.
+	p.broadcast(&Event{MMSI: 42, Time: now, Type: "PositionReport", Lat: 49.5, Lon: 0.5, HasPos: true})
+	if s := step(); !strings.Contains(s, `"type":"event"`) {
+		t.Fatalf("after replay %q", s)
 	}
 }

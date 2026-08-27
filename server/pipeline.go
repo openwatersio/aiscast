@@ -343,9 +343,14 @@ func typeName(p ais.Packet) string {
 
 var typeNameOverride = map[string]string{"AddessedSafetyMessage": "AddressedSafetyMessage"}
 
+// subBuffer is the per-subscriber queue depth; a var so tests can shrink it. broadcast enqueues every
+// event before any per-subscription filtering, so this is depth measured in global events, not in the
+// ones a subscription actually matches.
+var subBuffer = 1024
+
 func (p *Pipeline) subscribe() *subscriber {
 	p.usage.streams.add(time.Now())
-	s := &subscriber{ch: make(chan *Event, 1024)}
+	s := &subscriber{ch: make(chan *Event, subBuffer)}
 	p.smu.Lock()
 	p.subs[s] = struct{}{}
 	p.smu.Unlock()

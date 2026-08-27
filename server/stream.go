@@ -681,18 +681,51 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 	if send(welcomeFor(cl, false)) != nil {
 		return
 	}
+	var snap []*Event
 	if r.URL.Query().Get("snapshot") == "1" {
-		for _, ev := range p.snapshotEvents(s) { // unpaced, like the socket's snapshot frame
-			if send(renderV1(ev)) != nil {
-				return
-			}
-		}
+		snap = p.snapshotEvents(s)
 	}
 
 	pace := pacer{n: cl.Rate}
 	keep := time.NewTicker(time.Duration(pingEvery.Load()))
 	defer keep.Stop()
+	// deliver sends one event from the fan-out; false ends the handler.
+	deliver := func(ev *Event) bool {
+		if fan.overflow.Load() {
+			send(map[string]string{"type": "error", "error": "client too slow"}) // the socket's close 1008
+			return false
+		}
+		if !s.match(ev) {
+			return true
+		}
+		if !pace.allow(time.Now()) {
+			p.stats.thinned.Add(1)
+			return true
+		}
+		return send(renderV1(ev)) == nil
+	}
 	for {
+		if len(snap) > 0 {
+			// Live events take priority over the replay. The fan-out buffer fills at the global event
+			// rate rather than this subscription's, so a replay written as one uninterrupted burst
+			// overflows a queue nobody is draining and disconnects the client that asked for it. The
+			// socket avoids this by replaying on its reader goroutine while the writer drains; SSE
+			// writes from one goroutine, so the two interleave here instead.
+			select {
+			case <-r.Context().Done():
+				return
+			case ev := <-fan.ch:
+				if !deliver(ev) {
+					return
+				}
+			default:
+				if send(renderV1(snap[0])) != nil { // unpaced, like the socket's snapshot frame
+					return
+				}
+				snap = snap[1:]
+			}
+			continue
+		}
 		select {
 		case <-r.Context().Done():
 			return
@@ -701,18 +734,7 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case ev := <-fan.ch:
-			if fan.overflow.Load() {
-				send(map[string]string{"type": "error", "error": "client too slow"}) // the socket's close 1008
-				return
-			}
-			if !s.match(ev) {
-				continue
-			}
-			if !pace.allow(time.Now()) {
-				p.stats.thinned.Add(1)
-				continue
-			}
-			if send(renderV1(ev)) != nil {
+			if !deliver(ev) {
 				return
 			}
 		}

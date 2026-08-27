@@ -28,7 +28,7 @@ GET /v1/stream?bbox=41.2,-71.2,42.0,-70.0&bbox=58.5,9.5,60.5,11.5&mmsi=368168720
 |---|---|
 | `bbox` | `minLat,minLon,maxLat,maxLon`, repeatable; boxes are ORed. Same form as `/v1/nmea`. |
 | `mmsi` | comma-separated vessels to follow wherever they are, ORed with `bbox`. Same form as `/v1/vessels`. |
-| `snapshot` | `1` replays the last known events for vessels already matched before live events begin. |
+| `snapshot` | `1` replays the last known events for vessels already matched, interleaved with live traffic. |
 | `key` | token, as elsewhere; `Authorization: Bearer` also works. |
 
 Neither `bbox` nor `mmsi` means everything, permitted only for tokens without an `area` cap. The parsed parameters build a `v1Sub` and reuse its `match` method unchanged.
@@ -63,7 +63,9 @@ data: {"type":"event","id":"15f3d254...","time":"2026-08-20T15:25:54.342871Z",..
 
 ```
 
-Payloads are the existing `v1Welcome` and `renderV1(ev)` structures marshalled unchanged. The welcome frame comes first, as on the socket. `snapshot=1` then replays `p.snapshotEvents(s)` unpaced, before live events, with the same guarantee: a vessel may appear in both the replay and the live stream, but nothing falls in the gap between them.
+Payloads are the existing `v1Welcome` and `renderV1(ev)` structures marshalled unchanged. The welcome frame comes first, as on the socket. `snapshot=1` then replays `p.snapshotEvents(s)` unpaced, with the same guarantee the socket gives: a vessel may appear in both the replay and the live stream, but nothing falls in the gap between them.
+
+Live events take priority over the replay, and the two interleave. The fan-out queue holds events at the global rate rather than at this subscription's, so a replay written as one uninterrupted burst overflows a queue nobody is draining and disconnects the client that asked for the snapshot. A replay of the whole vessel cache is megabytes, which is many seconds of global traffic on a busy feed. The socket avoids this by replaying on its reader goroutine while its writer drains; SSE writes from a single goroutine, so the replay yields to the queue between frames instead.
 
 A slow client whose `sub.overflow` is set gets a final `{"type":"error","error":"client too slow"}` and the handler returns, mirroring the socket's close 1008.
 
@@ -131,7 +133,8 @@ In [server/hub_test.go](../server/hub_test.go), alongside `TestV1SnapshotSubscri
 | Case | Assertion |
 |---|---|
 | live delivery | connect, then ingest a sentence; a `welcome` arrives, then an `event` carrying the same JSON the WebSocket test asserts |
-| snapshot replay | ingest a sentence **before** connecting, then `GET` with `snapshot=1`; the vessel is replayed after the `welcome` and ahead of live traffic |
+| snapshot replay | ingest a sentence **before** connecting, then `GET` with `snapshot=1`; the vessel is replayed after the `welcome` |
+| replay under load | step the handler frame by frame through a gated writer, broadcasting one event per replay frame; the queue must stay drained and the client must survive the replay |
 | malformed parameters | `bbox=nonsense` and `mmsi=nonsense` each return 400 |
 | capped subscription | a token with an `area` claim requesting a larger box returns 400; one with `mmsis` exceeded returns 400 |
 | disconnect cleanup | closing the response body releases the stream slot, so a second connect within the token's `conns` succeeds |

@@ -139,7 +139,7 @@ A `GET` to the same URL without a WebSocket upgrade returns `text/event-stream` 
 curl -N 'https://ais.openwaters.io/v1/stream?bbox=41.2,-71.2,42.0,-70.0&mmsi=368168720&snapshot=1'
 ```
 
-The subscription is fixed at connect time from the query string: `bbox=minLat,minLon,maxLat,maxLon` (repeatable, ORed), `mmsi=<mmsi>,<mmsi>,...`, `snapshot=1`, and `key=<token>` (or `Authorization: Bearer`). Neither `bbox` nor `mmsi` means everything, for tokens without an `area` cap. The claim checks are the ones the `subscribe` frame applies.
+The subscription is fixed at connect time from the query string: `bbox=minLat,minLon,maxLat,maxLon` (repeatable, ORed), `mmsi=<mmsi>,<mmsi>,...`, `snapshot=1`, and `key=<token>` (or `Authorization: Bearer`). Neither `bbox` nor `mmsi` means everything, for tokens without an `area` cap. The claim checks are the ones the `subscribe` frame applies, and `snapshot=1` behaves as it does on the socket: live events interleave with the replay, a vessel can appear in both, and nothing falls in the gap between them.
 
 Each frame is one `data:` line carrying the same JSON the socket sends — a `welcome` first, then `event` frames, distinguished by their `type` field rather than an SSE event name, so a browser's `EventSource.onmessage` sees all of them:
 
