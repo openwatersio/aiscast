@@ -17,6 +17,7 @@ import (
 
 func testPipeline(t *testing.T) *Pipeline {
 	allowAnon = true
+	wsConnectLimit = newLimiter(wsConnectLimit.max) // package-level, so connects otherwise accumulate across tests
 	return newPipeline(newArchive("", nil))
 }
 
@@ -479,4 +480,145 @@ func TestPingTimeoutReleasesSlots(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("slots still held after ping timeout: %s timeouts=%d", held(), p.stats.pingTimeouts.Load())
+}
+
+// sseLines opens an SSE stream and returns a reader of decoded frames: JSON payloads as maps, keepalive
+// comments skipped.
+func sseGet(t *testing.T, url string) (*http.Response, func() map[string]any) {
+	t.Helper()
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 200 {
+		t.Fatalf("%s: status %d", url, res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content-type %q", ct)
+	}
+	sc := bufio.NewScanner(res.Body)
+	return res, func() map[string]any {
+		for sc.Scan() {
+			line := sc.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue // blank separator or ":" keepalive
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &m); err != nil {
+				t.Fatalf("bad frame %q: %v", line, err)
+			}
+			return m
+		}
+		t.Fatalf("stream ended: %v", sc.Err())
+		return nil
+	}
+}
+
+func TestV1SSE(t *testing.T) {
+	const sentence = "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23" // 227006760 at 49.4756N 0.1314E
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	// live delivery: welcome first, then events ingested after the stream is open
+	res, read := sseGet(t, srv.URL+"/v1/stream?bbox=49,0,50,1")
+	if m := read(); m["type"] != "welcome" || m["limits"].(map[string]any)["publish"] != false {
+		t.Fatalf("want welcome without publish, got %v", m)
+	}
+	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: sentence})
+	if m := read(); m["type"] != "event" || m["mmsi"] != float64(227006760) {
+		t.Fatalf("want event, got %v", m)
+	}
+	res.Body.Close()
+
+	// snapshot: the vessel is already known before this stream opens, so it must be replayed
+	res, read = sseGet(t, srv.URL+"/v1/stream?bbox=49,0,50,1&snapshot=1")
+	defer res.Body.Close()
+	if m := read(); m["type"] != "welcome" {
+		t.Fatalf("want welcome, got %v", m)
+	}
+	if m := read(); m["type"] != "event" || m["mmsi"] != float64(227006760) {
+		t.Fatalf("want replayed event, got %v", m)
+	}
+}
+
+func TestV1SSERejections(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false // exercise the anonymous tier's caps rather than ALLOW_ANON's admin claims
+	defer func() { allowAnon = true }()
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{"?bbox=nonsense", 400},
+		{"?bbox=49,0,50", 400},
+		{"?bbox=49,0,200,1", 400},                 // out of range
+		{"?mmsi=nonsense", 400},                   // /v1/vessels would drop this silently
+		{"", 400},                                 // everything, but the anonymous tier has an area cap
+		{"?bbox=0,0,50,50", 400},                  // 2500 square degrees over the anonymous 100
+		{"?bbox=0,0,50,50&bbox=0,0,-50,-50", 400}, // inverted second box must not subtract from the total
+		{"?mmsi=1,2,3,4,5,6,7,8,9,10,11", 400},    // over the anonymous mmsi cap of 10
+		{"?key=ak1.bogus.bogus&bbox=49,0,50,1", 401},
+	} {
+		res, err := http.Get(srv.URL + "/v1/stream" + tc.query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != tc.want {
+			t.Errorf("%q: status %d, want %d", tc.query, res.StatusCode, tc.want)
+		}
+	}
+
+	if res, err := http.Post(srv.URL+"/v1/stream", "text/plain", nil); err != nil {
+		t.Fatal(err)
+	} else if res.Body.Close(); res.StatusCode != 405 {
+		t.Errorf("POST: status %d, want 405", res.StatusCode)
+	}
+}
+
+// A disconnected client must release its stream slot, or the tier's conns cap leaks one connection per
+// dropped reader.
+func TestV1SSEReleasesSlots(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	var bodies []*http.Response
+	for i := 0; i < anonConns; i++ { // fill the anonymous tier
+		res, _ := sseGet(t, srv.URL+"/v1/stream?bbox=49,0,50,1")
+		bodies = append(bodies, res)
+	}
+	res, err := http.Get(srv.URL + "/v1/stream?bbox=49,0,50,1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 429 {
+		t.Fatalf("over the cap: status %d, want 429", res.StatusCode)
+	}
+	for _, b := range bodies {
+		b.Body.Close()
+	}
+	// The handler notices the disconnect through r.Context(); give it a moment to unwind. Checking the
+	// counter rather than reconnecting keeps the connect limiter out of it, since its 429 and a full
+	// slot's 429 are the same status.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conns.mu.Lock()
+		n := conns.n["anon:127.0.0.1"]
+		conns.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot never released: %d still held", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

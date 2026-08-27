@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -326,6 +328,17 @@ type v1Event struct {
 }
 
 func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
+	// Not an upgrade: same URL, same claims and caps, one-way over SSE. This test only routes; the real
+	// handshake validation is websocket.Accept's, which answers a malformed one with 400. Requiring GET is
+	// what stops a POST from opening an unbounded stream.
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		p.serveV1SSE(w, r)
+		return
+	}
 	// Anonymous sockets may subscribe (the viewer), never publish. A supplied token must verify, and its
 	// claims (cidr, conns, bbox) bind the socket whatever its role; publishing needs a publish role.
 	cl, claimsErr := p.socketClaims(r)
@@ -366,14 +379,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	closed := false
 	defer func() { slotMu.Lock(); closed = true; relSub(); relAddr(); slotMu.Unlock() }()
 	canPublish := cl.may("publish")
-	sendWelcome := func() error {
-		lim := v1Limits{Conns: cl.Conns, Rate: cl.Rate, Area: cl.Area, MMSIs: cl.MMSIs, BBox: cl.BBox,
-			Publish: canPublish, ConnectsPerMin: wsConnectLimit.max}
-		if canPublish {
-			lim.PublishPerMin, lim.PublishFrame = publishLimit.max, maxPublishFrame
-		}
-		return wsWriteJSON(ctx, c, v1Welcome{Type: "welcome", Sub: cl.Sub, Role: cl.Role, Feeder: cl.Feeder, Limits: lim})
-	}
+	sendWelcome := func() error { return wsWriteJSON(ctx, c, welcomeFor(cl, canPublish)) }
 	if sendWelcome() != nil {
 		return
 	}
@@ -556,4 +562,159 @@ func channelString(c byte) string {
 		return ""
 	}
 	return string(c)
+}
+
+// ---- /v1/stream over Server-Sent Events: the same feed for clients without a WebSocket ----
+
+// welcomeFor builds the connection's welcome frame. Shared by both transports so the advertised limits
+// cannot drift from the ones actually enforced. canPublish is a property of the transport as well as the
+// token: SSE has no channel to publish on, so it advertises false however capable the token is.
+func welcomeFor(cl *Claims, canPublish bool) v1Welcome {
+	lim := v1Limits{Conns: cl.Conns, Rate: cl.Rate, Area: cl.Area, MMSIs: cl.MMSIs, BBox: cl.BBox,
+		Publish: canPublish, ConnectsPerMin: wsConnectLimit.max}
+	if canPublish {
+		lim.PublishPerMin, lim.PublishFrame = publishLimit.max, maxPublishFrame
+	}
+	return v1Welcome{Type: "welcome", Sub: cl.Sub, Role: cl.Role, Feeder: cl.Feeder, Limits: lim}
+}
+
+// parseSSESub builds the fixed subscription from the query string. Malformed input is refused rather than
+// dropped the way /v1/vessels drops it: on a connection held open for hours a typo'd mmsi is
+// indistinguishable from a subscription that legitimately never matches.
+func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
+	s := &v1Sub{}
+	for _, q := range r.URL.Query()["bbox"] {
+		var v [4]float64
+		if n, _ := fmt.Sscanf(q, "%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3]); n != 4 {
+			return nil, "bbox=minLat,minLon,maxLat,maxLon"
+		}
+		// Corners are normalised, as /v0 normalises them: an inverted box has negative area and would
+		// otherwise subtract from the total the area claim is checked against.
+		b := bbox{min(v[0], v[2]), min(v[1], v[3]), max(v[0], v[2]), max(v[1], v[3])}
+		if b[0] < -90 || b[2] > 90 || b[1] < -180 || b[3] > 180 {
+			return nil, "bbox out of range"
+		}
+		if !cl.allowsBox(b) {
+			return nil, "bbox not allowed for this key"
+		}
+		s.boxes = append(s.boxes, b)
+	}
+	if q := r.URL.Query().Get("mmsi"); q != "" {
+		s.mmsi = map[uint32]bool{}
+		for _, f := range strings.Split(q, ",") {
+			n, err := strconv.ParseUint(strings.TrimSpace(f), 10, 32)
+			if err != nil {
+				return nil, "mmsi=<mmsi>,<mmsi>,..."
+			}
+			s.mmsi[uint32(n)] = true
+		}
+	}
+	s.everything = len(s.boxes) == 0 && len(s.mmsi) == 0
+	if s.everything && cl.Area != 0 {
+		return nil, "bbox or mmsi required for this key"
+	}
+	if !cl.allowsArea(s.boxes) {
+		return nil, "bbox not allowed for this key"
+	}
+	if !cl.allowsMMSIs(len(s.mmsi)) {
+		return nil, "too many mmsi for this key"
+	}
+	return s, ""
+}
+
+// serveV1SSE streams the same events as the socket to a plain GET. The subscription is fixed at connect time
+// from the query string, since SSE gives the client no channel to change it on.
+func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
+	cl, claimsErr := p.socketClaims(r)
+	if p.limited(w, wsConnectLimit, connectKey(cl, r)) {
+		return
+	}
+	if claimsErr != nil {
+		http.Error(w, claimsErr.Error(), http.StatusUnauthorized)
+		return
+	}
+	if cl == nil {
+		if allowAnon {
+			cl = &Claims{Sub: "anon", Role: "admin"}
+		} else {
+			cl = anonymousClaims(clientIP(r))
+		}
+	}
+	// Parsed and checked before any slot or subscription is taken, so a rejected request is cheap.
+	s, msg := parseSSESub(r, cl)
+	if msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	relSub, relAddr, err := acquireStreamSlots(cl, clientIP(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusTooManyRequests)
+		return
+	}
+	defer func() { relSub(); relAddr() }()
+
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Access-Control-Allow-Origin", "*")
+	rc := http.NewResponseController(w)
+	// Every write is deadlined. A client that stops reading fills its socket buffer, and an undeadlined
+	// write to it never returns: the handler would never see overflow, never fire a keepalive, and never
+	// run the releases above. The deadline turns that into a write error, which unwinds the handler.
+	write := func(prefix string, b []byte) error {
+		rc.SetWriteDeadline(time.Now().Add(time.Duration(pingTimeout.Load()))) // ErrNotSupported only off a real conn
+		if _, err := fmt.Fprintf(w, "%s%s\n\n", prefix, b); err != nil {
+			return err
+		}
+		return rc.Flush()
+	}
+	// One data: line per frame is always valid here — JSON escapes the newlines that would need more.
+	send := func(v any) error {
+		b, _ := json.Marshal(v)
+		return write("data: ", b)
+	}
+
+	// Subscribed before the snapshot replay, as on the socket: an event broadcast between the replay and a
+	// later registration would be in neither.
+	fan := p.subscribe()
+	defer p.unsubscribe(fan)
+	if send(welcomeFor(cl, false)) != nil {
+		return
+	}
+	if r.URL.Query().Get("snapshot") == "1" {
+		for _, ev := range p.snapshotEvents(s) { // unpaced, like the socket's snapshot frame
+			if send(renderV1(ev)) != nil {
+				return
+			}
+		}
+	}
+
+	pace := pacer{n: cl.Rate}
+	keep := time.NewTicker(time.Duration(pingEvery.Load()))
+	defer keep.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-keep.C:
+			if write(":", nil) != nil { // comment frame: keeps idle proxies from closing the stream
+				return
+			}
+		case ev := <-fan.ch:
+			if fan.overflow.Load() {
+				send(map[string]string{"type": "error", "error": "client too slow"}) // the socket's close 1008
+				return
+			}
+			if !s.match(ev) {
+				continue
+			}
+			if !pace.allow(time.Now()) {
+				p.stats.thinned.Add(1)
+				continue
+			}
+			if send(renderV1(ev)) != nil {
+				return
+			}
+		}
+	}
 }
