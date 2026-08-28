@@ -1,6 +1,6 @@
 # Signal K AIS plugins and server API
 
-Researched 2026-08-20 from published npm tarballs, `@signalk/server-api` types, `signalk-server` 2.31 source, and issue trackers. Informs Stage 3 in [../PLAN.md](../PLAN.md). Weekly downloads are for 2026-08-13 → 19.
+Researched 2026-08-20 from published npm tarballs, `@signalk/server-api` types, `signalk-server` 2.31 source, and issue trackers. Informs the design of the `signalk-aiscast` plugin. Weekly downloads are for 2026-08-13 → 19.
 
 ## Headline findings
 

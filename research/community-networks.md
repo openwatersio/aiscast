@@ -17,9 +17,13 @@ Compiled 2026-08-20 from upstream source, live pages, DNS/socket probes. Station
 | SDRMap | Chaos Consulting | HTTP POST `https://ais.feed.sdrmap.org/` | community map | ~340 | undocumented |
 | aisstream.io | — | does not accept feeds | — | undisclosed | free wss, no ToS at all |
 | aprs.fi | Heikki Hannikainen | HTTP multipart `jsonais` → `aprs.fi/jsonais/post/$KEY` | map + free API (non-commercial) | — | no cloning |
-| Airframes | community | HTTP → `feed.airframes.io:5599`, no signup | leaderboard | aviation-focused | — |
-| BoatBeacon | Pocket Mariner (UK) | UDP/TCP `boatbeaconapp.com:5322` | station page | — | none |
-| ShippingExplorer, VesselTracker, HPRadar, MLAT.uk, RadarVirtuel | — | UDP/HTTP | account | — | none |
+| Airframes | community, no legal entity | TCP `feed.airframes.io:5599` (open), no signup | leaderboard; REST `api.airframes.io/v1` free for feeders (≥7 days feeding, 60 req/min, non-commercial) | aviation-focused | docs list a Marine/AIS section but `/v1/marine` and `/v1/vessels` 404; redistribution needs attribution, bulk needs arrangement ([licensing](https://docs.airframes.io/api/licensing)) |
+| BoatBeacon | Pocket Mariner / Electric Pocket (UK) | UDP `boatbeaconapp.com:5322` (TCP closed); register via coverage@pocketmariner.com | station page `boatbeaconapp.com/station/NNNN`, sometimes free hardware | — | sells AIS data commercially ([AISWatch/FleetWatch](https://pocketmariner.com/commercial-services/aiswatch/fleetwatch/)), quote-only, no public terms |
+| HP Radar | DIY, Hai Phong, Vietnam; 8 stations | UDP `aisfeed.hpradar.com:4200` (always open, JSON accepted), dedicated port on request | REST `api.hpradar.com` `/ais/vessels`, `/ais/vessels/{mmsi}`, `/ais/stats`; free 100 req/h, contributor 1,000 req/h ([docs](https://hpradar.com/api)) | local | "available upon request" by email; documented paths 404 on the Kong gateway as of 2026-08-22; no license text; Hai Phong only |
+| ShippingExplorer | ShippingExplorer S.L., Tenerife | UDP `144.76.54.111` (Hetzner), port on request | nothing published | — | "Custom APIs / Raw Data" sales-gated ([services](https://www.shippingexplorer.net/en/services)); viewer €42–220/mo |
+| VesselTracker | vesseltracker.com GmbH, Hamburg (Wood Mackenzie) | UDP `83.220.137.136` (`aisstaging.vesseltracker.com`) | free hardware + Coastal Account viewer, explicitly not API ([antenna partner](https://www.vesseltracker.com/en/static/antenna-partner.html)) | — | commercial Data Services: REST/SOAP, sFTP, NMEA streams, quote-only |
+| RadarVirtuel / ADSB-Network | ADS-B NETWORK SAS (FR) | HTTP POST `ais.adsbnetwork.com/ingester/insert/lourd`, key + station ID via support@adsbnetwork.com | account | aviation-first | no AIS map, API, or terms found on either domain |
+| MLAT.uk | — | UDP | account | — | none |
 | MastChain | DePIN startup 2026 | forked AIS-catcher | $MAST tokens | early | enterprise API planned |
 | FleetMon | JAKOTA → Kpler | dead, no A record | — | — | gone |
 | OpenSeaMap | OSM | no AIS network; "AIS" layer is MarineTraffic raster tiles | — | — | — |
