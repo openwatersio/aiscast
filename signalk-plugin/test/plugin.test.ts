@@ -144,12 +144,15 @@ describe("uplink", () => {
       fields: { userId: 244670316, longitude: 4.4, latitude: 52.1, sog: 5.1, cog: 1.2, heading: 1.3, navStatus: "Under way using engine", aisTransceiverInformation: "Channel A VDL reception" },
     });
     app.emit("N2KAnalyzerOut", { pgn: 129038, fields: { userId: 123456789, longitude: 4.4, latitude: 52.1, aisTransceiverInformation: "Own information not broadcast" } });
+    // own MMSI while transmitting: the transponder stamps "VDL transmission", still own ship
+    app.emit("N2KAnalyzerOut", { pgn: 129038, fields: { userId: 123456789, longitude: 4.4, latitude: 52.1, aisTransceiverInformation: "Channel A VDL transmission" } });
     app.emit("N2KAnalyzerOut", { pgn: 127250, fields: { heading: 1 } });
     const f = await server.waitForFrame((f) => f.type === "publish");
     const nmea = f.nmea as string[];
-    expect(nmea).toHaveLength(2);
+    expect(nmea).toHaveLength(3);
     expect(nmea[0]).toMatch(/^\\s:n2k,c:\d{13}\*[0-9A-F]{2}\\!AIVDM,1,1,,A,/);
     expect(nmea[1]).toMatch(/\\!AIVDO,1,1,,A,/);
+    expect(nmea[2]).toMatch(/\\!AIVDO,1,1,,A,/);
     const { Parser } = await import("@signalk/nmea0183-signalk");
     const d = new Parser().parse(nmea[0].replace(/^\\[^\\]*\\/, ""));
     expect(d?.context).toBe("vessels.urn:mrn:imo:mmsi:244670316");
