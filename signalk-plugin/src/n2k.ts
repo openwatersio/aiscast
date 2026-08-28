@@ -28,7 +28,11 @@ export function n2kToSentence(app: ServerAPI, msg: { pgn: number; fields?: Field
   if (!AIS_PGNS.has(msg.pgn)) return null;
   const pgn = convertNamesToCamel(app, msg as never) as { fields: Fields };
   const f = pgn.fields ?? {};
-  const own = f.aisTransceiverInformation === AisTransceiver.OwnInformationNotBroadcast;
+  // A transmitting transponder stamps its own position "Channel A/B VDL transmission", not
+  // "Own information not broadcast" (that's silent/receive-only mode), so match by MMSI too.
+  const own =
+    f.aisTransceiverInformation === AisTransceiver.OwnInformationNotBroadcast ||
+    (f.userId !== undefined && f.userId === Number(app.getSelfPath("mmsi")));
   let enc: Record<string, unknown> | null = null;
   switch (msg.pgn) {
     case 129038: // class A position
