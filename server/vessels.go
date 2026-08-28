@@ -97,6 +97,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// A late-arriving report (AISHub lags minutes behind VHF) must not drag the vessel back along its track;
 	// only static fields fold in. Whole-second source stamps make ties and sub-second skew meaningless.
 	stale := v.HasPos && ev.Time.Before(v.Seen.Add(-time.Second))
+	ev.Stale = stale
 	// Low-trust (UDP) positions that imply an impossible speed from the vessel's last position are dropped:
 	// cheap poisoning defence; the reception is still archived.
 	if hasPos && !stale && ev.LowTrust && v.HasPos {
