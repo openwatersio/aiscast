@@ -8,6 +8,7 @@ Base: `https://ais.openwaters.io` (WebSocket: `wss://`). All responses are JSON;
 |---|---|---|
 | `GET /v0/stream` (WebSocket) | token as `APIKey` | aisstream.io-compatible stream |
 | `GET /v1/stream` (WebSocket) | none to subscribe (anonymous tier); any token to publish | native event stream, both directions |
+| `GET /v1/stream` (SSE) | none to subscribe (anonymous tier) | the same events over Server-Sent Events, subscribe only |
 | `GET /v1/vessels` | none | current positions as GeoJSON |
 | `GET /v1/stations`, `GET /v1/stations/{id}` | none | stations being heard, with per-station statistics |
 | `GET /v1/stats` | none | usage summary: stations, vessels per source, event rate, streams and API requests |
@@ -129,6 +130,31 @@ aiscast → client. The first frame on every accepted socket is a `welcome` adve
 - `synthesized`: `true` when the message was not heard over VHF: rebuilt from a non-NMEA source (Digitraffic JSON, AISHub rows, aisstream envelopes), an own-ship report a vessel built from its GPS (`signalk-aiscast` with TAG `s:self`, station `v1:<sub>/self`), or a snapshot reconstruction from the vessel cache. Never fed to AISHub.
 
 Other frames: `{"type":"error","error":"invalid token"}` followed by close 1008 for a bad token; `{"type":"error","error":"bad frame"}` / `"unknown type"` for malformed input; `"concurrent connections per key exceeded"` then close. Frames in are limited to 256 KB. Slow clients are closed with 1008 "client too slow".
+
+### Server-Sent Events
+
+A `GET` to the same URL without a WebSocket upgrade returns `text/event-stream` instead: the same events, the same tokens, the same tier limits, for clients that would rather not carry a WebSocket library. It is subscribe-only — there is no channel to publish or `register` on, so `limits.publish` is always `false` however capable the token is.
+
+```
+curl -N 'https://ais.openwaters.io/v1/stream?bbox=41.2,-71.2,42.0,-70.0&mmsi=368168720&snapshot=1'
+```
+
+The subscription is fixed at connect time from the query string: `bbox=minLat,minLon,maxLat,maxLon` (repeatable, ORed), `mmsi=<mmsi>,<mmsi>,...`, `snapshot=1`, and `key=<token>` (or `Authorization: Bearer`). Neither `bbox` nor `mmsi` means everything, for tokens without an `area` cap. The claim checks are the ones the `subscribe` frame applies, and `snapshot=1` behaves as it does on the socket: live events interleave with the replay, a vessel can appear in both, and nothing falls in the gap between them.
+
+Each frame is one `data:` line carrying the same JSON the socket sends — a `welcome` first, then `event` frames, distinguished by their `type` field rather than an SSE event name, so a browser's `EventSource.onmessage` sees all of them:
+
+```
+data: {"type":"welcome","sub":"anon:203.0.113.4","role":"anonymous","limits":{"conns":2,"rate":20,"area":100,"mmsis":10,"publish":false,"connects_per_min":20}}
+
+data: {"type":"event","id":"15f3d254...","time":"2026-08-20T15:25:54.342871Z","mmsi":257090090,"...":"..."}
+
+```
+
+A `:` comment arrives every 30 seconds while the stream is idle, so a proxy does not mistake a quiet subscription for a dead one. A client that cannot keep up receives `{"type":"error","error":"client too slow"}` and the stream ends, as close 1008 does on the socket.
+
+Anything wrong with the request is an HTTP status, not a frame: `400` for a malformed `bbox` or `mmsi` or a subscription outside the token's claims (unlike `/v1/vessels`, an unparseable MMSI is refused rather than dropped — on a long-lived stream a typo would be indistinguishable from a subscription that never matches), `401` for a bad token, `405` for a method other than `GET`, `429` for the connect limit or the concurrent-connection caps.
+
+There is no `Last-Event-ID` resumption; `snapshot=1` rebuilds current state on reconnect.
 
 ## `GET /v1/vessels`
 

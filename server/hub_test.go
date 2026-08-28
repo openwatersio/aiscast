@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 func testPipeline(t *testing.T) *Pipeline {
 	allowAnon = true
+	wsConnectLimit = newLimiter(wsConnectLimit.max) // package-level, so connects otherwise accumulate across tests
 	return newPipeline(newArchive("", nil))
 }
 
@@ -479,4 +481,234 @@ func TestPingTimeoutReleasesSlots(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("slots still held after ping timeout: %s timeouts=%d", held(), p.stats.pingTimeouts.Load())
+}
+
+// sseLines opens an SSE stream and returns a reader of decoded frames: JSON payloads as maps, keepalive
+// comments skipped.
+func sseGet(t *testing.T, url string) (*http.Response, func() map[string]any) {
+	t.Helper()
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 200 {
+		t.Fatalf("%s: status %d", url, res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content-type %q", ct)
+	}
+	sc := bufio.NewScanner(res.Body)
+	return res, func() map[string]any {
+		for sc.Scan() {
+			line := sc.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue // blank separator or ":" keepalive
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &m); err != nil {
+				t.Fatalf("bad frame %q: %v", line, err)
+			}
+			return m
+		}
+		t.Fatalf("stream ended: %v", sc.Err())
+		return nil
+	}
+}
+
+func TestV1SSE(t *testing.T) {
+	const sentence = "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23" // 227006760 at 49.4756N 0.1314E
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	// live delivery: welcome first, then events ingested after the stream is open
+	res, read := sseGet(t, srv.URL+"/v1/stream?bbox=49,0,50,1")
+	if m := read(); m["type"] != "welcome" || m["limits"].(map[string]any)["publish"] != false {
+		t.Fatalf("want welcome without publish, got %v", m)
+	}
+	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: sentence})
+	if m := read(); m["type"] != "event" || m["mmsi"] != float64(227006760) {
+		t.Fatalf("want event, got %v", m)
+	}
+	res.Body.Close()
+
+	// snapshot: the vessel is already known before this stream opens, so it must be replayed
+	res, read = sseGet(t, srv.URL+"/v1/stream?bbox=49,0,50,1&snapshot=1")
+	defer res.Body.Close()
+	if m := read(); m["type"] != "welcome" {
+		t.Fatalf("want welcome, got %v", m)
+	}
+	if m := read(); m["type"] != "event" || m["mmsi"] != float64(227006760) {
+		t.Fatalf("want replayed event, got %v", m)
+	}
+}
+
+func TestV1SSERejections(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false // exercise the anonymous tier's caps rather than ALLOW_ANON's admin claims
+	defer func() { allowAnon = true }()
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{"?bbox=nonsense", 400},
+		{"?bbox=49,0,50", 400},
+		{"?bbox=49,0,200,1", 400},                 // out of range
+		{"?mmsi=nonsense", 400},                   // /v1/vessels would drop this silently
+		{"", 400},                                 // everything, but the anonymous tier has an area cap
+		{"?bbox=0,0,50,50", 400},                  // 2500 square degrees over the anonymous 100
+		{"?bbox=0,0,50,50&bbox=0,0,-50,-50", 400}, // inverted second box must not subtract from the total
+		{"?mmsi=1,2,3,4,5,6,7,8,9,10,11", 400},    // over the anonymous mmsi cap of 10
+		{"?key=ak1.bogus.bogus&bbox=49,0,50,1", 401},
+	} {
+		res, err := http.Get(srv.URL + "/v1/stream" + tc.query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != tc.want {
+			t.Errorf("%q: status %d, want %d", tc.query, res.StatusCode, tc.want)
+		}
+	}
+
+	if res, err := http.Post(srv.URL+"/v1/stream", "text/plain", nil); err != nil {
+		t.Fatal(err)
+	} else if res.Body.Close(); res.StatusCode != 405 {
+		t.Errorf("POST: status %d, want 405", res.StatusCode)
+	}
+}
+
+// A disconnected client must release its stream slot, or the tier's conns cap leaks one connection per
+// dropped reader.
+func TestV1SSEReleasesSlots(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	var bodies []*http.Response
+	for i := 0; i < anonConns; i++ { // fill the anonymous tier
+		res, _ := sseGet(t, srv.URL+"/v1/stream?bbox=49,0,50,1")
+		bodies = append(bodies, res)
+	}
+	res, err := http.Get(srv.URL + "/v1/stream?bbox=49,0,50,1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 429 {
+		t.Fatalf("over the cap: status %d, want 429", res.StatusCode)
+	}
+	for _, b := range bodies {
+		b.Body.Close()
+	}
+	// The handler notices the disconnect through r.Context(); give it a moment to unwind. Checking the
+	// counter rather than reconnecting keeps the connect limiter out of it, since its 429 and a full
+	// slot's 429 are the same status.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conns.mu.Lock()
+		n := conns.n["anon:127.0.0.1"]
+		conns.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot never released: %d still held", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// gatedWriter releases exactly one Write per token, so a test can step the SSE handler frame by frame with
+// no socket or bufio buffering in between.
+type gatedWriter struct {
+	h      http.Header
+	gate   chan struct{}
+	writes chan string
+}
+
+func (g *gatedWriter) Header() http.Header              { return g.h }
+func (g *gatedWriter) WriteHeader(int)                  {}
+func (g *gatedWriter) Flush()                           {}
+func (g *gatedWriter) SetWriteDeadline(time.Time) error { return nil }
+
+// A closed gate ends the handler, so its deferred slot releases run instead of leaking into later tests.
+func (g *gatedWriter) Write(p []byte) (int, error) {
+	if _, ok := <-g.gate; !ok {
+		return 0, errors.New("gated writer closed")
+	}
+	g.writes <- string(p)
+	return len(p), nil
+}
+
+// A replay must keep draining the fan-out while it goes out. The subscriber queue holds global events, not
+// the ones a subscription matches, so a replay written as one uninterrupted burst overflows a queue nobody
+// is reading and disconnects the very client that asked for the snapshot. The socket avoids this by
+// replaying on its reader goroutine while its writer drains; SSE writes from a single goroutine.
+func TestV1SSESnapshotUnderLoad(t *testing.T) {
+	p := testPipeline(t)
+	defer func(n int) { subBuffer = n }(subBuffer)
+	subBuffer = 8
+
+	const vessels = 50 // 2 replay frames each: a position and a static reconstruction
+	now := time.Now()
+	p.vmu.Lock()
+	for i := uint32(0); i < vessels; i++ {
+		v := newVessel()
+		v.HasPos, v.Lat, v.Lon, v.Seen, v.PosAt = true, 49.5, 0.5, now, now
+		v.Name, v.Source, v.Station = "TESTVESSEL", "t", "t"
+		p.vessels[200000000+i] = v
+	}
+	p.vmu.Unlock()
+
+	w := &gatedWriter{h: http.Header{}, gate: make(chan struct{}), writes: make(chan string, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer close(w.gate) // unwind the handler even if the test fails mid-frame
+	r := httptest.NewRequest("GET", "/v1/stream?bbox=49,0,50,1&snapshot=1", nil).WithContext(ctx)
+	go p.serveV1SSE(w, r)
+
+	step := func() string {
+		t.Helper()
+		select {
+		case w.gate <- struct{}{}:
+		case <-time.After(5 * time.Second):
+			t.Fatal("handler never reached its next write")
+		}
+		select {
+		case s := <-w.writes:
+			if strings.Contains(s, "client too slow") {
+				t.Fatalf("disconnected: the replay stalled its own fan-out queue")
+			}
+			return s
+		case <-time.After(5 * time.Second):
+			t.Fatal("write never completed")
+			return ""
+		}
+	}
+
+	if s := step(); !strings.Contains(s, `"type":"welcome"`) {
+		t.Fatalf("first frame %q", s)
+	}
+	// One event per replay frame written: a rate any reading client sustains, never bursting past the
+	// queue depth. Only a replay that ignores its queue lets these pile up.
+	sent := 4 * subBuffer
+	for i := 0; i < sent; i++ {
+		p.broadcast(&Event{MMSI: 42, Time: now, Type: "PositionReport"}) // matches no bbox: drained, not written
+		step()
+	}
+	for i := sent; i < 2*vessels; i++ { // rest of the replay
+		step()
+	}
+	// Replay done. A matching event must now arrive as an event: a handler that ignored its queue has
+	// overflow set and cuts the client off instead, which is the failure this test exists to catch.
+	p.broadcast(&Event{MMSI: 42, Time: now, Type: "PositionReport", Lat: 49.5, Lon: 0.5, HasPos: true})
+	if s := step(); !strings.Contains(s, `"type":"event"`) {
+		t.Fatalf("after replay %q", s)
+	}
 }
