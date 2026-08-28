@@ -1,9 +1,11 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -658,13 +660,33 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Access-Control-Allow-Origin", "*")
 	rc := http.NewResponseController(w)
+	// Compressed here rather than at the proxy: Caddy's encode skips text/event-stream, so a stream left
+	// to it goes out plain. AIS JSON repeats heavily between events (field names, source, timestamp
+	// prefixes), and one HTTP response is one deflate stream, so each event compresses against the ones
+	// before it.
+	out, gz := io.Writer(w), (*gzip.Writer)(nil)
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		h.Set("Content-Encoding", "gzip") // Caddy leaves an already-encoded response alone
+		h.Set("Vary", "Accept-Encoding")
+		gz = gzip.NewWriter(w)
+		defer gz.Close()
+		out = gz
+	}
 	// Every write is deadlined. A client that stops reading fills its socket buffer, and an undeadlined
 	// write to it never returns: the handler would never see overflow, never fire a keepalive, and never
 	// run the releases above. The deadline turns that into a write error, which unwinds the handler.
 	write := func(prefix string, b []byte) error {
 		rc.SetWriteDeadline(time.Now().Add(time.Duration(pingTimeout.Load()))) // ErrNotSupported only off a real conn
-		if _, err := fmt.Fprintf(w, "%s%s\n\n", prefix, b); err != nil {
+		if _, err := fmt.Fprintf(out, "%s%s\n\n", prefix, b); err != nil {
 			return err
+		}
+		// Compressor first, then the socket. gzip's Flush is a deflate sync flush: it emits this frame
+		// and keeps the window, so the next event still compresses against the previous ones. Without it
+		// events sit in the compressor until a block fills, which is minutes on a quiet subscription.
+		if gz != nil {
+			if err := gz.Flush(); err != nil {
+				return err
+			}
 		}
 		return rc.Flush()
 	}

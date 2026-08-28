@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -711,4 +713,119 @@ func TestV1SSESnapshotUnderLoad(t *testing.T) {
 	if s := step(); !strings.Contains(s, `"type":"event"`) {
 		t.Fatalf("after replay %q", s)
 	}
+}
+
+// countingReader reports how many compressed bytes the gzip reader has consumed.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
+func TestV1SSEGzip(t *testing.T) {
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	// Set by hand: Go's transport only decompresses transparently when it added the header itself, so
+	// this leaves res.Body as the raw gzip stream the handler produced.
+	// Bounded so an unflushed compressor fails here in seconds instead of hanging until the suite timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/v1/stream?bbox=49,0,50,1", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if got := res.Header.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("content-encoding %q", got)
+	}
+	if got := res.Header.Get("Vary"); got != "Accept-Encoding" {
+		t.Fatalf("vary %q", got)
+	}
+
+	// Reaching this line at all is the flush assertion: gzip.NewReader needs the header, and a compressor
+	// that was not flushed per frame holds everything until a deflate block fills, so this would block.
+	counted := &countingReader{r: res.Body}
+	zr, err := gzip.NewReader(counted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := bufio.NewScanner(zr)
+	read := func() map[string]any {
+		t.Helper()
+		for sc.Scan() {
+			if !strings.HasPrefix(sc.Text(), "data: ") {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(sc.Text(), "data: ")), &m); err != nil {
+				t.Fatalf("bad frame %q: %v", sc.Text(), err)
+			}
+			return m
+		}
+		t.Fatalf("stream ended: %v", sc.Err())
+		return nil
+	}
+	if m := read(); m["type"] != "welcome" {
+		t.Fatalf("want welcome, got %v", m)
+	}
+	// Ingested only now: the welcome was already readable, so each frame is flushed as it is written
+	// rather than batched with later ones.
+	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	if m := read(); m["type"] != "event" || m["mmsi"] != float64(227006760) {
+		t.Fatalf("want event, got %v", m)
+	}
+
+	// One deflate stream for the whole response, not one per frame: similar events after the first cost a
+	// fraction of their plain size. Per-frame gzip members would lose the window and cost more than plain.
+	const n = 100
+	now := time.Now()
+	before, plain := counted.n, 0
+	for i := 0; i < n; i++ {
+		p.broadcast(&Event{MMSI: uint32(200000000 + i), Time: now, Type: "PositionReport", Lat: 49.5, Lon: 0.5, HasPos: true})
+	}
+	for i := 0; i < n; i++ {
+		b, _ := json.Marshal(read())
+		plain += len(b)
+	}
+	if got := counted.n - before; got > plain/2 {
+		t.Errorf("compressed %d bytes for %d plain: window not retained across frames", got, plain)
+	} else {
+		t.Logf("%d compressed bytes for %d plain (%.1fx)", got, plain, float64(plain)/float64(got))
+	}
+}
+
+func TestV1SSEIdentityWhenNotRequested(t *testing.T) {
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/stream?bbox=49,0,50,1", nil)
+	req.Header.Set("Accept-Encoding", "identity")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if got := res.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("content-encoding %q on an identity request", got)
+	}
+	sc := bufio.NewScanner(res.Body)
+	for sc.Scan() {
+		if strings.HasPrefix(sc.Text(), "data: ") {
+			if !strings.Contains(sc.Text(), `"type":"welcome"`) {
+				t.Fatalf("want plain welcome, got %q", sc.Text())
+			}
+			return
+		}
+	}
+	t.Fatalf("no frame: %v", sc.Err())
 }
