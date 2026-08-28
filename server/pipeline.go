@@ -45,6 +45,7 @@ type Event struct {
 	LowTrust     bool // from a source that cannot be authenticated (UDP)
 	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
 	Implausible  bool // low-trust position implying an impossible speed; archived, not emitted
+	Stale        bool // older than the newest event already folded for the vessel; archived, not emitted
 
 	v0Once sync.Once
 	v0     []byte
@@ -83,7 +84,7 @@ type Pipeline struct {
 	usage        usageCounters
 	lastBySource sync.Map // source → time.Time of last event; /health and /metrics read it
 	stats        struct {
-		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, uncorroborated, pingTimeouts atomic.Int64
+		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts atomic.Int64
 		bySource                                                                                                                  sync.Map // source → *counterT
 	}
 }
@@ -280,6 +281,13 @@ func (p *Pipeline) emit(ev *Event) {
 		p.stats.implausible.Add(1)
 		return
 	}
+	// Per-vessel monotonic stream: a late copy of an already-superseded report (AISHub lags minutes)
+	// is archived and its static fields are folded, but it never reaches subscribers.
+	if ev.Stale {
+		p.stats.stale.Add(1)
+		p.touch(ev.Source) // still proof the source is delivering
+		return
+	}
 	p.stations.event(ev)
 	p.stats.events.Add(1)
 	p.usage.events.add(time.Now())
@@ -343,9 +351,14 @@ func typeName(p ais.Packet) string {
 
 var typeNameOverride = map[string]string{"AddessedSafetyMessage": "AddressedSafetyMessage"}
 
+// subBuffer is the per-subscriber queue depth; a var so tests can shrink it. broadcast enqueues every
+// event before any per-subscription filtering, so this is depth measured in global events, not in the
+// ones a subscription actually matches.
+var subBuffer = 1024
+
 func (p *Pipeline) subscribe() *subscriber {
 	p.usage.streams.add(time.Now())
-	s := &subscriber{ch: make(chan *Event, 1024)}
+	s := &subscriber{ch: make(chan *Event, subBuffer)}
 	p.smu.Lock()
 	p.subs[s] = struct{}{}
 	p.smu.Unlock()

@@ -38,3 +38,25 @@ func TestUpdateVesselStalePosition(t *testing.T) {
 		t.Fatalf("sub-second-older event should apply: %+v", p.vessels[1])
 	}
 }
+
+func TestStaleEventNotBroadcast(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	report := func(lat float64) ais.Packet {
+		return ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 2}, Valid: true,
+			Latitude: ais.FieldLatLonFine(lat), Longitude: 10, Cog: 360, Sog: 102.3, TrueHeading: 511, NavigationalStatus: 15}
+	}
+	p.ingestPacket("kystverket", "kystverket", t0, report(50))
+	if len(sub.ch) != 1 {
+		t.Fatalf("fresh event not broadcast: %d", len(sub.ch))
+	}
+	<-sub.ch
+
+	// a slow source's copy of an already-superseded report: archived and folded, never streamed
+	before := p.stats.stale.Load()
+	p.ingestPacket("aishub", "aishub", t0.Add(-90*time.Second), report(49))
+	if len(sub.ch) != 0 || p.stats.stale.Load() != before+1 {
+		t.Fatalf("stale event broadcast: events=%d stale=%d→%d", len(sub.ch), before, p.stats.stale.Load())
+	}
+}

@@ -51,6 +51,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
 	counter("aiscast_thinned_total", "events withheld from connections over their per-second rate", p.stats.thinned.Load())
 	counter("aiscast_implausible_total", "low-trust positions dropped for implying an impossible speed", p.stats.implausible.Load())
+	counter("aiscast_stale_total", "events withheld from the stream for being older than the vessel's newest", p.stats.stale.Load())
 	counter("aiscast_uncorroborated_total", "low-trust events kept local because no trusted source has heard the vessel", p.stats.uncorroborated.Load())
 
 	p.vmu.RLock()
