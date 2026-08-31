@@ -49,6 +49,9 @@ func TestV1Welcome(t *testing.T) {
 		if json.Unmarshal(msg, &w) != nil || w.Type != "welcome" {
 			t.Fatalf("first frame not a welcome: %s", msg)
 		}
+		if w.Terms != termsURL {
+			t.Errorf("welcome terms: %q want %q", w.Terms, termsURL)
+		}
 		return w
 	}
 
@@ -121,6 +124,9 @@ func TestTokens(t *testing.T) {
 		p.serveReceive(w, r)
 		if w.Code != c.want {
 			t.Errorf("receive with %q: %d want %d (%s)", c.tok[:min(8, len(c.tok))], w.Code, c.want, w.Body.String())
+		}
+		if link := w.Result().Header.Get("Link"); link != "<"+termsURL+`>; rel="terms-of-service"` {
+			t.Errorf("receive Link header: %q", link)
 		}
 	}
 	// cidr claim

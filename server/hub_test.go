@@ -436,13 +436,13 @@ func TestNMEAFeed(t *testing.T) {
 	defer c.CloseNow()
 	time.Sleep(50 * time.Millisecond)
 	p.Ingest(Reception{Source: "kystverket", Station: "kystverket/2573010", RecvTime: time.Unix(1787234980, 0), Body: `\s:2573010,c:1787234980*03\!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43`}) // outside bbox
-	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})                                                      // inside
+	p.Ingest(Reception{Source: "v1:t", Station: "t", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})                                                   // inside
 	_, msg, err := c.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(msg)
-	if !strings.HasPrefix(got, `\s:t,c:1787234990,t:feeder*`) || !strings.Contains(got, `\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`+"\r\n") {
+	if !strings.HasPrefix(got, `\s:t,c:1787234990,t:CC0-1.0*`) || !strings.Contains(got, `\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`+"\r\n") {
 		t.Errorf("nmea frame: %q", got)
 	}
 	if tb := tagBlock(map[byte]string{'s': "2573010", 'c': "1787234980"}); tb != `\s:2573010,c:1787234980*03\` {

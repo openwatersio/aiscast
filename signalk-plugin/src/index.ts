@@ -41,6 +41,8 @@ export default function (app: ServerAPI): Plugin {
       "Show nearby traffic without an AIS receiver and share your AIS data with the world.",
     schema: {
       type: "object",
+      description:
+        "By enabling this plugin, you agree to the Open Waters AIS Contributor Agreement (https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md): the AIS data you share is dedicated to the public domain.",
       properties: {
         share: {
           type: "object",

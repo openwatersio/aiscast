@@ -12,7 +12,24 @@ import (
 )
 
 // license tag per source; goes in the object path so consumers can filter by terms.
-var licenses = map[string]string{"kystverket": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms"}
+// All volunteer receptions are CC0 per the contributor agreement and docs/policy.md.
+var licenses = map[string]string{
+	"kystverket": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
+	"v1": "CC0-1.0", "http": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
+}
+
+// licenseOf resolves a source's license tag: the full source name first, then its prefix (`v1:ed25519:...` → `v1`).
+func licenseOf(source string) string {
+	if lic := licenses[source]; lic != "" {
+		return lic
+	}
+	if i := strings.IndexByte(source, ':'); i > 0 {
+		if lic := licenses[source[:i]]; lic != "" {
+			return lic
+		}
+	}
+	return "unspecified"
+}
 
 type hourFile struct {
 	hour time.Time
@@ -105,11 +122,7 @@ func (a *archive) shutdown() {
 }
 
 func (a *archive) key(source string, hour time.Time) string {
-	lic := licenses[source]
-	if lic == "" {
-		lic = "feeder"
-	}
-	return filepath.Join(lic, strings.ReplaceAll(source, ":", "/"), hour.Format("2006/01/02/15")+".gz")
+	return filepath.Join(licenseOf(source), strings.ReplaceAll(source, ":", "/"), hour.Format("2006/01/02/15")+".gz")
 }
 
 func (a *archive) open(source string, hour time.Time) *hourFile {
