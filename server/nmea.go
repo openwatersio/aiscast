@@ -113,15 +113,7 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 
 // nmeaText renders the event's sentences with our TAG block; an incoming TAG block is replaced, the sentence kept.
 func (ev *Event) nmeaText() string {
-	lic := licenses[ev.Source]
-	if lic == "" {
-		if i := strings.IndexByte(ev.Source, ':'); i > 0 {
-			lic = licenses[ev.Source[:i]]
-		}
-	}
-	if lic == "" {
-		lic = "feeder"
-	}
+	lic := licenseOf(ev.Source)
 	var sb strings.Builder
 	for _, s := range ev.Sentences {
 		if i := strings.LastIndexAny(s, "!$"); i > 0 {

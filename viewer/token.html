@@ -12,8 +12,9 @@
 <h1>Get an aiscast token</h1>
 <p>A token lets you <strong>send</strong> your AIS receiver's data to <code>ais.openwaters.io</code> and <strong>read</strong> the live stream with any aisstream.io client. This page makes an Ed25519 key in your browser, asks the server for a personal token bound to it (no expiry), and keeps both in this browser so the same station id is reused next time. </p>
 <p class="muted">Personal tokens: 2 concurrent connections, 50 messages/s per connection, 400 square degrees of subscribed area, no expiry. Feed data from it and it becomes a feeder token on its own (5 connections, 200 messages/s, any area, raw NMEA feed). Need more, or a named station? <a href="mailto:hello@openwaters.io">hello@openwaters.io</a>.</p>
+<p><label><input type="checkbox" id="agree"> I accept the <a href="https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md">contributor agreement</a>: the data I send is my station's own reception, my receptions are dedicated to the public domain (CC0), and the aggregate is published under ODbL.</label></p>
 <p><label><input type="checkbox" id="bind"> Also bind this network address, so a UDP receiver sending from here counts toward this token (the token then only works from this address)</label></p>
-<p><button id="go">Get token</button> <span id="status" class="muted"></span></p>
+<p><button id="go" disabled>Get token</button> <span id="status" class="muted"></span></p>
 <div id="out" hidden>
   <h2>Your token</h2>
   <pre id="token"></pre>
@@ -50,6 +51,7 @@
     $("cmd-ws").textContent = `websocat wss://ais.openwaters.io/v0/stream\n{"APIKey":"${token}","BoundingBoxes":[[[41,-71.5],[42.5,-69.5]]]}`;
     $("out").hidden = false;
   }
+  $("agree").onchange = () => { $("go").disabled = !$("agree").checked; };
   $("go").onclick = async () => {
     $("status").textContent = "…";
     try {

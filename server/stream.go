@@ -292,11 +292,16 @@ type v1Frame struct {
 
 // v1Welcome is the first frame on every /v1/stream socket: the tier in effect for this connection, so a
 // client can size its bbox, pace itself, and back off reconnects without discovering the limits by error.
+// termsURL is the contributor agreement, delivered with every welcome frame and /v1/receive response so
+// that persistent feeders get the terms on every interaction.
+const termsURL = "https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md"
+
 type v1Welcome struct {
 	Type   string   `json:"type"` // "welcome"
 	Sub    string   `json:"sub"`
 	Role   string   `json:"role"`
 	Feeder bool     `json:"feeder,omitempty"` // personal token currently earning the feeder tier
+	Terms  string   `json:"terms"`            // the contributor agreement; publishing data is acceptance
 	Limits v1Limits `json:"limits"`
 }
 
@@ -577,7 +582,7 @@ func welcomeFor(cl *Claims, canPublish bool) v1Welcome {
 	if canPublish {
 		lim.PublishPerMin, lim.PublishFrame = publishLimit.max, maxPublishFrame
 	}
-	return v1Welcome{Type: "welcome", Sub: cl.Sub, Role: cl.Role, Feeder: cl.Feeder, Limits: lim}
+	return v1Welcome{Type: "welcome", Sub: cl.Sub, Role: cl.Role, Feeder: cl.Feeder, Terms: termsURL, Limits: lim}
 }
 
 // parseSSESub builds the fixed subscription from the query string. Malformed input is refused rather than

@@ -141,6 +141,7 @@ aiscast → client. The first frame on every accepted socket is a `welcome` adve
   "sub": "ed25519:abc...",
   "role": "personal",
   "feeder": false,
+  "terms": "https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md",
   "limits": {
     "conns": 2,
     "rate": 50,
@@ -154,7 +155,7 @@ aiscast → client. The first frame on every accepted socket is a `welcome` adve
 }
 ```
 
-`limits` uses the claim semantics: an absent value is unlimited, a negative `area` means MMSI-only subscriptions, and `bbox` (when present) lists the boxes subscriptions must fit inside. `publish_per_min`/`publish_frame` appear only when the socket may publish. On an anonymous socket, `conns` and `connects_per_min` are shared by every client behind the same network address, not per client. `feeder: true` marks a personal token currently earning the feeder tier. The limits reflect the tier at connect time, or at the latest in-band `register`, so a tier earned mid-connection appears on the next connect. Then one frame per decoded message after deduplication:
+`terms` is the contributor agreement, and publishing data is acceptance. `limits` uses the claim semantics: an absent value is unlimited, a negative `area` means MMSI-only subscriptions, and `bbox` (when present) lists the boxes subscriptions must fit inside. `publish_per_min`/`publish_frame` appear only when the socket may publish. On an anonymous socket, `conns` and `connects_per_min` are shared by every client behind the same network address, not per client. `feeder: true` marks a personal token currently earning the feeder tier. The limits reflect the tier at connect time, or at the latest in-band `register`, so a tier earned mid-connection appears on the next connect. Then one frame per decoded message after deduplication:
 
 ```json
 {
@@ -206,7 +207,7 @@ The subscription is fixed at connect time from the query string: `bbox=minLat,mi
 Each frame is one `data:` line carrying the same JSON the socket sends — a `welcome` first, then `event` frames, distinguished by their `type` field rather than an SSE event name, so a browser's `EventSource.onmessage` sees all of them:
 
 ```
-data: {"type":"welcome","sub":"anon:203.0.113.4","role":"anonymous","limits":{"conns":2,"rate":20,"area":100,"mmsis":10,"publish":false,"connects_per_min":20}}
+data: {"type":"welcome","sub":"anon:203.0.113.4","role":"anonymous","terms":"https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md","limits":{"conns":2,"rate":20,"area":100,"mmsis":10,"publish":false,"connects_per_min":20}}
 
 data: {"type":"event","id":"15f3d254...","time":"2026-08-20T15:25:54.342871Z","mmsi":257090090,"...":"..."}
 

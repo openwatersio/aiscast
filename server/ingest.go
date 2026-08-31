@@ -33,6 +33,8 @@ type jsonaiscatcher struct {
 
 // serveReceive accepts AIS-catcher HTTP output (jsonaiscatcher JSON, or plain NMEA lines), optionally gzip'd.
 func (p *Pipeline) serveReceive(w http.ResponseWriter, r *http.Request) {
+	// Terms with every response: a repeat sender who keeps posting after receiving them accepts the agreement.
+	w.Header().Set("Link", "<"+termsURL+`>; rel="terms-of-service"`)
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return

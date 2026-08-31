@@ -33,7 +33,7 @@ Signal K App Store → `signalk-aiscast`, or `npm install signalk-aiscast` in `~
 
 ## Data and licensing
 
-aiscast publishes what you share under its open data terms (see the [aiscast README](https://github.com/openwatersio/aiscast#readme)). The plugin shares only AIS sentences and, if you enable it, your own position. That position comes from the transponder, or the plugin builds it from Signal K when an AIS transponder is not available. Removal requests and the privacy policy are on the aiscast site.
+aiscast publishes what you share under its open data terms: the [contributor agreement](https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md), summarized in the [aiscast README](https://github.com/openwatersio/aiscast#readme). The plugin shares only AIS sentences and, if you enable it, your own position. That position comes from the transponder, or the plugin builds it from Signal K when an AIS transponder is not available. Removal requests and the privacy policy are on the aiscast site.
 
 ## Development
 

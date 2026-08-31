@@ -1,6 +1,6 @@
 # Access tiers and limits
 
-aiscast is free to use and free to feed. Tokens keep the service healthy and recognise contribution. They do not protect the data: everything aiscast re-serves is open data or volunteer data that the contributor chose to share. The limits below are the starting point. They loosen as capacity grows, and a token can always carry more than its tier.
+aiscast is free to use and free to feed. Tokens keep the service healthy and recognise contribution. They do not protect the data: everything aiscast re-serves is open data or volunteer data that the contributor [chose to share](contributor-agreement.md). The limits below are the starting point. They loosen as capacity grows, and a token can always carry more than its tier.
 
 ## Tiers at a glance
 
