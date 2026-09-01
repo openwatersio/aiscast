@@ -42,6 +42,7 @@ type Event struct {
 	HasPos       bool
 	Sentences    []string
 	Synthesized  bool
+	rebuilt      bool // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
 	LowTrust     bool // from a source that cannot be authenticated (UDP)
 	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
 	Implausible  bool // low-trust position implying an impossible speed; archived, not emitted
@@ -232,7 +233,7 @@ func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Pac
 	p.mu.Lock()
 	sentences := p.encoder.EncodeSentence(aisnmeaPacket('A', payload))
 	p.mu.Unlock()
-	p.emit(&Event{Time: t, Source: source, Station: station, Payload: payload, Packet: decoded, Sentences: sentences, Synthesized: true})
+	p.emit(&Event{Time: t, Source: source, Station: station, Payload: payload, Packet: decoded, Sentences: sentences, Synthesized: true, rebuilt: true})
 }
 
 // aisnmeaPacket builds a VdmPacket for EncodeSentence, which wants the channel as 1/2, not 'A'/'B'.

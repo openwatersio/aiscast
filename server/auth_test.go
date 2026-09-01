@@ -531,9 +531,10 @@ func TestTiersAndTrust(t *testing.T) {
 	for len(sub.ch) > 0 {
 		<-sub.ch
 	}
-	// a UDP report putting the same vessel 3,000 nm away two seconds later is implausible: dropped, not emitted
+	// a UDP report putting the same vessel 3,000 nm away three seconds later is implausible: dropped, not
+	// emitted (three, not two: rebuilt events must advance the vessel's clock by more than a second first)
 	before := p.stats.implausible.Load()
-	p.ingestPacket(udp, udp, now.Add(2*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 0, Longitude: 0, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	p.ingestPacket(udp, udp, now.Add(3*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 0, Longitude: 0, Cog: 360, Sog: 102.3, TrueHeading: 511})
 	if p.stats.implausible.Load() != before+1 || len(sub.ch) != 0 {
 		t.Errorf("implausible jump: count %d→%d, events %d", before, p.stats.implausible.Load(), len(sub.ch))
 	}

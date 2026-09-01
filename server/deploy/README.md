@@ -10,7 +10,7 @@ One box, one binary: the aiscast server. Cloudflare goes in front of the WebSock
 - On the box (from [cloud-init.yaml](cloud-init.yaml)): user `aiscast`, `/opt/aiscast/aiscast`, `/var/lib/aiscast/{archive,vessels.json}`, `/etc/aiscast.env` (0600), and `/etc/systemd/system/aiscast.service` enabled. `/etc/aiscast.env` holds `ISSUER_PUBKEYS`, `PERSONAL_ISSUER_KEY`, and the R2 and AISHub/aisstream settings. The issuer *seed* for minting tokens lives only in the repo's untracked `.env` as `ISSUER_SEED`/`ISSUER_KID`.
 - Public: `https://ais.openwaters.io` serves `/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, and `/health`. The request path is a DNS-only A record → Caddy → aiscast on `127.0.0.1:8080`. [Caddyfile](Caddyfile) sets the Let's Encrypt cert, `zstd`/`gzip` response compression, and a block on `/metrics`, which stays reachable only on the box. Cloudflare proxying is off for the beta, and `TRUST_CF_HEADERS=1` re-enables it if the box needs DDoS cover.
 - UDP ingest at `ais.openwaters.io:10110`, the same name, which resolves straight to the box.
-- Upstreams: Kystverket, Digitraffic, aisstream.io (best effort, outside the health gate).
+- Upstreams: Kystverket, BarentsWatch, Digitraffic, aisstream.io (best effort, outside the health gate). BarentsWatch credentials go in `/etc/aiscast.env` (`BARENTSWATCH_CLIENT_ID`, `BARENTSWATCH_CLIENT_SECRET`).
 - Archive hours upload to R2 `ais-archive` over the S3 API on rotation and on shutdown.
 
 ## How it was created
