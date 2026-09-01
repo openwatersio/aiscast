@@ -173,6 +173,51 @@ describe("uplink", () => {
   });
 });
 
+describe("buddy boats", () => {
+  const buddylist = (urns: string[], enabled = true) =>
+    writeFile(
+      join(app.dataDir, "..", "signalk-buddylist-plugin.json"),
+      JSON.stringify({ configuration: { buddies: urns.map((urn) => ({ urn })) }, enabled }),
+    );
+
+  it("follows buddies from the buddylist plugin, and keeps them when local AIS silences the radius", async () => {
+    await buddylist(["urn:mrn:imo:mmsi:258857000", "urn:mrn:imo:mmsi:227006760"]);
+    await start();
+    const sub = await server.waitForFrame((f) => f.type === "subscribe" && f.mmsi != null && f.bbox != null);
+    expect(sub.mmsi).toEqual([227006760, 258857000]);
+    app.emit("nmea0183", VDM); // auto mode drops the box but keeps the buddies
+    const only = await server.waitForFrame((f) => f.type === "subscribe" && f.bbox == null);
+    expect(only.mmsi).toEqual([227006760, 258857000]);
+    expect(server.frames.find((f) => f.type === "unsubscribe")).toBeUndefined();
+  });
+
+  it("follows buddies and injects them even with receive off", async () => {
+    await buddylist(["urn:mrn:imo:mmsi:258857000"]);
+    await start({ receive: { mode: "off" } });
+    const sub = await server.waitForFrame((f) => f.type === "subscribe");
+    expect(sub).toEqual({ type: "subscribe", snapshot: true, mmsi: [258857000] });
+    server.send({ type: "event", source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length === 1);
+    expect(app.deltas[0].context).toBe("vessels.urn:mrn:imo:mmsi:258857000");
+  });
+
+  it("trims the list to the welcome frame's mmsi cap instead of losing the whole subscription", async () => {
+    await buddylist(["urn:mrn:imo:mmsi:258857000", "urn:mrn:imo:mmsi:227006760"]);
+    await start({ receive: { mode: "off" } });
+    await server.waitForFrame((f) => f.type === "subscribe" && (f.mmsi as number[]).length === 2);
+    server.send({ type: "welcome", limits: { mmsis: 1 } });
+    const trimmed = await server.waitForFrame((f) => f.type === "subscribe" && (f.mmsi as number[]).length === 1);
+    expect(trimmed.mmsi).toEqual([227006760]);
+  });
+
+  it("ignores itself, malformed URNs, and a disabled buddylist plugin", async () => {
+    await buddylist(["urn:mrn:imo:mmsi:123456789", "urn:mrn:imo:mmsi:12345", "bogus"]);
+    await start({ receive: { mode: "off" } });
+    await sleep(100);
+    expect(server.frames.find((f) => f.type === "subscribe")).toBeUndefined();
+  });
+});
+
 describe("config UI", () => {
   it("disables the GPS position option without an MMSI and says why", () => {
     type Ui = { share: { position: Record<string, unknown> } };
