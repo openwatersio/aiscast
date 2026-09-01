@@ -107,6 +107,7 @@ func httpHandler(p *Pipeline) http.Handler {
 	mux.HandleFunc("/v1/stats", p.rateLimited(p.serveStats))
 	mux.HandleFunc("/health", p.serveHealth)
 	mux.HandleFunc("/metrics", p.serveMetrics)
+	mux.HandleFunc("/robots.txt", serveRobots)
 	mux.Handle("/{$}", http.RedirectHandler("https://openwaters.io/ais/", http.StatusFound))
 	return p.countRequests(mux)
 }

@@ -34,6 +34,13 @@ func (p *Pipeline) serveHealth(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "ok")
 }
 
+// serveRobots keeps search engines off the API entirely: crawlers were finding /v1/vessels and
+// /v1/receive in the code samples on openwaters.io/ais/ and reporting the 4xx answers as site errors.
+func serveRobots(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, "User-agent: *\nDisallow: /\n")
+}
+
 // serveMetrics writes Prometheus text format by hand; no client library needed for a dozen series.
 func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
