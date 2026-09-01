@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Buddy boats: vessels on [signalk-buddylist-plugin](https://github.com/sbender9/signalk-buddylist-plugin)'s list are followed on aiscast wherever they are, far beyond VHF range, in every receive mode. The buddylist plugin keeps raising its buddy flag and proximity alerts, so Freeboard-SK's buddy icon and phone notifications work at any distance. The status line shows how many buddies have been heard from.
 - Own-ship reports from NMEA 2000 are recognized by the boat's MMSI, not only by the transceiver-information field. A transmitting transponder (like the B&G V60-B) stamps its own position "Channel A/B VDL transmission", which previously published as `!AIVDM` and left the plugin unaware a transponder was present. Those reports now publish as `!AIVDO`, pause self-reported position synthesis while transponder data flows, and follow the *Share my own ship's AIS transponder data* setting.
 
 ## 0.2.0

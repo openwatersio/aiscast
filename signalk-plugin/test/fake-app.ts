@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Delta, ServerAPI } from "@signalk/server-api";
@@ -21,7 +21,9 @@ export function fakeApp(self: Record<string, unknown> = {}): FakeApp {
   em.errors = [];
   em.self = { mmsi: "123456789", ...self };
   em.model = {};
-  em.dataDir = mkdtempSync(join(tmpdir(), "aiscast-"));
+  // Nested like the real thing (<config>/plugin-config-data/<id>), so sibling files land in a per-test dir.
+  em.dataDir = join(mkdtempSync(join(tmpdir(), "aiscast-")), "signalk-aiscast");
+  mkdirSync(em.dataDir);
   (em as unknown as { config: unknown }).config = { version: "2.31.1" };
   em.selfId = "urn:mrn:imo:mmsi:123456789";
   em.selfContext = "vessels.urn:mrn:imo:mmsi:123456789";

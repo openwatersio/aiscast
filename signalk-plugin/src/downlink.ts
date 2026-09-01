@@ -20,6 +20,14 @@ export interface DownlinkStats {
   subscribed: boolean;
 }
 
+interface SubscribeFrame {
+  type: "subscribe";
+  snapshot: true;
+  bbox?: [number, number, number, number][];
+  mmsi?: number[];
+  [key: string]: unknown; // Frame compatibility
+}
+
 const LOCAL_QUIET = 90_000; // auto: no local AIS for this long → subscribe
 const RESUBSCRIBE_FRACTION = 0.25; // re-send the box after moving this fraction of the radius
 const VHF_WINS = 60_000; // always: leave a target alone when another source updated it this recently
@@ -40,6 +48,11 @@ export class Downlink {
   private subscribed = false;
   private timer: NodeJS.Timeout | null = null;
   private targets = new Map<string, number>();
+  private buddies: number[] = [];
+  private sentMmsi = "";
+  private mmsiCap = Infinity; // from the welcome frame's limits; the server refuses a too-long list as a whole frame
+  private lastFrame = ""; // last subscribe frame sent, to avoid re-sending one the server refused
+  private refusedFrame = "";
   private selfMmsi: string | null;
   stats: DownlinkStats = { targets: 0, events: 0, subscribed: false };
 
@@ -56,6 +69,7 @@ export class Downlink {
   start(): void {
     this.link.on("open", () => {
       this.subscribed = false;
+      this.refusedFrame = "";
       this.tick();
     });
     this.link.on("close", () => {
@@ -63,7 +77,12 @@ export class Downlink {
       this.stats.subscribed = false;
     });
     this.link.on("error", (message) => {
-      if (/bbox/.test(message)) this.subscribed = this.stats.subscribed = false; // aiscast kept the old subscription (none)
+      // aiscast refuses a subscribe frame as a unit and keeps the old subscription (none). Remember the
+      // refused frame so the 10 s tick does not resend it verbatim; any change to it is tried again.
+      if (/bbox|mmsi/i.test(message)) {
+        this.subscribed = this.stats.subscribed = false;
+        this.refusedFrame = this.lastFrame;
+      }
     });
     this.link.on("frame", (f) => this.onFrame(f));
     this.timer = setInterval(() => this.tick(), 10_000);
@@ -81,6 +100,23 @@ export class Downlink {
     if (this.subscribed && this.opts.mode === "auto") this.tick(now);
   }
 
+  // Buddy MMSIs to follow wherever they are, independent of the receive mode: the point is traffic
+  // beyond local reception, so the list keeps the subscription alive even when the radius half is quiet.
+  setBuddies(mmsis: number[]): void {
+    this.buddies = mmsis;
+    this.tick();
+  }
+
+  // How many buddies have been heard from recently.
+  buddiesSeen(now = Date.now()): number {
+    let n = 0;
+    for (const m of this.buddies) {
+      const at = this.targets.get(`vessels.urn:mrn:imo:mmsi:${m}`);
+      if (at != null && now - at < TARGET_TTL) n++;
+    }
+    return n;
+  }
+
   private wanted(now: number): boolean {
     switch (this.opts.mode) {
       case "off":
@@ -94,31 +130,60 @@ export class Downlink {
 
   tick(now = Date.now()): void {
     if (!this.link.open) return;
-    if (!this.wanted(now)) {
+    const wantBox = this.wanted(now);
+    const pos = wantBox ? ownPosition(this.app) : null;
+    // Never subscribe a box without a fix: an empty bbox is the whole world. While the fix is gone, the
+    // last box stands in so a GPS dropout does not tear down the subscription.
+    const box = pos ? { lat: pos.latitude, lon: pos.longitude, radiusNm: this.opts.radiusNm } : wantBox ? this.box : null;
+    // Over the cap, the server would refuse the whole frame, bbox included: follow what fits instead.
+    const mmsi = this.buddies.length > this.mmsiCap ? this.buddies.slice(0, this.mmsiCap) : this.buddies;
+    if (!box && mmsi.length === 0) {
       if (this.subscribed && this.link.send({ type: "unsubscribe" })) {
         this.subscribed = false;
         this.stats.subscribed = false;
+        this.box = null;
+        this.sentMmsi = "";
         this.log("unsubscribed");
       }
       return;
     }
-    const pos = ownPosition(this.app);
-    if (!pos) return; // never subscribe without a position: an empty bbox is the whole world
-    const moved = this.box
-      ? distanceNm(pos.latitude, pos.longitude, this.box.lat, this.box.lon) > this.box.radiusNm * RESUBSCRIBE_FRACTION ||
-        this.box.radiusNm !== this.opts.radiusNm
-      : true;
-    if (this.subscribed && !moved) return;
-    const box = { lat: pos.latitude, lon: pos.longitude, radiusNm: this.opts.radiusNm };
-    if (this.link.send({ type: "subscribe", bbox: [bbox(box)] })) {
+    const boxChanged =
+      box !== this.box &&
+      (!box ||
+        !this.box ||
+        distanceNm(box.lat, box.lon, this.box.lat, this.box.lon) > this.box.radiusNm * RESUBSCRIBE_FRACTION ||
+        this.box.radiusNm !== box.radiusNm);
+    if (this.subscribed && !boxChanged && mmsi.join() === this.sentMmsi) return;
+    // snapshot: the server replays its cache for the new coverage, so targets appear at connect
+    // instead of one by one as they next transmit (a moored class B is minutes between reports).
+    const frame: SubscribeFrame = { type: "subscribe", snapshot: true };
+    if (box) frame.bbox = [bbox(box)];
+    if (mmsi.length > 0) frame.mmsi = mmsi;
+    const encoded = JSON.stringify(frame);
+    if (encoded === this.refusedFrame) return;
+    this.lastFrame = encoded;
+    if (this.link.send(frame)) {
       this.box = box;
+      this.sentMmsi = mmsi.join();
       this.subscribed = true;
       this.stats.subscribed = true;
-      this.log(`subscribed ${box.radiusNm} nm around ${box.lat.toFixed(3)},${box.lon.toFixed(3)}`);
+      const parts = [
+        box && `${box.radiusNm} nm around ${box.lat.toFixed(3)},${box.lon.toFixed(3)}`,
+        mmsi.length > 0 && `${mmsi.length} buddies`,
+      ];
+      this.log(`subscribed ${parts.filter(Boolean).join(" + ")}`);
     }
   }
 
   private onFrame(f: Frame): void {
+    if (f.type === "welcome") {
+      const cap = (f as { limits?: { mmsis?: number } }).limits?.mmsis;
+      if (typeof cap === "number" && cap !== this.mmsiCap) {
+        this.mmsiCap = cap;
+        this.tick(); // a tighter cap trims the list; a looser one restores it
+      }
+      return;
+    }
     if (f.type !== "event") return;
     const ev = f as unknown as AisEvent;
     if (!Array.isArray(ev.nmea) || ev.nmea.length === 0) return;

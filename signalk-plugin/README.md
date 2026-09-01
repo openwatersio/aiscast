@@ -5,6 +5,8 @@ Signal K plugin for [aiscast](https://github.com/openwatersio/aiscast), the open
 - **Share**: the plugin sends every AIS sentence your receiver hears to aiscast as it arrives (`!AIVDM` on NMEA 0183, or NMEA 2000 AIS PGNs re-encoded as sentences), so the places only boats can hear get coverage. The plugin also shares your own transponder's position (`!AIVDO`). When an AIS transponder is not available, the plugin builds class B reports from the Signal K position and marks them self-reported. Each part has its own checkbox.
 - **Receive**: when the boat hears no AIS of its own (no receiver, receiver off, server running ashore), the plugin subscribes to aiscast around your position. It injects the traffic as Signal K targets with `$source` `signalk-aiscast.net`, so Freeboard and friends show them. `Always` mode also adds traffic beyond VHF range, and locally heard targets win.
 
+It also follows your buddy boats worldwide: see [Buddy boats](#buddy-boats).
+
 No account. On first start the plugin generates an Ed25519 keypair in its data directory and requests its own access token from aiscast, sent as an `Authorization: Bearer` header. aiscast credits receptions to that key. Paste an operator-issued token into the config to publish as a named station with higher limits.
 
 ## Install
@@ -22,6 +24,18 @@ Signal K App Store → `signalk-aiscast`, or `npm install signalk-aiscast` in `~
 | Receive → Radius | 50 nm | subscription box around the vessel (5–200) |
 | Advanced → Server | `https://ais.openwaters.io` | aiscast base URL |
 | Advanced → Access token | empty | optional operator-issued token. Empty = self-minted personal token |
+
+## Buddy boats
+
+Install [signalk-buddylist-plugin](https://github.com/sbender9/signalk-buddylist-plugin) alongside and the vessels on its buddy list stay on your chart wherever they are, far beyond VHF range. The buddylist plugin owns the list and the alerts; this plugin only supplies the positions, from aiscast, by subscribing to the buddies' MMSIs alongside the radius.
+
+- Add a buddy in Freeboard-SK (tap a vessel → "Is Buddy"), through the buddylist plugin's config, or `POST /signalk/v2/api/resources/buddies` with `{"urn": "urn:mrn:imo:mmsi:<mmsi>", "name": "Selkie"}`. The plugin picks up changes within a minute.
+- Buddies are followed in every receive mode, including `Off`: the whole point is traffic beyond local reception. Local reception still wins per target in `Always` mode.
+- The buddylist plugin raises `vessels.<urn>.buddy` and its `notifications.buddy.<urn>` proximity alert the moment positions arrive, so Freeboard's buddy icon, the buddies-only filter, and phone alerts via signalk-push-notifications all work at any distance.
+- The status line shows `buddies 2/3`: how many of the listed buddies aiscast has heard from in the last 10 minutes.
+- A buddy only appears when some station or satellite feed hears them. Coastal coverage is good; mid-ocean gaps are real.
+
+Without the buddylist plugin installed, there are no buddies and nothing changes.
 
 ## Behaviour worth knowing
 

@@ -1,5 +1,7 @@
 import type { EventEmitter } from "node:events";
+import { join } from "node:path";
 import type { Plugin, ServerAPI } from "@signalk/server-api";
+import { Buddies, BUDDYLIST_OPTIONS } from "./buddies.js";
 import { Downlink, type ReceiveMode } from "./downlink.js";
 import {
   forgetToken,
@@ -228,6 +230,13 @@ export default function (app: ServerAPI): Plugin {
       },
       log,
     );
+    // The data dir is <config>/plugin-config-data/<id>; the buddylist plugin's options file is a sibling.
+    const selfMmsi = app.getSelfPath("mmsi");
+    const buddies = new Buddies(
+      join(dir, "..", BUDDYLIST_OPTIONS),
+      selfMmsi == null ? null : String(selfMmsi),
+      (mmsis) => down.setBuddies(mmsis),
+    );
     const canShare = () =>
       token !== null && !publishRefused && (shareTargets || shareOwn || sharePosition);
     up.enabled = canShare();
@@ -259,6 +268,10 @@ export default function (app: ServerAPI): Plugin {
         reportError(
           `aiscast refused the subscription: ${message} (reduce the radius)`,
         );
+      } else if (/mmsi/.test(message)) {
+        reportError(
+          `aiscast refused the buddy list: ${message} (trim the buddy list)`,
+        );
       } else {
         log(`aiscast: ${message}`);
       }
@@ -270,6 +283,7 @@ export default function (app: ServerAPI): Plugin {
       return;
     }
     down.start();
+    buddies.start();
     l.start();
     if (sharePosition) own.start();
 
@@ -311,6 +325,7 @@ export default function (app: ServerAPI): Plugin {
         refreshToken()
           .catch((err) => log(`token refresh: ${describe(err)}`))
           .then(() => {
+            if (!live()) return; // stop() landed mid-refresh; do not resurrect the timer
             up.enabled = canShare();
             if (token?.token !== before) l.reconnect();
             if (token) {
@@ -339,18 +354,21 @@ export default function (app: ServerAPI): Plugin {
         const upText = up.enabled
           ? `↑ ${perMin}/min (queue ${up.stats.queued})`
           : "↑ off";
-        const downText =
-          mode === "off"
+        const downText = down.stats.subscribed
+          ? `↓ ${down.stats.targets} targets`
+          : mode === "off"
             ? "↓ off"
-            : down.stats.subscribed
-              ? `↓ ${down.stats.targets} targets`
-              : "↓ idle";
+            : "↓ idle";
+        const buddyText =
+          buddies.mmsis.length > 0
+            ? `  buddies ${down.buddiesSeen()}/${buddies.mmsis.length}`
+            : "";
         const linkText = l.open
           ? "connected"
           : l.lastRefusal
             ? `refused: ${l.lastRefusal}`
             : "reconnecting";
-        app.setPluginStatus(`key ${key}…  ${upText}  ${downText}  ${linkText}`);
+        app.setPluginStatus(`key ${key}…  ${upText}  ${downText}${buddyText}  ${linkText}`);
       }, STATUS_EVERY),
     ];
 
@@ -360,6 +378,7 @@ export default function (app: ServerAPI): Plugin {
       events.removeListener("nmea0183", onNmea);
       events.removeListener("N2KAnalyzerOut", onN2k);
       own.stop();
+      buddies.stop();
       down.stop();
       await up.stop();
       l.stop();
