@@ -90,6 +90,25 @@ func TestBarentswatchEdgeCases(t *testing.T) {
 	}
 }
 
+// A future msgtime must not fold into the vessel's clock: it would mark every later genuine report stale
+// until wall time caught up, and survive snapshot restarts.
+func TestBarentswatchFutureTimestamp(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	line := func(at time.Time, lat string) string {
+		return `{"type":"Position","messageType":1,"aisClass":"A","latitude":` + lat + `,"longitude":5.0,"speedOverGround":1,"mmsi":257000004,"msgtime":"` + at.UTC().Format(time.RFC3339) + `","stream":"terra"}`
+	}
+	base := time.Now()
+	p.barentswatchLine([]byte(line(base.Add(time.Hour), "59.0")), base) // corrupted future stamp: capped to receive time
+	p.barentswatchLine([]byte(line(base.Add(2*time.Second), "59.1")), base.Add(2*time.Second))
+	if len(sub.ch) != 2 { // the next genuine report still flows
+		t.Fatalf("events=%d want 2 (stale=%d)", len(sub.ch), p.stats.stale.Load())
+	}
+	if ev := <-sub.ch; absDur(ev.Time.Sub(base)) > time.Minute {
+		t.Errorf("future stamp used as canonical: %v", ev.Time)
+	}
+}
+
 // A rebuilt copy of a transmission another source already delivered is withheld (same message time, so it
 // does not advance the vessel's clock); the next transmission only BarentsWatch hears flows immediately.
 func TestBarentswatchCopiesWithheld(t *testing.T) {

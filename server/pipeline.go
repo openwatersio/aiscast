@@ -220,6 +220,13 @@ func (p *Pipeline) ingestLine(rx Reception) {
 // The packet is re-encoded so dedupe, the event id, and the /v1 `nmea` field work exactly as for VHF receptions,
 // and decoded again so the struct is what a receiver would have produced (quantized lat/lon, sentinels).
 func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Packet) {
+	// Source times are trusted arbitrarily far back (satellite passes and AISHub snapshots deliver late;
+	// the stale check keeps old reports off the live stream) but never into the future: a future stamp
+	// would fold into the vessel's clock, mark every later genuine report stale until wall time caught
+	// up, and survive snapshot restarts.
+	if now := time.Now(); t.IsZero() || t.After(now.Add(maxSkew)) {
+		t = now
+	}
 	payload := p.codec.EncodePacket(pkt)
 	if payload == nil {
 		p.stats.decodeFail.Add(1)

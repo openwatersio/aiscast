@@ -434,7 +434,8 @@ func TestTiersAndTrust(t *testing.T) {
 	allowAnon = false
 	defer func() { allowAnon = true }()
 	kid, priv := testIssuer(t, p)
-	now := time.Now()
+	// in the past so the trust timeline below (events up to now+10min) never trips the future-stamp cap
+	now := time.Now().Add(-20 * time.Minute)
 
 	// no exp = never expires; exp in the past still expires
 	forever, _ := signToken(priv, Claims{Kid: kid, Sub: "forever", Role: "personal"})

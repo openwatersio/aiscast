@@ -166,19 +166,17 @@ func (p *Pipeline) barentswatchLine(line []byte, now time.Time) {
 	default: // MetHyd weather broadcasts and the like
 		return
 	}
-	t := now
-	if !m.Msgtime.IsZero() { // trusted minutes back like AISHub rows: satellite passes deliver late
-		t = m.Msgtime
-	}
 	station := "barentswatch"
 	if m.Stream != "" {
 		station += "/" + m.Stream
 	}
-	p.ingestPacketAt("barentswatch", station, t, pkt)
+	// msgtime goes through as-is: ingestPacket caps zero or future stamps at receive time
+	p.ingestPacketAt("barentswatch", station, m.Msgtime, pkt)
 }
 
 func barentswatchToken(clientID, clientSecret string) (string, time.Duration, error) {
-	res, err := http.PostForm(bwTokenURL, url.Values{
+	client := &http.Client{Timeout: 30 * time.Second} // bounds the whole request; a stalled IdP must not park the source goroutine
+	res, err := client.PostForm(bwTokenURL, url.Values{
 		"client_id": {clientID}, "client_secret": {clientSecret},
 		"scope": {"ais"}, "grant_type": {"client_credentials"},
 	})
