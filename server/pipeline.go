@@ -42,6 +42,7 @@ type Event struct {
 	HasPos       bool
 	Sentences    []string
 	Synthesized  bool
+	rebuilt      bool // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
 	LowTrust     bool // from a source that cannot be authenticated (UDP)
 	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
 	Implausible  bool // low-trust position implying an impossible speed; archived, not emitted
@@ -219,6 +220,15 @@ func (p *Pipeline) ingestLine(rx Reception) {
 // The packet is re-encoded so dedupe, the event id, and the /v1 `nmea` field work exactly as for VHF receptions,
 // and decoded again so the struct is what a receiver would have produced (quantized lat/lon, sentinels).
 func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Packet) {
+	// Source times are trusted arbitrarily far back (satellite passes and AISHub snapshots deliver late;
+	// the stale check keeps old reports off the live stream) but never into the future: a future stamp
+	// would fold into the vessel's clock, mark every later genuine report stale until wall time caught
+	// up, and survive snapshot restarts. No skew allowance — a rebuilt source's legitimate stamps are
+	// always in the past, and an upstream clock running consistently fast would otherwise keep vessel
+	// clocks ahead of wall time and suppress genuine raw reports.
+	if now := time.Now(); t.IsZero() || t.After(now) {
+		t = now
+	}
 	payload := p.codec.EncodePacket(pkt)
 	if payload == nil {
 		p.stats.decodeFail.Add(1)
@@ -232,7 +242,7 @@ func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Pac
 	p.mu.Lock()
 	sentences := p.encoder.EncodeSentence(aisnmeaPacket('A', payload))
 	p.mu.Unlock()
-	p.emit(&Event{Time: t, Source: source, Station: station, Payload: payload, Packet: decoded, Sentences: sentences, Synthesized: true})
+	p.emit(&Event{Time: t, Source: source, Station: station, Payload: payload, Packet: decoded, Sentences: sentences, Synthesized: true, rebuilt: true})
 }
 
 // aisnmeaPacket builds a VdmPacket for EncodeSentence, which wants the channel as 1/2, not 'A'/'B'.

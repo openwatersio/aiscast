@@ -14,7 +14,7 @@ import (
 // license tag per source; goes in the object path so consumers can filter by terms.
 // All volunteer receptions are CC0 per the contributor agreement and docs/policy.md.
 var licenses = map[string]string{
-	"kystverket": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
+	"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
 	"v1": "CC0-1.0", "http": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
 }
 

@@ -35,6 +35,14 @@ func main() {
 		p.upstreams = append(p.upstreams, "kystverket")
 		go runTCPSource(p, "kystverket", env("KYSTVERKET_ADDR", "153.44.253.27:5631"))
 	}
+	if id := os.Getenv("BARENTSWATCH_CLIENT_ID"); id != "" {
+		if secret := os.Getenv("BARENTSWATCH_CLIENT_SECRET"); secret == "" {
+			log.Printf("BARENTSWATCH_CLIENT_SECRET unset: barentswatch upstream off")
+		} else {
+			p.upstreams = append(p.upstreams, "barentswatch")
+			go runBarentswatch(p, env("BARENTSWATCH_URL", "https://live.ais.barentswatch.no/v1/ais"), id, secret)
+		}
+	}
 	if env("DIGITRAFFIC", "1") == "1" {
 		p.upstreams = append(p.upstreams, "digitraffic")
 		go runDigitraffic(p, env("DIGITRAFFIC_URL", "wss://meri.digitraffic.fi:443/mqtt"))

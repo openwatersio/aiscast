@@ -33,6 +33,7 @@ type vessel struct {
 	MsgType   string
 	TrustedAt time.Time // last position from a source that is not low-trust
 	PosAt     time.Time // time of the last position folded in (Seen also moves on static messages)
+	StaticAt  time.Time // time of the last static folded in; gates rebuilt copies of the same broadcast
 
 	// last events heard, replayed by snapshot subscriptions; unexported so the vessel snapshot file skips
 	// them — nil after a restore, and then a reconstruction is synthesized instead.
@@ -94,9 +95,26 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		v = newVessel()
 		p.vessels[ev.MMSI] = v
 	}
-	// A late-arriving report (AISHub lags minutes behind VHF) must not drag the vessel back along its track;
-	// only static fields fold in. Whole-second source stamps make ties and sub-second skew meaningless.
+	// Any event older than the vessel's newest (AISHub lags minutes behind VHF) must not drag the vessel
+	// back along its track; only static fields fold in. Whole-second source stamps make ties and
+	// sub-second skew meaningless.
 	stale := v.HasPos && ev.Time.Before(v.Seen.Add(-time.Second))
+	// Rebuilt events must moreover advance the vessel's clock, not merely match it: sources overlap
+	// (BarentsWatch and aisstream re-serve what Kystverket already delivered raw), and a rebuilt copy of
+	// the same transmission carries the same message time but never byte-matches the payload dedupe. AIS
+	// transmits at 2 s minimum spacing, so "more than a second newer" separates copies from genuinely new
+	// reports without any per-source rule, and a vessel every other source has gone silent on flows again
+	// on its next transmission. Raw receptions keep the exact test instead — identical bytes — because an
+	// equal-time raw event that survives dedupe is usually distinct data (1 Hz s:self reports, truncated
+	// TAG stamps), and withholding a reception loses data where withholding a reconstruction loses nothing.
+	if ev.rebuilt {
+		if hasPos && v.HasPos && !ev.Time.After(v.PosAt.Add(time.Second)) {
+			stale = true
+		}
+		if isStatic && !v.StaticAt.IsZero() && !ev.Time.After(v.StaticAt.Add(time.Second)) {
+			stale = true
+		}
+	}
 	ev.Stale = stale
 	// Low-trust (UDP) positions that imply an impossible speed from the vessel's last position are dropped:
 	// cheap poisoning defence; the reception is still archived.
@@ -132,6 +150,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
 	if isStatic { // names don't move, so a stale static is still worth keeping
 		v.lastStatic = ev
+		if !stale {
+			v.StaticAt = ev.Time
+		}
 	}
 	if !stale {
 		v.Seen, v.Source, v.Station, v.MsgType = ev.Time, ev.Source, ev.Station, ev.Type

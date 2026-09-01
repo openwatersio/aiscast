@@ -13,6 +13,7 @@ Environment:
 
 - `ADDR` (`:8080`), `UDP_ADDR` (`:10110`).
 - `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`.
+- `BARENTSWATCH_CLIENT_ID` + `BARENTSWATCH_CLIENT_SECRET` (set = BarentsWatch upstream on), `BARENTSWATCH_URL`.
 - `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`.
 - `AISSTREAM_API_KEY` (set = aisstream.io upstream on), `AISSTREAM_BBOX` (world), `AISSTREAM_URL`.
 - `AISHUB_FEED` (`data.aishub.net:<port>`): forward volunteer-station events to AISHub as plain `!AIVDM`. The server never forwards public feeds or synthesized events, per their terms.
@@ -52,6 +53,7 @@ The token goes everywhere an API key went: aisstream `APIKey`, `Authorization: B
 Sources:
 
 - Kystverket (Norway, NLOD, TCP NMEA).
+- BarentsWatch when `BARENTSWATCH_CLIENT_ID` is set (Norway, NLOD, JSON stream, `synthesized`). The same AIS Norge network as Kystverket plus satellite and offshore receivers out to the EEZ and Svalbard. Events rebuilt from a non-NMEA source must advance the vessel's clock, so its copies of transmissions Kystverket already delivered raw are withheld, and it takes over a vessel from that vessel's next missed transmission onward.
 - Digitraffic (Finland, CC BY 4.0). The server maps its MQTT JSON to go-ais structs and re-encodes it, and the events carry `synthesized: true`.
 - aisstream.io when `AISSTREAM_API_KEY` is set. The server maps its `/v0` envelopes back to structs, also `synthesized`. Anything the open feeds already delivered dedupes.
 - AISHub's aggregate snapshot when `AISHUB_USERNAME` is set (`synthesized`, source `aishub`, reciprocal with `AISHUB_FEED`). AISHub regenerates its world snapshot only every ~5 minutes, so positions from it are 1–6 minutes old. The server skips unchanged snapshots.

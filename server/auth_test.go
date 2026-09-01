@@ -434,7 +434,8 @@ func TestTiersAndTrust(t *testing.T) {
 	allowAnon = false
 	defer func() { allowAnon = true }()
 	kid, priv := testIssuer(t, p)
-	now := time.Now()
+	// in the past so the trust timeline below (events up to now+10min) never trips the future-stamp cap
+	now := time.Now().Add(-20 * time.Minute)
 
 	// no exp = never expires; exp in the past still expires
 	forever, _ := signToken(priv, Claims{Kid: kid, Sub: "forever", Role: "personal"})
@@ -531,9 +532,10 @@ func TestTiersAndTrust(t *testing.T) {
 	for len(sub.ch) > 0 {
 		<-sub.ch
 	}
-	// a UDP report putting the same vessel 3,000 nm away two seconds later is implausible: dropped, not emitted
+	// a UDP report putting the same vessel 3,000 nm away three seconds later is implausible: dropped, not
+	// emitted (three, not two: rebuilt events must advance the vessel's clock by more than a second first)
 	before := p.stats.implausible.Load()
-	p.ingestPacket(udp, udp, now.Add(2*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 0, Longitude: 0, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	p.ingestPacket(udp, udp, now.Add(3*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 0, Longitude: 0, Cog: 360, Sog: 102.3, TrueHeading: 511})
 	if p.stats.implausible.Load() != before+1 || len(sub.ch) != 0 {
 		t.Errorf("implausible jump: count %d→%d, events %d", before, p.stats.implausible.Load(), len(sub.ch))
 	}
@@ -559,7 +561,8 @@ func TestTiersAndTrust(t *testing.T) {
 func TestDedupedTrustedCopyCorroborates(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	now := time.Now()
+	// in the past so the +30s report below never trips the future-stamp cap
+	now := time.Now().Add(-2 * time.Minute)
 	udp := udpStation("203.0.113.77")
 	line := "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23" // 227006760
 	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now, Body: line})
