@@ -89,7 +89,7 @@ func (m bwMessage) position() ais.Packet {
 	}
 	return ais.PositionReport{
 		Header: ais.Header{MessageID: 1, UserID: m.MMSI}, Valid: true,
-		NavigationalStatus: m.NavStat, RateOfTurn: rot, Sog: ais.Field10(m.Sog),
+		NavigationalStatus: m.NavStat, RateOfTurn: rot, Sog: ais.Field10(sog),
 		Longitude: lon, Latitude: lat, Cog: ais.Field10(m.Cog),
 		TrueHeading: m.Heading, Timestamp: uint8(m.Msgtime.Second()),
 	}

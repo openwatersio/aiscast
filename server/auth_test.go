@@ -561,7 +561,8 @@ func TestTiersAndTrust(t *testing.T) {
 func TestDedupedTrustedCopyCorroborates(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	now := time.Now()
+	// in the past so the +30s report below never trips the future-stamp cap
+	now := time.Now().Add(-2 * time.Minute)
 	udp := udpStation("203.0.113.77")
 	line := "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23" // 227006760
 	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now, Body: line})

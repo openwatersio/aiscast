@@ -88,6 +88,14 @@ func TestBarentswatchEdgeCases(t *testing.T) {
 	if pr, ok := cls.Packet.(ais.PositionReport); !ok || pr.RateOfTurn != -128 {
 		t.Errorf("null ROT not n/a: %+v", cls.Packet)
 	}
+	// a class A vessel claiming 120 kt still encodes (SOG capped to the type-1 n/a value) instead of vanishing
+	bwLine(t, p, `{"type":"Position","messageType":1,"aisClass":"A","latitude":60.5,"longitude":5.5,"speedOverGround":120,"rateOfTurn":null,"mmsi":257000005,"msgtime":"`+now+`","stream":"terra"}`)
+	if len(sub.ch) != 1 {
+		t.Fatalf("high-SOG class A dropped (decode_fail=%d)", p.stats.decodeFail.Load())
+	}
+	if pr, ok := (<-sub.ch).Packet.(ais.PositionReport); !ok || float64(pr.Sog) != 102.3 {
+		t.Errorf("high SOG not capped: %+v", pr)
+	}
 }
 
 // A future msgtime must not fold into the vessel's clock: it would mark every later genuine report stale
@@ -99,13 +107,20 @@ func TestBarentswatchFutureTimestamp(t *testing.T) {
 		return `{"type":"Position","messageType":1,"aisClass":"A","latitude":` + lat + `,"longitude":5.0,"speedOverGround":1,"mmsi":257000004,"msgtime":"` + at.UTC().Format(time.RFC3339) + `","stream":"terra"}`
 	}
 	base := time.Now()
-	p.barentswatchLine([]byte(line(base.Add(time.Hour), "59.0")), base) // corrupted future stamp: capped to receive time
-	p.barentswatchLine([]byte(line(base.Add(2*time.Second), "59.1")), base.Add(2*time.Second))
-	if len(sub.ch) != 2 { // the next genuine report still flows
-		t.Fatalf("events=%d want 2 (stale=%d)", len(sub.ch), p.stats.stale.Load())
+	p.barentswatchLine([]byte(line(base.Add(time.Hour), "59.0")), base) // corrupted future stamp: capped to wall time
+	if len(sub.ch) != 1 {
+		t.Fatalf("events=%d want 1", len(sub.ch))
 	}
 	if ev := <-sub.ch; absDur(ev.Time.Sub(base)) > time.Minute {
-		t.Errorf("future stamp used as canonical: %v", ev.Time)
+		t.Fatalf("future stamp used as canonical: %v", ev.Time)
+	}
+	p.vmu.Lock() // stand in for wall time passing: the vessel clock sits 2 s back from the next report
+	p.vessels[257000004].Seen = p.vessels[257000004].Seen.Add(-2 * time.Second)
+	p.vessels[257000004].PosAt = p.vessels[257000004].PosAt.Add(-2 * time.Second)
+	p.vmu.Unlock()
+	p.barentswatchLine([]byte(line(time.Now(), "59.1")), time.Now())
+	if len(sub.ch) != 1 { // the next genuine report still flows
+		t.Fatalf("later report suppressed (stale=%d)", p.stats.stale.Load())
 	}
 }
 

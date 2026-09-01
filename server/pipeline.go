@@ -223,8 +223,10 @@ func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Pac
 	// Source times are trusted arbitrarily far back (satellite passes and AISHub snapshots deliver late;
 	// the stale check keeps old reports off the live stream) but never into the future: a future stamp
 	// would fold into the vessel's clock, mark every later genuine report stale until wall time caught
-	// up, and survive snapshot restarts.
-	if now := time.Now(); t.IsZero() || t.After(now.Add(maxSkew)) {
+	// up, and survive snapshot restarts. No skew allowance — a rebuilt source's legitimate stamps are
+	// always in the past, and an upstream clock running consistently fast would otherwise keep vessel
+	// clocks ahead of wall time and suppress genuine raw reports.
+	if now := time.Now(); t.IsZero() || t.After(now) {
 		t = now
 	}
 	payload := p.codec.EncodePacket(pkt)
