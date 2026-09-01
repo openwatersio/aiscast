@@ -22,6 +22,7 @@ func runTCPSource(p *Pipeline, name, addr string) {
 		backoff = time.Second
 		sc := bufio.NewScanner(conn)
 		sc.Buffer(make([]byte, 4096), 4096) // line limit; a hostile upstream can't grow memory
+		conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		for sc.Scan() {
 			conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 			p.Ingest(Reception{Source: name, Station: name, RecvTime: time.Now(), Body: sc.Text()})
