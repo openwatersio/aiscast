@@ -33,6 +33,7 @@ Install [signalk-buddylist-plugin](https://github.com/sbender9/signalk-buddylist
 - Buddies are followed in every receive mode, including `Off`: the whole point is traffic beyond local reception. Local reception still wins per target in `Always` mode.
 - The buddylist plugin raises `vessels.<urn>.buddy` and its `notifications.buddy.<urn>` proximity alert the moment positions arrive, so Freeboard's buddy icon, the buddies-only filter, and phone alerts via signalk-push-notifications all work at any distance.
 - The status line shows `buddies 2/3`: how many of the listed buddies aiscast has heard from in the last 10 minutes.
+- aiscast caps how many MMSIs one connection may follow (50 for the plugin's own personal token). A longer list is trimmed to the lowest MMSIs that fit, so the rest are not followed until the list shrinks.
 - A buddy only appears when some station or satellite feed hears them. Coastal coverage is good; mid-ocean gaps are real.
 
 Without the buddylist plugin installed, there are no buddies and nothing changes.
