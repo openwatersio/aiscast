@@ -7,7 +7,7 @@ export const BUDDYLIST_OPTIONS = "signalk-buddylist-plugin.json";
 // saved options for MMSIs to follow on aiscast. No file, plugin disabled, or no buddies all mean an empty list.
 export class Buddies {
   private timer: NodeJS.Timeout | null = null;
-  private stopped = false;
+  private gen = 0; // bumped by start() and stop(): a poll still in flight from an older run cannot commit
   private last = ""; // matches the empty list, so a missing file never reports a change
   mmsis: number[] = [];
 
@@ -20,18 +20,18 @@ export class Buddies {
 
   start(): void {
     this.stop();
-    this.stopped = false;
-    void this.poll();
-    this.timer = setInterval(() => void this.poll(), this.pollMs);
+    const gen = ++this.gen;
+    void this.poll(gen);
+    this.timer = setInterval(() => void this.poll(gen), this.pollMs);
   }
 
   stop(): void {
-    this.stopped = true;
+    this.gen++;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
 
-  private async poll(): Promise<void> {
+  private async poll(gen: number): Promise<void> {
     let mmsis: number[] = [];
     try {
       const opts = JSON.parse(await readFile(this.file, "utf8")) as {
@@ -52,7 +52,7 @@ export class Buddies {
     }
     mmsis = [...new Set(mmsis)].sort((a, b) => a - b);
     const key = mmsis.join();
-    if (this.stopped || key === this.last) return;
+    if (gen !== this.gen || key === this.last) return;
     this.last = key;
     this.mmsis = mmsis;
     this.onChange(mmsis);
