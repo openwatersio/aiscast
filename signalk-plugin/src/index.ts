@@ -268,7 +268,7 @@ export default function (app: ServerAPI): Plugin {
         reportError(
           `aiscast refused the subscription: ${message} (reduce the radius)`,
         );
-      } else if (/mmsi/.test(message)) {
+      } else if (/mmsi/i.test(message)) {
         reportError(
           `aiscast refused the buddy list: ${message} (trim the buddy list)`,
         );

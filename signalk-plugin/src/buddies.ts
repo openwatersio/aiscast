@@ -19,6 +19,8 @@ export class Buddies {
   ) {}
 
   start(): void {
+    this.stop();
+    this.stopped = false;
     void this.poll();
     this.timer = setInterval(() => void this.poll(), this.pollMs);
   }
