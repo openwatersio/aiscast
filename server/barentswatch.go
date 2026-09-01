@@ -45,7 +45,7 @@ type bwMessage struct {
 	CallSign    string    `json:"callSign"`
 	Name        string    `json:"name"`
 	Dest        string    `json:"destination"`
-	Eta         string    `json:"eta"` // "MMDDHHmm" digits; "00002460" = not available
+	Eta         string    `json:"eta"`     // "MMDDHHmm" digits; "00002460" = not available
 	Draught     uint16    `json:"draught"` // 0.1 m
 	ShipType    uint8     `json:"shipType"`
 	DimA        uint16    `json:"dimensionA"`
