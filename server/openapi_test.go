@@ -47,9 +47,10 @@ func TestOpenAPIMatchesMux(t *testing.T) {
 		}
 		documented[path] = true
 	}
+	notAPI := map[string]bool{"/metrics": true, "/robots.txt": true}
 	for pat := range mux {
-		if !strings.HasPrefix(pat, "/v1/") && pat != "/health" {
-			continue // /metrics and the root redirect are not API surface
+		if notAPI[pat] {
+			continue
 		}
 		if wsOnly[pat] {
 			if !strings.Contains(spec.Info.Description, "`"+pat+"`") {

@@ -3,7 +3,7 @@
   "info": {
     "title": "aiscast API",
     "version": "1.0.0",
-    "description": "Live AIS data from openwaters.io: current vessel positions, receiving-station statistics, usage stats, self-serve tokens, and HTTP ingest for feeders. All responses are JSON, CORS is open, and times are UTC. JSON responses are compressed (zstd or gzip) when the request sends Accept-Encoding.\n\nThe streaming endpoints are not described here: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket or Server-Sent Events, both directions), `/v1/nmea` (WebSocket, raw NMEA back to feeders), and raw NMEA ingest on UDP port 10110. See [docs/API.md](https://github.com/openwatersio/aiscast/blob/main/docs/API.md) for those.",
+    "description": "Live AIS data from openwaters.io: current vessel positions, receiving-station statistics, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful data responses are JSON; errors and `/health` are plain text. CORS is open and times are UTC. JSON responses are compressed (zstd or gzip) when the request sends Accept-Encoding.\n\nThe streaming endpoints are not described here: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket or Server-Sent Events, both directions), `/v1/nmea` (WebSocket, raw NMEA back to feeders), and raw NMEA ingest on UDP port 10110. See [docs/API.md](https://github.com/openwatersio/aiscast/blob/main/docs/API.md) for those.",
     "contact": {
       "name": "aiscast",
       "url": "https://github.com/openwatersio/aiscast"
