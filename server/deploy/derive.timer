@@ -1,0 +1,11 @@
+# /etc/systemd/system/derive.timer — run the lake derive shortly after the UTC day closes.
+[Unit]
+Description=nightly aiscast lake derive
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
