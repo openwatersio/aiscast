@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,6 +13,16 @@ import (
 	"sync"
 	"time"
 )
+
+//go:embed openapi.json
+var openapiJSON []byte
+
+// serveOpenAPI serves the hand-written OpenAPI document; openapi_test.go keeps it in sync with the mux.
+func serveOpenAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(openapiJSON)
+}
 
 const upstreamSilence = 2 * time.Minute
 

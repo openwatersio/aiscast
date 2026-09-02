@@ -24,6 +24,7 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test ./...
+      - run: npx --yes @redocly/cli lint openapi.json
       - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o aiscast-linux .
       - uses: actions/upload-artifact@v7
         with:

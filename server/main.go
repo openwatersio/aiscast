@@ -90,20 +90,31 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, httpHandler(p)))
 }
 
+// routes is the HTTP surface; openapi_test.go checks it against openapi.json, so a new endpoint fails the
+// build until the document mentions it.
+func routes(p *Pipeline) map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"/v0/stream":    p.serveV0,
+		"/v1/stream":    p.serveV1,
+		"/v1/receive":   p.serveReceive,
+		"/v1/keys":      p.serveKeys,
+		"/v1/nmea":      p.serveNMEA,
+		"/v1/stations":  p.rateLimited(p.serveStations),
+		"/v1/stations/": p.rateLimited(p.serveStations),
+		"/v1/vessels":   p.rateLimited(p.serveVessels),
+		"/v1/stats":     p.rateLimited(p.serveStats),
+		"/health":       p.serveHealth,
+		"/metrics":      p.serveMetrics,
+		"/robots.txt":   serveRobots,
+		"/openapi.json": p.rateLimited(serveOpenAPI),
+	}
+}
+
 func httpHandler(p *Pipeline) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v0/stream", p.serveV0)
-	mux.HandleFunc("/v1/stream", p.serveV1)
-	mux.HandleFunc("/v1/receive", p.serveReceive)
-	mux.HandleFunc("/v1/keys", p.serveKeys)
-	mux.HandleFunc("/v1/nmea", p.serveNMEA)
-	mux.HandleFunc("/v1/stations", p.rateLimited(p.serveStations))
-	mux.HandleFunc("/v1/stations/", p.rateLimited(p.serveStations))
-	mux.HandleFunc("/v1/vessels", p.rateLimited(p.serveVessels))
-	mux.HandleFunc("/v1/stats", p.rateLimited(p.serveStats))
-	mux.HandleFunc("/health", p.serveHealth)
-	mux.HandleFunc("/metrics", p.serveMetrics)
-	mux.HandleFunc("/robots.txt", serveRobots)
+	for pat, h := range routes(p) {
+		mux.HandleFunc(pat, h)
+	}
 	mux.Handle("/{$}", http.RedirectHandler("https://openwaters.io/ais/", http.StatusFound))
 	return p.countRequests(mux)
 }
