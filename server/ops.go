@@ -15,20 +15,12 @@ import (
 
 const upstreamSilence = 2 * time.Minute
 
-// serveHealth: 503 when any configured upstream has been silent longer than upstreamSilence (the aisstream
-// failure mode was a healthy-looking empty service).
+// serveHealth: 503 when the loopback probe has received nothing for upstreamSilence, i.e. the stream itself
+// delivers no events to subscribers (the aisstream failure mode was a healthy-looking empty service). A single
+// silent source is not an outage while the others keep the stream flowing; per-source ages are in /metrics.
 func (p *Pipeline) serveHealth(w http.ResponseWriter, r *http.Request) {
-	var silent []string
-	for _, s := range p.upstreams {
-		if p.sourceAge(s) > upstreamSilence {
-			silent = append(silent, fmt.Sprintf("%s silent %s", s, p.sourceAge(s).Truncate(time.Second)))
-		}
-	}
 	if last := p.probeLast.Load(); last != 0 && time.Since(time.Unix(last, 0)) > upstreamSilence {
-		silent = append(silent, fmt.Sprintf("no events delivered to subscribers for %s", time.Since(time.Unix(last, 0)).Truncate(time.Second)))
-	}
-	if len(silent) > 0 {
-		http.Error(w, strings.Join(silent, "; "), http.StatusServiceUnavailable)
+		http.Error(w, fmt.Sprintf("no events delivered to subscribers for %s", time.Since(time.Unix(last, 0)).Truncate(time.Second)), http.StatusServiceUnavailable)
 		return
 	}
 	fmt.Fprintln(w, "ok")
