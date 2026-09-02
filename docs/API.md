@@ -17,6 +17,7 @@ All responses are JSON. CORS is open (`Access-Control-Allow-Origin: *`) on the H
 | `POST /v1/receive`                          | personal, feeder, peer, or admin token                   | AIS-catcher style HTTP ingest                                                     |
 | UDP `:10110`                                | none                                                     | raw NMEA ingest                                                                   |
 | `GET /health`                               | none                                                     | 503 when nothing is reaching subscribers                                          |
+| `GET /openapi.json`                         | none                                                     | the HTTP endpoints as OpenAPI 3.1 (the streams and UDP are described here only)   |
 
 ## Tokens
 
@@ -380,7 +381,7 @@ Everyone:
 
 - At most 32 concurrent streams per network address across all tokens.
 - 20 WebSocket connects per minute per address (`/v0/stream`, `/v1/stream`, `/v1/nmea`).
-- 120 requests per minute per address on `/v1/vessels`, `/v1/stations`, `/v1/stats`.
+- 120 requests per minute per address on `/v1/vessels`, `/v1/stations`, `/v1/stats`, `/openapi.json`.
 - 10 per minute per address on `/v1/keys` and in-band `register`.
 - 500 UDP sentences/s per source address.
 - A 3 s subscribe deadline on `/v0`.

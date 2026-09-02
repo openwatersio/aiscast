@@ -233,5 +233,6 @@ func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"station": row, "vessels": map[string]any{"type": "FeatureCollection", "features": features}})
 		return
 	}
-	http.Error(w, `{"error":"unknown station"}`, http.StatusNotFound)
+	w.WriteHeader(http.StatusNotFound) // not http.Error: that would override the JSON Content-Type set above
+	json.NewEncoder(w).Encode(map[string]string{"error": "unknown station"})
 }

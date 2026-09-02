@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,6 +13,16 @@ import (
 	"sync"
 	"time"
 )
+
+//go:embed openapi.json
+var openapiJSON []byte
+
+// serveOpenAPI serves the hand-written OpenAPI document; openapi_test.go keeps it in sync with the mux.
+func serveOpenAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(openapiJSON)
+}
 
 const upstreamSilence = 2 * time.Minute
 
@@ -158,9 +169,11 @@ func connectKey(c *Claims, r *http.Request) string {
 	return clientIP(r)
 }
 
-// rateLimited wraps a public HTTP handler with the per-address request limit.
+// rateLimited wraps a public HTTP handler with the per-address request limit. CORS stays open on the 429
+// itself, so a cross-origin client sees the rate limit rather than an opaque CORS failure.
 func (p *Pipeline) rateLimited(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if p.limited(w, httpLimit, clientIP(r)) {
 			return
 		}
