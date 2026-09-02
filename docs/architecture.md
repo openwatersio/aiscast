@@ -35,7 +35,7 @@ Canonical time comes from the source's own timestamp (TAG `c:`, Digitraffic `tim
 | Edge | Cloudflare in front for WebSocket and HTTP, app-level ping/pong for the proxy idle timeout, `permessage-deflate` on | Certificate operations become a non-event, and compression cuts origin egress about 5× |
 | State on restart | Vessel map snapshot to disk every 10 s, reloaded on boot | Restart without a blank map |
 | Identity | Devices generate Ed25519 keypairs. Authorization is a signed claims token (`ak1.<claims>.<sig>`) carrying `sub`, `role`, `exp`, and optional `bbox`, `cidr`, `conns` | An identity model that survives federation, with no accounts system |
-| Metrics and health | Prometheus `/metrics` (per-source rate and last-message age, dedupe ratio, clients, queue drops, invalid timestamps per station). `/health` fails when a configured upstream is silent for 2 minutes or a loopback subscriber stops receiving | The aisstream failure mode was a healthy-looking empty service |
+| Metrics and health | Prometheus `/metrics` (per-source rate and last-message age, dedupe ratio, clients, queue drops, invalid timestamps per station). `/health` fails when a loopback subscriber has received nothing for 2 minutes | The aisstream failure mode was a healthy-looking empty service |
 
 ## Adding a source
 

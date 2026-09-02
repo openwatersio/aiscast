@@ -16,7 +16,7 @@ All responses are JSON. CORS is open (`Access-Control-Allow-Origin: *`) on the H
 | `POST /v1/keys`                             | none                                                     | mint a personal token for a device key                                            |
 | `POST /v1/receive`                          | personal, feeder, peer, or admin token                   | AIS-catcher style HTTP ingest                                                     |
 | UDP `:10110`                                | none                                                     | raw NMEA ingest                                                                   |
-| `GET /health`                               | none                                                     | 503 when an open-feed upstream is silent or nothing is reaching subscribers       |
+| `GET /health`                               | none                                                     | 503 when nothing is reaching subscribers                                          |
 
 ## Tokens
 
@@ -388,4 +388,4 @@ Everyone:
 
 ## Health
 
-`GET /health` returns `ok` or `503` with the reasons: open-feed upstreams (Kystverket, Digitraffic) silent for more than two minutes, or the server's own loopback `/v1/stream` subscriber receiving nothing for two minutes (ingest without delivery). AISHub and aisstream are best-effort and never affect it. Uptime history is on [status.openwaters.io](https://status.openwaters.io).
+`GET /health` returns `ok`, or `503` with the reason when the server's own loopback `/v1/stream` subscriber has received nothing for two minutes: the stream is delivering no events. A single silent upstream is not an outage while the others keep the stream flowing; per-source ages are on `/metrics`. Uptime history is on [status.openwaters.io](https://status.openwaters.io).
