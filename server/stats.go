@@ -259,6 +259,9 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 		}
 		sources[k] = map[string]any{"events": p.usage.source(k).windows(now), "last_age_s": int64(a.Seconds()),
 			"vessels": vs[0], "vessels_exclusive": vs[1]} // distinct MMSIs heard in the last vesselTTL; exclusive = no other kind heard them
+		if d := p.delays.snapshot(k); d != nil {
+			sources[k].(map[string]any)["delay"] = d
+		}
 	}
 
 	p.rate.mu.Lock()

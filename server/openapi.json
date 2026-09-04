@@ -174,7 +174,7 @@
                   "events": { "per_second": 212.4, "last_24h": 18230411, "last_7d": 121004312, "duplicates": { "last_24h": 2210560, "last_7d": 15320011 } },
                   "clients": { "streams": 9, "streams_opened": { "last_24h": 410, "last_7d": 2822 }, "requests": { "last_24h": 28310, "last_7d": 190412 } },
                   "sources": {
-                    "kystverket": { "events": { "last_24h": 9120033, "last_7d": 61233190 }, "last_age_s": 0, "vessels": 2411, "vessels_exclusive": 180 }
+                    "kystverket": { "events": { "last_24h": 9120033, "last_7d": 61233190 }, "last_age_s": 0, "vessels": 2411, "vessels_exclusive": 180, "delay": { "n": 512, "p50": 0.6, "p99": 1.1 } }
                   }
                 }
               }
@@ -531,7 +531,17 @@
                 "events": { "$ref": "#/components/schemas/Windows" },
                 "last_age_s": { "type": "integer", "description": "Seconds since any member last produced an event." },
                 "vessels": { "type": "integer", "description": "Distinct MMSIs heard in the last 30 minutes." },
-                "vessels_exclusive": { "type": "integer", "description": "Of those, MMSIs no other source kind heard in that window." }
+                "vessels_exclusive": { "type": "integer", "description": "Of those, MMSIs no other source kind heard in that window." },
+                "delay": {
+                  "type": "object",
+                  "description": "Seconds from broadcast to arrival at aiscast over the last 512 position reports from this kind. The broadcast time is the report's UTC-second field placed in the minute of the event's canonical time, so delays of 55 s or more wrap. Absent until a position report with a valid second has been heard.",
+                  "required": ["n", "p50", "p99"],
+                  "properties": {
+                    "n": { "type": "integer", "description": "Samples in the window, at most 512." },
+                    "p50": { "type": "number" },
+                    "p99": { "type": "number" }
+                  }
+                }
               }
             }
           }

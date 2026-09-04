@@ -83,6 +83,7 @@ type Pipeline struct {
 	rate         rateSample   // events/s over the last logStats interval; /v1/stats
 	usage        usageCounters
 	lastBySource sync.Map // source → time.Time of last event; /metrics reads it
+	delays       delayStats
 	stats        struct {
 		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts atomic.Int64
 		bySource                                                                                                                         sync.Map // source → *counterT
@@ -255,6 +256,7 @@ func aisnmeaPacket(channel byte, payload []byte) aisnmea.VdmPacket {
 
 // emit is the common tail: dedupe on (payload, channel) within the window, then id, vessel cache, fan-out.
 func (p *Pipeline) emit(ev *Event) {
+	p.delays.observe(ev, time.Now())
 	key := string(ev.Payload) + string(ev.Channel)
 	p.mu.Lock()
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
