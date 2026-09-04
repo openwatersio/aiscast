@@ -35,9 +35,12 @@ ws.onmessage = ({ data }) => {
   if (ev.type !== "event") return ev.type === "error" && console.error(ev);
   const sec = ev.message?.Timestamp ?? ev.message?.UtcSecond;
   if (sec == null || sec > 59) return skipped++;
-  // ponytail: only the second-of-minute is known, so delays >= 55 s alias into 0..55.
-  let d = recv - (Math.floor(recv / 60) * 60 + sec);
-  if (d < -5) d += 60;
+  // Same rule as the server: the event's canonical time picks the minute, a stamp up to 5 s ahead of it is
+  // skew, anything further is the previous minute. Only the second-of-minute is known, so delays >= 55 s alias.
+  const t = Date.parse(ev.time) / 1000;
+  let b = Math.floor(t / 60) * 60 + sec;
+  if (b > t + 5) b -= 60;
+  const d = Math.max(0, recv - b);
   (delays.get(ev.source) ?? delays.set(ev.source, []).get(ev.source)).push(d);
 };
 

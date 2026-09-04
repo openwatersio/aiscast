@@ -14,7 +14,7 @@ func TestBroadcastDelay(t *testing.T) {
 		want float64
 	}{
 		{25, 5},  // same minute
-		{33, -3}, // slight skew
+		{33, 0},  // slight skew reads as zero, never negative
 		{50, 40}, // previous minute
 	} {
 		if got := broadcastDelay(c.sec, t0, t0); got != c.want {
@@ -36,5 +36,16 @@ func TestDelayStats(t *testing.T) {
 	}
 	if got := d.snapshot("aishub"); got != nil {
 		t.Errorf("unheard kind should have no delay: %v", got)
+	}
+}
+
+func TestDelayRingWindow(t *testing.T) {
+	var r delayRing
+	for i := 0; i < delaySamples+100; i++ {
+		r.add(float64(i))
+	}
+	// Only the newest 512 samples (100..611) remain.
+	if got := r.percentiles(); got["n"] != delaySamples || got["p50"] != 356.0 || got["p99"] != 606.0 {
+		t.Errorf("window: %v", got)
 	}
 }

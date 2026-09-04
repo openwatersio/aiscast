@@ -14,7 +14,7 @@ and prints two tables:
 
   python3 analysis/archive-delay.py <dir with *.gz>
 """
-import gzip, json, sys, glob, os
+import gzip, json, sys, glob, os, re
 from datetime import datetime, timezone
 
 def ts(s):  # RFC3339 with nanoseconds -> unix float
@@ -61,11 +61,13 @@ def nmea_lines(f):
             d = decode(body)
             yield ts(recv), up, d and key(*d)
 
+HEADER = re.compile(r"\d{4}-\d\d-\d\dT\S+\t")
+
 def records(f):
     """(recv, body) per archive record; bodies may span lines (pretty-printed JSON)."""
     recv = None; buf = []
     for line in f:
-        if line.startswith("2026-") and "\t" in line[:40]:
+        if HEADER.match(line):
             if recv:
                 yield recv, "".join(buf)
             head = line.rstrip("\n").split("\t", 2)

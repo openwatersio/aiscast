@@ -49,38 +49,22 @@ func (r *delayRing) percentiles() map[string]any {
 }
 
 type delayStats struct {
-	mu sync.Mutex
-	by map[string]*delayRing
-}
-
-func (d *delayStats) ring(kind string) *delayRing {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.by == nil {
-		d.by = map[string]*delayRing{}
-	}
-	r := d.by[kind]
-	if r == nil {
-		r = &delayRing{}
-		d.by[kind] = r
-	}
-	return r
+	by sync.Map // kind → *delayRing; a handful of kinds, read on every event
 }
 
 func (d *delayStats) observe(ev *Event, now time.Time) {
 	if sec, ok := txSecond(ev.Packet); ok {
-		d.ring(sourceKind(ev.Source)).add(broadcastDelay(sec, ev.Time, now))
+		r, _ := d.by.LoadOrStore(sourceKind(ev.Source), &delayRing{})
+		r.(*delayRing).add(broadcastDelay(sec, ev.Time, now))
 	}
 }
 
 func (d *delayStats) snapshot(kind string) map[string]any {
-	d.mu.Lock()
-	r := d.by[kind]
-	d.mu.Unlock()
-	if r == nil {
+	r, ok := d.by.Load(kind)
+	if !ok {
 		return nil
 	}
-	return r.percentiles()
+	return r.(*delayRing).percentiles()
 }
 
 // txSecond is the UTC second the position was fixed; 60 and above mean unavailable or a special condition.
@@ -99,10 +83,11 @@ func txSecond(pkt ais.Packet) (uint8, bool) {
 
 // broadcastDelay is seconds from the broadcast to now, with t (the best known time near the broadcast)
 // choosing the minute. A stamp up to 5 s ahead of t is clock skew, anything further is the previous minute.
+// Skew that lands the broadcast after now reads as zero delay.
 func broadcastDelay(sec uint8, t, now time.Time) float64 {
 	b := t.Truncate(time.Minute).Add(time.Duration(sec) * time.Second)
 	if b.After(t.Add(5 * time.Second)) {
 		b = b.Add(-time.Minute)
 	}
-	return now.Sub(b).Seconds()
+	return max(0, now.Sub(b).Seconds())
 }
