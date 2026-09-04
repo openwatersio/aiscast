@@ -1,6 +1,6 @@
 # signalk-aiscast
 
-Signal K plugin for [aiscast](https://github.com/openwatersio/aiscast), the open AIS network from [Open Waters](https://openwaters.io). It does two things over one connection:
+Signal K plugin for [aiscast](https://github.com/openwatersio/aiscast), the [Open Waters](https://openwaters.io) AIS network. It does two things over one connection:
 
 - **Share**: the plugin sends every AIS sentence your receiver hears to aiscast as it arrives (`!AIVDM` on NMEA 0183, or NMEA 2000 AIS PGNs re-encoded as sentences), so the places only boats can hear get coverage. The plugin also shares your own transponder's position (`!AIVDO`). When an AIS transponder is not available, the plugin builds class B reports from the Signal K position and marks them self-reported. Each part has its own checkbox.
 - **Receive**: when the boat hears no AIS of its own (no receiver, receiver off, server running ashore), the plugin subscribes to aiscast around your position. It injects the traffic as Signal K targets with `$source` `signalk-aiscast.net`, so Freeboard and friends show them. `Always` mode also adds traffic beyond VHF range, and locally heard targets win.
