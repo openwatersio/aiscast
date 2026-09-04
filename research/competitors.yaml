@@ -1,0 +1,161 @@
+# Competitor data for the aiscast comparison pages on openwaters.io.
+# Single source of truth: every /ais/alternatives/* and /ais/vs/* page reads from here.
+# Facts carry the date they were last checked. Sources: open-feeds.md, commercial-providers.md,
+# community-networks.md, aisstream-issues.md (all 2026-08-20) plus a re-check on 2026-09-04.
+# Refresh quarterly; aisstream.io status monthly (it is the page that ranks).
+
+self:
+  name: aiscast
+  url: https://openwaters.io/ais/
+  positioning: Open AIS network streamed in real time. Free push WebSocket by bounding box, wire-compatible with aisstream.io, source and license on every event, feeders get the aggregate back.
+  audience: [developers leaving aisstream.io, Signal K boats, hobby dashboards, receiver operators, small products and fleets]
+  pricing:
+    anonymous: free, no token, 2 streams per address, 20 msg/s, ~10°×10°
+    personal: free, one-click token, never expires, 2 streams, 50 msg/s, ~20°×20°, 50 MMSIs
+    feeder: free, earned by feeding 1,000 msgs/day, 5 streams, 200 msg/s, any area, raw NMEA, history when it exists
+    commercial: paid, by arrangement (hello@openwaters.io), 10+ streams, unlimited
+  strengths:
+    - aisstream.io protocol on /v0/stream: change the hostname, existing clients work
+    - HTTP snapshot (/v1/vessels) so a view fills instantly; aisstream has none
+    - subscription ack, heartbeat, close reasons, public status page, documented per-token limits
+    - source named on every event; per-source license table published; a human to email
+    - open source (MIT); every reception archived by source
+    - feeders get the live deduplicated aggregate back (raw NMEA) and an open license on it
+  weaknesses:
+    - beta, no SLA, launched 2026
+    - live coverage is Norway, Finland, and volunteer stations; the rest of the world arrives via AISHub snapshots 1–6 min old (or aisstream.io when it is up)
+    - no history or bulk export yet
+    - satellite AIS only via a partner feed (BarentsWatch, Norwegian EEZ); no open-ocean coverage elsewhere
+    - small project; commercial terms are per arrangement, not a rate card
+  best_for: [aisstream.io clients that need to keep running, Signal K, dashboards and hobby projects, anyone who must know a message's source and license, receiver operators who want their data back]
+  not_ideal_for: [global fleet monitoring with an SLA, open-ocean satellite tracking, anyone needing history today]
+
+competitors:
+  aisstream:
+    name: aisstream.io
+    url: https://aisstream.io/
+    checked: 2026-09-04
+    positioning: Free global AIS over WebSocket, bounding-box subscribe, decoded JSON. The incumbent free push feed.
+    audience: [hobby developers, students, LLM-built side projects, Signal K (signalk-aisstream, signalk-mareas-ihm)]
+    pricing:
+      free: only tier; API key via GitHub/Google OAuth; no paid tier, no way to pay (issue #260, 16 reactions)
+    strengths:
+      - free, global-ish terrestrial coverage (~200 km off coastlines), all message types decoded
+      - simplest protocol in the category; many examples and client libraries
+      - when up, latency is fine
+    weaknesses:
+      - outages: down ~14 of 20 days in Aug 2026; 190 open issues on 2026-09-04, newest are 429 lockouts (#292, Sep 2) and instant 1006 closes (#291, Sep 1)
+      - silent failure: no ack, no heartbeat, no close reason, no status page
+      - no terms, no license, no attribution guidance; 20 unanswered licensing issues (latest #290, #289, Aug 29–30)
+      - 1 connection per IP, resubscribe counts as a connection, undocumented 429s, browsers banned
+      - no HTTP snapshot, no history, no raw NMEA, no way to contribute a receiver
+      - closed source; server repo empty; project repo unpushed since 2022-12
+    best_for: [nothing you rely on; a free key to try the category]
+    not_ideal_for: [anything that runs unattended]
+    common_complaints: [connects and subscribes but zero messages, expired TLS certificate, 429 with no Retry-After, is it me or you, no license, no one to email]
+    migration_to_self: change wss://stream.aisstream.io/v0/stream to wss://ais.openwaters.io/v0/stream and use an aiscast personal token as APIKey. Same subscribe message, same MessageType / MetaData / Message frames. Verified with aisstream-ts and the official Go/Python/JS examples. Known differences are listed in docs/API.md.
+
+  aishub:
+    name: AISHub
+    url: https://www.aishub.net/
+    checked: 2026-09-04
+    positioning: Reciprocal AIS data exchange. Feed a receiver, get the aggregate.
+    audience: [receiver operators, researchers with a station, small commercial users]
+    pricing:
+      free: only tier, gated on running a receiver that meets quality bars (≥10 vessels, ≥90% uptime, ≤60 s downsampling, ≤10 s delay)
+    strengths:
+      - largest open-ish terrestrial aggregate: 1,600+ stations, ~98k vessels/24 h, 83 countries
+      - confirmed in writing (2026-08-22) that use, commercial use, and redistribution are unrestricted
+      - stable since 2010s; same operator as VesselFinder
+    weaknesses:
+      - no push: REST/XML/JSON snapshot polled at most once a minute; the world snapshot regenerates every ~5 min so positions are 1–6 min old
+      - you must operate a receiver; no receiver, no API
+      - no written terms document, no termination clause, key revocable at will
+      - no raw NMEA back, no history
+    best_for: [station operators who want a global snapshot, "who is out there" views]
+    not_ideal_for: [anyone without a receiver, close-quarters or sub-minute use cases, push/streaming architectures]
+    relationship_to_self: aiscast is an AISHub contributor (volunteer receptions only) and re-serves the AISHub snapshot as source aishub. A feeder to aiscast can also feed AISHub directly for their API.
+
+  vesselfinder:
+    name: VesselFinder API
+    url: https://api.vesselfinder.com/docs/
+    checked: 2026-08-20
+    positioning: Credit-based REST API for per-vessel lookups; raw terrestrial feed on quote.
+    pricing:
+      api: €330 / 10k credits, €625 / 20k, €1,470 / 50k (≈€0.029 per terrestrial position; satellite 10× credits)
+      raw_feed: TCP/UDP by quote, priced on area, stations, and density
+      premium_web: $34/mo or $179/yr; satellite $139/mo
+    strengths: [global terrestrial + satellite, mature, per-vessel lookups are cheap, feeders get Premium free]
+    weaknesses: [pull only; ToS §7.4 bans competing services and AI training; §7.5 external display only if your Order allows; feeder data licensed to them transferable and sublicensable]
+    best_for: [looking up a few known vessels, satellite positions on demand]
+    not_ideal_for: [area monitoring, redistribution, public maps on a budget]
+
+  datalastic:
+    name: Datalastic
+    url: https://www.datalastic.com/pricing/
+    checked: 2026-09-04
+    positioning: Self-serve REST AIS API with credits.
+    pricing:
+      starter: €199/mo, 20k credits
+      growth: €569/mo, 80k credits
+      developer_pro: €679/mo, unlimited
+      trial: 2-week money-back
+    strengths: [self-serve, historical data included, annual −10%]
+    weaknesses: [REST only, no WebSocket; ToS bans public-facing application exposure; 1 credit per position lookup]
+    best_for: [backend lookups and history with a budget]
+    not_ideal_for: [streaming, public maps, hobby budgets]
+
+  myshiptracking:
+    name: MyShipTracking API
+    url: https://www.myshiptracking.com/pricing/
+    checked: 2026-08-20
+    positioning: Terrestrial network with a REST API and a contributor program.
+    pricing: {plans: "€90 / €185 / €350 per month", contributors: plan upgrades}
+    strengths: [sub-1 s latency claimed, contributor upgrades]
+    weaknesses: [pull only, "public or third-party usage of the Data is expressly prohibited"]
+    best_for: [private dashboards in Europe]
+    not_ideal_for: [anything public]
+
+  marinesia:
+    name: Marinesia
+    url: https://marinesia.com/pricing
+    checked: 2026-09-04
+    positioning: Cheapest paid AIS API found; the one aisstream user who reported migrating went here.
+    pricing: {free: "1 request/hour", premium: "€13.99 / 3 months (2026-08-20 figure; price hidden behind login on 2026-09-04)", ultimate: "100 req/min, 3-month minimum, ~€72.99/mo"}
+    strengths: [cheap]
+    weaknesses: [REST polling only, terms say as-is/as-available, thin documentation]
+    best_for: [a hobby project that polls a few vessels]
+    not_ideal_for: [streaming or area monitoring]
+
+  kpler:
+    name: Kpler AIS (MarineTraffic, Spire Maritime, exactEarth, FleetMon)
+    url: https://www.kpler.com/product/maritime/kplerais
+    checked: 2026-08-20
+    positioning: The consolidated commercial layer: 13,000+ receivers plus satellite, GraphQL, raw NMEA streams, Snowflake.
+    pricing: {published: none, wholesale_anchor: "$437,500/mo global feed (SEC 8-K, 2025-04-25)", regional_live_satellite: "~$10k/yr achievable (NOAA award)"}
+    strengths: [best coverage on earth, satellite latency under a minute, SLAs, history]
+    weaknesses: [no self-serve, no free tier; master agreement bans access through any aggregator or third-party software; no redistribution]
+    best_for: [fleets, analysts, anyone with procurement]
+    not_ideal_for: [individuals, open projects, anything that re-serves data]
+
+  government_feeds:
+    name: Open government feeds (Digitraffic, Kystverket, BarentsWatch, EuRIS)
+    url: https://www.digitraffic.fi/en/marine-traffic/
+    checked: 2026-08-20
+    positioning: Free, licensed for redistribution, regional. What aiscast itself is built on.
+    pricing: {free: "no registration (Digitraffic MQTT, Kystverket TCP, EuRIS REST); BarentsWatch needs a free OAuth client"}
+    strengths: [CC BY 4.0 / NLOD / open, push (MQTT, TCP), verified live, redistribution explicitly allowed]
+    weaknesses: [Finland, Norway, EU inland only; three protocols; EuRIS anonymised (no MMSI); you run the reconnects and dedupe]
+    best_for: [Nordic-only projects, anyone who wants to own the pipeline]
+    not_ideal_for: [anything outside those waters]
+    relationship_to_self: aiscast re-serves Digitraffic and Kystverket/BarentsWatch with their licenses carried through, over one protocol, with the volunteer and AISHub layers on top.
+
+feeder_programs:
+  # For the receiver-operator page: what you get back for your station's data.
+  aiscast: {gets_back: "live deduplicated aggregate (raw NMEA + JSON), feeder tier, station page, open license (CC0 receptions, ODbL aggregate)", license_on_your_data: "CC0 dedication under the contributor agreement; aggregate ODbL; not transferable to an acquirer (draft)", transport: "HTTP (AIS-catcher -H) with token, UDP no token, Signal K plugin"}
+  aishub: {gets_back: "REST snapshot ≤1/min", license_on_your_data: "no written terms", transport: "UDP, per-feeder port"}
+  marinetraffic: {gets_back: "free web plan + raw NMEA bounce-back", license_on_your_data: "perpetual, transferable, irrevocable, royalty-free; data becomes Kpler's exclusive property", transport: "UDP/TCP per-station port"}
+  vesselfinder: {gets_back: "free Premium (≈$179/yr)", license_on_your_data: "transferable, sublicensable license to commercialize; benefits discretionary", transport: "UDP/TCP"}
+  shipxplorer: {gets_back: "free Business plan, ranking, free hardware near ports", license_on_your_data: "none published", transport: "closed sxfeeder binary or UDP"}
+  aiscatcher_org: {gets_back: "a map popup; API paths robots-blocked and 403", license_on_your_data: "none published; sharing is on by default in AIS-catcher", transport: "TCP, COMMUNITY_HUB binary"}
+  myshiptracking: {gets_back: "plan upgrade", license_on_your_data: "none published", transport: "UDP/TCP"}

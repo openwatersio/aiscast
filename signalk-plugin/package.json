@@ -1,7 +1,7 @@
 {
   "name": "signalk-aiscast",
   "version": "0.3.0",
-  "description": "Show nearby traffic without an AIS receiver and share your AIS data with the world.",
+  "description": "aiscast, the Open Waters AIS network, for Signal K: show nearby traffic without an AIS receiver and share what yours hears.",
   "license": "MIT",
   "author": "Brandon Keepers <brandon@opensoul.org>",
   "repository": {
