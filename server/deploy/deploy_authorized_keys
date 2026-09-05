@@ -1,4 +1,0 @@
-# Public keys for the deploy user; the private half is the DEPLOY_SSH_KEY repository secret.
-# apply.sh seeds /home/deploy/.ssh/authorized_keys from this file on a box that has none
-# and never touches an existing one.
-# TODO: paste the current deploy public key here (on the box: /home/deploy/.ssh/authorized_keys).
