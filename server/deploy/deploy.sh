@@ -1,6 +1,6 @@
 #!/bin/sh
 # One-step deploy: ship the binary and the config bundle, converge the box, restart once.
-# Usage: deploy/deploy.sh root@ais.example.org [linux-amd64-binary]
+# Usage: server/deploy/deploy.sh root@ais.example.org [linux-amd64-binary]
 # Without a binary argument it cross-compiles first. Works the same on a fresh Ubuntu box
 # and the live one; CI runs it on every push to main with the tested build artifact.
 set -eu
@@ -17,5 +17,5 @@ fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp "$bin" "$stage/aiscast-linux"
-tar cz apply.sh aiscast.env.example rootfs -C "$stage" aiscast-linux |
-	ssh "$host" 'rm -rf aiscast-deploy && mkdir aiscast-deploy && tar xz -C aiscast-deploy && sh aiscast-deploy/apply.sh'
+tar czf - apply.sh aiscast.env.example rootfs -C "$stage" aiscast-linux |
+	ssh "$host" 'rm -rf aiscast-deploy && mkdir aiscast-deploy && tar xzf - -C aiscast-deploy && sh aiscast-deploy/apply.sh'
