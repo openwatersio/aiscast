@@ -6,7 +6,7 @@ Everything the box needs lives in this directory, and changing any of it is a pu
 
 - [`rootfs/`](rootfs/) mirrors the managed files on the box, copied to `/` verbatim: the systemd unit, [Caddyfile](rootfs/etc/caddy/Caddyfile), sshd hardening, and the fail2ban jail. Add a file here (a new unit, a timer) and merge; the next deploy installs it.
 - [`apply.sh`](apply.sh) converges a box and restarts the service: installs packages (caddy, curl, fail2ban, unattended-upgrades), creates the `aiscast` user and its directories, copies `rootfs/`, validates sshd and the Caddyfile before reloading them, installs the bundled binary, and restarts aiscast exactly once. Binary and config always ship together, so they cannot get out of step. It is idempotent and safe to rerun; it seeds `/etc/aiscast.env` only when missing and never overwrites it.
-- [`deploy.sh`](deploy.sh) is the whole deploy: build (or take a prebuilt binary), send the bundle over ssh, run `apply.sh`. The same command sets up a fresh box and updates the live one: `deploy/deploy.sh root@<ip>`.
+- [`deploy.sh`](deploy.sh) is the whole deploy: build (or take a prebuilt binary), send the bundle over ssh, run `apply.sh`. The same command sets up a fresh box and updates the live one: `server/deploy/deploy.sh root@<ip>`.
 - [`aiscast.env.example`](aiscast.env.example) lists every variable `/etc/aiscast.env` holds. The real file stays on the box; secrets never enter the repo.
 
 ## What exists
@@ -26,7 +26,7 @@ Everything the box needs lives in this directory, and changing any of it is a pu
 
 Deploys ssh in as root: `apply.sh` writes to `/etc` and manages systemd, so a service-level account would not be meaningfully weaker — anyone who can push to `main` controls the files it installs. Repository secrets: `DEPLOY_HOST` (the box IP), `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan -t ed25519 <ip>`), `DEPLOY_SSH_KEY` (the CI ssh key; its public half is in root's `authorized_keys`).
 
-Manual deploy: `deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0.215 journalctl -u aiscast -f`. `systemctl stop aiscast` snapshots the vessel cache and flushes the open archive hour before exit.
+Manual deploy: `server/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0.215 journalctl -u aiscast -f`. `systemctl stop aiscast` snapshots the vessel cache and flushes the open archive hour before exit.
 
 ## Replacing the server
 
@@ -43,7 +43,7 @@ Manual deploy: `deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0.215 jo
    (First-time setup of ssh keys and the firewall uses `POST $A/ssh_keys` and `POST $A/firewalls` with the rules above.)
 
 2. Update the `DEPLOY_HOST` and `DEPLOY_KNOWN_HOSTS` secrets for the new IP.
-3. Deploy: rerun the CI deploy job, or `deploy/deploy.sh root@<ip>`.
+3. Deploy: rerun the CI deploy job, or `server/deploy/deploy.sh root@<ip>`.
 4. Fill `/etc/aiscast.env`: copy it from the old box, or refill the seeded template from `aiscast.env.example`, then `systemctl restart aiscast`.
 5. Move the `ais.openwaters.io` A record to the new IP. UDP feeders and stream clients follow the name; keep its TTL low. Retire the old box once traffic drains.
 
