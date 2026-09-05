@@ -28,7 +28,7 @@ Go 1.24 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the author
 
 ## Production
 
-`server/deploy/README.md` has the box, firewall, systemd unit, cloud-init template, secrets layout, and the CI deploy. Secrets live in the untracked `.env` at the repo root (issuer seed for tokens, Hetzner/R2/AISHub credentials) and in `/etc/server.env` on the box.
+`server/deploy/README.md` has the box, firewall, the managed files under `rootfs/`, provisioning, secrets layout, and the CI deploy. Secrets live in the untracked `.env` at the repo root (issuer seed for tokens, Hetzner/R2/AISHub credentials) and in `/etc/aiscast.env` on the box.
 
 ## Releases
 

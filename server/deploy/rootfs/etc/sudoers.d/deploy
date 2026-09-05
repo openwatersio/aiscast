@@ -1,0 +1,3 @@
+# The CI deploy job may only restart and check the app service. Box config goes through
+# provisioning (server/deploy/provision.sh), which runs as root.
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart aiscast, /usr/bin/systemctl is-active aiscast

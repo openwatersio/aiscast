@@ -1,5 +1,5 @@
 # /etc/systemd/system/aiscast.service — one aiscast per box. Binary at /opt/aiscast/aiscast, env in /etc/aiscast.env
-# (ADDR, UDP_ADDR, ARCHIVE_DIR, SNAPSHOT, R2_BUCKET, V0_API_KEYS, FEEDER_KEYS; never ALLOW_ANON).
+# (see aiscast.env.example in server/deploy for the variables; never ALLOW_ANON).
 [Unit]
 Description=aiscast AIS server
 After=network-online.target
