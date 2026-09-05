@@ -60,3 +60,84 @@ func TestStaleEventNotBroadcast(t *testing.T) {
 		t.Fatalf("stale event broadcast: events=%d stale=%d→%d", len(sub.ch), before, p.stats.stale.Load())
 	}
 }
+
+// posAt is the AIS-quantized comparison: lat/lon round-trip to within one 1/10000-minute step.
+func posAt(t *testing.T, v *vessel, lat, lon float64) bool {
+	t.Helper()
+	return v.HasPos && absF(v.Lat-lat) < 1e-4 && absF(v.Lon-lon) < 1e-4
+}
+
+func absF(f float64) float64 {
+	if f < 0 {
+		return -f
+	}
+	return f
+}
+
+func posReport(mmsi uint32, lat, lon float64) ais.Packet {
+	return ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: mmsi}, Valid: true,
+		Latitude: ais.FieldLatLonFine(lat), Longitude: ais.FieldLatLonFine(lon),
+		Cog: 360, Sog: 102.3, TrueHeading: 511, NavigationalStatus: 15}
+}
+
+// The implausibility check is not limited to UDP: the upstream aggregates carry bad positions too.
+func TestImplausibleJumpFromAnySource(t *testing.T) {
+	for i, src := range []string{"aishub", "aisstream", "kystverket"} {
+		p := testPipeline(t)
+		mmsi := uint32(3000 + i)
+		t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+		p.ingestPacket(src, src, t0, posReport(mmsi, 49.48, 0.13))
+
+		before := p.stats.implausible.Load()
+		ev := &Event{Time: t0.Add(3 * time.Second), Source: src, MMSI: mmsi, Type: "PositionReport",
+			Packet: posReport(mmsi, -0.52, 0.13)} // 3,002 nm away
+		p.updateVessel(ev)
+		if !ev.Implausible {
+			t.Errorf("%s: 3,000 nm in 3 s not flagged implausible", src)
+		}
+		if !posAt(t, p.vessels[mmsi], 49.48, 0.13) {
+			t.Errorf("%s: implausible position folded into the cache: %+v", src, p.vessels[mmsi])
+		}
+		p.emit(ev) // emit counts it and withholds it from subscribers
+		if p.stats.implausible.Load() != before+1 {
+			t.Errorf("%s: implausible not counted", src)
+		}
+	}
+}
+
+// A jump shorter than implausibleJumpNM is left alone however fast it implies: at second-level spacing two
+// sources reporting the same vessel disagree by metres, and 100 m in 1 s already implies 117 kn.
+func TestShortJumpNotImplausible(t *testing.T) {
+	p := testPipeline(t)
+	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	p.ingestPacket("kystverket", "kystverket", t0, posReport(4242, 69.9, 20.1))
+	ev := &Event{Time: t0.Add(time.Second), Source: "barentswatch", MMSI: 4242, Type: "PositionReport",
+		Packet: posReport(4242, 69.909472, 20.163188)}
+	p.updateVessel(ev)
+	if ev.Implausible {
+		t.Errorf("cross-source jitter of %.2f nm flagged implausible", nm(69.9, 20.1, 69.909472, 20.163188))
+	}
+}
+
+// (0,0) is a GPS default, not a fix. It is a valid coordinate, so the 91/181 range test passes it.
+func TestNullIslandIsNotAPosition(t *testing.T) {
+	p := testPipeline(t)
+	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+
+	// a vessel already tracked keeps the position it had
+	p.ingestPacket("aisstream", "aisstream", t0, posReport(1, 49.48, 0.13))
+	p.ingestPacket("aisstream", "aisstream", t0.Add(time.Minute), posReport(1, 0, 0))
+	if !posAt(t, p.vessels[1], 49.48, 0.13) {
+		t.Errorf("null island folded into the cache: %+v", p.vessels[1])
+	}
+	// a vessel seen only at (0,0) has no position at all, so it never reaches /v1/vessels
+	p.ingestPacket("aishub", "aishub", t0, posReport(2, 0, 0))
+	if v := p.vessels[2]; v.HasPos {
+		t.Errorf("vessel known only at (0,0) has a position: lat=%v lon=%v", v.Lat, v.Lon)
+	}
+	// the meridian and the equator on their own are ordinary water: Greenwich is on longitude 0
+	p.ingestPacket("aishub", "aishub", t0, posReport(3, 51.5, 0))
+	if !posAt(t, p.vessels[3], 51.5, 0) {
+		t.Errorf("Greenwich position rejected: %+v", p.vessels[3])
+	}
+}

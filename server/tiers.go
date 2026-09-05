@@ -21,7 +21,8 @@ const (
 	httpPerMinute, keysPerMinute              = 120, 10      // per address
 	udpLinesPerMinute                         = 30000        // ≈500 sentences/s per source address
 	corroborationWindow                       = time.Hour    // a low-trust position counts as corroborated this long after a trusted source heard the vessel
-	implausibleKnots                          = 120.0        // low-trust positions implying faster than this are dropped
+	implausibleKnots                          = 120.0        // positions implying faster than this are dropped
+	implausibleJumpNM                         = 10.0         // ...but only once the jump is this far; nearer than that, source jitter dominates
 )
 
 func anonymousClaims(ip string) *Claims {
