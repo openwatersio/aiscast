@@ -28,4 +28,4 @@ Go 1.24 (`server/mise.toml`). `go test ./...` runs unit tests, the aisstream gol
 
 ## Production
 
-`server/deploy/README.md` has the box, firewall, the managed files under `rootfs/`, provisioning, secrets layout, and the CI deploy. Secrets live in the untracked `.env` at the repo root (issuer seed for tokens, Hetzner/R2/AISHub credentials) and in `/etc/aiscast.env` on the box.
+`server/deploy/README.md` has the box, firewall, the managed files under `rootfs/`, the one-step deploy, and the secrets layout. Secrets live in the untracked `.env` at the repo root (issuer seed for tokens, Hetzner/R2/AISHub credentials) and in `/etc/aiscast.env` on the box.
