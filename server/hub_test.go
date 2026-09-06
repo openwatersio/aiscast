@@ -585,6 +585,31 @@ func TestV1SSERejections(t *testing.T) {
 	}
 }
 
+// Anonymous SSE and WebSocket connects share one per-address bucket, so a client cannot double its connect
+// allowance by alternating transports.
+func TestV1ConnectLimitSharedAcrossTransports(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	wsConnectLimit = newLimiter(1)
+	defer func() { wsConnectLimit = newLimiter(20) }()
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	res, _ := sseGet(t, srv.URL+"/v1/stream?bbox=49,0,50,1") // the one connect this address gets
+	res.Body.Close()
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/stream", nil)
+	req.Header.Set("Upgrade", "websocket")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 429 {
+		t.Errorf("websocket connect after SSE connect: status %d, want 429", res.StatusCode)
+	}
+}
+
 // A disconnected client must release its stream slot, or the tier's conns cap leaks one connection per
 // dropped reader.
 func TestV1SSEReleasesSlots(t *testing.T) {

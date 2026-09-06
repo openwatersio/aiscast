@@ -271,17 +271,25 @@ func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
 	return p.effective(c), nil
 }
 
-// requestClaims is socketClaims with the anonymous tier filled in for a tokenless request, so a plain GET
-// (/v1/stream over SSE, /v1/vessels) is checked against the same caps as a socket.
-func (p *Pipeline) requestClaims(r *http.Request) (*Claims, error) {
-	cl, err := p.socketClaims(r)
-	if err != nil || cl != nil {
-		return cl, err
+// orAnonymous fills in the anonymous tier for a tokenless request. Handlers with a connect limit apply it
+// after that check, so anonymous connects stay keyed by address across every endpoint.
+func orAnonymous(cl *Claims, r *http.Request) *Claims {
+	if cl != nil {
+		return cl
 	}
 	if allowAnon {
-		return &Claims{Sub: "anon", Role: "admin"}, nil
+		return &Claims{Sub: "anon", Role: "admin"}
 	}
-	return anonymousClaims(clientIP(r)), nil
+	return anonymousClaims(clientIP(r))
+}
+
+// requestClaims is socketClaims with the anonymous tier filled in, for handlers without a connect limit.
+func (p *Pipeline) requestClaims(r *http.Request) (*Claims, error) {
+	cl, err := p.socketClaims(r)
+	if err != nil {
+		return nil, err
+	}
+	return orAnonymous(cl, r), nil
 }
 
 // ---- personal tokens: POST /v1/keys {"pubkey": "<base64 ed25519 public key>"} ----

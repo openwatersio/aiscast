@@ -367,13 +367,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusPolicyViolation, "invalid token")
 		return
 	}
-	if cl == nil {
-		if allowAnon {
-			cl = &Claims{Sub: "anon", Role: "admin"}
-		} else {
-			cl = anonymousClaims(clientIP(r)) // personal-tier limits, keyed by address
-		}
-	}
+	cl = orAnonymous(cl, r)
 	ip := clientIP(r)
 	relSub, relAddr, err := acquireStreamSlots(cl, ip)
 	if err != nil {
@@ -632,7 +626,7 @@ func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
 // serveV1SSE streams the same events as the socket to a plain GET. The subscription is fixed at connect time
 // from the query string, since SSE gives the client no channel to change it on.
 func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
-	cl, claimsErr := p.requestClaims(r)
+	cl, claimsErr := p.socketClaims(r)
 	if p.limited(w, wsConnectLimit, connectKey(cl, r)) {
 		return
 	}
@@ -640,6 +634,7 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, claimsErr.Error(), http.StatusUnauthorized)
 		return
 	}
+	cl = orAnonymous(cl, r)
 	// Parsed and checked before any slot or subscription is taken, so a rejected request is cheap.
 	s, msg := parseSSESub(r, cl)
 	if msg != "" {
