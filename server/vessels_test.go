@@ -61,10 +61,13 @@ func TestStaleEventNotBroadcast(t *testing.T) {
 	}
 }
 
-// posAt is the AIS-quantized comparison: lat/lon round-trip to within one 1/10000-minute step.
+// quantStep is the AIS lat/lon resolution: 1/10000 minute, i.e. 1/600000 of a degree. A round trip through
+// ais.FieldLatLonFine loses at most one step (49.48 comes back as 49.479998333).
+const quantStep = 1.0 / 600000
+
 func posAt(t *testing.T, v *vessel, lat, lon float64) bool {
 	t.Helper()
-	return v.HasPos && absF(v.Lat-lat) < 1e-4 && absF(v.Lon-lon) < 1e-4
+	return v.HasPos && absF(v.Lat-lat) < 2*quantStep && absF(v.Lon-lon) < 2*quantStep
 }
 
 func absF(f float64) float64 {

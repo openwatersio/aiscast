@@ -123,11 +123,12 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// the speed test flags ordinary cross-source jitter instead of teleports. The reception is archived
 	// either way.
 	if hasPos && !stale && v.HasPos {
-		d := nm(v.Lat, v.Lon, u.Lat, u.Lon)
-		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 && d > implausibleJumpNM && d/(dt/3600) > implausibleKnots {
-			ev.Implausible = true
-			p.vmu.Unlock()
-			return
+		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 { // dt first: nm() is trig, and tied stamps are common
+			if d := nm(v.Lat, v.Lon, u.Lat, u.Lon); d > implausibleJumpNM && d/(dt/3600) > implausibleKnots {
+				ev.Implausible = true
+				p.vmu.Unlock()
+				return
+			}
 		}
 	}
 	if hasPos && !stale {
