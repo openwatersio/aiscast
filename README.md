@@ -8,7 +8,7 @@ This is a beta. There is no SLA. Coverage is uneven. The terms for re-serving so
 
 **aisstream.io clients.** aiscast speaks aisstream.io's protocol on `wss://ais.openwaters.io/v0/stream`: the same subscribe message, the same `MessageType` / `MetaData` / `Message` frames. Change the hostname and use your aiscast token as the `APIKey`. Existing code keeps working: [aisstream-ts](https://www.npmjs.com/package/aisstream-ts), the official Go/Python/JS examples, and `signalk-aisstream`.
 
-**Native API** ([full reference](docs/API.md)).
+**Native API** ([full reference](https://openwaters.io/api/ais/)).
 
 - `wss://ais.openwaters.io/v1/stream`: send `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon]]}` or `{"type":"subscribe","mmsi":[368168720]}` (or both). You receive one JSON event per decoded AIS message. Each event carries its source, station, receive time, raw sentence, and the decoded fields. Add `"snapshot":true` to get the last known messages for every vessel already tracked in the subscription first, then live traffic. Subscribing needs no token.
 - `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon` (or `?mmsi=a,b,c`): GeoJSON of every vessel currently in view. Each vessel carries its last position, name, type, course, speed, heading, and when and from where aiscast last heard it. No token.

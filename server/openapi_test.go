@@ -8,8 +8,9 @@ import (
 	"testing"
 )
 
-// wsOnly routes stream over WebSocket/SSE and are pointed at docs/API.md by info.description instead of a
-// paths entry. /v1/nmea is also WebSocket but keeps a paths entry for its pre-upgrade HTTP refusals.
+// wsOnly routes stream over WebSocket/SSE and are pointed at the API reference (openwaters.io/api/ais) by
+// info.description instead of a paths entry. /v1/nmea is also WebSocket but keeps a paths entry for its
+// pre-upgrade HTTP refusals.
 var wsOnly = map[string]bool{"/v0/stream": true, "/v1/stream": true}
 
 func TestOpenAPIMatchesMux(t *testing.T) {

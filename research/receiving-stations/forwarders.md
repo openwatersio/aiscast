@@ -8,8 +8,8 @@ All dates verified 2026-08-22 via the GitHub REST API, npm registry API, or the 
 
 | Path | Endpoint | Auth | Notes |
 |---|---|---|---|
-| Plain UDP NMEA | `ais.openwaters.io:10110` | none | Source: [`docs/API.md`](../../../docs/API.md) — "UDP `:10110` \| none \| raw NMEA ingest" |
-| HTTP POST | `https://ais.openwaters.io/v1/receive` | token (`personal`/`feeder`/`peer`/`admin`) | AIS-catcher's `jsonaiscatcher` envelope or plain newline-separated NMEA; gzip accepted; 1 MB limit; 600 posts/min. Source: `docs/API.md` |
+| Plain UDP NMEA | `ais.openwaters.io:10110` | none | Source: [the API reference](https://openwaters.io/api/ais/) — "UDP `:10110` \| none \| raw NMEA ingest" |
+| HTTP POST | `https://ais.openwaters.io/v1/receive` | token (`personal`/`feeder`/`peer`/`admin`) | AIS-catcher's `jsonaiscatcher` envelope or plain newline-separated NMEA; gzip accepted; 1 MB limit; 600 posts/min. Source: [the API reference](https://openwaters.io/api/ais/) |
 
 One implementation detail that shapes the advice below: aiscast's UDP listener splits **each datagram** on `\n` (`server/ingest.go:122`, `for _, line := range strings.Split(string(buf[:n]), "\n")`). So several sentences in one datagram are fine, but a sentence split *across* two datagrams is corrupted. Any forwarder you pick must emit whole lines per datagram. This is why the `socat` recipe below uses canonical (line-buffered) mode rather than raw mode.
 
@@ -674,7 +674,7 @@ Use `AISCATCHER_EXTRA_OPTIONS` with AIS-catcher's `-H`:
 - AISCATCHER_EXTRA_OPTIONS=-H https://ais.openwaters.io/v1/receive USERPWD x:ak1.<your-token> GZIP on INTERVAL 15 RESPONSE off
 ```
 
-The README documents this pattern generally ("To feed additional AIS aggregators that are not listed above using HTTP…"), and multiple `-H` blocks can be chained in the same variable separated by spaces. Sources: [README, "Feeding Additional Services Using HTTP"](https://github.com/sdr-enthusiasts/docker-shipfeeder#feeding-additional-services-using-http); [`docs/API.md`](../../../docs/API.md) for the aiscast side.
+The README documents this pattern generally ("To feed additional AIS aggregators that are not listed above using HTTP…"), and multiple `-H` blocks can be chained in the same variable separated by spaces. Sources: [README, "Feeding Additional Services Using HTTP"](https://github.com/sdr-enthusiasts/docker-shipfeeder#feeding-additional-services-using-http); [the API reference](https://openwaters.io/api/ais/) for the aiscast side.
 
 ### Aggregators it can feed simultaneously
 

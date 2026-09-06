@@ -70,7 +70,7 @@ func TestEventIDDerivation(t *testing.T) {
 	p.Ingest(Reception{Source: "test", Station: "test", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,H42O55lti4hhhilD3nink000?050,0*40"})
 	select {
 	case ev := <-sub.ch:
-		// Documented in docs/API.md; changing the hash, truncation, or inputs breaks every archived id.
+		// Documented in the API reference; changing the hash, truncation, or inputs breaks every archived id.
 		if want := "381c250991f87733bb5080209c16904d"; ev.ID != want {
 			t.Errorf("id=%s want %s", ev.ID, want)
 		}

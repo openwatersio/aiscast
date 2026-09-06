@@ -53,7 +53,7 @@ competitors:
     best_for: [nothing you rely on; a free key to try the category]
     not_ideal_for: [anything that runs unattended]
     common_complaints: [connects and subscribes but zero messages, expired TLS certificate, 429 with no Retry-After, is it me or you, no license, no one to email]
-    migration_to_self: change wss://stream.aisstream.io/v0/stream to wss://ais.openwaters.io/v0/stream and use an aiscast personal token as APIKey. Same subscribe message, same MessageType / MetaData / Message frames. Verified with aisstream-ts and the official Go/Python/JS examples. Known differences are listed in docs/API.md.
+    migration_to_self: change wss://stream.aisstream.io/v0/stream to wss://ais.openwaters.io/v0/stream and use an aiscast personal token as APIKey. Same subscribe message, same MessageType / MetaData / Message frames. Verified with aisstream-ts and the official Go/Python/JS examples. Known differences are listed in the API reference (https://openwaters.io/api/ais/).
 
   aishub:
     name: AISHub

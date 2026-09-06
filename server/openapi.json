@@ -3,7 +3,7 @@
   "info": {
     "title": "aiscast API",
     "version": "1.0.0",
-    "description": "Live AIS data from openwaters.io: current vessel positions, receiving-station statistics, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful data responses are JSON; errors and `/health` are plain text. CORS is open and times are UTC. JSON responses are compressed (zstd or gzip) when the request sends Accept-Encoding.\n\nThe streaming endpoints are not described here: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket or Server-Sent Events, both directions), `/v1/nmea` (WebSocket, raw NMEA back to feeders), and raw NMEA ingest on UDP port 10110. See [docs/API.md](https://github.com/openwatersio/aiscast/blob/main/docs/API.md) for those.",
+    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
     "contact": {
       "name": "aiscast",
       "url": "https://github.com/openwatersio/aiscast"
@@ -16,18 +16,18 @@
   },
   "servers": [{ "url": "https://ais.openwaters.io" }],
   "tags": [
-    { "name": "Data", "description": "Current vessels, stations, and usage statistics. No token needed. 120 requests per minute per address." },
-    { "name": "Tokens", "description": "Self-serve personal tokens. The operator mints feeder, peer, partner, and admin tokens offline." },
-    { "name": "Feeding", "description": "Contributing AIS receptions over HTTP." },
-    { "name": "Ops", "description": "Health and this document." }
+    { "name": "Authentication", "description": "Create a token over HTTP. Feeder, peer, partner, and admin tokens are issued by the operator." },
+    { "name": "Vessels and stations", "description": "The current picture, for a map or a lookup. No token needed, 120 requests per minute per address. For continuous updates, use a stream instead of polling." },
+    { "name": "Contributing", "description": "Send what your receiver hears. Everything you feed is credited to your station, and 1,000 messages a day earns a personal token the feeder tier." },
+    { "name": "Status", "description": "For status pages and monitors. No token needed." }
   ],
   "paths": {
     "/v1/vessels": {
       "get": {
         "operationId": "getVessels",
-        "tags": ["Data"],
-        "summary": "Current vessel positions as GeoJSON",
-        "description": "One `Point` feature per vessel with a known position, seen within the last 30 minutes. Filter with `bbox` (repeatable) and/or `mmsi`, ORed together. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties use AIS \"not available\" sentinels by omission: `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.",
+        "tags": ["Vessels and stations"],
+        "summary": "Current vessels",
+        "description": "Every vessel with a position heard in the last 30 minutes, as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.",
         "security": [{}, { "token": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/bbox" },
@@ -75,9 +75,9 @@
     "/v1/stations": {
       "get": {
         "operationId": "listStations",
-        "tags": ["Data"],
-        "summary": "Receiving stations and their statistics",
-        "description": "Every station heard since the server started. `events` counts decoded messages credited to the station (first to deliver them) over rolling 24-hour and 7-day windows. `vessels` is distinct MMSIs heard in the last 30 minutes. `bbox` is the extent of positions heard, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
+        "tags": ["Vessels and stations"],
+        "summary": "Stations",
+        "description": "Every receiving station heard since the server started, with what it contributes. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes. `bbox` is the extent of positions heard, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
         "security": [],
         "responses": {
           "200": {
@@ -109,9 +109,9 @@
     "/v1/stations/{id}": {
       "get": {
         "operationId": "getStation",
-        "tags": ["Data"],
-        "summary": "One station with the vessels it last updated",
-        "description": "The station's statistics row plus a GeoJSON FeatureCollection of the vessels whose latest message came from this station. Station ids can contain slashes (`kystverket/2573010`).",
+        "tags": ["Vessels and stations"],
+        "summary": "Station detail",
+        "description": "One station's statistics plus a GeoJSON FeatureCollection of the vessels it was the latest to hear. Ids can contain slashes, such as `kystverket/2573010`.",
         "security": [],
         "parameters": [
           {
@@ -158,9 +158,9 @@
     "/v1/stats": {
       "get": {
         "operationId": "getStats",
-        "tags": ["Data"],
-        "summary": "Usage summary",
-        "description": "A one-shot summary for status pages and tracking growth: stations, vessels, event rates, client counts, and per-source-kind breakdowns. Counts are rolling windows over the last 24 hours and 7 days (hourly buckets, kept across restarts), never since-start totals.",
+        "tags": ["Status"],
+        "summary": "Stats",
+        "description": "A summary for status pages and growth tracking: stations, vessels, event rates, client counts, and a breakdown by source kind. Counts are rolling 24-hour and 7-day windows that survive restarts, never since-start totals.",
         "security": [],
         "responses": {
           "200": {
@@ -188,9 +188,9 @@
     "/v1/keys": {
       "post": {
         "operationId": "mintKey",
-        "tags": ["Tokens"],
-        "summary": "Mint a personal token for a device key",
-        "description": "Self-serve tokens for an Ed25519 device key. Personal tokens never expire and allow 2 concurrent streams, 50 messages/s per stream, 400 square degrees of subscribed area, and publishing. A personal token whose stations delivered at least 1,000 events in the last 24 hours is treated as the feeder tier (5 streams, 200 messages/s, no area cap, `/v1/nmea` access) while the station keeps feeding. `bind_ip: true` adds the requester's address as a `cidr` claim so a UDP station at that address counts toward this token's feeder tier (the token then only works from that address). 10 requests per minute per address: one token is all a client needs.",
+        "tags": ["Authentication"],
+        "summary": "Create a personal token",
+        "description": "Create a personal token for an Ed25519 key you generate. It never expires. Generate a key and print its public half in the form `pubkey` expects:\n\n```\nopenssl genpkey -algorithm ed25519 -out ais-key.pem\nopenssl pkey -in ais-key.pem -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '='\n```\n\nTiers and limits are in [docs/limits.md](https://github.com/openwatersio/aiscast/blob/main/docs/limits.md).",
         "security": [],
         "requestBody": {
           "required": true,
@@ -202,12 +202,12 @@
                 "properties": {
                   "pubkey": {
                     "type": "string",
-                    "description": "Base64url-encoded Ed25519 public key, 32 bytes."
+                    "description": "The raw 32-byte Ed25519 public key, base64url-encoded without padding (43 characters). Not PEM or DER."
                   },
                   "bind_ip": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Also bind the requester's address, so its UDP station counts as this token's."
+                    "description": "Bind the token to the requesting address, so a receiver sending UDP from that address counts toward this token's feeder tier. The token then only works from that address."
                   }
                 }
               },
@@ -253,9 +253,9 @@
     "/v1/receive": {
       "post": {
         "operationId": "receive",
-        "tags": ["Feeding"],
-        "summary": "HTTP ingest for AIS receivers",
-        "description": "AIS-catcher's HTTP output: `AIS-catcher -H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on INTERVAL 15`. Body is either AIS-catcher's `jsonaiscatcher` envelope or plain newline-separated NMEA. `Content-Encoding: gzip` is accepted, with a 1 MB limit before and after decompression. Needs a token that may publish (`personal`, `feeder`, `peer`, or `admin`). The token's `sub` becomes the station. 600 posts per minute per station. Every response carries a `Link: rel=\"terms-of-service\"` header naming the contributor agreement; feeding data is acceptance.",
+        "tags": ["Contributing"],
+        "summary": "Contributing over HTTP",
+        "description": "Contributing over HTTP with AIS-catcher's `-H` output or your own client:\n\n```\nAIS-catcher -H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on INTERVAL 15\n```\n\nThe body is AIS-catcher's `jsonaiscatcher` envelope or plain newline-separated NMEA, optionally gzipped, up to 1 MB. Needs a token, whose `sub` becomes the station name. 600 posts per minute per station. Feeding data is acceptance of the contributor agreement, linked from every response's `Link: rel=\"terms-of-service\"` header.",
         "security": [{ "token": [] }],
         "requestBody": {
           "required": true,
@@ -301,9 +301,9 @@
     "/v1/nmea": {
       "get": {
         "operationId": "nmeaStream",
-        "tags": ["Feeding"],
-        "summary": "Raw deduplicated NMEA back to feeders (WebSocket)",
-        "description": "A WebSocket endpoint: one text frame per deduplicated message, each sentence prefixed with a NMEA 4.10 TAG block carrying the station (`s:`), the canonical time (`c:`), and the source's license tag (`t:`). Needs a token with role `feeder`, `peer`, `partner`, or `admin`, or a personal token that has earned the feeder tier by contributing. Optional `bbox` filters by the vessel's last known position. The stream itself is outside this document; see [docs/API.md](https://github.com/openwatersio/aiscast/blob/main/docs/API.md). The responses below are what a request receives when it is refused before the WebSocket upgrade.",
+        "tags": ["Contributing"],
+        "summary": "Deduplicated NMEA feed",
+        "description": "The raw NMEA WebSocket, documented at [openwaters.io/api/ais](https://openwaters.io/api/ais/). The responses below are what a request receives when it is refused before the WebSocket upgrade.",
         "security": [{ "token": [] }],
         "parameters": [
           {
@@ -326,9 +326,9 @@
     "/health": {
       "get": {
         "operationId": "getHealth",
-        "tags": ["Ops"],
-        "summary": "Liveness of the ingest pipeline",
-        "description": "`ok` while data flows. 503 when the server's own loopback subscriber has received nothing for two minutes, i.e. the stream itself delivers no events. A single silent source is not an outage while the others keep the stream flowing; per-source ages are in `/metrics`.",
+        "tags": ["Status"],
+        "summary": "Health",
+        "description": "`ok` while data is reaching subscribers. 503 after two minutes of nothing. One silent source is not an outage while the others keep the stream flowing.",
         "security": [],
         "responses": {
           "200": {
@@ -345,8 +345,8 @@
     "/openapi.json": {
       "get": {
         "operationId": "getOpenAPI",
-        "tags": ["Ops"],
-        "summary": "This document",
+        "tags": ["Status"],
+        "summary": "OpenAPI specification",
         "security": [],
         "responses": {
           "200": {
@@ -363,7 +363,7 @@
       "token": {
         "type": "http",
         "scheme": "bearer",
-        "description": "An aiscast claim token (`ak1....`), minted by `POST /v1/keys` or by the operator. Besides `Authorization: Bearer`, the token is accepted as an HTTP Basic password (`anything:<token>`, which is what AIS-catcher's USERPWD sends) or as `?key=<token>` on the URL. A token that is present but invalid, expired, revoked, used outside its `cidr`, or lacking the role for the action is refused; it never degrades to anonymous access."
+        "description": "An aiscast claim token (`ak1....`), created by `POST /v1/keys` or issued by the operator. Besides `Authorization: Bearer`, the token is accepted as an HTTP Basic password (`anything:<token>`, which is what AIS-catcher's USERPWD sends) or as `?key=<token>` on the URL. A token that is present but invalid, expired, revoked, used outside its `cidr`, or lacking the role for the action is refused; it never degrades to anonymous access."
       }
     },
     "parameters": {
