@@ -216,7 +216,7 @@ data: {"type":"event","id":"15f3d254...","time":"2026-08-20T15:25:54.342871Z","m
 
 The stream is gzipped when the request sends `Accept-Encoding: gzip`, flushed per event so nothing waits on a compression block. A `:` comment arrives every 30 seconds while the stream is idle, so a proxy does not mistake a quiet subscription for a dead one. A client that cannot keep up receives `{"type":"error","error":"client too slow"}` and the stream ends, as close 1008 does on the socket.
 
-Anything wrong with the request is an HTTP status, not a frame: `400` for a malformed `bbox` or `mmsi` or a subscription outside the token's claims (unlike `/v1/vessels`, an unparseable MMSI is refused rather than dropped — on a long-lived stream a typo would be indistinguishable from a subscription that never matches), `401` for a bad token, `405` for a method other than `GET`, `429` for the connect limit or the concurrent-connection caps.
+Anything wrong with the request is an HTTP status, not a frame: `400` for a malformed `bbox` or `mmsi` or a subscription outside the token's claims (an unparseable MMSI is refused rather than dropped: on a long-lived stream a typo would be indistinguishable from a subscription that never matches), `401` for a bad token, `405` for a method other than `GET`, `429` for the connect limit or the concurrent-connection caps.
 
 There is no `Last-Event-ID` resumption. `snapshot=1` rebuilds current state on reconnect.
 
@@ -372,7 +372,7 @@ Defaults by tier, which a minted token's claims override. See [limits.md](limits
 | -------------------------------------- | ------------- | ---------------------------------------------------------------------- | ------------------------- | --------------- |
 | Concurrent streams                     | 2 per address | 2                                                                      | 5                         | as minted       |
 | Messages/s per stream (excess thinned) | 20            | 50                                                                     | 200                       | as minted       |
-| Subscribed area (sq °)                 | 100           | 400                                                                    | unlimited                 | as minted       |
+| Area per stream or `/v1/vessels` (sq °)| 100           | 400                                                                    | unlimited                 | as minted       |
 | Vessels followed by MMSI per stream    | 10            | 50                                                                     | 200                       | as minted       |
 | `/v1/nmea`                             | no            | no                                                                     | yes                       | yes             |
 | Publish                                | no            | 6,000 sentences/min, 1,000/frame, `/v1/receive` 600 posts/min and 1 MB | same                      | same            |

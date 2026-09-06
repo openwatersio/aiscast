@@ -558,21 +558,23 @@ func TestV1SSERejections(t *testing.T) {
 	}{
 		{"?bbox=nonsense", 400},
 		{"?bbox=49,0,50", 400},
-		{"?bbox=49,0,200,1", 400},                 // out of range
-		{"?mmsi=nonsense", 400},                   // /v1/vessels would drop this silently
+		{"?bbox=49,0,200,1", 400}, // out of range
+		{"?mmsi=nonsense", 400},
 		{"", 400},                                 // everything, but the anonymous tier has an area cap
 		{"?bbox=0,0,50,50", 400},                  // 2500 square degrees over the anonymous 100
 		{"?bbox=0,0,50,50&bbox=0,0,-50,-50", 400}, // inverted second box must not subtract from the total
 		{"?mmsi=1,2,3,4,5,6,7,8,9,10,11", 400},    // over the anonymous mmsi cap of 10
 		{"?key=ak1.bogus.bogus&bbox=49,0,50,1", 401},
 	} {
-		res, err := http.Get(srv.URL + "/v1/stream" + tc.query)
-		if err != nil {
-			t.Fatal(err)
-		}
-		res.Body.Close()
-		if res.StatusCode != tc.want {
-			t.Errorf("%q: status %d, want %d", tc.query, res.StatusCode, tc.want)
+		for _, path := range []string{"/v1/stream", "/v1/vessels"} { // same filters, same caps
+			res, err := http.Get(srv.URL + path + tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			if res.StatusCode != tc.want {
+				t.Errorf("%s%s: status %d, want %d", path, tc.query, res.StatusCode, tc.want)
+			}
 		}
 	}
 

@@ -271,6 +271,19 @@ func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
 	return p.effective(c), nil
 }
 
+// requestClaims is socketClaims with the anonymous tier filled in for a tokenless request, so a plain GET
+// (/v1/stream over SSE, /v1/vessels) is checked against the same caps as a socket.
+func (p *Pipeline) requestClaims(r *http.Request) (*Claims, error) {
+	cl, err := p.socketClaims(r)
+	if err != nil || cl != nil {
+		return cl, err
+	}
+	if allowAnon {
+		return &Claims{Sub: "anon", Role: "admin"}, nil
+	}
+	return anonymousClaims(clientIP(r)), nil
+}
+
 // ---- personal tokens: POST /v1/keys {"pubkey": "<base64 ed25519 public key>"} ----
 // The server holds a separate personal-tier issuer key (PERSONAL_ISSUER_KEY, base64 seed); what it mints is
 // bounded by personalClaims, so a compromised box can only hand out personal-tier access.

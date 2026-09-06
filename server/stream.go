@@ -585,9 +585,9 @@ func welcomeFor(cl *Claims, canPublish bool) v1Welcome {
 	return v1Welcome{Type: "welcome", Sub: cl.Sub, Role: cl.Role, Feeder: cl.Feeder, Terms: termsURL, Limits: lim}
 }
 
-// parseSSESub builds the fixed subscription from the query string. Malformed input is refused rather than
-// dropped the way /v1/vessels drops it: on a connection held open for hours a typo'd mmsi is
-// indistinguishable from a subscription that legitimately never matches.
+// parseSSESub builds the fixed subscription from the query string, for /v1/stream over SSE and for
+// /v1/vessels. Malformed input is refused rather than dropped: on a connection held open for hours a typo'd
+// mmsi is indistinguishable from a subscription that legitimately never matches.
 func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
 	s := &v1Sub{}
 	for _, q := range r.URL.Query()["bbox"] {
@@ -632,20 +632,13 @@ func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
 // serveV1SSE streams the same events as the socket to a plain GET. The subscription is fixed at connect time
 // from the query string, since SSE gives the client no channel to change it on.
 func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
-	cl, claimsErr := p.socketClaims(r)
+	cl, claimsErr := p.requestClaims(r)
 	if p.limited(w, wsConnectLimit, connectKey(cl, r)) {
 		return
 	}
 	if claimsErr != nil {
 		http.Error(w, claimsErr.Error(), http.StatusUnauthorized)
 		return
-	}
-	if cl == nil {
-		if allowAnon {
-			cl = &Claims{Sub: "anon", Role: "admin"}
-		} else {
-			cl = anonymousClaims(clientIP(r))
-		}
 	}
 	// Parsed and checked before any slot or subscription is taken, so a rejected request is cheap.
 	s, msg := parseSSESub(r, cl)

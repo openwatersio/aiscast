@@ -27,8 +27,8 @@
         "operationId": "getVessels",
         "tags": ["Data"],
         "summary": "Current vessel positions as GeoJSON",
-        "description": "One `Point` feature per vessel with a known position, seen within the last 30 minutes. Filter with `bbox` and/or `mmsi` (ORed together), or neither for all vessels. Properties use AIS \"not available\" sentinels by omission: `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.",
-        "security": [],
+        "description": "One `Point` feature per vessel with a known position, seen within the last 30 minutes. Filter with `bbox` (repeatable) and/or `mmsi`, ORed together. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties use AIS \"not available\" sentinels by omission: `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.",
+        "security": [{}, { "token": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/bbox" },
           { "$ref": "#/components/parameters/mmsi" }
@@ -67,6 +67,7 @@
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
           "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }

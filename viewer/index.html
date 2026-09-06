@@ -87,30 +87,14 @@
     ws.onerror = () => ws.close();
     ws.onmessage = (e) => {
       const ev = JSON.parse(e.data);
-      if (ev.type === "error" && /bbox/.test(ev.error)) return refresh(); // view exceeds the area cap: HTTP snapshot instead
+      if (ev.type === "error" && /bbox/.test(ev.error)) { wsState = "zoom in to see vessels"; return; } // view exceeds the area cap
       if (ev.type !== "event") return;
+      wsState = "live";
       eventCount++;
       onEvent(ev);
     };
   }
 
-  // Fallback when the view is too large to subscribe: /v1/vessels has no area cap.
-  async function refresh() {
-    try {
-      const res = await fetch(`${server}/v1/vessels?bbox=${bboxParam().join(",")}`);
-      const fc = await res.json();
-      for (const f of fc.features) {
-        const p = f.properties;
-        const v = vessels.get(p.mmsi) || {};
-        Object.assign(v, p, { lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], seen: Date.parse(p.seen) });
-        vessels.set(p.mmsi, v);
-        noteSource(p.source);
-      }
-      dirty = true;
-    } catch (e) {
-      console.warn("snapshot failed", e);
-    }
-  }
   function subscribe() {
     if (ws?.readyState === 1) ws.send(JSON.stringify({ type: "subscribe", bbox: [bboxParam()], snapshot: true }));
   }
