@@ -50,11 +50,7 @@ jobs:
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-      - name: install and restart
-        run: |
-          scp aiscast-linux deploy@"$DEPLOY_HOST":/opt/aiscast/aiscast.new
-          scp server/deploy/Caddyfile deploy@"$DEPLOY_HOST":/etc/caddy/Caddyfile
-          ssh deploy@"$DEPLOY_HOST" 'chmod 755 /opt/aiscast/aiscast.new && mv /opt/aiscast/aiscast.new /opt/aiscast/aiscast && sudo systemctl restart aiscast && sudo systemctl reload caddy && sleep 3 && sudo systemctl is-active aiscast && sudo systemctl is-active caddy && curl -fsS localhost:8080/health'
+      - run: server/deploy/deploy.sh root@"$DEPLOY_HOST" aiscast-linux
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
 
