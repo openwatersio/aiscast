@@ -83,7 +83,10 @@ func (p *Pipeline) updateVessel(ev *Event) {
 			u.ShipType = m.ReportB.ShipType
 		}
 	}
-	if hasPos && (math.Abs(u.Lat) > 90 || math.Abs(u.Lon) > 180) { // 91/181 = not available
+	// 91/181 are the "not available" sentinels. (0,0) is a valid coordinate, so it passes the range test,
+	// but it is a GPS default rather than a fix; it arrives steadily from the upstream aggregates. Treated
+	// as "no position" rather than dropped, so the rest of the message still folds in.
+	if hasPos && (math.Abs(u.Lat) > 90 || math.Abs(u.Lon) > 180 || (u.Lat == 0 && u.Lon == 0)) {
 		hasPos = false
 	}
 	p.vmu.Lock()
@@ -113,13 +116,19 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		}
 	}
 	ev.Stale = stale
-	// Low-trust (UDP) positions that imply an impossible speed from the vessel's last position are dropped:
-	// cheap poisoning defence; the reception is still archived.
-	if hasPos && !stale && ev.LowTrust && v.HasPos {
-		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 && nm(v.Lat, v.Lon, u.Lat, u.Lon)/(dt/3600) > implausibleKnots {
-			ev.Implausible = true
-			p.vmu.Unlock()
-			return
+	// A position implying an impossible speed from the vessel's last position is dropped whatever the
+	// source: the aggregates carry bad positions of their own, and no vessel outruns implausibleKnots.
+	// The jump must also clear implausibleJumpNM. Two sources reporting the same vessel a second apart
+	// disagree by metres, and at that spacing 100 m alone implies 117 kn — so without a distance floor
+	// the speed test flags ordinary cross-source jitter instead of teleports. The reception is archived
+	// either way.
+	if hasPos && !stale && v.HasPos {
+		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 { // dt first: nm() is trig, and tied stamps are common
+			if d := nm(v.Lat, v.Lon, u.Lat, u.Lon); d > implausibleJumpNM && d/(dt/3600) > implausibleKnots {
+				ev.Implausible = true
+				p.vmu.Unlock()
+				return
+			}
 		}
 	}
 	if hasPos && !stale {
