@@ -12,6 +12,9 @@ User=aiscast
 Group=aiscast
 EnvironmentFile=/etc/aiscast-lake.env
 WorkingDirectory=/var/lib/aiscast
+# everything the job writes (stage/, warehouse/, uv's cache via HOME) must live under ReadWritePaths
+Environment=LAKE_HOME=/var/lib/aiscast/lake
+Environment=HOME=/var/lib/aiscast
 ExecStart=/usr/local/bin/uv run /opt/aiscast/derive.py --archive /var/lib/aiscast/archive
 # uploaded raw hours also live in R2; prune local copies the box no longer needs (160 GB disk, ~4.5 GB/day)
 ExecStartPost=/usr/bin/find /var/lib/aiscast/archive -name '*.gz' -mtime +14 -delete
@@ -19,4 +22,5 @@ TimeoutStartSec=2h
 MemoryMax=8G
 NoNewPrivileges=true
 ProtectSystem=strict
+PrivateTmp=true
 ReadWritePaths=/var/lib/aiscast
