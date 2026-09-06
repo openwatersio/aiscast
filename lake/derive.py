@@ -1,5 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
+# requires-python = ">=3.11"
 # dependencies = ["pyais", "pyarrow", "duckdb", "pyiceberg[sql-sqlite]"]
 # ///
 """Derive job: raw per-source archive -> deduplicated Iceberg tables.
@@ -18,7 +19,7 @@ import os
 import re
 import sys
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -78,7 +79,8 @@ def valid_pos(lat6, lon6):
 
 
 def parse_recv(tscol):
-    return datetime.fromisoformat(tscol[:26].decode()).replace(tzinfo=None)  # trim ns, naive UTC
+    # RFC3339Nano from the server; [:26] trims to µs, fromisoformat (3.11+) takes the rest
+    return datetime.fromisoformat(tscol[:26].decode()).replace(tzinfo=None)
 
 
 def canonical(src_epoch_us, recv):
@@ -233,11 +235,12 @@ def nmea_line(source, payload, recv, parts, pos_out, stat_out):
     canon = canonical(src_us, recv)
     t = msg.msg_type
     if t in POS_TYPES:
+        hdg = getattr(msg, "heading", None)  # 0 (due north) is valid; only absence means n/a
         emit_pos(
             pos_out, msg.mmsi, t,
             round(float(msg.lat) * 600000), round(float(msg.lon) * 600000),
             sog_wire(getattr(msg, "speed", None)), cog_wire(getattr(msg, "course", None)),
-            getattr(msg, "heading", NA_HDG) or NA_HDG,
+            NA_HDG if hdg is None else hdg,
             int(getattr(msg, "status", NA_NAV)) if getattr(msg, "status", None) is not None else NA_NAV,
             canon, recv, source, station,
         )
@@ -349,9 +352,9 @@ def process_day(day, files, con, catalog, keep_stage, reuse_stage):
         n_pos, n_stat = pos_out.n, stat_out.n
 
     day_start = datetime.fromisoformat(day)
-    day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
+    day_end = day_start + timedelta(days=1)  # exclusive
     con.execute(GROUP_SQL, [pos_path, day_start, day_end])
-    # COPY streams to disk instead of materializing arrow tables; add_files registers them without rewriting
+    # COPY streams to disk instead of materializing arrow tables
     msg_path, rx_path = str(stage / f"messages-{day}.parquet"), str(stage / f"receptions-{day}.parquet")
     con.execute(
         f"""
@@ -378,18 +381,23 @@ def process_day(day, files, con, catalog, keep_stage, reuse_stage):
     con.execute("DROP TABLE grouped")
 
     for name, path in [("ais.messages", msg_path), ("ais.receptions", rx_path)]:
-        tbl = retry(lambda: catalog.load_table(name))
-        retry(lambda: tbl.delete(f"day = '{day}'"))  # rerunning a day replaces it
-        # chunked appends keep memory flat and work against local and R2 warehouses alike
-        pf = pq.ParquetFile(path)
-        for batch in pf.iter_batches(batch_size=2_000_000):
-            chunk = pa.Table.from_batches([batch], schema=pf.schema_arrow)
-            retry(lambda: tbl.append(chunk))
+
+        def replace_day(name=name, path=path):
+            tbl = catalog.load_table(name)
+            # delete + chunked appends land as one commit: a crashed or retried run never
+            # exposes a partial day. Chunking keeps memory flat; retry redoes the whole table.
+            with tbl.transaction() as tx:
+                tx.delete(f"day = '{day}'")  # rerunning a day replaces it
+                pf = pq.ParquetFile(path)
+                for batch in pf.iter_batches(batch_size=2_000_000):
+                    tx.append(pa.Table.from_batches([batch], schema=pf.schema_arrow))
+
+        retry(replace_day)
     refresh_vessels(con, catalog, stat_path, pos_path)
 
     print(f"{day}: {n_pos} position receptions, {n_msg} messages, {n_err} decode errors", file=sys.stderr)
     if not keep_stage:
-        for p in (pos_path, stat_path):
+        for p in (pos_path, stat_path, msg_path, rx_path):
             os.remove(p)
 
 
@@ -413,7 +421,7 @@ def refresh_vessels(con, catalog, stat_path, pos_path):
         WHERE rn = 1 ORDER BY u.mmsi
         """,
         [pos_path, stat_path],
-    ).fetch_arrow_table()
+    ).to_arrow_table()
     retry(lambda: tbl.overwrite(merged.cast(tbl.schema().as_arrow())))
 
 
@@ -452,8 +460,6 @@ def main():
         m = re.search(r"(\d{4})/(\d{2})/(\d{2})/\d{2}\.gz$", f)
         if m:
             by_day.setdefault("-".join(m.groups()), []).append(f)
-    from datetime import timedelta
-
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     days = sorted(by_day) if args.all else [args.date or yesterday]
 

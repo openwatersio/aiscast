@@ -20,7 +20,7 @@ T0 = int(datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc).timestamp())
 B_MMSI, A_MMSI, CERULEAN = 257000001, 230111222, 368168720
 # wire-exact values so every format encodes them identically
 B_POS = dict(lat=59.5, lon=10.25, speed=6.5, course=123.4, heading=87)
-A_POS = dict(lat=60.1, lon=24.9, speed=0.0, course=0.0, heading=90)
+A_POS = dict(lat=60.1, lon=24.9, speed=0.0, course=0.0, heading=0)  # heading 0 (due north) must survive, not decay to 511
 
 
 def ts(offset):
@@ -72,7 +72,7 @@ def fixture_archive(tmp_path):
         nmea_line(f"v1:mmsi:{CERULEAN}", 50, dict(type=18, mmsi=CERULEAN, lat=41.5, lon=-71.3, speed=0.0, course=0.0, heading=511)),
     )
 
-    dt_loc = json.dumps({"lat": A_POS["lat"], "lon": A_POS["lon"], "sog": 0.0, "cog": 0.0, "heading": 90, "navStat": 0, "time": T0 + 30}, indent=2)
+    dt_loc = json.dumps({"lat": A_POS["lat"], "lon": A_POS["lon"], "sog": 0.0, "cog": 0.0, "heading": A_POS["heading"], "navStat": 0, "time": T0 + 30}, indent=2)
     dt_meta = json.dumps({"name": "FIXTURE A", "callSign": "OH123", "shipType": 70, "draught": 33, "time": T0 + 31}, indent=2)
     write_gz(
         archive,
