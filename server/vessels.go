@@ -2,11 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
@@ -216,34 +213,24 @@ func (v *vessel) feature(mmsi uint32) map[string]any {
 	}
 }
 
-// serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon → GeoJSON of current positions (all if no bbox).
+// serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b → GeoJSON of current positions.
+// The filters, the token, and the area and MMSI caps are exactly those of /v1/stream.
 func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	var b bbox
-	all := true
-	if q := r.URL.Query().Get("bbox"); q != "" {
-		if n, _ := fmt.Sscanf(q, "%f,%f,%f,%f", &b[0], &b[1], &b[2], &b[3]); n != 4 {
-			http.Error(w, "bbox=minLat,minLon,maxLat,maxLon", http.StatusBadRequest)
-			return
-		}
-		all = false
+	cl, err := p.requestClaims(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
 	}
-	var want map[uint32]bool // ?mmsi=a,b,c: those vessels wherever they are (ORed with bbox)
-	if q := r.URL.Query().Get("mmsi"); q != "" {
-		want = map[uint32]bool{}
-		for _, s := range strings.Split(q, ",") {
-			if n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 32); err == nil {
-				want[uint32(n)] = true
-			}
-		}
-		if all {
-			all = false // mmsi alone: only those
-		}
+	s, msg := parseSSESub(r, cl)
+	if msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
+		return
 	}
 	features := []map[string]any{}
 	p.vmu.RLock()
 	for mmsi, v := range p.vessels {
-		if v.HasPos && (all || want[mmsi] || (b != (bbox{}) && b.contains(v.Lat, v.Lon))) {
+		if v.HasPos && s.match(&Event{MMSI: mmsi, Lat: v.Lat, Lon: v.Lon, HasPos: true}) {
 			features = append(features, v.feature(mmsi))
 		}
 	}

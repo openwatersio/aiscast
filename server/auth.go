@@ -271,6 +271,27 @@ func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
 	return p.effective(c), nil
 }
 
+// orAnonymous fills in the anonymous tier for a tokenless request. Handlers with a connect limit apply it
+// after that check, so anonymous connects stay keyed by address across every endpoint.
+func orAnonymous(cl *Claims, r *http.Request) *Claims {
+	if cl != nil {
+		return cl
+	}
+	if allowAnon {
+		return &Claims{Sub: "anon", Role: "admin"}
+	}
+	return anonymousClaims(clientIP(r))
+}
+
+// requestClaims is socketClaims with the anonymous tier filled in, for handlers without a connect limit.
+func (p *Pipeline) requestClaims(r *http.Request) (*Claims, error) {
+	cl, err := p.socketClaims(r)
+	if err != nil {
+		return nil, err
+	}
+	return orAnonymous(cl, r), nil
+}
+
 // ---- personal tokens: POST /v1/keys {"pubkey": "<base64 ed25519 public key>"} ----
 // The server holds a separate personal-tier issuer key (PERSONAL_ISSUER_KEY, base64 seed); what it mints is
 // bounded by personalClaims, so a compromised box can only hand out personal-tier access.
