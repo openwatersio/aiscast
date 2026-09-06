@@ -222,7 +222,7 @@ There is no `Last-Event-ID` resumption. `snapshot=1` rebuilds current state on r
 
 ## `GET /v1/vessels`
 
-`GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon` and/or `?mmsi=368168720,257090090` (either, both ORed, or neither for all). GeoJSON `FeatureCollection`, one `Point` per vessel with a known position, seen within the last 30 minutes:
+`GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon` (repeatable, ORed) and/or `?mmsi=368168720,257090090`, with the same token, area cap, and MMSI cap as a `/v1/stream` subscription: an anonymous request must give at most 100 square degrees of `bbox` or at most 10 MMSIs, and only a token without an area claim may omit both. GeoJSON `FeatureCollection`, one `Point` per vessel with a known position, seen within the last 30 minutes:
 
 ```json
 {

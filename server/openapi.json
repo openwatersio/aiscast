@@ -371,7 +371,7 @@
         "name": "bbox",
         "in": "query",
         "required": false,
-        "description": "`minLat,minLon,maxLat,maxLon`. Latitude −90…90, longitude −180…180.",
+        "description": "`minLat,minLon,maxLat,maxLon`. Latitude −90…90, longitude −180…180. Repeatable: the boxes are ORed and their total area counts against the token's area cap.",
         "schema": { "type": "string" },
         "example": "41.2,-71.2,42.0,-70.0"
       },
@@ -379,7 +379,7 @@
         "name": "mmsi",
         "in": "query",
         "required": false,
-        "description": "Comma-separated MMSIs. ORed with `bbox` when both are given; unparseable entries are dropped.",
+        "description": "Comma-separated MMSIs. ORed with `bbox` when both are given. An unparseable entry is a `400`.",
         "schema": { "type": "string" },
         "example": "368168720,257090090"
       }
