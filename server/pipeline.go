@@ -45,7 +45,7 @@ type Event struct {
 	rebuilt      bool // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
 	LowTrust     bool // from a source that cannot be authenticated (UDP)
 	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
-	Implausible  bool // low-trust position implying an impossible speed; archived, not emitted
+	Implausible  bool // position implying an impossible speed from the vessel's last; archived, not emitted
 	Stale        bool // older than the newest event already folded for the vessel; archived, not emitted
 
 	v0Once sync.Once
