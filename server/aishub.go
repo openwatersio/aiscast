@@ -20,7 +20,7 @@ import (
 // AISHub is reciprocal: we feed them our volunteer receivers' stream over UDP (their assigned port), and poll
 // their aggregate snapshot (all stations, positions downsampled to ≤60 s) every 20 s. Their terms grant "use"
 // with no stated restriction and no stated term, i.e. revocable at will, so this source is flagged in
-// `source`/archive tags and can be switched off and purged; see PLAN.md.
+// `source`/archive tags and can be switched off and purged; see docs/policy.md.
 
 // ---- feed out ----
 
