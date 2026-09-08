@@ -1,29 +1,14 @@
 version: 2
 updates:
-  # Action majors move fast and Node runtime deprecations arrive as CI warnings.
-  # One grouped PR a month beats noticing them in a run log.
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: monthly
-    groups:
-      actions:
-        patterns: ["*"]
-
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
-    groups:
-      npm:
-        patterns: ["*"]
-
-  # The server is the product; its module graph is small enough that a monthly
-  # grouped PR keeps it current without a weekly stream.
   - package-ecosystem: gomod
     directory: /server
     schedule:
       interval: monthly
-    groups:
-      gomod:
-        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
