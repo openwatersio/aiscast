@@ -6,7 +6,7 @@ toolchain go1.24.13
 
 require (
 	github.com/BertoldVdb/go-ais v0.4.0
-	github.com/adrianmo/go-nmea v1.10.0
+	github.com/adrianmo/go-nmea v1.11.0
 	github.com/coder/websocket v1.8.15
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 )
