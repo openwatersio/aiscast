@@ -96,6 +96,19 @@ def fixture_archive(tmp_path):
         f"{ts(25)}\taisstream\t{json.dumps(aisstream)}\n{ts(55)}\taisstream\t{json.dumps(cerulean_static)}\n",
     )
 
+    # barentswatch: line-delimited JSON, same Class A transmission the two above carry
+    bw = json.dumps({
+        "type": "Position", "messageType": 1, "mmsi": A_MMSI, "msgtime": ts(31), "stream": "terra",
+        "latitude": A_POS["lat"], "longitude": A_POS["lon"], "speedOverGround": A_POS["speed"],
+        "courseOverGround": A_POS["course"], "trueHeading": A_POS["heading"],
+        "navigationalStatus": 0, "aisClass": "A",
+    })
+    bw_static = json.dumps({
+        "type": "Staticdata", "mmsi": A_MMSI, "msgtime": ts(32), "stream": "terra",
+        "name": "FIXTURE A", "callSign": "OH123", "shipType": 70, "draught": 33, "aisClass": "A",
+    })
+    write_gz(archive, f"NLOD-2.0/barentswatch/{hour}", f"{ts(31)}\tbarentswatch\t{bw}\n{ts(32)}\tbarentswatch\t{bw_static}\n")
+
     snapshot = [
         {"USERNAME": "TEST", "RECORDS": 3},
         [
@@ -141,13 +154,14 @@ def test_derive_day(tmp_path, fixture_archive):
     for r in receptions:
         rx_by_msg.setdefault(r["msg_id"], set()).add(r["source"])
     assert rx_by_msg[by_mmsi[B_MMSI]["id"]] == {"kystverket", "aisstream", "aishub"}
-    assert rx_by_msg[by_mmsi[A_MMSI]["id"]] == {"kystverket", "digitraffic"}
+    assert rx_by_msg[by_mmsi[A_MMSI]["id"]] == {"kystverket", "digitraffic", "barentswatch"}
     # same-source duplicate lines collapse to one reception per station
-    assert len(receptions) == 6
+    assert len(receptions) == 7
 
     # licenses ride along
     licenses = {r["source"]: r["license"] for r in receptions}
     assert licenses["kystverket"] == "NLOD-2.0"
+    assert licenses["barentswatch"] == "NLOD-2.0"  # not the 'feeder' fallback
     assert licenses[f"v1:mmsi:{CERULEAN}"] == "feeder"
 
     # vessels: names from statics, class from position-message evidence (not JSON defaults)

@@ -39,7 +39,7 @@ AISHUB_FRESH_S = 120  # snapshot records older than this are stale state, not ne
 TAG_STATION = re.compile(rb"s:([0-9]+)")
 TAG_TIME = re.compile(rb"c:(\d+)")
 AISSTREAM_META = re.compile(rb'"time_utc":"([0-9: .-]+)')
-LICENSES = {"kystverket": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms"}
+LICENSES = {"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms"}
 
 POS_SCHEMA = pa.schema(
     [
@@ -82,6 +82,10 @@ def valid_pos(lat6, lon6):
 def parse_recv(tscol):
     # RFC3339Nano from the server; [:26] trims to µs, fromisoformat (3.11+) takes the rest
     return datetime.fromisoformat(tscol[:26].decode()).replace(tzinfo=None)
+
+
+def na(v, sentinel):
+    return sentinel if v is None else v  # 0 is a real heading; only absence is n/a
 
 
 def canonical(src_epoch_us, recv):
@@ -241,6 +245,8 @@ def decode_day(files, pos_out, stat_out):
             try:
                 if source == "aisstream":
                     aisstream_record(payload, parse_recv(tscol), pos_out, stat_out)
+                elif source == "barentswatch":
+                    barentswatch_record(payload, parse_recv(tscol), pos_out, stat_out)
                 elif source == "aishub":
                     aishub_snapshot(payload, parse_recv(tscol), pos_out, stat_out)
                 elif source == "digitraffic":
@@ -330,6 +336,37 @@ def digitraffic_record(topic, raw, pos_out, stat_out):
         )
     elif kind == "metadata" and valid_mmsi(mmsi):
         stat_out.add((mmsi, d.get("name"), d.get("callSign"), int(d.get("type") or d.get("shipType") or 0), int(d.get("draught") or 0), "A", recv))
+
+
+def barentswatch_record(payload, recv, pos_out, stat_out):
+    """BarentsWatch streams line-delimited JSON, one object per message."""
+    d = json.loads(payload)
+    mmsi = int(d.get("mmsi") or 0)
+    if not mmsi:
+        return
+    canon = recv
+    if ts := d.get("msgtime"):
+        src = parse_recv(ts.encode())
+        canon = canonical(int(src.replace(tzinfo=timezone.utc).timestamp() * 1e6), recv)
+    station = "barentswatch" + (f"/{d['stream']}" if d.get("stream") else "")
+    kind = d.get("type")
+    if kind == "Position":
+        lat, lon = d.get("latitude"), d.get("longitude")
+        if lat is None or lon is None or lat == 91:  # 91/181 is the source's null position
+            return
+        emit_pos(
+            pos_out, mmsi, int(d.get("messageType") or 0),
+            round(lat * 600000), round(lon * 600000),
+            sog_wire(d.get("speedOverGround")), cog_wire(d.get("courseOverGround")),
+            na(d.get("trueHeading"), NA_HDG), na(d.get("navigationalStatus"), NA_NAV),
+            canon, recv, "barentswatch", station,
+        )
+    elif kind == "Staticdata" and valid_mmsi(mmsi):
+        stat_out.add((
+            mmsi, (d.get("name") or "").strip() or None, (d.get("callSign") or "").strip() or None,
+            int(d.get("shipType") or 0), int(d.get("draught") or 0),  # already 0.1 m
+            "B" if d.get("aisClass") == "B" else "A", canon,
+        ))
 
 
 def aisstream_record(payload, recv, pos_out, stat_out):
