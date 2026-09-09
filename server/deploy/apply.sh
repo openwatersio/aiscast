@@ -4,6 +4,8 @@
 set -eu
 cd "$(dirname "$0")"
 
+UV_VERSION=0.12.12
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -yq caddy curl fail2ban unattended-upgrades
@@ -29,8 +31,18 @@ fi
 rm -f "$drop.bak"
 systemctl reload ssh
 
-mkdir -p /opt/aiscast /var/lib/aiscast/archive
+mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/aiscast/lake
 chown -R aiscast:aiscast /var/lib/aiscast
+
+# The nightly derive runs lake/derive.py under uv, which resolves the script's own dependencies
+# and Python. Not in apt; pinned so a box and CI agree on what ran.
+if [ "$(/usr/local/bin/uv --version 2>/dev/null | cut -d' ' -f2)" != "$UV_VERSION" ]; then
+	curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" |
+		UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 INSTALLER_NO_MODIFY_PATH=1 sh
+	# a failed download still exits 0 through the pipe, so fail here rather than at 00:30 UTC
+	/usr/local/bin/uv --version >/dev/null
+fi
+install -m 755 derive.py /opt/aiscast/derive.py
 
 # Seed only: secrets live on the box, never in the repo.
 if [ ! -f /etc/aiscast.env ]; then
@@ -40,6 +52,9 @@ fi
 
 systemctl daemon-reload
 systemctl enable aiscast caddy fail2ban
+# The timer skips itself while /etc/aiscast.env has no LAKE_CATALOG_URI, so enabling it is safe
+# on a box whose template is still unfilled.
+systemctl enable --now derive.timer
 systemctl reload-or-restart fail2ban
 caddy validate --config /etc/caddy/Caddyfile
 systemctl reload-or-restart caddy

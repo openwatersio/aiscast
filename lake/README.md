@@ -9,6 +9,8 @@ The nightly derive job turns the raw per-source archive into deduplicated, decod
 
 The local catalog is SQLite at `warehouse/catalog.db` with data files under `warehouse/`. Set `LAKE_CATALOG_URI`, `LAKE_WAREHOUSE`, and `LAKE_CATALOG_TOKEN` to write to R2 Data Catalog instead (the token needs the R2 Data Catalog permission; add R2 SQL Read to the same token for `wrangler r2 sql` queries); everything else is identical. The production catalog is bucket `ais-lake`, warehouse `7822da9c68cfce969e63d07534969359_ais-lake`.
 
+In production the box runs this nightly: `derive.timer` fires at 00:30 UTC and `derive.service` runs `/opt/aiscast/derive.py` for the day that just closed, reading the `LAKE_*` variables from `/etc/aiscast.env`. Both units live in [server/deploy/rootfs](../server/deploy/rootfs/etc/systemd/system), and `derive.py` ships in the same bundle as the server binary, so a deploy updates the script and the units together. `LAKE_HOME` points the staging and warehouse directories at `/var/lib/aiscast/lake`.
+
 ## Schema
 
 All coordinates and kinematics are stored at AIS wire precision so the same transmission is byte-identical no matter which source carried it: lat/lon as 1/600000 degree integers (`lat6`, `lon6`), SOG in 0.1 kn (`sog10`, 1023 = n/a), COG in 0.1 degree (`cog10`, 3600 = n/a), heading in degrees (511 = n/a), draught in 0.1 m (`draught10`).

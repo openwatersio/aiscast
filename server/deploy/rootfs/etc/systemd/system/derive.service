@@ -1,6 +1,6 @@
 # /etc/systemd/system/derive.service — nightly lake derive (lake/derive.py; see lake/README.md).
-# Script at /opt/aiscast/derive.py (needs uv: https://docs.astral.sh/uv/), env in /etc/aiscast-lake.env
-# (LAKE_CATALOG_URI, LAKE_WAREHOUSE, LAKE_CATALOG_TOKEN). Started by derive.timer, not enabled directly.
+# Script at /opt/aiscast/derive.py, run by uv; env in /etc/aiscast.env (the LAKE_* variables).
+# Started by derive.timer, not enabled directly.
 [Unit]
 Description=aiscast lake derive: yesterday's archive to R2 Data Catalog
 After=network-online.target
@@ -10,12 +10,15 @@ Wants=network-online.target
 Type=oneshot
 User=aiscast
 Group=aiscast
-EnvironmentFile=/etc/aiscast-lake.env
+EnvironmentFile=/etc/aiscast.env
 WorkingDirectory=/var/lib/aiscast
 # everything the job writes (stage/, warehouse/, uv's cache via HOME) must live under ReadWritePaths
 Environment=LAKE_HOME=/var/lib/aiscast/lake
 Environment=HOME=/var/lib/aiscast
-ExecStart=/usr/local/bin/uv run /opt/aiscast/derive.py --archive /var/lib/aiscast/archive
+# A box with no catalog configured yet would otherwise spend the night deriving into a local
+# throwaway warehouse. Reading the file keeps the check clear of systemd's variable expansion.
+ExecCondition=/usr/bin/grep -q ^LAKE_CATALOG_URI=. /etc/aiscast.env
+ExecStart=/usr/local/bin/uv run --script /opt/aiscast/derive.py --archive /var/lib/aiscast/archive
 # uploaded raw hours also live in R2; prune local copies the box no longer needs (160 GB disk, ~4.5 GB/day)
 ExecStartPost=/usr/bin/find /var/lib/aiscast/archive -name '*.gz' -mtime +14 -delete
 TimeoutStartSec=2h

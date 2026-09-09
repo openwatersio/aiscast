@@ -342,7 +342,7 @@ FROM runs
 
 def process_day(day, files, con, catalog, keep_stage, reuse_stage):
     stage = HERE / "stage"
-    stage.mkdir(exist_ok=True)
+    stage.mkdir(parents=True, exist_ok=True)
     pos_path, stat_path = str(stage / f"pos-{day}.parquet"), str(stage / f"stat-{day}.parquet")
     n_err = 0
     if reuse_stage and os.path.exists(pos_path):
@@ -436,7 +436,7 @@ def get_catalog():
         catalog = load_catalog("r2", uri=uri, warehouse=os.environ["LAKE_WAREHOUSE"], token=os.environ["LAKE_CATALOG_TOKEN"])
     else:
         wh = HERE / "warehouse"
-        wh.mkdir(exist_ok=True)
+        wh.mkdir(parents=True, exist_ok=True)
         catalog = load_catalog("local", uri=f"sqlite:///{wh}/catalog.db", warehouse=f"file://{wh}")
     retry(lambda: catalog.create_namespace_if_not_exists("ais"))
     for name, schema in [
@@ -468,7 +468,7 @@ def main():
 
     catalog = get_catalog()
     stage = HERE / "stage"
-    stage.mkdir(exist_ok=True)
+    stage.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(stage / "derive.duckdb"))
     con.execute(f"SET memory_limit='4GB'; SET temp_directory='{stage}/tmp'")
     for day in days:

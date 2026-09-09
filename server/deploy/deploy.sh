@@ -1,5 +1,6 @@
 #!/bin/sh
-# One-step deploy: ship the binary and the config bundle, converge the box, restart once.
+# One-step deploy: ship the binary, the derive script, and the config bundle, converge the box,
+# restart once.
 # Usage: server/deploy/deploy.sh root@ais.example.org [linux-amd64-binary]
 # Without a binary argument it cross-compiles first. Works the same on a fresh Ubuntu box
 # and the live one; CI runs it on every push to main with the tested build artifact.
@@ -17,5 +18,6 @@ fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp "$bin" "$stage/aiscast-linux"
-tar czf - apply.sh aiscast.env.example rootfs -C "$stage" aiscast-linux |
+cp ../../lake/derive.py "$stage/derive.py"  # the nightly derive runs from the same source the tests do
+tar czf - apply.sh aiscast.env.example rootfs -C "$stage" aiscast-linux derive.py |
 	ssh "$host" 'rm -rf aiscast-deploy && mkdir aiscast-deploy && tar xzf - -C aiscast-deploy && sh aiscast-deploy/apply.sh'

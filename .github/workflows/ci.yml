@@ -41,7 +41,7 @@ jobs:
       - run: uv run --with pytest --with pyais --with pyarrow --with duckdb --with "pyiceberg[sql-sqlite]" pytest -q lake/
 
   deploy:
-    needs: test
+    needs: [test, lake]  # the bundle carries derive.py, so its tests gate the deploy too
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
