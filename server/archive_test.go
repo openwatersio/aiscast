@@ -18,6 +18,7 @@ func TestArchiveSweep(t *testing.T) {
 	stored := map[string][]byte{
 		"a/stored.gz":    []byte("hello"),
 		"a/truncated.gz": []byte("he"),
+		"a/stub.gz":      []byte("hello there, the complete hour"),
 	}
 	var puts []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +61,8 @@ func TestArchiveSweep(t *testing.T) {
 		{"a/truncated.gz", "hello", 2 * time.Hour, true}, // short object upstream, re-upload then drop
 		{"a/missing.gz", "hello", 2 * time.Hour, true},   // never made it up, upload then drop
 		{"a/broken.gz", "hello", 2 * time.Hour, false},   // upload fails, keep it for the next sweep
-		{"a/open.gz", "hello", 5 * time.Minute, false},   // current hour, rotation owns it
+		{"a/stub.gz", "hello", 2 * time.Hour, false},     // local is a stub over a complete object: never clobber it
+		{"a/open.gz", "hello", 5 * time.Minute, false},   // inside the grace window, rotation owns it
 	}
 	paths := map[string]string{}
 	for _, tc := range cases {
@@ -88,10 +90,16 @@ func TestArchiveSweep(t *testing.T) {
 	}
 }
 
-// A successful rotation upload leaves nothing behind on disk.
-func TestArchiveCloseDeletesAfterUpload(t *testing.T) {
+// Rotation uploads but must not delete: a Reception queued across the hour boundary reopens the same
+// path, and a file deleted here would come back as a stub and overwrite the complete object.
+func TestArchiveCloseKeepsFileForTheSweep(t *testing.T) {
 	dir := t.TempDir()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	var puts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			puts++
+		}
+	}))
 	defer srv.Close()
 
 	a := &archive{dir: dir, s3: &s3Client{endpoint: srv.URL, bucket: "b", region: "auto", accessKey: "k", secretKey: "s"}}
@@ -103,7 +111,10 @@ func TestArchiveCloseDeletesAfterUpload(t *testing.T) {
 	a.close(hf)
 	a.uploads.Wait()
 
-	if _, err := os.Stat(hf.path); !os.IsNotExist(err) {
-		t.Errorf("%s still on disk after a successful upload", hf.path)
+	if puts != 1 {
+		t.Errorf("uploads = %d, want 1", puts)
+	}
+	if _, err := os.Stat(hf.path); err != nil {
+		t.Errorf("rotation deleted %s; only the sweep may delete: %v", hf.path, err)
 	}
 }
