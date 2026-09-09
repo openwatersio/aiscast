@@ -165,5 +165,8 @@ def test_rerun_replaces_day(tmp_path, fixture_archive):
     con = duckdb.connect()
     files = sorted(str(p) for p in fixture_archive.rglob("*.gz"))
     derive.process_day(DAY, files, con, catalog, keep_stage=False, reuse_stage=False)
+    first = {m["id"] for m in catalog.load_table("ais.messages").scan().to_arrow().to_pylist()}
     derive.process_day(DAY, files, con, catalog, keep_stage=False, reuse_stage=False)
-    assert len(catalog.load_table("ais.messages").scan().to_arrow()) == 3
+    again = {m["id"] for m in catalog.load_table("ais.messages").scan().to_arrow().to_pylist()}
+    assert len(again) == 3
+    assert again == first  # ids are a pure function of the input, so a rerun reproduces them

@@ -317,18 +317,21 @@ def aishub_snapshot(payload, recv, pos_out, stat_out):
             stat_out.add((r["MMSI"], r["NAME"], r.get("CALLSIGN") or None, int(r.get("TYPE") or 0), int(r.get("DRAUGHT") or 0), "A", canon))
 
 
+# file_row_number breaks canon_ts ties into a total order. Without it the LAG pass and the
+# SUM pass can order tied rows differently, so rows of one transmission land in different runs
+# and the same input yields a different (inflated) message count every time.
 GROUP_SQL = """
 CREATE OR REPLACE TABLE grouped AS
 WITH keyed AS (
   SELECT *, md5(mmsi || ':' || lat6 || ':' || lon6 || ':' || sog10 || ':' || cog10 || ':' || heading) AS ck
-  FROM read_parquet(?)
+  FROM read_parquet(?, file_row_number=true)
   WHERE canon_ts >= ? AND canon_ts < ?
 ), lagged AS (
   SELECT *, CASE WHEN canon_ts - LAG(canon_ts) OVER w > INTERVAL 10 SECONDS OR LAG(canon_ts) OVER w IS NULL THEN 1 ELSE 0 END AS new_run
   FROM keyed
-  WINDOW w AS (PARTITION BY mmsi, ck ORDER BY canon_ts)
+  WINDOW w AS (PARTITION BY mmsi, ck ORDER BY canon_ts, file_row_number)
 ), runs AS (
-  SELECT *, SUM(new_run) OVER (PARTITION BY mmsi, ck ORDER BY canon_ts ROWS UNBOUNDED PRECEDING) AS grp
+  SELECT *, SUM(new_run) OVER (PARTITION BY mmsi, ck ORDER BY canon_ts, file_row_number ROWS UNBOUNDED PRECEDING) AS grp
   FROM lagged
 )
 SELECT *, md5(ck || ':' || grp || ':' || mmsi) AS id,
