@@ -3,13 +3,16 @@
 The nightly derive job turns the raw per-source archive into deduplicated, decoded Iceberg tables that anyone can build on. The raw log (`<license>/<source>/YYYY/MM/DD/HH.gz` in the `ais-archive` bucket, one line per reception, source-native payloads) is the lossless source of truth; everything here is a pure function of it, so a parser fix or a backfilled source is a rerun, never a migration. Only the coverage map and the history APIs ship as part of this project; other analytics are external consumers reading the same tables.
 
 ```sh
-./derive.py --archive ../server/archive --date 2026-08-29   # one day
-./derive.py --archive ../server/archive --all               # every day present
+./derive.py --date 2026-08-29                               # fetch that day from R2 and derive it
+./derive.py --archive ../server/archive --date 2026-08-29   # derive from a local archive tree
+./derive.py --archive ../server/archive --all               # every closed day in that tree
 ```
+
+Without `--archive` the job fetches the day's hour files from the `ais-archive` bucket into `raw/`, derives them, and deletes them, so it does not depend on what any box still holds on disk. That needs `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` (the same S3 keys the server uploads with) and works one day at a time. A day is refused if it is not over yet, or if fewer than 20 distinct hours arrived; `--min-hours` covers a day the archive genuinely started mid-way through.
 
 The local catalog is SQLite at `warehouse/catalog.db` with data files under `warehouse/`. Set `LAKE_CATALOG_URI`, `LAKE_WAREHOUSE`, and `LAKE_CATALOG_TOKEN` to write to R2 Data Catalog instead (the token needs the R2 Data Catalog permission; add R2 SQL Read to the same token for `wrangler r2 sql` queries); everything else is identical. The production catalog is bucket `ais-lake`, warehouse `7822da9c68cfce969e63d07534969359_ais-lake`.
 
-In production the box runs this nightly: `derive.timer` fires at 00:30 UTC and `derive.service` runs `/opt/aiscast/derive.py` for the day that just closed, reading the `LAKE_*` variables from `/etc/aiscast.env`. Both units live in [server/deploy/rootfs](../server/deploy/rootfs/etc/systemd/system), and `derive.py` ships in the same bundle as the server binary, so a deploy updates the script and the units together. `LAKE_HOME` points the staging and warehouse directories at `/var/lib/aiscast/lake`.
+In production the box runs this nightly: `derive.timer` fires at 00:30 UTC and `derive.service` runs `/opt/aiscast/derive.py` for the day that just closed, fetching it from R2 and reading the `LAKE_*` and `R2_*` variables from `/etc/aiscast.env`. Both units live in [server/deploy/rootfs](../server/deploy/rootfs/etc/systemd/system), and `derive.py` ships in the same bundle as the server binary, so a deploy updates the script and the units together. `LAKE_HOME` points the staging and warehouse directories at `/var/lib/aiscast/lake`.
 
 ## Schema
 

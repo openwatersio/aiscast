@@ -17,6 +17,7 @@ import gzip
 import json
 import os
 import re
+import shutil
 import sys
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -105,6 +106,68 @@ def safe_lines(path):
                 yield line
     except OSError:
         return
+
+
+def r2_archive():
+    """The raw archive bucket over the S3 API, using the same keys the server uploads with."""
+    import pyarrow.fs as pafs
+
+    return pafs.S3FileSystem(
+        access_key=os.environ["R2_ACCESS_KEY_ID"],
+        secret_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        endpoint_override=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        region="auto",
+        scheme="https",
+    ), os.environ.get("R2_BUCKET", "ais-archive")
+
+
+def day_key(day):
+    """Matches one UTC day's hour files at whatever depth the source nests them."""
+    y, m, d = day.split("-")
+    return re.compile(rf"/{y}/{m}/{d}/\d{{2}}\.gz$")
+
+
+def sync_day(day, dest):
+    """Fetch one UTC day's hour files from R2 into dest, preserving the key path under the bucket.
+
+    The bucket is the source of truth; the box keeps only hours it has not uploaded yet. Copying
+    the day first (rather than decoding straight off the network) keeps a mid-transfer reset a
+    loud, retryable failure instead of a silently short day, since safe_lines swallows read errors.
+    Keys are matched on the date, not on a fixed depth: feeders nest under station id
+    (feeder/v1/mmsi/<mmsi>/Y/M/D/HH.gz) while upstreams sit at <license>/<source>/Y/M/D/HH.gz.
+    """
+    import pyarrow.fs as pafs
+
+    fs, bucket = r2_archive()
+    local = pafs.LocalFileSystem()
+    want = day_key(day)
+    sel = pafs.FileSelector(bucket, recursive=True, allow_not_found=True)
+    out = []
+    for info in retry(lambda: fs.get_file_info(sel)):
+        if not want.search(info.path):
+            continue
+        path = Path(dest) / info.path[len(bucket) + 1 :]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        retry(lambda i=info, p=path: _fetch(fs, local, i, p))
+        out.append(str(path))
+    print(f"{day}: fetched {len(out)} hour files from {bucket}", file=sys.stderr)
+    return sorted(out)
+
+
+def _fetch(fs, local, info, path):
+    # compression=None on both sides: these are .gz keys and the default "detect" would
+    # decompress on read and recompress on write, transcoding the archive byte-for-byte.
+    with fs.open_input_stream(info.path, compression=None) as r, local.open_output_stream(str(path), compression=None) as w:
+        while chunk := r.read(8 << 20):
+            w.write(chunk)
+    got = path.stat().st_size
+    if got != info.size:
+        path.unlink(missing_ok=True)  # partial copy must not look like a complete hour
+        raise OSError(f"{info.path}: copied {got} of {info.size} bytes")
+
+
+def hours_present(files):
+    return {m.group(1) for f in files if (m := re.search(r"/(\d{2})\.gz$", f))}
 
 
 class Batcher:
@@ -451,20 +514,27 @@ def get_catalog():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--archive", required=True)
+    ap.add_argument("--archive", help="local archive tree; omit to fetch the day from R2")
     ap.add_argument("--date", help="UTC day YYYY-MM-DD (default: yesterday)")
-    ap.add_argument("--all", action="store_true", help="every day present in the archive")
+    ap.add_argument("--all", action="store_true", help="every day present in --archive")
     ap.add_argument("--keep-stage", action="store_true")
     ap.add_argument("--reuse-stage", action="store_true", help="skip decode when the day's staging parquet exists")
+    ap.add_argument("--min-hours", type=int, default=20, help="refuse a day with fewer distinct hours")
     args = ap.parse_args()
 
     by_day = {}
-    for f in glob.glob(f"{args.archive}/**/*.gz", recursive=True):
-        m = re.search(r"(\d{4})/(\d{2})/(\d{2})/\d{2}\.gz$", f)
-        if m:
-            by_day.setdefault("-".join(m.groups()), []).append(f)
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-    days = sorted(by_day) if args.all else [args.date or yesterday]
+    if args.archive:
+        for f in glob.glob(f"{args.archive}/**/*.gz", recursive=True):
+            m = re.search(r"(\d{4})/(\d{2})/(\d{2})/\d{2}\.gz$", f)
+            if m:
+                by_day.setdefault("-".join(m.groups()), []).append(f)
+    elif args.all:
+        sys.exit("--all needs --archive; from R2 the job takes one day at a time")
+
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    days = [d for d in sorted(by_day) if d < today] if args.all else [args.date or yesterday]
 
     catalog = get_catalog()
     stage = HERE / "stage"
@@ -472,9 +542,26 @@ def main():
     con = duckdb.connect(str(stage / "derive.duckdb"))
     con.execute(f"SET memory_limit='4GB'; SET temp_directory='{stage}/tmp'")
     for day in days:
-        if day not in by_day:
-            sys.exit(f"no archive files for {day}")
-        process_day(day, sorted(by_day[day]), con, catalog, args.keep_stage, args.reuse_stage)
+        # a day partition is written once, after the day closes; deriving a live day would
+        # replace good rows with a fraction of one
+        if day >= today:
+            sys.exit(f"{day} is not over yet")
+        raw = None
+        if args.archive:
+            if day not in by_day:
+                sys.exit(f"no archive files for {day}")
+            files = sorted(by_day[day])
+        else:
+            raw = HERE / "raw" / day
+            files = sync_day(day, raw)
+        n_hours = len(hours_present(files))
+        if n_hours < args.min_hours:
+            sys.exit(f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}; pass --min-hours to override")
+        try:
+            process_day(day, files, con, catalog, args.keep_stage, args.reuse_stage)
+        finally:
+            if raw and not args.keep_stage:
+                shutil.rmtree(raw, ignore_errors=True)  # re-fetchable; the bucket is the source of truth
 
 
 if __name__ == "__main__":

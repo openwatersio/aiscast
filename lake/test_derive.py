@@ -170,3 +170,43 @@ def test_rerun_replaces_day(tmp_path, fixture_archive):
     again = {m["id"] for m in catalog.load_table("ais.messages").scan().to_arrow().to_pylist()}
     assert len(again) == 3
     assert again == first  # ids are a pure function of the input, so a rerun reproduces them
+
+
+def test_hours_present_counts_distinct_hours():
+    files = [
+        "a/NLOD-2.0/kystverket/2026/08/21/00.gz",
+        "a/aishub-terms/aishub/2026/08/21/00.gz",  # same hour, another source
+        "a/NLOD-2.0/kystverket/2026/08/21/23.gz",
+        "a/NLOD-2.0/kystverket/2026/08/21/notanhour.gz",
+    ]
+    assert derive.hours_present(files) == {"00", "23"}
+    assert derive.hours_present([]) == set()
+
+
+def test_day_key_matches_any_nesting_depth():
+    want = derive.day_key("2026-08-21")
+    assert want.search("ais-archive/NLOD-2.0/kystverket/2026/08/21/12.gz")
+    assert want.search(f"ais-archive/feeder/v1/mmsi/{CERULEAN}/2026/08/21/00.gz")  # feeders nest deeper
+    assert not want.search("ais-archive/NLOD-2.0/kystverket/2026/08/22/12.gz")
+    assert not want.search("ais-archive/NLOD-2.0/kystverket/2026/08/21/12.gz.tmp")
+
+
+def test_fetch_copies_gzip_bytes_verbatim(tmp_path):
+    """pyarrow's default compression='detect' would decompress .gz on read and recompress on
+    write, so the copy would neither match the source bytes nor its recorded size."""
+    import pyarrow.fs as pafs
+
+    src = tmp_path / "07.gz"
+    with gzip.open(src, "wt") as f:
+        f.write("2026-08-21T12:00:00.000000Z\tkystverket\t!AIVDM,1,1,,A,test,0*00\n" * 50)
+    local = pafs.LocalFileSystem()
+    info = local.get_file_info(str(src))
+
+    dest = tmp_path / "copy" / "07.gz"
+    dest.parent.mkdir()
+    derive._fetch(local, local, info, dest)
+
+    assert dest.read_bytes() == src.read_bytes()
+    assert dest.stat().st_size == info.size
+    with gzip.open(dest, "rb") as f:  # still a readable archive hour
+        assert f.readline().count(b"\t") == 2

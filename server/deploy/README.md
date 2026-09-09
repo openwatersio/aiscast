@@ -9,7 +9,7 @@ Everything the box needs lives in this directory, and changing any of it is a pu
 - [`deploy.sh`](deploy.sh) is the whole deploy: build (or take a prebuilt binary), send the bundle over ssh, run `apply.sh`. The same command sets up a fresh box and updates the live one: `server/deploy/deploy.sh root@<ip>`.
 - [`aiscast.env.example`](aiscast.env.example) lists every variable `/etc/aiscast.env` holds. The real file stays on the box; secrets never enter the repo.
 
-The nightly [lake derive](../../lake/README.md) rides along: `derive.timer` fires at 00:30 UTC and `derive.service` runs `/opt/aiscast/derive.py` under uv, turning the day's raw archive into Iceberg tables in R2 Data Catalog. It reads the `LAKE_*` variables from the same `/etc/aiscast.env`, and skips itself while `LAKE_CATALOG_URI` is empty, so a box whose template is still unfilled does no nightly work. The service also prunes local raw hour files older than 14 days, which is what keeps the 160 GB disk ahead of ~4.5 GB/day of archive.
+The nightly [lake derive](../../lake/README.md) rides along: `derive.timer` fires at 00:30 UTC and `derive.service` runs `/opt/aiscast/derive.py` under uv, turning the day's raw archive into Iceberg tables in R2 Data Catalog. It reads the `LAKE_*` variables from the same `/etc/aiscast.env`, and skips itself while `LAKE_CATALOG_URI` is empty, so a box whose template is still unfilled does no nightly work. It fetches the day it needs from the `ais-archive` bucket and deletes it afterwards, so it holds no opinion about what the archive has left on local disk.
 
 ## What exists
 
