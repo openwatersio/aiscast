@@ -10,8 +10,23 @@ apt-get install -yq caddy curl fail2ban unattended-upgrades
 
 id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
 
+# The sshd drop-in is the one file that can lock everyone out of the box, and a bad one
+# only bites on the next reboot, so roll it back if it does not validate.
+drop=/etc/ssh/sshd_config.d/10-hardening.conf
+if [ -f "$drop" ]; then
+	cp "$drop" "$drop.bak"
+fi
 cp -R rootfs/. /
-sshd -t
+if ! sshd -t; then
+	if [ -f "$drop.bak" ]; then
+		mv "$drop.bak" "$drop"
+	else
+		rm -f "$drop"
+	fi
+	echo 'sshd config invalid: rolled back the drop-in' >&2
+	exit 1
+fi
+rm -f "$drop.bak"
 systemctl reload ssh
 
 mkdir -p /opt/aiscast /var/lib/aiscast/archive
