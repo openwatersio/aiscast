@@ -118,3 +118,46 @@ func TestArchiveCloseKeepsFileForTheSweep(t *testing.T) {
 		t.Errorf("rotation deleted %s; only the sweep may delete: %v", hf.path, err)
 	}
 }
+
+// A quiet source keeps its hour file open indefinitely, so an open file can be older than the grace
+// period. The sweep must leave it alone: deleting it would strand the gzip footer the writer still
+// owes, and the mtime check alone only happens to cover this because an idle gzip flush writes bytes.
+func TestArchiveSweepSkipsOpenFiles(t *testing.T) {
+	dir := t.TempDir()
+	var touched []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		touched = append(touched, r.Method+" "+r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	a := &archive{dir: dir, s3: &s3Client{endpoint: srv.URL, bucket: "b", region: "auto", accessKey: "k", secretKey: "s"}}
+	hf := a.open("kystverket", time.Date(2026, 9, 1, 3, 0, 0, 0, time.UTC))
+	if hf == nil {
+		t.Fatal("open returned nil")
+	}
+	hf.gz.Write([]byte("line\n"))
+	hf.gz.Flush()
+
+	// Age it well past the grace window, as a source that has been silent for hours would be.
+	old := time.Now().Add(-6 * time.Hour)
+	os.Chtimes(hf.path, old, old)
+
+	a.sweep()
+
+	if _, err := os.Stat(hf.path); err != nil {
+		t.Errorf("sweep deleted an open file: %v", err)
+	}
+	if len(touched) != 0 {
+		t.Errorf("sweep touched the bucket for an open file: %v", touched)
+	}
+
+	// Once rotation hands it over, the sweep owns it again.
+	a.close(hf)
+	a.uploads.Wait()
+	os.Chtimes(hf.path, old, old)
+	a.sweep()
+	if _, err := os.Stat(hf.path); err != nil {
+		t.Errorf("sweep should reclaim a closed file: %v", err)
+	}
+}

@@ -47,6 +47,11 @@ type archive struct {
 	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
 	drops   atomic.Int64
 	uploads sync.WaitGroup
+
+	// held is every path run() still owns, including one being uploaded. The sweep skips these: a
+	// quiet source keeps its hour open indefinitely, and deleting it out from under the writer would
+	// strand the gzip footer. Zero value is usable, so tests can build an archive as a literal.
+	held sync.Map
 }
 
 // newArchive with an empty dir is a no-op archive (tests).
@@ -138,6 +143,7 @@ func (a *archive) open(source string, hour time.Time) *hourFile {
 		log.Printf("archive: %v", err)
 		return nil
 	}
+	a.held.Store(path, struct{}{})
 	return &hourFile{hour: hour, path: path, f: f, gz: gzip.NewWriter(f)} // appending gzip members is valid gzip
 }
 
@@ -149,12 +155,14 @@ func (a *archive) close(hf *hourFile) {
 		log.Printf("archive: close %s: gzip=%v file=%v", hf.path, gzErr, fErr)
 	}
 	if a.s3 == nil {
+		a.held.Delete(hf.path)
 		return
 	}
 	rel, _ := filepath.Rel(a.dir, hf.path)
 	a.uploads.Add(1)
 	go func() {
 		defer a.uploads.Done()
+		defer a.held.Delete(hf.path) // stay held until the upload is done, so no sweep deletes it mid-put
 		if err := a.s3.put(filepath.ToSlash(rel), hf.path); err != nil {
 			log.Printf("archive: upload %s: %v", rel, err) // the next sweep retries it
 			return
@@ -167,7 +175,8 @@ func (a *archive) close(hf *hourFile) {
 // does not delete: a Reception queued across the hour boundary reopens the hour it names, appending
 // to the file and uploading it again, so a file deleted at rotation would come back as a stub and
 // overwrite the complete object in the bucket. Receive time is our own clock, so nothing reopens an
-// hour this old.
+// hour this old. The grace period covers files a previous process left behind, which are on disk but
+// not in held; files this process still owns are excluded by held, not by their age.
 const archiveGrace = 2 * time.Hour
 
 // sweep reconciles the local tree with the bucket, which is where the archive actually lives; disk is
@@ -182,6 +191,9 @@ func (a *archive) sweep() {
 	var freed, kept int64
 	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
+			return nil
+		}
+		if _, open := a.held.Load(path); open {
 			return nil
 		}
 		fi, err := d.Info()
