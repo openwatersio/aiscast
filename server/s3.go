@@ -104,3 +104,24 @@ func hmacSHA256(key []byte, data string) []byte {
 	m.Write([]byte(data))
 	return m.Sum(nil)
 }
+
+// size returns the length of the stored object, or -1 if it is not there.
+func (c *s3Client) size(key string) (int64, error) {
+	req, err := http.NewRequest(http.MethodHead, c.endpoint+"/"+c.bucket+"/"+key, nil)
+	if err != nil {
+		return 0, err
+	}
+	c.sign(req, time.Now().UTC())
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return -1, nil
+	}
+	if res.StatusCode/100 != 2 {
+		return 0, fmt.Errorf("s3 head %s: %s", key, res.Status)
+	}
+	return res.ContentLength, nil
+}

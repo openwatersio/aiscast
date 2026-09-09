@@ -18,7 +18,8 @@ Everything the box needs lives in this directory, and changing any of it is a pu
 - Public: `https://ais.openwaters.io` serves `/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, and `/health`. The request path is a DNS-only A record → Caddy → aiscast on `127.0.0.1:8080`. The Caddyfile sets the Let's Encrypt cert, `zstd`/`gzip` response compression, and a block on `/metrics`, which stays reachable only on the box. Cloudflare proxying is off for the beta, and `TRUST_CF_HEADERS=1` re-enables it if the box needs DDoS cover.
 - UDP ingest at `ais.openwaters.io:10110`, the same name, which resolves straight to the box.
 - Upstreams: Kystverket, BarentsWatch, Digitraffic, aisstream.io. Credentials go in `/etc/aiscast.env`.
-- Archive hours upload to R2 `ais-archive` over the S3 API on rotation and on shutdown.
+- Archive hours upload to R2 `ais-archive` over the S3 API on rotation and on shutdown, and each file is deleted once the bucket holds it. The bucket is the archive and the box is only staging, so the box does not keep a second copy. An upload that fails leaves its file on disk. A sweep at startup reconciles what is left: a file the bucket already has at the same size is deleted, and one that is missing or short is uploaded first. Files written in the last hour belong to rotation and are skipped. The sweep is the only retry, so uploads that keep failing hold disk until the next restart.
+- The journal is capped at 500 MB ([rootfs](rootfs/etc/systemd/journald.conf.d/10-cap.conf)). The default ceiling is 10% of the filesystem, which is 15 GB on this box.
 
 ## Continuous deployment
 

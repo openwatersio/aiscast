@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -151,9 +152,58 @@ func (a *archive) close(hf *hourFile) {
 	go func() {
 		defer a.uploads.Done()
 		if err := a.s3.put(filepath.ToSlash(rel), hf.path); err != nil {
-			log.Printf("archive: upload %s: %v", rel, err) // file stays on disk; ponytail: no retry queue yet
+			log.Printf("archive: upload %s: %v", rel, err) // file stays on disk; the next sweep retries it
 			return
 		}
+		os.Remove(hf.path)
 		log.Printf("archive: uploaded %s", rel)
 	}()
+}
+
+// sweep reconciles the local tree with the bucket, which is where the archive actually lives; disk is
+// only staging. A file the bucket already holds at the same size is deleted, one that is missing or
+// truncated is uploaded first. Files touched within the last hour are left alone: those are the open
+// hours, and rotation uploads them.
+//
+// ponytail: startup only, so a source whose uploads keep failing holds disk until the next restart.
+// Run it on a ticker if deploys ever get rare enough for that to matter.
+func (a *archive) sweep() {
+	if a.dir == "" || a.s3 == nil {
+		return
+	}
+	cutoff := time.Now().Add(-time.Hour)
+	var freed, kept int64
+	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil || fi.ModTime().After(cutoff) {
+			return nil
+		}
+		rel, err := filepath.Rel(a.dir, path)
+		if err != nil {
+			return nil
+		}
+		key := filepath.ToSlash(rel)
+		stored, err := a.s3.size(key)
+		if err != nil {
+			log.Printf("archive: sweep head %s: %v", key, err)
+			kept += fi.Size()
+			return nil
+		}
+		if stored != fi.Size() {
+			if err := a.s3.put(key, path); err != nil {
+				log.Printf("archive: sweep upload %s: %v", key, err)
+				kept += fi.Size()
+				return nil
+			}
+			log.Printf("archive: uploaded %s (sweep)", key)
+		}
+		if os.Remove(path) == nil {
+			freed += fi.Size()
+		}
+		return nil
+	})
+	log.Printf("archive: sweep freed %d MiB, kept %d MiB not yet in the bucket", freed>>20, kept>>20)
 }
