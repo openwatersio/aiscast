@@ -18,7 +18,8 @@ Everything the box needs lives in this directory, and changing any of it is a pu
 - Public: `https://ais.openwaters.io` serves `/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, and `/health`. The request path is a DNS-only A record → Caddy → aiscast on `127.0.0.1:8080`. The Caddyfile sets the Let's Encrypt cert, `zstd`/`gzip` response compression, and a block on `/metrics`, which stays reachable only on the box. Cloudflare proxying is off for the beta, and `TRUST_CF_HEADERS=1` re-enables it if the box needs DDoS cover.
 - UDP ingest at `ais.openwaters.io:10110`, the same name, which resolves straight to the box.
 - Upstreams: Kystverket, BarentsWatch, Digitraffic, aisstream.io. Credentials go in `/etc/aiscast.env`.
-- Archive hours upload to R2 `ais-archive` over the S3 API on rotation and on shutdown.
+- Archive hours upload to R2 `ais-archive` over the S3 API on rotation and on shutdown. The bucket is the archive and the box is only staging. Rotation uploads but never deletes, because a reception queued across the hour boundary reopens that hour and appends to it; a file deleted at rotation would come back as a stub and overwrite the complete object. An hourly sweep does the deleting. It skips any file the writer still holds open, since a quiet source keeps its hour open indefinitely and deleting it would strand the gzip footer, and among the rest it takes only files untouched for two hours. It deletes a file the bucket already holds at the same size, uploads one that is missing or short, and leaves alone any object larger than its local file, which means a stub is sitting over a good upload and needs a human. Steady-state disk is a few hours of traffic, well under 1 GB.
+- The journal is capped at 500 MB ([rootfs](rootfs/etc/systemd/journald.conf.d/10-cap.conf)). The default is 10% of the filesystem capped at 4 GB, so 4 GB here.
 
 ## Continuous deployment
 

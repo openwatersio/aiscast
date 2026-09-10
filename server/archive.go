@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -46,6 +47,11 @@ type archive struct {
 	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
 	drops   atomic.Int64
 	uploads sync.WaitGroup
+
+	// held is every path run() still owns, including one being uploaded. The sweep skips these: a
+	// quiet source keeps its hour open indefinitely, and deleting it out from under the writer would
+	// strand the gzip footer. Zero value is usable, so tests can build an archive as a literal.
+	held sync.Map
 }
 
 // newArchive with an empty dir is a no-op archive (tests).
@@ -137,23 +143,108 @@ func (a *archive) open(source string, hour time.Time) *hourFile {
 		log.Printf("archive: %v", err)
 		return nil
 	}
+	a.held.Store(path, struct{}{})
 	return &hourFile{hour: hour, path: path, f: f, gz: gzip.NewWriter(f)} // appending gzip members is valid gzip
 }
 
 func (a *archive) close(hf *hourFile) {
-	hf.gz.Close()
-	hf.f.Close()
+	gzErr, fErr := hf.gz.Close(), hf.f.Close()
+	if gzErr != nil || fErr != nil {
+		// The hour on disk may be short. Upload it anyway, since it is the only copy, but say so:
+		// silence here looks identical to a healthy rotation.
+		log.Printf("archive: close %s: gzip=%v file=%v", hf.path, gzErr, fErr)
+	}
 	if a.s3 == nil {
+		a.held.Delete(hf.path)
 		return
 	}
 	rel, _ := filepath.Rel(a.dir, hf.path)
 	a.uploads.Add(1)
 	go func() {
 		defer a.uploads.Done()
+		defer a.held.Delete(hf.path) // stay held until the upload is done, so no sweep deletes it mid-put
 		if err := a.s3.put(filepath.ToSlash(rel), hf.path); err != nil {
-			log.Printf("archive: upload %s: %v", rel, err) // file stays on disk; ponytail: no retry queue yet
+			log.Printf("archive: upload %s: %v", rel, err) // the next sweep retries it
 			return
 		}
 		log.Printf("archive: uploaded %s", rel)
 	}()
+}
+
+// archiveGrace is how long an hour file must sit untouched before a sweep may delete it. Rotation
+// does not delete: a Reception queued across the hour boundary reopens the hour it names, appending
+// to the file and uploading it again, so a file deleted at rotation would come back as a stub and
+// overwrite the complete object in the bucket. Receive time is our own clock, so nothing reopens an
+// hour this old. The grace period covers files a previous process left behind, which are on disk but
+// not in held; files this process still owns are excluded by held, not by their age.
+const archiveGrace = 2 * time.Hour
+
+// sweep reconciles the local tree with the bucket, which is where the archive actually lives; disk is
+// only staging. A file the bucket already holds at the same size is deleted, and a short or missing
+// one is uploaded first. An object larger than the local file is left alone: that is a stub over a
+// complete upload, and overwriting it would destroy the only good copy.
+func (a *archive) sweep() {
+	if a.dir == "" || a.s3 == nil {
+		return
+	}
+	cutoff := time.Now().Add(-archiveGrace)
+	var freed, kept int64
+	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
+			return nil
+		}
+		if _, open := a.held.Load(path); open {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil || fi.ModTime().After(cutoff) {
+			return nil
+		}
+		rel, err := filepath.Rel(a.dir, path)
+		if err != nil {
+			return nil
+		}
+		key := filepath.ToSlash(rel)
+		stored, err := a.s3.size(key)
+		if err != nil {
+			log.Printf("archive: sweep head %s: %v", key, err)
+			kept += fi.Size()
+			return nil
+		}
+		switch {
+		case stored > fi.Size():
+			log.Printf("archive: %s is %d bytes in the bucket but %d on disk; keeping both for a human", key, stored, fi.Size())
+			kept += fi.Size()
+			return nil
+		case stored < fi.Size():
+			if err := a.s3.put(key, path); err != nil {
+				log.Printf("archive: sweep upload %s: %v", key, err)
+				kept += fi.Size()
+				return nil
+			}
+			log.Printf("archive: uploaded %s (sweep)", key)
+		}
+		// The upload took a while. Delete only the bytes that went up: anything else means a writer
+		// touched the file, and the next sweep can take another run at it.
+		if cur, err := os.Stat(path); err != nil || cur.Size() != fi.Size() || !cur.ModTime().Equal(fi.ModTime()) {
+			kept += fi.Size()
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			log.Printf("archive: sweep remove %s: %v", key, err)
+			kept += fi.Size()
+			return nil
+		}
+		freed += fi.Size()
+		return nil
+	})
+	log.Printf("archive: sweep freed %d MiB, kept %d MiB not yet reclaimed", freed>>20, kept>>20)
+}
+
+// sweepLoop reclaims on an interval, so a failed upload is retried without waiting for a restart.
+func (a *archive) sweepLoop() {
+	for {
+		a.sweep()
+		time.Sleep(time.Hour)
+	}
 }

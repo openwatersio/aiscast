@@ -39,6 +39,7 @@ if [ ! -f /etc/aiscast.env ]; then
 fi
 
 systemctl daemon-reload
+systemctl restart systemd-journald
 systemctl enable aiscast caddy fail2ban
 systemctl reload-or-restart fail2ban
 caddy validate --config /etc/caddy/Caddyfile

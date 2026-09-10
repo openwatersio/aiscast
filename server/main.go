@@ -19,6 +19,7 @@ func env(k, def string) string {
 
 func main() {
 	arch := newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv())
+	go arch.sweepLoop() // reclaim what the bucket already has; slow, so it must not hold up ingest
 	p := newPipeline(arch)
 
 	snapshot := env("SNAPSHOT", "vessels.json")
