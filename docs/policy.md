@@ -48,6 +48,8 @@ The agreement guards against the failure mode of the ADS-B Exchange sale and the
 
 ## Privacy
 
+The public-facing statement is [docs/privacy-policy.md](privacy-policy.md). The position behind it:
+
 - **Vessel opt-out**: a documented request path and a suppression list applied at fan-out and in history queries. The stated default is to publish all and honor opt-outs. Opt-outs cover small craft tied to an identifiable person, which is the GDPR Article 21 objection path that legitimate interest requires. Commercial traffic is excluded, because its AIS carriage is mandated. Norway's open feed excludes fishing vessels under 15 m and leisure craft under 45 m, which shows the same dial set differently.
 - **Retention**: receptions from open-licensed sources are kept indefinitely. Volunteer-contributed receptions are kept per the contributor agreement. A deletion procedure removes opt-out vessels from history.
 - **Station locations**: never asked for, and derived locations are shown only coarse. A feed that includes own-vessel (`!AIVDO`) sentences publishes its own position, and the station is then identified by that MMSI. UDP stations without own-vessel sentences are identified by a keyed hash of the address, never by the address itself.
