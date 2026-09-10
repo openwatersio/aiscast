@@ -136,6 +136,10 @@ def test_derive_day(tmp_path, fixture_archive):
     receptions = catalog.load_table("ais.receptions").scan().to_arrow().to_pylist()
     vessels = {v["mmsi"]: v for v in catalog.load_table("ais.vessels").scan().to_arrow().to_pylist()}
 
+    # day partitions are real Iceberg partitions, not just a column
+    for name in ("ais.messages", "ais.receptions"):
+        assert [f.name for f in catalog.load_table(name).spec().fields] == ["day"]
+
     # three position messages: the B trio, the A pair, CERULEAN
     assert len(messages) == 3
     by_mmsi = {m["mmsi"]: m for m in messages}
@@ -186,22 +190,29 @@ def test_rerun_replaces_day(tmp_path, fixture_archive):
     assert again == first  # ids are a pure function of the input, so a rerun reproduces them
 
 
-def test_hours_present_counts_distinct_hours():
+def test_hours_present_ignores_neighbouring_boundary_hours():
     files = [
         "a/NLOD-2.0/kystverket/2026/08/21/00.gz",
         "a/aishub-terms/aishub/2026/08/21/00.gz",  # same hour, another source
         "a/NLOD-2.0/kystverket/2026/08/21/23.gz",
+        "a/NLOD-2.0/kystverket/2026/08/20/23.gz",  # boundary hour, belongs to the previous day
+        "a/NLOD-2.0/kystverket/2026/08/22/00.gz",  # boundary hour, belongs to the next day
         "a/NLOD-2.0/kystverket/2026/08/21/notanhour.gz",
     ]
-    assert derive.hours_present(files) == {"00", "23"}
-    assert derive.hours_present([]) == set()
+    assert derive.hours_present(DAY, files) == {"00", "23"}
+    assert derive.hours_present(DAY, []) == set()
 
 
-def test_day_key_matches_any_nesting_depth():
+def test_day_key_matches_any_depth_and_both_boundary_hours():
     want = derive.day_key("2026-08-21")
     assert want.search("ais-archive/NLOD-2.0/kystverket/2026/08/21/12.gz")
     assert want.search(f"ais-archive/feeder/v1/mmsi/{CERULEAN}/2026/08/21/00.gz")  # feeders nest deeper
-    assert not want.search("ais-archive/NLOD-2.0/kystverket/2026/08/22/12.gz")
+    # canonical time can sit either side of midnight from the hour file that carries it
+    assert want.search("ais-archive/NLOD-2.0/kystverket/2026/08/20/23.gz")
+    assert want.search("ais-archive/NLOD-2.0/kystverket/2026/08/22/00.gz")
+    # but only those two neighbouring hours
+    assert not want.search("ais-archive/NLOD-2.0/kystverket/2026/08/20/22.gz")
+    assert not want.search("ais-archive/NLOD-2.0/kystverket/2026/08/22/01.gz")
     assert not want.search("ais-archive/NLOD-2.0/kystverket/2026/08/21/12.gz.tmp")
 
 
@@ -224,3 +235,28 @@ def test_fetch_copies_gzip_bytes_verbatim(tmp_path):
     assert dest.stat().st_size == info.size
     with gzip.open(dest, "rb") as f:  # still a readable archive hour
         assert f.readline().count(b"\t") == 2
+
+
+@pytest.fixture
+def chained_archive(tmp_path):
+    """One vessel repeating an identical report at 0 s, 9 s and 18 s."""
+    archive = tmp_path / "chained"
+    y, m, d = DAY.split("-")
+    text = "".join(nmea_line("kystverket", off, dict(type=1, mmsi=A_MMSI, status=0, **A_POS)) for off in (0, 9, 18))
+    write_gz(archive, f"NLOD-2.0/kystverket/{y}/{m}/{d}/12.gz", text)
+    return archive
+
+
+def test_ten_second_window_anchors_rather_than_chains(tmp_path, chained_archive):
+    """Adjacent gaps are both under 10 s, but the window is measured from the last accepted copy,
+    so 18 s is a second transmission. Chaining on the previous row would report one."""
+    derive.HERE = tmp_path / "lake"
+    derive.HERE.mkdir()
+    catalog = derive.get_catalog()
+    con = duckdb.connect()
+    files = sorted(str(p) for p in chained_archive.rglob("*.gz"))
+    derive.process_day(DAY, files, con, catalog, keep_stage=False, reuse_stage=False)
+
+    messages = catalog.load_table("ais.messages").scan().to_arrow().to_pylist()
+    assert len(messages) == 2
+    assert {m["ts"].second for m in messages} == {0, 18}

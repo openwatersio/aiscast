@@ -96,20 +96,18 @@ def canonical(src_epoch_us, recv):
     return recv
 
 
-def safe_lines(path):
-    try:
-        with gzip.open(path, "rb") as f:
-            while True:
-                try:
-                    line = f.readline()
-                except (EOFError, OSError, zlib.error):
-                    print(f"  gzip error, skipping rest of {path}", file=sys.stderr)
-                    return
-                if not line:
-                    return
-                yield line
-    except OSError:
-        return
+def read_lines(path):
+    """Every line of an hour file. A damaged object fails the day: the derived partition claims
+    the day is complete, so silently stopping at the corruption would publish a short day."""
+    with gzip.open(path, "rb") as f:
+        while True:
+            try:
+                line = f.readline()
+            except (EOFError, OSError, zlib.error) as e:
+                raise OSError(f"{path}: {type(e).__name__}: {e}") from e
+            if not line:
+                return
+            yield line
 
 
 def r2_archive():
@@ -126,9 +124,16 @@ def r2_archive():
 
 
 def day_key(day):
-    """Matches one UTC day's hour files at whatever depth the source nests them."""
-    y, m, d = day.split("-")
-    return re.compile(rf"/{y}/{m}/{d}/\d{{2}}\.gz$")
+    """Matches a day's hour files, plus the two neighbouring hours that can carry its rows.
+
+    Hour files are named by receive time while canonical time can precede receipt by up to 30 s
+    (120 s for an aishub snapshot), so a transmission either side of midnight is filed under the
+    neighbouring day. Reading both edges lets the day's own canon_ts window claim those rows;
+    the window then discards whatever belongs to the neighbour.
+    """
+    d = datetime.fromisoformat(day)
+    prev, nxt = d - timedelta(days=1), d + timedelta(days=1)
+    return re.compile(rf"/{d:%Y/%m/%d}/\d{{2}}\.gz$|/{prev:%Y/%m/%d}/23\.gz$|/{nxt:%Y/%m/%d}/00\.gz$")
 
 
 def sync_day(day, dest):
@@ -170,8 +175,11 @@ def _fetch(fs, local, info, path):
         raise OSError(f"{info.path}: copied {got} of {info.size} bytes")
 
 
-def hours_present(files):
-    return {m.group(1) for f in files if (m := re.search(r"/(\d{2})\.gz$", f))}
+def hours_present(day, files):
+    """Hours belonging to the day itself, ignoring the neighbouring boundary hours."""
+    d = datetime.fromisoformat(day)
+    pat = re.compile(rf"/{d:%Y/%m/%d}/(\d{{2}})\.gz$")
+    return {m.group(1) for f in files if (m := pat.search(f))}
 
 
 class Batcher:
@@ -226,7 +234,7 @@ def decode_day(files, pos_out, stat_out):
     n_err = 0
     for path in files:
         json_buf = None
-        for line in safe_lines(path):
+        for line in read_lines(path):
             if json_buf is not None:  # digitraffic continuation lines have no tab prefix
                 json_buf[1].append(line)
                 if line.startswith(b"}"):
@@ -250,10 +258,14 @@ def decode_day(files, pos_out, stat_out):
                 elif source == "aishub":
                     aishub_snapshot(payload, parse_recv(tscol), pos_out, stat_out)
                 elif source == "digitraffic":
-                    head, brace, _ = payload.partition(b" {")
+                    head, brace, rest = payload.partition(b" {")
                     if brace:
                         seg = head.split(b"/")  # vessels-v2/<mmsi>/<topic>
-                        json_buf = ((int(seg[1]), seg[2].decode(), parse_recv(tscol)), [b"{"])
+                        topic = (int(seg[1]), seg[2].decode(), parse_recv(tscol))
+                        if rest.rstrip().endswith(b"}"):  # compact JSON, all on this line
+                            digitraffic_record(topic, b"{" + rest, pos_out, stat_out)
+                        else:
+                            json_buf = (topic, [b"{" + rest])
                 else:
                     nmea_line(source, payload, parse_recv(tscol), parts, pos_out, stat_out)
             except Exception:
@@ -420,24 +432,65 @@ def aishub_snapshot(payload, recv, pos_out, stat_out):
 # file_row_number breaks canon_ts ties into a total order. Without it the LAG pass and the
 # SUM pass can order tied rows differently, so rows of one transmission land in different runs
 # and the same input yields a different (inflated) message count every time.
-GROUP_SQL = """
-CREATE OR REPLACE TABLE grouped AS
+STAGE_SQL = """
+CREATE OR REPLACE TABLE lagged AS
 WITH keyed AS (
   SELECT *, md5(mmsi || ':' || lat6 || ':' || lon6 || ':' || sog10 || ':' || cog10 || ':' || heading) AS ck
   FROM read_parquet(?, file_row_number=true)
   WHERE canon_ts >= ? AND canon_ts < ?
-), lagged AS (
-  SELECT *, CASE WHEN canon_ts - LAG(canon_ts) OVER w > INTERVAL 10 SECONDS OR LAG(canon_ts) OVER w IS NULL THEN 1 ELSE 0 END AS new_run
+), gapped AS (
+  SELECT *, canon_ts - LAG(canon_ts) OVER w AS gap,
+         CASE WHEN canon_ts - LAG(canon_ts) OVER w > INTERVAL 10 SECONDS OR LAG(canon_ts) OVER w IS NULL THEN 1 ELSE 0 END AS new_run
   FROM keyed
   WINDOW w AS (PARTITION BY mmsi, ck ORDER BY canon_ts, file_row_number)
-), runs AS (
-  SELECT *, SUM(new_run) OVER (PARTITION BY mmsi, ck ORDER BY canon_ts, file_row_number ROWS UNBOUNDED PRECEDING) AS grp
-  FROM lagged
 )
-SELECT *, md5(ck || ':' || grp || ':' || mmsi) AS id,
-       min(canon_ts) OVER (PARTITION BY mmsi, ck, grp) AS grp_ts
-FROM runs
+SELECT *, SUM(new_run) OVER (PARTITION BY mmsi, ck ORDER BY canon_ts, file_row_number ROWS UNBOUNDED PRECEDING) AS lag_grp
+FROM gapped
 """
+
+# Chaining and anchoring agree unless a partition holds a sub-10 s gap and also spans 10 s or
+# more, so only those rows need the sequential pass.
+CHAINED_SQL = """
+SELECT l.mmsi, l.ck, l.file_row_number, l.canon_ts
+FROM lagged l JOIN (
+  SELECT mmsi, ck FROM lagged GROUP BY mmsi, ck
+  HAVING max(canon_ts) - min(canon_ts) >= INTERVAL 10 SECONDS AND min(gap) < INTERVAL 10 SECONDS
+) c ON l.mmsi = c.mmsi AND l.ck = c.ck
+ORDER BY l.mmsi, l.ck, l.canon_ts, l.file_row_number
+"""
+
+GROUP_SQL = """
+CREATE OR REPLACE TABLE grouped AS
+SELECT l.* EXCLUDE (gap, new_run, lag_grp),
+       coalesce(a.grp, l.lag_grp) AS grp,
+       md5(l.ck || ':' || coalesce(a.grp, l.lag_grp) || ':' || l.mmsi) AS id,
+       min(l.canon_ts) OVER (PARTITION BY l.mmsi, l.ck, coalesce(a.grp, l.lag_grp)) AS grp_ts
+FROM lagged l LEFT JOIN anchors a
+  ON l.mmsi = a.mmsi AND l.ck = a.ck AND l.file_row_number = a.file_row_number
+"""
+
+ANCHOR_SCHEMA = pa.schema([("mmsi", pa.int32()), ("ck", pa.string()), ("file_row_number", pa.int64()), ("grp", pa.int64())])
+
+
+def anchored_groups(con):
+    """Group a run of identical reports the way the server's hot path does.
+
+    The server keeps the time of the last *accepted* copy and treats a new one as a duplicate only
+    while it is under 10 s from that anchor, so reports at 0 s, 9 s and 18 s are two transmissions:
+    9 s is a duplicate of 0 s, and 18 s is 18 s from the anchor that still stands at 0 s. Grouping
+    on the gap to the previous *row* instead would chain all three into one, and a transponder
+    repeating a frozen position would collapse into a single message for the whole day.
+    """
+    rows = con.execute(CHAINED_SQL).fetchall()
+    out, key, anchor, grp = [], None, None, 0
+    for mmsi, ck, frn, ts in rows:
+        if (mmsi, ck) != key:
+            key, anchor, grp = (mmsi, ck), ts, 0
+        elif (ts - anchor).total_seconds() >= 10:
+            anchor, grp = ts, grp + 1
+        out.append((mmsi, ck, frn, grp))
+    cols = list(zip(*out)) if out else [[], [], [], []]
+    return pa.table({f.name: pa.array(cols[i], f.type) for i, f in enumerate(ANCHOR_SCHEMA)}, schema=ANCHOR_SCHEMA)
 
 
 def process_day(day, files, con, catalog, keep_stage, reuse_stage):
@@ -456,7 +509,10 @@ def process_day(day, files, con, catalog, keep_stage, reuse_stage):
 
     day_start = datetime.fromisoformat(day)
     day_end = day_start + timedelta(days=1)  # exclusive
-    con.execute(GROUP_SQL, [pos_path, day_start, day_end])
+    con.execute(STAGE_SQL, [pos_path, day_start, day_end])
+    anchors = anchored_groups(con)
+    con.register("anchors", anchors)
+    con.execute(GROUP_SQL)
     # COPY streams to disk instead of materializing arrow tables
     msg_path, rx_path = str(stage / f"messages-{day}.parquet"), str(stage / f"receptions-{day}.parquet")
     con.execute(
@@ -482,8 +538,13 @@ def process_day(day, files, con, catalog, keep_stage, reuse_stage):
     )
     n_msg = con.execute("SELECT count(DISTINCT id) FROM grouped").fetchone()[0]
     con.execute("DROP TABLE grouped")
+    con.execute("DROP TABLE lagged")
+    con.unregister("anchors")
 
-    for name, path in [("ais.messages", msg_path), ("ais.receptions", rx_path)]:
+    refresh_vessels(con, catalog, stat_path, pos_path)
+    # No cross-table transaction exists in Iceberg, so the order is the guarantee: receptions and
+    # vessels commit first and ais.messages last, making its day partition the completion marker.
+    for name, path in [("ais.receptions", rx_path), ("ais.messages", msg_path)]:
 
         def replace_day(name=name, path=path):
             tbl = catalog.load_table(name)
@@ -496,7 +557,6 @@ def process_day(day, files, con, catalog, keep_stage, reuse_stage):
                     tx.append(pa.Table.from_batches([batch], schema=pf.schema_arrow))
 
         retry(replace_day)
-    refresh_vessels(con, catalog, stat_path, pos_path)
 
     print(f"{day}: {n_pos} position receptions, {n_msg} messages, {n_err} decode errors", file=sys.stderr)
     if not keep_stage:
@@ -513,15 +573,24 @@ def refresh_vessels(con, catalog, stat_path, pos_path):
         WITH evidence AS (  -- position message types are the truthful class signal; JSON statics are not
           SELECT mmsi, CASE WHEN bool_or(msg_type IN (18, 19)) THEN 'B' WHEN bool_or(msg_type IN (1, 2, 3)) THEN 'A' END AS ev_cls
           FROM read_parquet(?) GROUP BY mmsi
+        ), all_static AS (
+          SELECT mmsi, name, callsign, ship_type, draught10, cls, ts FROM read_parquet(?)
+          UNION ALL
+          SELECT mmsi, name, callsign, ship_type, draught10, cls, updated_ts FROM existing_vessels
+        ), merged AS (
+          -- latest-wins per field, not per row: a type 24 part B or a source's metadata can
+          -- legitimately carry no name, and that must not discard the newer callsign or draught
+          SELECT mmsi,
+            arg_max(name, ts) FILTER (WHERE name IS NOT NULL) AS name,
+            arg_max(callsign, ts) FILTER (WHERE callsign IS NOT NULL) AS callsign,
+            coalesce(arg_max(ship_type, ts) FILTER (WHERE ship_type > 0), 0) AS ship_type,
+            coalesce(arg_max(draught10, ts) FILTER (WHERE draught10 > 0), 0) AS draught10,
+            arg_max(cls, ts) FILTER (WHERE cls IS NOT NULL) AS cls,
+            max(ts) AS updated_ts
+          FROM all_static GROUP BY mmsi
         )
-        SELECT u.mmsi, name, callsign, ship_type, draught10, coalesce(ev_cls, cls) AS cls, ts AS updated_ts FROM (
-          SELECT *, ROW_NUMBER() OVER (PARTITION BY mmsi ORDER BY has_name DESC, ts DESC) AS rn FROM (
-            SELECT mmsi, name, callsign, ship_type, draught10, cls, ts, (name IS NOT NULL) AS has_name FROM read_parquet(?)
-            UNION ALL
-            SELECT mmsi, name, callsign, ship_type, draught10, cls, updated_ts, (name IS NOT NULL) FROM existing_vessels
-          )
-        ) u LEFT JOIN evidence ON u.mmsi = evidence.mmsi
-        WHERE rn = 1 ORDER BY u.mmsi
+        SELECT m.mmsi, name, callsign, ship_type, draught10, coalesce(ev_cls, cls) AS cls, updated_ts
+        FROM merged m LEFT JOIN evidence ON m.mmsi = evidence.mmsi ORDER BY m.mmsi
         """,
         [pos_path, stat_path],
     ).to_arrow_table()
@@ -546,6 +615,12 @@ def get_catalog():
     ]:
         if ("ais", name) not in retry(lambda: list(catalog.list_tables("ais"))):
             retry(lambda: catalog.create_table(f"ais.{name}", schema=schema))
+        if "day" in schema.names:
+            # Identity partition on day, so replacing a day rewrites that partition instead of
+            # scanning the table, and the day column prunes the way the contract says it does.
+            tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
+            if not tbl.spec().fields:
+                retry(lambda: tbl.update_spec().add_identity("day").commit())
     return catalog
 
 
@@ -559,9 +634,10 @@ def main():
     ap.add_argument("--min-hours", type=int, default=20, help="refuse a day with fewer distinct hours")
     args = ap.parse_args()
 
-    by_day = {}
+    by_day, all_files = {}, []
     if args.archive:
-        for f in glob.glob(f"{args.archive}/**/*.gz", recursive=True):
+        all_files = glob.glob(f"{args.archive}/**/*.gz", recursive=True)
+        for f in all_files:
             m = re.search(r"(\d{4})/(\d{2})/(\d{2})/\d{2}\.gz$", f)
             if m:
                 by_day.setdefault("-".join(m.groups()), []).append(f)
@@ -587,11 +663,12 @@ def main():
         if args.archive:
             if day not in by_day:
                 sys.exit(f"no archive files for {day}")
-            files = sorted(by_day[day])
+            want = day_key(day)
+            files = sorted(f for f in all_files if want.search(f))
         else:
             raw = HERE / "raw" / day
             files = sync_day(day, raw)
-        n_hours = len(hours_present(files))
+        n_hours = len(hours_present(day, files))
         if n_hours < args.min_hours:
             sys.exit(f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}; pass --min-hours to override")
         try:
