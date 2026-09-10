@@ -43,7 +43,8 @@ systemctl restart systemd-journald
 systemctl enable aiscast caddy fail2ban
 systemctl reload-or-restart fail2ban
 caddy validate --config /etc/caddy/Caddyfile
-systemctl reload-or-restart caddy
+# A reload can time out when long-lived SSE streams hold the old servers open; a restart is bounded.
+systemctl reload-or-restart caddy || systemctl restart caddy
 
 if [ -f aiscast-linux ]; then
 	install -m 755 aiscast-linux /opt/aiscast/aiscast.new
