@@ -1,6 +1,8 @@
-import { generateKeyPairSync, type JsonWebKey } from "node:crypto";
+import { generateKeyPairSync, type webcrypto } from "node:crypto";
 import { readFile, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
+
+type JsonWebKey = webcrypto.JsonWebKey;
 
 export interface Identity {
   pubkey: string; // base64url of the raw 32-byte Ed25519 public key (the JWK `x`)
