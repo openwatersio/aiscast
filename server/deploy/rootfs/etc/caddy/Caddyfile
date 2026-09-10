@@ -1,3 +1,8 @@
+# Reloads must not wait on open /v1/stream SSE connections; close them after 10s and let clients reconnect.
+{
+	grace_period 10s
+}
+
 # TLS for the hub. Let's Encrypt HTTP-01 works through the Cloudflare proxy; ACME retries until DNS points here.
 ais.openwaters.io {
 	@metrics path /metrics
