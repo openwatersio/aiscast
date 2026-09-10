@@ -10,6 +10,7 @@ from pathlib import Path
 import duckdb
 import pytest
 from pyais.encode import encode_dict
+from pyais.util import compute_checksum
 
 sys.path.insert(0, str(Path(__file__).parent))
 import derive
@@ -29,11 +30,8 @@ def ts(offset):
 
 def vdm(s):
     # pyais encodes own-ship VDO; archives carry VDM, so rewrite and re-checksum
-    body = s.replace("VDO", "VDM").split("*")[0][1:]
-    cs = 0
-    for ch in body.encode():
-        cs ^= ch
-    return f"!{body}*{cs:02X}"
+    body = s.replace("VDO", "VDM").split("*")[0]
+    return f"{body}*{compute_checksum(body.encode()):02X}"
 
 
 def nmea_line(source, offset, payload_dict):
@@ -139,7 +137,9 @@ def test_derive_day(tmp_path, fixture_archive):
     catalog = derive.get_catalog()
     con = duckdb.connect()
     files = sorted(str(p) for p in fixture_archive.rglob("*.gz"))
-    derive.process_day(DAY, files, con, catalog, keep_stage=False, reuse_stage=False)
+    srcdirs = {Path(f).relative_to(fixture_archive).parts[1] for f in files}
+    derive.process_day(DAY, files, con, catalog, keep_stage=False, reuse_stage=False, srcdirs=srcdirs)
+    assert derive.derived_days(catalog) == {DAY}
 
     messages = catalog.load_table("ais.messages").scan().to_arrow().to_pylist()
     receptions = catalog.load_table("ais.receptions").scan().to_arrow().to_pylist()
@@ -279,3 +279,55 @@ def test_ten_second_window_anchors_rather_than_chains(tmp_path, chained_archive)
     b = [m for m in messages if m["mmsi"] == B_MMSI]
     assert {m["ts"].second for m in a} == {0, 18}
     assert {m["ts"].second for m in b} == {0, 10}  # a copy at exactly 10 s is a new transmission
+
+
+class Cap:
+    def __init__(self):
+        self.rows = []
+
+    def add(self, row):
+        self.rows.append(row)
+
+
+def test_type27_na_speed_maps_to_sentinel():
+    """Type 27 carries whole knots with 63 = not available, not the 1023 wire sentinel."""
+    pos = Cap()
+    line = nmea_line("kystverket", 0, dict(type=27, mmsi=A_MMSI, speed=63, course=511, lat=60.1, lon=24.9))
+    ts_col, src, payload = line.strip().split("\t", 2)
+    derive.nmea_line(src, payload.encode(), derive.parse_recv(ts_col.encode()), {}, pos, Cap())
+    (row,) = pos.rows
+    assert row[4] == derive.NA_SOG
+    assert row[5] == derive.NA_COG
+
+
+def test_emit_pos_clamps_wire_domain():
+    """A JSON source's unvalidated int must clamp to the sentinel, not poison the int16 batch."""
+    pos = Cap()
+    derive.emit_pos(pos, 230000001, 0, 30000000, 6000000, 40000, -5, 9999, 200, None, None, "aishub", "aishub")
+    (row,) = pos.rows
+    assert row[4:8] == (derive.NA_SOG, derive.NA_COG, derive.NA_HDG, derive.NA_NAV)
+
+
+def test_aishub_bad_record_does_not_void_snapshot():
+    pos = Cap()
+    recv = datetime(2026, 8, 21, 12, 1, 0)
+    snapshot = json.dumps([{}, [
+        {"MMSI": 230000005, "TIME": "not-a-number"},
+        {"MMSI": 230000006, "TIME": str(T0 + 55), "LATITUDE": 30000000, "LONGITUDE": 6000000, "SOG": 0, "COG": 0, "HEADING": 0, "NAVSTAT": 0},
+    ]])
+    derive.aishub_snapshot(snapshot.encode(), recv, pos, Cap())
+    assert [r[0] for r in pos.rows] == [230000006]
+
+
+def test_source_dropped_by_decoder_fails_the_day(tmp_path, fixture_archive):
+    """A source dir that contributed raw files but decoded to nothing must fail, not vanish."""
+    y, m, d = DAY.split("-")
+    write_gz(fixture_archive, f"MIT/junk/{y}/{m}/{d}/12.gz", "this is not AIS\n")
+    derive.HERE = tmp_path / "lake"
+    derive.HERE.mkdir()
+    catalog = derive.get_catalog()
+    con = duckdb.connect()
+    files = sorted(str(p) for p in fixture_archive.rglob("*.gz"))
+    srcdirs = {Path(f).relative_to(fixture_archive).parts[1] for f in files}
+    with pytest.raises(SystemExit, match="junk"):
+        derive.process_day(DAY, files, con, catalog, keep_stage=False, reuse_stage=False, srcdirs=srcdirs)

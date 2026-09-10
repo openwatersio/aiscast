@@ -20,6 +20,7 @@ import re
 import shutil
 import sys
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,6 +46,11 @@ LICENSES = {
     "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
     "v1": "CC0-1.0", "http": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
 }
+LICENSE_SQL = (
+    "CASE "
+    + " ".join(f"WHEN source = '{k}' OR split_part(source, ':', 1) = '{k}' THEN '{v}'" for k, v in LICENSES.items())
+    + " ELSE 'unspecified' END"
+)
 
 POS_SCHEMA = pa.schema(
     [
@@ -128,17 +134,14 @@ def r2_archive():
     ), os.environ.get("R2_BUCKET", "ais-archive")
 
 
-def day_key(day):
-    """Matches a day's hour files, plus the two neighbouring hours that can carry its rows.
+def hour_pattern(d, hour=r"\d{2}"):
+    return rf"/{d:%Y/%m/%d}/({hour})\.gz$"
 
-    Hour files are named by receive time while canonical time can precede receipt by up to 30 s
-    (120 s for an aishub snapshot), so a transmission either side of midnight is filed under the
-    neighbouring day. Reading both edges lets the day's own canon_ts window claim those rows;
-    the window then discards whatever belongs to the neighbour.
-    """
+
+def day_key(day):
+    """Matches a day's hour files plus the two boundary hours whose canonical times can cross midnight."""
     d = datetime.fromisoformat(day)
-    prev, nxt = d - timedelta(days=1), d + timedelta(days=1)
-    return re.compile(rf"/{d:%Y/%m/%d}/\d{{2}}\.gz$|/{prev:%Y/%m/%d}/23\.gz$|/{nxt:%Y/%m/%d}/00\.gz$")
+    return re.compile("|".join((hour_pattern(d), hour_pattern(d - timedelta(days=1), "23"), hour_pattern(d + timedelta(days=1), "00"))))
 
 
 def sync_day(day, dest):
@@ -156,14 +159,17 @@ def sync_day(day, dest):
     local = pafs.LocalFileSystem()
     want = day_key(day)
     sel = pafs.FileSelector(bucket, recursive=True, allow_not_found=True)
-    out = []
-    for info in retry(lambda: fs.get_file_info(sel)):
-        if not want.search(info.path):
-            continue
+    # ponytail: lists the whole bucket and filters by date; walk-and-prune per source tree if listing ever dominates the night
+    infos = [i for i in retry(lambda: fs.get_file_info(sel)) if want.search(i.path)]
+
+    def fetch(info):
         path = Path(dest) / info.path[len(bucket) + 1 :]
         path.parent.mkdir(parents=True, exist_ok=True)
-        retry(lambda i=info, p=path: _fetch(fs, local, i, p))
-        out.append(str(path))
+        retry(lambda: _fetch(fs, local, info, path))
+        return str(path)
+
+    with ThreadPoolExecutor(8) as pool:
+        out = list(pool.map(fetch, infos))
     print(f"{day}: fetched {len(out)} hour files from {bucket}", file=sys.stderr)
     return sorted(out)
 
@@ -181,9 +187,8 @@ def _fetch(fs, local, info, path):
 
 
 def hours_present(day, files):
-    """Hours belonging to the day itself, ignoring the neighbouring boundary hours."""
-    d = datetime.fromisoformat(day)
-    pat = re.compile(rf"/{d:%Y/%m/%d}/(\d{{2}})\.gz$")
+    """Hours of the day itself; the boundary hours belong to the neighbours."""
+    pat = re.compile(hour_pattern(datetime.fromisoformat(day)))
     return {m.group(1) for f in files if (m := pat.search(f))}
 
 
@@ -203,7 +208,11 @@ class Batcher:
     def flush(self):
         if self.rows:
             cols = list(zip(*self.rows))
-            self.writer.write_table(pa.table({f.name: pa.array(cols[i], f.type) for i, f in enumerate(self.schema)}, schema=self.schema))
+            try:
+                self.writer.write_table(pa.table({f.name: pa.array(cols[i], f.type) for i, f in enumerate(self.schema)}, schema=self.schema))
+            except Exception as e:
+                # SystemExit passes decode_day's per-line except: a bad batch fails the day loudly instead of looping as decode errors
+                raise SystemExit(f"stage write failed: {e}") from e
             self.rows = []
 
     def close(self):
@@ -283,8 +292,14 @@ def decode_day(files, pos_out, stat_out):
 
 
 def emit_pos(out, mmsi, msg_type, lat6, lon6, sog10, cog10, heading, navstat, canon, recv, source, station):
-    if valid_mmsi(mmsi) and valid_pos(lat6, lon6):
-        out.add((mmsi, msg_type, lat6, lon6, sog10, cog10, heading, navstat, canon, recv, source, station))
+    if not (valid_mmsi(mmsi) and valid_pos(lat6, lon6)):
+        return
+    # clamp to the wire domain: JSON sources hand over unvalidated ints, and one value past int16 would poison the staging batch
+    sog10 = sog10 if 0 <= sog10 <= NA_SOG else NA_SOG
+    cog10 = cog10 if 0 <= cog10 <= NA_COG else NA_COG
+    heading = heading if 0 <= heading <= NA_HDG else NA_HDG
+    navstat = navstat if -1 <= navstat <= 127 else NA_NAV
+    out.add((mmsi, msg_type, lat6, lon6, sog10, cog10, heading, navstat, canon, recv, source, station))
 
 
 def nmea_line(source, payload, recv, parts, pos_out, stat_out, src_us=None):
@@ -298,7 +313,7 @@ def nmea_line(source, payload, recv, parts, pos_out, stat_out, src_us=None):
         if m:
             v = int(m.group(1))  # unit is unspecified in practice; match server tagTime by magnitude
             src_us = v * 1_000_000 if v < 10**12 else v * 1000 if v < 10**15 else v
-        if source == "kystverket":
+        if source == "kystverket":  # only this upstream's s: tag is trusted; feeder tag blocks are sender-supplied
             m = TAG_STATION.search(tag)
             if m:
                 station = m.group(1).decode()
@@ -324,10 +339,13 @@ def nmea_line(source, payload, recv, parts, pos_out, stat_out, src_us=None):
     t = msg.msg_type
     if t in POS_TYPES:
         hdg = getattr(msg, "heading", None)  # 0 (due north) is valid; only absence means n/a
+        spd = getattr(msg, "speed", None)
+        if t == 27 and spd is not None and spd >= 63:
+            spd = None  # type 27 carries whole knots with 63 = not available, not the 1023 sentinel
         emit_pos(
             pos_out, msg.mmsi, t,
             round(float(msg.lat) * 600000), round(float(msg.lon) * 600000),
-            sog_wire(getattr(msg, "speed", None)), cog_wire(getattr(msg, "course", None)),
+            sog_wire(spd), cog_wire(getattr(msg, "course", None)),
             NA_HDG if hdg is None else hdg,
             int(getattr(msg, "status", NA_NAV)) if getattr(msg, "status", None) is not None else NA_NAV,
             canon, recv, source, station,
@@ -439,26 +457,27 @@ def aishub_snapshot(payload, recv, pos_out, stat_out):
     _header, records = json.loads(payload)
     recv_epoch = recv.replace(tzinfo=timezone.utc).timestamp()  # recv is naive UTC
     for r in records:
-        t = int(r.get("TIME", 0))
-        if recv_epoch - t > AISHUB_FRESH_S or t > recv_epoch + 60:
-            continue
-        if r.get("LATITUDE") is None or r.get("LONGITUDE") is None:
-            continue
-        canon = datetime.fromtimestamp(t, tz=timezone.utc).replace(tzinfo=None)
-        emit_pos(
-            pos_out, r["MMSI"], 0,
-            r["LATITUDE"], r["LONGITUDE"],  # already 1/600000 units
-            na(r.get("SOG"), NA_SOG), min(na(r.get("COG"), NA_COG), NA_COG),
-            na(r.get("HEADING"), NA_HDG), na(r.get("NAVSTAT"), NA_NAV),
-            canon, recv, "aishub", "aishub",
-        )
-        if r.get("NAME") and valid_mmsi(r["MMSI"]):
-            stat_out.add((r["MMSI"], r["NAME"], r.get("CALLSIGN") or None, int(r.get("TYPE") or 0), int(r.get("DRAUGHT") or 0), "A", canon))
+        try:
+            t = int(r.get("TIME", 0))
+            if recv_epoch - t > AISHUB_FRESH_S or t > recv_epoch + 60:
+                continue
+            if r.get("LATITUDE") is None or r.get("LONGITUDE") is None:
+                continue
+            canon = datetime.fromtimestamp(t, tz=timezone.utc).replace(tzinfo=None)
+            emit_pos(
+                pos_out, r["MMSI"], 0,
+                r["LATITUDE"], r["LONGITUDE"],  # already 1/600000 units
+                na(r.get("SOG"), NA_SOG), na(r.get("COG"), NA_COG),
+                na(r.get("HEADING"), NA_HDG), na(r.get("NAVSTAT"), NA_NAV),
+                canon, recv, "aishub", "aishub",
+            )
+            if r.get("NAME") and valid_mmsi(r["MMSI"]):
+                stat_out.add((r["MMSI"], r["NAME"], r.get("CALLSIGN") or None, int(r.get("TYPE") or 0), min(int(r.get("DRAUGHT") or 0), 32767), "A", canon))
+        except Exception:
+            continue  # the ingest that wrote this tolerates malformed records; one must not drop the rest
 
 
-# file_row_number breaks canon_ts ties into a total order. Without it the LAG pass and the
-# SUM pass can order tied rows differently, so rows of one transmission land in different runs
-# and the same input yields a different (inflated) message count every time.
+# file_row_number gives canon_ts ties a total order; without it the LAG and SUM passes can order ties differently and split transmissions nondeterministically.
 STAGE_SQL = """
 CREATE OR REPLACE TABLE lagged AS
 WITH keyed AS (
@@ -478,12 +497,12 @@ FROM gapped
 # Chaining and anchoring agree unless a partition holds a sub-10 s gap and also spans 10 s or
 # more, so only those rows need the sequential pass.
 CHAINED_SQL = """
-SELECT l.mmsi, l.ck, l.file_row_number, l.canon_ts
+SELECT DISTINCT l.mmsi, l.ck, l.canon_ts
 FROM lagged l JOIN (
   SELECT mmsi, ck FROM lagged GROUP BY mmsi, ck
   HAVING max(canon_ts) - min(canon_ts) >= INTERVAL 10 SECONDS AND min(gap) < INTERVAL 10 SECONDS
 ) c ON l.mmsi = c.mmsi AND l.ck = c.ck
-ORDER BY l.mmsi, l.ck, l.canon_ts, l.file_row_number
+ORDER BY l.mmsi, l.ck, l.canon_ts
 """
 
 GROUP_SQL = """
@@ -493,10 +512,10 @@ SELECT l.* EXCLUDE (gap, new_run, lag_grp),
        md5(l.ck || ':' || coalesce(a.grp, l.lag_grp) || ':' || l.mmsi) AS id,
        min(l.canon_ts) OVER (PARTITION BY l.mmsi, l.ck, coalesce(a.grp, l.lag_grp)) AS grp_ts
 FROM lagged l LEFT JOIN anchors a
-  ON l.mmsi = a.mmsi AND l.ck = a.ck AND l.file_row_number = a.file_row_number
+  ON l.mmsi = a.mmsi AND l.ck = a.ck AND l.canon_ts = a.canon_ts
 """
 
-ANCHOR_SCHEMA = pa.schema([("mmsi", pa.int32()), ("ck", pa.string()), ("file_row_number", pa.int64()), ("grp", pa.int64())])
+ANCHOR_SCHEMA = pa.schema([("mmsi", pa.int32()), ("ck", pa.string()), ("canon_ts", pa.timestamp("us")), ("grp", pa.int64())])
 
 
 def anchored_groups(con):
@@ -508,31 +527,42 @@ def anchored_groups(con):
     on the gap to the previous *row* instead would chain all three into one, and a transponder
     repeating a frozen position would collapse into a single message for the whole day.
     """
-    rows = con.execute(CHAINED_SQL).fetchall()
-    out, key, anchor, grp = [], None, None, 0
-    for mmsi, ck, frn, ts in rows:
-        if (mmsi, ck) != key:
-            key, anchor, grp = (mmsi, ck), ts, 0
-        elif (ts - anchor).total_seconds() >= 10:
-            anchor, grp = ts, grp + 1
-        out.append((mmsi, ck, frn, grp))
-    cols = list(zip(*out)) if out else [[], [], [], []]
-    return pa.table({f.name: pa.array(cols[i], f.type) for i, f in enumerate(ANCHOR_SCHEMA)}, schema=ANCHOR_SCHEMA)
+    # Distinct timestamps only (copies with equal canon_ts always share a group), streamed in
+    # bounded batches: a moored vessel's identical-payload partition spans the whole day, so the
+    # chained subset is a large share of the day, not a rare corner.
+    batches, key, anchor, grp = [], None, None, 0
+    reader = con.execute(CHAINED_SQL).fetch_record_batch(1_000_000)
+    for batch in reader:
+        grps = []
+        for mmsi, ck, ts in zip(*(c.to_pylist() for c in batch.columns)):
+            if (mmsi, ck) != key:
+                key, anchor, grp = (mmsi, ck), ts, 0
+            elif (ts - anchor).total_seconds() >= 10:
+                anchor, grp = ts, grp + 1
+            grps.append(grp)
+        batches.append(pa.record_batch([*batch.columns, pa.array(grps, pa.int64())], schema=ANCHOR_SCHEMA))
+    return pa.Table.from_batches(batches, schema=ANCHOR_SCHEMA) if batches else ANCHOR_SCHEMA.empty_table()
 
 
-def process_day(day, files, con, catalog, keep_stage, reuse_stage):
+def process_day(day, files, con, catalog, keep_stage, reuse_stage, srcdirs=frozenset()):
     stage = HERE / "stage"
     stage.mkdir(parents=True, exist_ok=True)
     pos_path, stat_path = str(stage / f"pos-{day}.parquet"), str(stage / f"stat-{day}.parquet")
     n_err = 0
     if reuse_stage and os.path.exists(pos_path):
-        n_pos = n_stat = -1
+        n_pos = -1
     else:
         pos_out, stat_out = Batcher(pos_path, POS_SCHEMA), Batcher(stat_path, STATIC_SCHEMA)
         n_err = decode_day(files, pos_out, stat_out)
         pos_out.close()
         stat_out.close()
-        n_pos, n_stat = pos_out.n, stat_out.n
+        n_pos = pos_out.n
+
+    # a source directory that contributed raw files must surface in the day; a decoder regression
+    # that drops a whole source fails here, not in a consumer
+    seen = {r[0] for r in con.execute("SELECT DISTINCT split_part(source, ':', 1) FROM read_parquet(?)", [pos_path]).fetchall()}
+    if missing := sorted(set(srcdirs) - seen):
+        raise SystemExit(f"{day}: {', '.join(missing)} contributed raw files but decoded to zero position rows")
 
     day_start = datetime.fromisoformat(day)
     day_end = day_start + timedelta(days=1)  # exclusive
@@ -553,30 +583,22 @@ def process_day(day, files, con, catalog, keep_stage, reuse_stage):
         ) TO '{msg_path}' (FORMAT parquet)
         """
     )
-    lic = (
-        "CASE "
-        + " ".join(f"WHEN source = '{k}' THEN '{v}'" for k, v in LICENSES.items())
-        + " "
-        + " ".join(f"WHEN split_part(source, ':', 1) = '{k}' THEN '{v}'" for k, v in LICENSES.items())
-        + " ELSE 'unspecified' END"
-    )
     con.execute(
         f"""
         COPY (
-          SELECT id AS msg_id, source, station, min(recv_ts) AS recv_ts, CAST(min(grp_ts) AS DATE) AS day, {lic} AS license
+          SELECT id AS msg_id, source, station, min(recv_ts) AS recv_ts, CAST(min(grp_ts) AS DATE) AS day, {LICENSE_SQL} AS license
           FROM grouped GROUP BY id, source, station
           ORDER BY source, station, min(recv_ts)
         ) TO '{rx_path}' (FORMAT parquet)
         """
     )
-    n_msg = con.execute("SELECT count(DISTINCT id) FROM grouped").fetchone()[0]
+    n_msg = pq.ParquetFile(msg_path).metadata.num_rows  # the COPY wrote one row per id
     con.execute("DROP TABLE grouped")
     con.execute("DROP TABLE lagged")
     con.unregister("anchors")
 
     refresh_vessels(con, catalog, stat_path, pos_path)
-    # No cross-table transaction exists in Iceberg, so the order is the guarantee: receptions and
-    # vessels commit first and ais.messages last, making its day partition the completion marker.
+    # Iceberg has no cross-table transaction, so order is the guarantee: messages commits last and its day partition is the completion marker.
     for name, path in [("ais.receptions", rx_path), ("ais.messages", msg_path)]:
 
         def replace_day(name=name, path=path):
@@ -598,6 +620,7 @@ def process_day(day, files, con, catalog, keep_stage, reuse_stage):
 
 
 def refresh_vessels(con, catalog, stat_path, pos_path):
+    # ponytail: O(all vessels ever seen) each night; move to a keyed merge over the day's MMSIs if this ever dominates
     tbl = retry(lambda: catalog.load_table("ais.vessels"))
     existing = retry(lambda: tbl.scan().to_arrow())
     con.register("existing_vessels", existing)
@@ -630,6 +653,12 @@ def refresh_vessels(con, catalog, stat_path, pos_path):
     retry(lambda: tbl.overwrite(merged.cast(tbl.schema().as_arrow())))
 
 
+def derived_days(catalog):
+    """Day partitions already present in ais.messages, from table metadata only."""
+    tbl = retry(lambda: catalog.load_table("ais.messages"))
+    return {str(r["partition"]["day"]) for r in retry(lambda: tbl.inspect.partitions()).to_pylist()}
+
+
 def get_catalog():
     from pyiceberg.catalog import load_catalog
 
@@ -644,7 +673,7 @@ def get_catalog():
     for name, schema in [
         ("messages", pa.schema([("id", pa.string()), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("msg_type", pa.int8()), ("lat6", pa.int32()), ("lon6", pa.int32()), ("sog10", pa.int16()), ("cog10", pa.int16()), ("heading", pa.int16()), ("navstat", pa.int8()), ("day", pa.date32())])),
         ("receptions", pa.schema([("msg_id", pa.string()), ("source", pa.string()), ("station", pa.string()), ("recv_ts", pa.timestamp("us")), ("day", pa.date32()), ("license", pa.string())])),
-        ("vessels", STATIC_SCHEMA.remove(6).append(pa.field("updated_ts", pa.timestamp("us")))),
+        ("vessels", STATIC_SCHEMA.remove(STATIC_SCHEMA.get_field_index("ts")).append(pa.field("updated_ts", pa.timestamp("us")))),
     ]:
         if ("ais", name) not in retry(lambda: list(catalog.list_tables("ais"))):
             retry(lambda: catalog.create_table(f"ais.{name}", schema=schema))
@@ -679,10 +708,20 @@ def main():
 
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
-    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    days = [d for d in sorted(by_day) if d < today] if args.all else [args.date or yesterday]
-
     catalog = get_catalog()
+    if args.all:
+        days = [d for d in sorted(by_day) if d < today]
+    elif args.date:
+        days = [args.date]
+    elif args.archive:
+        days = [(now - timedelta(days=1)).strftime("%Y-%m-%d")]
+    else:
+        # self-heal: derive every closed day of the past week missing from the catalog, oldest first, so a failed night is retried the next
+        window = [(now - timedelta(days=n)).strftime("%Y-%m-%d") for n in range(7, 0, -1)]
+        days = [d for d in window if d not in derived_days(catalog)]
+        if not days:
+            print("nothing to derive: the last 7 days are all present", file=sys.stderr)
+            return
     stage = HERE / "stage"
     stage.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(stage / "derive.duckdb"))
@@ -699,13 +738,19 @@ def main():
                     sys.exit(f"no archive files for {day}")
                 want = day_key(day)
                 files = sorted(f for f in all_files if want.search(f))
+                root = args.archive
             else:
-                raw = HERE / "raw" / day
+                root = raw = HERE / "raw" / day
                 files = sync_day(day, raw)
             n_hours = len(hours_present(day, files))
             if n_hours < args.min_hours:
-                sys.exit(f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}; pass --min-hours to override")
-            process_day(day, files, con, catalog, args.keep_stage, args.reuse_stage)
+                short = f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}"
+                if args.all:
+                    print(f"  skipping {short}", file=sys.stderr)
+                    continue
+                sys.exit(short + "; pass --min-hours to override")
+            srcdirs = {Path(f).relative_to(root).parts[1] for f in files}
+            process_day(day, files, con, catalog, args.keep_stage, args.reuse_stage, srcdirs)
         finally:
             if raw and not args.keep_stage:
                 shutil.rmtree(raw, ignore_errors=True)  # re-fetchable; the bucket is the source of truth

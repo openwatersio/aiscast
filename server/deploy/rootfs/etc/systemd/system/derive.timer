@@ -1,9 +1,10 @@
-# /etc/systemd/system/derive.timer — run the lake derive shortly after the UTC day closes.
+# /etc/systemd/system/derive.timer — nightly lake derive, after the closed day's files land in R2.
 [Unit]
 Description=nightly aiscast lake derive
 
 [Timer]
-OnCalendar=*-*-* 00:30:00 UTC
+# hour files upload when the next hour's traffic rotates them (~01:00), so 00:30 would run before the day's last files exist in the bucket
+OnCalendar=*-*-* 01:30:00 UTC
 RandomizedDelaySec=15m
 Persistent=true
 
