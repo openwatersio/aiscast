@@ -16,8 +16,9 @@ WorkingDirectory=/var/lib/aiscast
 Environment=LAKE_HOME=/var/lib/aiscast/lake
 Environment=HOME=/var/lib/aiscast
 # A box with no catalog configured yet would otherwise spend the night deriving into a local
-# throwaway warehouse. Reading the file keeps the check clear of systemd's variable expansion.
-ExecCondition=/usr/bin/grep -q ^LAKE_CATALOG_URI=. /etc/aiscast.env
+# throwaway warehouse. This must test the loaded service environment, not read the env file:
+# the file is 0600 root-owned and this unit runs as aiscast. $$ passes a literal $ to sh.
+ExecCondition=/bin/sh -c 'test -n "$$LAKE_CATALOG_URI"'
 # No --archive: the day is fetched from the R2 bucket (R2_* in the env file) and deleted after,
 # so the job does not depend on what the box still has on disk.
 ExecStart=/usr/local/bin/uv run --script /opt/aiscast/derive.py

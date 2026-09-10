@@ -39,7 +39,12 @@ AISHUB_FRESH_S = 120  # snapshot records older than this are stale state, not ne
 TAG_STATION = re.compile(rb"s:([0-9]+)")
 TAG_TIME = re.compile(rb"c:(\d+)")
 AISSTREAM_META = re.compile(rb'"time_utc":"([0-9: .-]+)')
-LICENSES = {"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms"}
+# Mirrors licenseOf in server/archive.go: exact source first, then the prefix before ':'.
+LICENSES = {
+    "kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0",
+    "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
+    "v1": "CC0-1.0", "http": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
+}
 
 POS_SCHEMA = pa.schema(
     [
@@ -140,10 +145,10 @@ def sync_day(day, dest):
     """Fetch one UTC day's hour files from R2 into dest, preserving the key path under the bucket.
 
     The bucket is the source of truth; the box keeps only hours it has not uploaded yet. Copying
-    the day first (rather than decoding straight off the network) keeps a mid-transfer reset a
-    loud, retryable failure instead of a silently short day, since safe_lines swallows read errors.
-    Keys are matched on the date, not on a fixed depth: feeders nest under station id
-    (feeder/v1/mmsi/<mmsi>/Y/M/D/HH.gz) while upstreams sit at <license>/<source>/Y/M/D/HH.gz.
+    the day first (rather than decoding straight off the network) makes a mid-transfer reset a
+    retryable per-file failure instead of an abort deep inside the decode. Keys are matched on
+    the date, not on a fixed depth: feeders nest under station id (CC0-1.0/v1/mmsi/<mmsi>/...)
+    while upstreams sit at <license>/<source>/Y/M/D/HH.gz.
     """
     import pyarrow.fs as pafs
 
@@ -266,6 +271,8 @@ def decode_day(files, pos_out, stat_out):
                             digitraffic_record(topic, b"{" + rest, pos_out, stat_out)
                         else:
                             json_buf = (topic, [b"{" + rest])
+                elif payload.startswith(b"{"):  # AIS-catcher envelope; plain NMEA never starts with a brace
+                    aiscatcher_record(payload, parse_recv(tscol), source, parts, pos_out, stat_out)
                 else:
                     nmea_line(source, payload, parse_recv(tscol), parts, pos_out, stat_out)
             except Exception:
@@ -280,8 +287,8 @@ def emit_pos(out, mmsi, msg_type, lat6, lon6, sog10, cog10, heading, navstat, ca
         out.add((mmsi, msg_type, lat6, lon6, sog10, cog10, heading, navstat, canon, recv, source, station))
 
 
-def nmea_line(source, payload, recv, parts, pos_out, stat_out):
-    station, src_us = source, None
+def nmea_line(source, payload, recv, parts, pos_out, stat_out, src_us=None):
+    station = source
     if payload.startswith(b"\\"):
         end = payload.find(b"\\", 1)
         if end < 0:
@@ -289,8 +296,8 @@ def nmea_line(source, payload, recv, parts, pos_out, stat_out):
         tag = payload[:end]
         m = TAG_TIME.search(tag)
         if m:
-            v = int(m.group(1))
-            src_us = v * 1000 if len(m.group(1)) > 12 else v * 1_000_000  # ms vs s heuristic
+            v = int(m.group(1))  # unit is unspecified in practice; match server tagTime by magnitude
+            src_us = v * 1_000_000 if v < 10**12 else v * 1000 if v < 10**15 else v
         if source == "kystverket":
             m = TAG_STATION.search(tag)
             if m:
@@ -334,20 +341,38 @@ def nmea_line(source, payload, recv, parts, pos_out, stat_out):
         ))
 
 
+def aiscatcher_record(payload, recv, source, parts, pos_out, stat_out):
+    """AIS-catcher posts a JSON envelope wrapping NMEA sentences with their own receive time.
+    The server archives the whole envelope as one reception (see serveReceive in ingest.go)."""
+    for msg in json.loads(payload).get("msgs", []):
+        src_us = None
+        if rx := msg.get("rxtime"):
+            try:
+                src_us = int(datetime.strptime(rx, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp() * 1e6)
+            except ValueError:
+                pass
+        for line in msg.get("nmea", []):
+            nmea_line(source, line.encode(), recv, parts, pos_out, stat_out, src_us)
+
+
 def digitraffic_record(topic, raw, pos_out, stat_out):
     mmsi, kind, recv = topic
     d = json.loads(raw)
     if kind == "location":
+        if d.get("lat") is None or d.get("lon") is None:
+            return
         canon = canonical(d["time"] * 1_000_000, recv)
         emit_pos(
             pos_out, mmsi, 0,
             round(d["lat"] * 600000), round(d["lon"] * 600000),
             sog_wire(d.get("sog")), cog_wire(d.get("cog")),
-            d.get("heading", NA_HDG), d.get("navStat", NA_NAV),
+            na(d.get("heading"), NA_HDG), na(d.get("navStat"), NA_NAV),
             canon, recv, "digitraffic", "digitraffic",
         )
     elif kind == "metadata" and valid_mmsi(mmsi):
-        stat_out.add((mmsi, d.get("name"), d.get("callSign"), int(d.get("type") or d.get("shipType") or 0), int(d.get("draught") or 0), "A", recv))
+        ms = d.get("timestamp")  # metadata carries its own epoch-ms stamp; fall back to time (s), then receipt
+        canon = canonical(int(ms) * 1000 if ms else (d.get("time") or 0) * 1_000_000, recv)
+        stat_out.add((mmsi, d.get("name"), d.get("callSign"), int(d.get("type") or d.get("shipType") or 0), int(d.get("draught") or 0), "A", canon))
 
 
 def barentswatch_record(payload, recv, pos_out, stat_out):
@@ -399,7 +424,7 @@ def aisstream_record(payload, recv, pos_out, stat_out):
             pos_out, body["UserID"], wire_type,
             round(body["Latitude"] * 600000), round(body["Longitude"] * 600000),
             sog_wire(body.get("Sog")), cog_wire(body.get("Cog")),
-            body.get("TrueHeading", NA_HDG), body.get("NavigationalStatus", NA_NAV),
+            na(body.get("TrueHeading"), NA_HDG), na(body.get("NavigationalStatus"), NA_NAV),
             canon, recv, "aisstream", "aisstream",
         )
     elif mtype == "ShipStaticData" and valid_mmsi(body.get("UserID", 0)):
@@ -417,12 +442,14 @@ def aishub_snapshot(payload, recv, pos_out, stat_out):
         t = int(r.get("TIME", 0))
         if recv_epoch - t > AISHUB_FRESH_S or t > recv_epoch + 60:
             continue
+        if r.get("LATITUDE") is None or r.get("LONGITUDE") is None:
+            continue
         canon = datetime.fromtimestamp(t, tz=timezone.utc).replace(tzinfo=None)
         emit_pos(
             pos_out, r["MMSI"], 0,
             r["LATITUDE"], r["LONGITUDE"],  # already 1/600000 units
-            r.get("SOG", NA_SOG), min(r.get("COG", NA_COG), NA_COG),
-            r.get("HEADING", NA_HDG), r.get("NAVSTAT", NA_NAV),
+            na(r.get("SOG"), NA_SOG), min(na(r.get("COG"), NA_COG), NA_COG),
+            na(r.get("HEADING"), NA_HDG), na(r.get("NAVSTAT"), NA_NAV),
             canon, recv, "aishub", "aishub",
         )
         if r.get("NAME") and valid_mmsi(r["MMSI"]):
@@ -440,7 +467,7 @@ WITH keyed AS (
   WHERE canon_ts >= ? AND canon_ts < ?
 ), gapped AS (
   SELECT *, canon_ts - LAG(canon_ts) OVER w AS gap,
-         CASE WHEN canon_ts - LAG(canon_ts) OVER w > INTERVAL 10 SECONDS OR LAG(canon_ts) OVER w IS NULL THEN 1 ELSE 0 END AS new_run
+         CASE WHEN canon_ts - LAG(canon_ts) OVER w >= INTERVAL 10 SECONDS OR LAG(canon_ts) OVER w IS NULL THEN 1 ELSE 0 END AS new_run
   FROM keyed
   WINDOW w AS (PARTITION BY mmsi, ck ORDER BY canon_ts, file_row_number)
 )
@@ -526,7 +553,13 @@ def process_day(day, files, con, catalog, keep_stage, reuse_stage):
         ) TO '{msg_path}' (FORMAT parquet)
         """
     )
-    lic = "CASE " + " ".join(f"WHEN source LIKE '{k}%' THEN '{v}'" for k, v in LICENSES.items()) + " ELSE 'feeder' END"
+    lic = (
+        "CASE "
+        + " ".join(f"WHEN source = '{k}' THEN '{v}'" for k, v in LICENSES.items())
+        + " "
+        + " ".join(f"WHEN split_part(source, ':', 1) = '{k}' THEN '{v}'" for k, v in LICENSES.items())
+        + " ELSE 'unspecified' END"
+    )
     con.execute(
         f"""
         COPY (
@@ -660,18 +693,18 @@ def main():
         if day >= today:
             sys.exit(f"{day} is not over yet")
         raw = None
-        if args.archive:
-            if day not in by_day:
-                sys.exit(f"no archive files for {day}")
-            want = day_key(day)
-            files = sorted(f for f in all_files if want.search(f))
-        else:
-            raw = HERE / "raw" / day
-            files = sync_day(day, raw)
-        n_hours = len(hours_present(day, files))
-        if n_hours < args.min_hours:
-            sys.exit(f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}; pass --min-hours to override")
         try:
+            if args.archive:
+                if day not in by_day:
+                    sys.exit(f"no archive files for {day}")
+                want = day_key(day)
+                files = sorted(f for f in all_files if want.search(f))
+            else:
+                raw = HERE / "raw" / day
+                files = sync_day(day, raw)
+            n_hours = len(hours_present(day, files))
+            if n_hours < args.min_hours:
+                sys.exit(f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}; pass --min-hours to override")
             process_day(day, files, con, catalog, args.keep_stage, args.reuse_stage)
         finally:
             if raw and not args.keep_stage:

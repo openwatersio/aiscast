@@ -29,9 +29,9 @@ Three Parquet table families in R2 Data Catalog (Iceberg), partitioned by day, p
 
 **receptions** is one row per copy heard: message id, source, station, receive time. This table is where the duplication lives on purpose. Coverage reads it, station health reads it, and receive-time deltas between stations for one message are the raw material for multilateration. Source and license tag are columns.
 
-**vessels** is latest-wins static data per MMSI: name, callsign, type, dimensions, draught, with the time of last update.
+**vessels** is latest-wins static data per MMSI: name, callsign, type, draught, with the time of last update.
 
-Known limits, accepted: a stationary vessel can transmit byte-identical positions minutes apart, so time is part of the identity key; aishub snapshots arrive up to a minute late, so its receptions occasionally key to a neighboring message, which coverage tolerates.
+Known limits, accepted: a stationary vessel can transmit byte-identical positions minutes apart, so time is part of the identity key; aishub snapshots arrive up to a minute late, so its receptions occasionally key to a neighboring message, which coverage tolerates; a transmission whose copies straddle UTC midnight surfaces once in each neighboring day, since each day groups only the copies its own window claims.
 
 The derive job also owns data hygiene, so every consumer inherits it instead of rediscovering it: net-buoy fleets in unallocated MID gaps (578-599) are flagged, null-island positions (no GPS lock, jitter around 0,0) are dropped, and out-of-range coordinates are dropped. Filters that are analysis choices rather than data defects (minimum stop duration, track-gap limits) stay in consumers.
 

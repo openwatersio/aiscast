@@ -39,7 +39,7 @@ All coordinates and kinematics are stored at AIS wire precision so the same tran
 | Source | Format | Station | Event time |
 | --- | --- | --- | --- |
 | kystverket | tag-blocked NMEA | `s:NNN` tag | tag `c:` (seconds) |
-| feeders | tag-blocked NMEA | source column (`v1:mmsi:...`, `udp:...`) | tag `c:` (ms when >12 digits) |
+| feeders | tag-blocked NMEA, or AIS-catcher JSON envelopes over HTTP | source column (`v1:mmsi:...`, `udp:...`, `http:...`) | tag `c:` (unit by magnitude), envelope `rxtime` |
 | digitraffic | multi-line JSON per topic | none (source-wide) | `time` field |
 | aisstream | JSON per line | none (source-wide) | MetaData `time_utc` |
 | aishub | whole-network snapshot per line | none (source-wide) | record `TIME` |
@@ -52,7 +52,8 @@ Hygiene applied here so every consumer inherits it: out-of-range and null-island
 
 - Schema changes are additive: a column's meaning and units never change; new columns and tables may appear. A breaking change means a new table family name, with the old one kept until consumers move.
 - A day partition is written once, after the UTC day closes. Its presence in `ais.messages` means the day is done: Iceberg has no cross-table transaction, so receptions and vessels commit first and messages last. Reruns and backfills replace whole days.
-- Hour files are named by receive time, so the job also reads the hours either side of midnight and keeps whatever its own canonical-time window claims. A transmission never falls between two days.
+- Hour files are named by receive time, so the job also reads the hours either side of midnight and keeps whatever its own canonical-time window claims. A transmission never falls between two days, though one whose copies straddle midnight surfaces once in each.
+- `license` mirrors the server's mapping: exact source name first, then the prefix before `:`, else `unspecified`. Volunteer feeder receptions are CC0-1.0 per the contributor agreement.
 - A damaged hour file fails the day rather than shortening it, and a day is refused unless it has closed and arrived with a plausible number of hours.
 - Consumers publishing derived work must credit kystverket (NLOD-2.0) and digitraffic (CC-BY-4.0); those licenses require attribution. All sources are cleared for use and redistribution.
 - The tables contain per-MMSI data because AIS is per-MMSI. Publish aggregates (grids, counts, flows), not tracks of identifiable pleasure craft.

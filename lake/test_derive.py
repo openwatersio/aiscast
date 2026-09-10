@@ -27,15 +27,16 @@ def ts(offset):
     return datetime.fromtimestamp(T0 + offset, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
 
 
-def nmea_line(source, offset, payload_dict):
+def vdm(s):
     # pyais encodes own-ship VDO; archives carry VDM, so rewrite and re-checksum
-    def vdm(s):
-        body = s.replace("VDO", "VDM").split("*")[0][1:]
-        cs = 0
-        for ch in body.encode():
-            cs ^= ch
-        return f"!{body}*{cs:02X}"
+    body = s.replace("VDO", "VDM").split("*")[0][1:]
+    cs = 0
+    for ch in body.encode():
+        cs ^= ch
+    return f"!{body}*{cs:02X}"
 
+
+def nmea_line(source, offset, payload_dict):
     sentences = [vdm(s) for s in encode_dict(payload_dict, talker_id="AI")]
     tag = f"\\c:{T0 + offset}*00\\"
     return "".join(f"{ts(offset)}\t{source}\t{tag}{s}\n" for s in sentences)
@@ -96,6 +97,12 @@ def fixture_archive(tmp_path):
         f"{ts(25)}\taisstream\t{json.dumps(aisstream)}\n{ts(55)}\taisstream\t{json.dumps(cerulean_static)}\n",
     )
 
+    # http feeder: AIS-catcher JSON envelope wrapping the same B sentence, fourth copy
+    b_sentence = vdm(encode_dict(dict(type=18, mmsi=B_MMSI, **B_POS), talker_id="AI")[0])
+    rxtime = datetime.fromtimestamp(T0 + 27, tz=timezone.utc).strftime("%Y%m%d%H%M%S")
+    envelope = json.dumps({"protocol": "jsonaiscatcher", "msgs": [{"class": "AIS", "channel": "A", "rxtime": rxtime, "nmea": [b_sentence]}]})
+    write_gz(archive, f"CC0-1.0/http/test/{hour}", f"{ts(27)}\thttp:test\t{envelope}\n")
+
     # barentswatch: line-delimited JSON, same Class A transmission the two above carry
     bw = json.dumps({
         "type": "Position", "messageType": 1, "mmsi": A_MMSI, "msgtime": ts(31), "stream": "terra",
@@ -116,6 +123,8 @@ def fixture_archive(tmp_path):
             {"MMSI": B_MMSI, "TIME": str(T0 + 28), "LATITUDE": round(B_POS["lat"] * 600000), "LONGITUDE": round(B_POS["lon"] * 600000), "SOG": 65, "COG": 1234, "HEADING": 87, "NAVSTAT": 15, "NAME": "TEST B"},
             # stale state (an hour old): not a fresh reception, dropped
             {"MMSI": 219000111, "TIME": str(T0 - 3600), "LATITUDE": 30000000, "LONGITUDE": 6000000, "SOG": 0, "COG": 0, "HEADING": 0, "NAVSTAT": 1},
+            # explicit JSON nulls: sentinels fill in, the identity hash must never be NULL
+            {"MMSI": 219000333, "TIME": str(T0 + 40), "LATITUDE": 30600000, "LONGITUDE": 6100000, "SOG": None, "COG": None, "HEADING": None, "NAVSTAT": None},
             # null island (no GPS lock): dropped
             {"MMSI": 219000222, "TIME": str(T0 + 55), "LATITUDE": 0, "LONGITUDE": 0, "SOG": 0, "COG": 0, "HEADING": 511, "NAVSTAT": 15},
         ],
@@ -140,10 +149,15 @@ def test_derive_day(tmp_path, fixture_archive):
     for name in ("ais.messages", "ais.receptions"):
         assert [f.name for f in catalog.load_table(name).spec().fields] == ["day"]
 
-    # three position messages: the B trio, the A pair, CERULEAN
-    assert len(messages) == 3
+    # four position messages: the B quartet, the A trio, CERULEAN, the null-field aishub vessel
+    assert len(messages) == 4
     by_mmsi = {m["mmsi"]: m for m in messages}
-    assert set(by_mmsi) == {B_MMSI, A_MMSI, CERULEAN}
+    assert set(by_mmsi) == {B_MMSI, A_MMSI, CERULEAN, 219000333}
+
+    # explicit nulls became wire sentinels, not a NULL identity
+    nul = by_mmsi[219000333]
+    assert nul["id"] is not None
+    assert (nul["sog10"], nul["cog10"], nul["heading"], nul["navstat"]) == (1023, 3600, 511, -1)
 
     # hygiene: net buoy, stale aishub state, and null island never surface
     assert 586123456 not in by_mmsi
@@ -157,16 +171,17 @@ def test_derive_day(tmp_path, fixture_archive):
     rx_by_msg = {}
     for r in receptions:
         rx_by_msg.setdefault(r["msg_id"], set()).add(r["source"])
-    assert rx_by_msg[by_mmsi[B_MMSI]["id"]] == {"kystverket", "aisstream", "aishub"}
+    assert rx_by_msg[by_mmsi[B_MMSI]["id"]] == {"kystverket", "aisstream", "aishub", "http:test"}
     assert rx_by_msg[by_mmsi[A_MMSI]["id"]] == {"kystverket", "digitraffic", "barentswatch"}
     # same-source duplicate lines collapse to one reception per station
-    assert len(receptions) == 7
+    assert len(receptions) == 9
 
     # licenses ride along
     licenses = {r["source"]: r["license"] for r in receptions}
     assert licenses["kystverket"] == "NLOD-2.0"
     assert licenses["barentswatch"] == "NLOD-2.0"  # not the 'feeder' fallback
-    assert licenses[f"v1:mmsi:{CERULEAN}"] == "feeder"
+    assert licenses[f"v1:mmsi:{CERULEAN}"] == "CC0-1.0"  # volunteer receptions, per the contributor agreement
+    assert licenses["http:test"] == "CC0-1.0"
 
     # vessels: names from statics, class from position-message evidence (not JSON defaults)
     assert vessels[A_MMSI]["name"] == "FIXTURE A"
@@ -186,7 +201,7 @@ def test_rerun_replaces_day(tmp_path, fixture_archive):
     first = {m["id"] for m in catalog.load_table("ais.messages").scan().to_arrow().to_pylist()}
     derive.process_day(DAY, files, con, catalog, keep_stage=False, reuse_stage=False)
     again = {m["id"] for m in catalog.load_table("ais.messages").scan().to_arrow().to_pylist()}
-    assert len(again) == 3
+    assert len(again) == 4
     assert again == first  # ids are a pure function of the input, so a rerun reproduces them
 
 
@@ -243,6 +258,8 @@ def chained_archive(tmp_path):
     archive = tmp_path / "chained"
     y, m, d = DAY.split("-")
     text = "".join(nmea_line("kystverket", off, dict(type=1, mmsi=A_MMSI, status=0, **A_POS)) for off in (0, 9, 18))
+    # a second vessel at exactly the window width apart: two transmissions, not one
+    text += "".join(nmea_line("kystverket", off, dict(type=18, mmsi=B_MMSI, **B_POS)) for off in (0, 10))
     write_gz(archive, f"NLOD-2.0/kystverket/{y}/{m}/{d}/12.gz", text)
     return archive
 
@@ -258,5 +275,7 @@ def test_ten_second_window_anchors_rather_than_chains(tmp_path, chained_archive)
     derive.process_day(DAY, files, con, catalog, keep_stage=False, reuse_stage=False)
 
     messages = catalog.load_table("ais.messages").scan().to_arrow().to_pylist()
-    assert len(messages) == 2
-    assert {m["ts"].second for m in messages} == {0, 18}
+    a = [m for m in messages if m["mmsi"] == A_MMSI]
+    b = [m for m in messages if m["mmsi"] == B_MMSI]
+    assert {m["ts"].second for m in a} == {0, 18}
+    assert {m["ts"].second for m in b} == {0, 10}  # a copy at exactly 10 s is a new transmission
