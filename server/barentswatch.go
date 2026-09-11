@@ -55,6 +55,7 @@ type bwMessage struct {
 	FixType     uint8     `json:"positionFixingDeviceType"`
 	AtonType    uint8     `json:"typeOfAidsToNavigation"`
 	AtonFix     uint8     `json:"typeOfElectronicFixingDevice"`
+	Altitude    *float64  `json:"altitude"` // SAR aircraft, metres; null for everything else
 }
 
 func newBwMessage() bwMessage {
@@ -68,9 +69,13 @@ func (m bwMessage) position() ais.Packet {
 		if m.Sog != 102.3 && m.Sog < 1023 {
 			sog = uint16(math.Round(m.Sog))
 		}
+		alt := uint16(4095) // n/a; 4094 is the wire's "4094 or higher"
+		if m.Altitude != nil && *m.Altitude >= 0 {
+			alt = uint16(math.Round(min(*m.Altitude, 4094)))
+		}
 		return ais.StandardSearchAndRescueAircraftReport{
 			Header: ais.Header{MessageID: 9, UserID: m.MMSI}, Valid: true,
-			Altitude: 4095, Sog: sog, Longitude: lon, Latitude: lat, Cog: ais.Field10(m.Cog),
+			Altitude: alt, Sog: sog, Longitude: lon, Latitude: lat, Cog: ais.Field10(m.Cog),
 			Timestamp: uint8(m.Msgtime.Second()),
 		}
 	}
@@ -148,6 +153,13 @@ func (p *Pipeline) barentswatchLine(line []byte, now time.Time) {
 		p.stats.parseErr.Add(1)
 		return
 	}
+	if m.Type == "BinaryBroadcastMessageMetHyd" {
+		p.writeMetHyd(line, now) // decoded weather: no AIS packet to map onto, archived verbatim
+		return
+	}
+	if shadowSample("barentswatch") {
+		shadowCheck("barentswatch", line, bwKnown)
+	}
 	if m.MMSI == 0 {
 		p.stats.parseErr.Add(1)
 		return
@@ -163,7 +175,8 @@ func (p *Pipeline) barentswatchLine(line []byte, now time.Time) {
 		pkt = m.static()
 	case "Aton":
 		pkt = m.aton()
-	default: // MetHyd weather broadcasts and the like
+	default:
+		countUnmappedType("barentswatch", m.Type)
 		return
 	}
 	station := "barentswatch"
@@ -171,7 +184,7 @@ func (p *Pipeline) barentswatchLine(line []byte, now time.Time) {
 		station += "/" + m.Stream
 	}
 	// msgtime goes through as-is: ingestPacket caps zero or future stamps at receive time
-	p.ingestPacketAt("barentswatch", station, m.Msgtime, pkt)
+	p.ingestPacketAt("barentswatch", station, m.Msgtime, now, pkt)
 }
 
 func barentswatchToken(clientID, clientSecret string) (string, time.Duration, error) {
