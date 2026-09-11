@@ -50,8 +50,20 @@ func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
 	}
 	rt, ok := v0Types[env.MessageType]
 	raw, ok2 := env.Message[env.MessageType]
-	if !ok || !ok2 {
-		return // UnknownMessage or a type we don't carry
+	if !ok {
+		countUnmappedType("aisstream", env.MessageType)
+		return
+	}
+	if !ok2 {
+		return
+	}
+	if shadowSample("aisstream") {
+		shadowCheck("aisstream", body, v0EnvKnown)
+		var md struct{ MetaData json.RawMessage }
+		if json.Unmarshal(body, &md) == nil && len(md.MetaData) > 0 {
+			shadowCheck("aisstream/meta", md.MetaData, v0MetaKnown)
+		}
+		shadowCheck("aisstream/"+env.MessageType, raw, aisstreamKnown(env.MessageType))
 	}
 	pv := reflect.New(rt)
 	if json.Unmarshal(raw, pv.Interface()) != nil {
@@ -62,7 +74,7 @@ func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
 	if st, err := time.Parse(goTimeLayout, env.MetaData.TimeUTC); err == nil && absDur(st.Sub(now)) <= maxSkew {
 		t = st
 	}
-	p.ingestPacket("aisstream", "aisstream", t, pv.Elem().Interface().(ais.Packet))
+	p.ingestPacket("aisstream", "aisstream", t, now, pv.Elem().Interface().(ais.Packet))
 }
 
 func runAisstream(p *Pipeline, url, apiKey, bboxJSON string) {

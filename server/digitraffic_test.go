@@ -11,8 +11,8 @@ import (
 func TestDigitrafficMapping(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	p.digitrafficMessage("vessels-v2/230985000/location", []byte(`{"time":1668075025,"sog":10.7,"cog":326.6,"navStat":0,"rot":0,"posAcc":true,"raim":false,"heading":325,"lon":20.345818,"lat":60.03802}`))
-	p.digitrafficMessage("vessels-v2/230985000/metadata", []byte(`{"timestamp":1668075026035,"destination":"UST LUGA","name":"ARUNA CIHAN","draught":68,"eta":733376,"posType":15,"refA":160,"refB":33,"refC":20,"refD":12,"callSign":"V7WW7","imo":9543756,"type":70}`))
+	p.digitrafficMessage("vessels-v2/230985000/location", []byte(`{"time":1668075025,"sog":10.7,"cog":326.6,"navStat":0,"rot":0,"posAcc":true,"raim":false,"heading":325,"lon":20.345818,"lat":60.03802}`), time.Now())
+	p.digitrafficMessage("vessels-v2/230985000/metadata", []byte(`{"timestamp":1668075026035,"destination":"UST LUGA","name":"ARUNA CIHAN","draught":68,"eta":733376,"posType":15,"refA":160,"refB":33,"refC":20,"refD":12,"callSign":"V7WW7","imo":9543756,"type":70}`), time.Now())
 	if len(sub.ch) != 2 {
 		t.Fatalf("events=%d want 2 (parse_err=%d decode_fail=%d)", len(sub.ch), p.stats.parseErr.Load(), p.stats.decodeFail.Load())
 	}

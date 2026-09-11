@@ -65,17 +65,9 @@ func (p *Pipeline) serveReceive(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	src := "http:" + id
 	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) {
-		var env jsonaiscatcher
-		if err := json.Unmarshal(body, &env); err != nil {
+		if !p.ingestCatcher(src, body, now) {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
-		}
-		p.arch.write(Reception{Source: src, Station: src, RecvTime: now, Body: string(body)}) // whole envelope, source-native
-		for _, m := range env.Msgs {
-			st, _ := time.Parse("20060102150405", m.RxTime)
-			for _, line := range m.NMEA {
-				p.ingestLine(Reception{Source: src, Station: src, RecvTime: now, SourceTime: st, Body: line})
-			}
 		}
 	} else {
 		sc := bufio.NewScanner(bytes.NewReader(body))
@@ -84,6 +76,31 @@ func (p *Pipeline) serveReceive(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// ingestCatcher archives and ingests one jsonaiscatcher envelope; replay feeds archived envelopes back here.
+func (p *Pipeline) ingestCatcher(src string, body []byte, now time.Time) bool {
+	var env jsonaiscatcher
+	if err := json.Unmarshal(body, &env); err != nil {
+		return false
+	}
+	if shadowSample("catcher") {
+		shadowCheck("catcher", body, catcherKnown)
+		var raw struct {
+			Msgs []json.RawMessage `json:"msgs"`
+		}
+		if json.Unmarshal(body, &raw) == nil && len(raw.Msgs) > 0 {
+			shadowCheck("catcher/msg", raw.Msgs[0], catcherMsg)
+		}
+	}
+	p.arch.write(Reception{Source: src, Station: src, RecvTime: now, Body: string(body)}) // whole envelope, source-native
+	for _, m := range env.Msgs {
+		st, _ := time.Parse("20060102150405", m.RxTime)
+		for _, line := range m.NMEA {
+			p.ingestLine(Reception{Source: src, Station: src, RecvTime: now, SourceTime: st, Body: line})
+		}
+	}
+	return true
 }
 
 // stationSalt keys the UDP station ids. STATION_SALT keeps them stable across restarts; unset = per-boot random.
