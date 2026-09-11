@@ -18,13 +18,24 @@ func env(k, def string) string {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "replay" {
+		runReplay(os.Args[2:])
+		return
+	}
 	arch := newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv())
 	go arch.sweepLoop() // reclaim what the bucket already has; slow, so it must not hold up ingest
+	norm := newNormArchive(env("NORMALIZED_DIR", "normalized"), s3NormFromEnv())
+	go norm.sweepLoop()
 	p := newPipeline(arch)
+	p.norm = norm
 
 	snapshot := env("SNAPSHOT", "vessels.json")
 	if n, err := p.loadSnapshot(snapshot); err == nil {
 		log.Printf("restored %d vessels from %s", n, snapshot)
+	}
+	dedupe := env("DEDUPE", "dedupe.json")
+	if n, err := p.loadDedupe(dedupe); err == nil {
+		log.Printf("restored %d dedupe entries from %s", n, dedupe)
 	}
 	usage := usagePath(snapshot)
 	if err := p.loadUsage(usage); err == nil {
@@ -81,7 +92,9 @@ func main() {
 		log.Printf("shutting down")
 		p.saveSnapshot(snapshot)
 		p.saveUsage(usage)
+		p.saveDedupe(dedupe)
 		arch.shutdown()
+		norm.shutdown()
 		os.Exit(0)
 	}()
 

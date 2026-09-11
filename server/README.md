@@ -19,6 +19,8 @@ Environment:
 - `AISHUB_FEED` (`data.aishub.net:<port>`): forward volunteer-station events to AISHub as plain `!AIVDM`. The server never forwards public feeds or synthesized events, per their terms.
 - `AISHUB_USERNAME` (set = poll AISHub's aggregate snapshot), `AISHUB_INTERVAL` (`20s`, the limit AISHub set for our account).
 - `ARCHIVE_DIR` (`archive`).
+- `NORMALIZED_DIR` (`normalized`) + `NORMALIZED_BUCKET` (unset = local only): the normalized archive, written at emit as one merged hourly gzip of versioned JSON envelopes: an `event` record per accepted message (the `/v1` event, persisted), a `copy` record per delivery heard with its license (the first copy included), and BarentsWatch `methyd` weather broadcasts verbatim. Uploads to its own private bucket with the same R2 credentials. `aiscast replay -archive <raw> -out <dir> -from YYYY-MM-DD -to YYYY-MM-DD` regenerates it from archived raw days through the same adapters, deterministically; `-warmup` (30m) replays a lead-in for dedupe and per-source state without writing it.
+- `DEDUPE` (`dedupe.json`): the dedupe window, saved on shutdown and restored on boot so a restart cannot re-accept a copy inside the 10 s window.
 - `R2_BUCKET` + `R2_ACCOUNT_ID` + `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY`: unset = archive stays local. Otherwise the server PUTs each hour to R2 over the S3 API on rotation and on shutdown. Use `S3_ENDPOINT`/`S3_REGION` for non-R2 targets.
 - `ISSUER_PUBKEYS` (`kid:base64url-pubkey,...`): the issuers whose tokens aiscast accepts.
 - `PERSONAL_ISSUER_KEY` (`kid:base64url-seed`): lets `POST /v1/keys` mint personal-tier tokens.

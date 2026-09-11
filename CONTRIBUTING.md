@@ -2,7 +2,7 @@
 
 ## Layout
 
-- [server/](server/): the server, one Go binary: ingest → reassemble → dedupe → decode → bbox fan-out, hourly archive to R2. [server/README.md](server/README.md) documents endpoints, environment, access tokens, and sources; [server/deploy/](server/deploy/) the production box.
+- [server/](server/): the server, one Go binary: ingest → reassemble → dedupe → decode → bbox fan-out, hourly raw and normalized archives to R2. [server/README.md](server/README.md) documents endpoints, environment, access tokens, and sources; [server/deploy/](server/deploy/) the production box.
 - [viewer/](viewer/): static MapLibre page, deployed to GitHub Pages from `main`.
 - [signalk-plugin/](signalk-plugin/): `signalk-aiscast`, the Signal K plugin (TypeScript, vitest). `npm install && npm test` runs it against a fake aiscast; `npm run build` emits `dist/`. Published to npm by `release.yml` on a `signalk-plugin-v*` release tag.
 - [docs/](docs/): [architecture.md](docs/architecture.md) is how data flows and why; read it before proposing a change to that. [policy.md](docs/policy.md) covers per-source licensing, privacy, and funding; [limits.md](docs/limits.md) the access tiers.

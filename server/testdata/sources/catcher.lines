@@ -1,0 +1,1 @@
+2026-09-01T12:00:40.000000000Z	http:test-station	{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260901120039","nmea":["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"]}]}

@@ -40,13 +40,17 @@ type hourFile struct {
 }
 
 // archive writes every reception source-native to hourly gzip files per source, then uploads to R2 when rotated.
+// The normalized stream reuses it with keyFn and bare set: one merged file per hour, envelope-only lines.
 type archive struct {
-	dir     string
-	s3      *s3Client // nil = keep files local only
-	ch      chan Reception
-	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
-	drops   atomic.Int64
-	uploads sync.WaitGroup
+	dir      string
+	s3       *s3Client                                  // nil = keep files local only
+	keyFn    func(source string, hour time.Time) string // nil = per-source license-prefixed layout
+	bare     bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
+	blocking bool                                       // replay: block on a full queue instead of dropping, so output is complete
+	ch       chan Reception
+	done     chan chan struct{} // shutdown request; replied to when files are closed and uploaded
+	drops    atomic.Int64
+	uploads  sync.WaitGroup
 
 	// held is every path run() still owns, including one being uploaded. The sweep skips these: a
 	// quiet source keeps its hour open indefinitely, and deleting it out from under the writer would
@@ -67,6 +71,10 @@ func (a *archive) write(rx Reception) {
 	if a.dir == "" {
 		return
 	}
+	if a.blocking {
+		a.ch <- rx
+		return
+	}
 	select {
 	case a.ch <- rx:
 	default: // drop rather than stall ingest
@@ -80,26 +88,21 @@ func (a *archive) run() {
 	for {
 		select {
 		case rx := <-a.ch:
-			hour := rx.RecvTime.UTC().Truncate(time.Hour)
-			hf := files[rx.Source]
-			if hf != nil && !hf.hour.Equal(hour) {
-				a.close(hf)
-				hf = nil
-			}
-			if hf == nil {
-				hf = a.open(rx.Source, hour)
-				if hf == nil {
-					continue
-				}
-				files[rx.Source] = hf
-			}
-			// one record per line: recv time, station, body as received (JSON envelopes are single-line)
-			hf.gz.Write([]byte(rx.RecvTime.UTC().Format(time.RFC3339Nano) + "\t" + rx.Station + "\t" + strings.TrimRight(rx.Body, "\r\n") + "\n"))
+			a.handle(rx, files)
 		case <-flush.C:
 			for _, hf := range files {
 				hf.gz.Flush()
 			}
 		case reply := <-a.done:
+			for { // drain: the select races queued records against shutdown, and the tail must not lose
+				select {
+				case rx := <-a.ch:
+					a.handle(rx, files)
+					continue
+				default:
+				}
+				break
+			}
 			for _, hf := range files {
 				a.close(hf)
 			}
@@ -107,6 +110,28 @@ func (a *archive) run() {
 			reply <- struct{}{}
 			return
 		}
+	}
+}
+
+func (a *archive) handle(rx Reception, files map[string]*hourFile) {
+	hour := rx.RecvTime.UTC().Truncate(time.Hour)
+	hf := files[rx.Source]
+	if hf != nil && !hf.hour.Equal(hour) {
+		a.close(hf)
+		hf = nil
+	}
+	if hf == nil {
+		hf = a.open(rx.Source, hour)
+		if hf == nil {
+			return
+		}
+		files[rx.Source] = hf
+	}
+	// one record per line: recv time, station, body as received (JSON envelopes are single-line)
+	if a.bare {
+		hf.gz.Write([]byte(strings.TrimRight(rx.Body, "\r\n") + "\n"))
+	} else {
+		hf.gz.Write([]byte(rx.RecvTime.UTC().Format(time.RFC3339Nano) + "\t" + rx.Station + "\t" + strings.TrimRight(rx.Body, "\r\n") + "\n"))
 	}
 }
 
@@ -128,6 +153,9 @@ func (a *archive) shutdown() {
 }
 
 func (a *archive) key(source string, hour time.Time) string {
+	if a.keyFn != nil {
+		return a.keyFn(source, hour)
+	}
 	return filepath.Join(licenseOf(source), strings.ReplaceAll(source, ":", "/"), hour.Format("2006/01/02/15")+".gz")
 }
 
