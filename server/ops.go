@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -58,6 +59,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("aiscast_client_drops_total", "events dropped because a client queue was full", p.stats.clientDrops.Load())
 	counter("aiscast_ping_timeouts_total", "stream connections closed because the client stopped answering pings", p.stats.pingTimeouts.Load())
 	counter("aiscast_archive_drops_total", "receptions dropped because the archive queue was full", p.arch.drops.Load())
+	counter("aiscast_normalized_drops_total", "normalized records dropped because the writer queue was full", p.norm.drops.Load())
 	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
 	counter("aiscast_thinned_total", "events withheld from connections over their per-second rate", p.stats.thinned.Load())
 	counter("aiscast_implausible_total", "positions dropped for implying an impossible speed", p.stats.implausible.Load())
@@ -82,6 +84,18 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP aiscast_source_events_total events per source\n# TYPE aiscast_source_events_total counter\n")
 	p.stats.bySource.Range(func(k, v any) bool {
 		fmt.Fprintf(w, "aiscast_source_events_total{source=%q} %d\n", k.(string), v.(*counterT).Load())
+		return true
+	})
+	fmt.Fprintf(w, "# HELP aiscast_unmapped_fields_total source fields outside the capture set and the waiver ledger\n# TYPE aiscast_unmapped_fields_total counter\n")
+	unmappedFld.Range(func(k, v any) bool {
+		site, field, _ := strings.Cut(k.(string), "\t")
+		fmt.Fprintf(w, "aiscast_unmapped_fields_total{site=%q,field=%q} %d\n", site, field, v.(*atomic.Int64).Load())
+		return true
+	})
+	fmt.Fprintf(w, "# HELP aiscast_unmapped_types_total source record types no adapter handles\n# TYPE aiscast_unmapped_types_total counter\n")
+	unmappedType.Range(func(k, v any) bool {
+		site, typ, _ := strings.Cut(k.(string), "\t")
+		fmt.Fprintf(w, "aiscast_unmapped_types_total{site=%q,type=%q} %d\n", site, typ, v.(*atomic.Int64).Load())
 		return true
 	})
 }

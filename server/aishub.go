@@ -147,6 +147,12 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 			if err := json.Unmarshal(part, &rows); err != nil {
 				return 0, err
 			}
+			if shadowSample("aishub") {
+				var rr []json.RawMessage
+				if json.Unmarshal(part, &rr) == nil && len(rr) > 0 {
+					shadowCheck("aishub", rr[0], aishubKnown)
+				}
+			}
 		} else if len(part) > 0 && part[0] == '{' {
 			var meta struct {
 				Error   bool
@@ -175,12 +181,12 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 		}
 		if st.lastTime[r.MMSI] != r.Time && r.Latitude != 0 && r.Longitude != 0 {
 			st.lastTime[r.MMSI] = r.Time
-			p.ingestPacketAt("aishub", "aishub", t, r.position(t))
+			p.ingestPacketAt("aishub", "aishub", t, now, r.position(t))
 			n++
 		}
 		if k := r.staticKey(); (r.Name != "" || r.IMO != 0) && st.lastStatic[r.MMSI] != k {
 			st.lastStatic[r.MMSI] = k
-			p.ingestPacketAt("aishub", "aishub", t, r.static())
+			p.ingestPacketAt("aishub", "aishub", t, now, r.static())
 			n++
 		}
 	}
@@ -189,8 +195,8 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 
 // ingestPacketAt is ingestPacket for sources whose timestamps are trusted minutes back (AISHub rows carry the
 // station's receive time, downsampled): the canonical time is the row's time even when it is older than the skew.
-func (p *Pipeline) ingestPacketAt(source, station string, t time.Time, pkt ais.Packet) {
-	p.ingestPacket(source, station, t, pkt)
+func (p *Pipeline) ingestPacketAt(source, station string, t, recv time.Time, pkt ais.Packet) {
+	p.ingestPacket(source, station, t, recv, pkt)
 }
 
 func runAishub(p *Pipeline, username string, interval time.Duration) {

@@ -130,7 +130,7 @@ func TestBarentswatchCopiesWithheld(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
 	tx := time.Now().Add(-10 * time.Second) // the vessel transmitted, kystverket delivered it first
-	p.ingestPacket("kystverket", "kystverket", tx, ais.PositionReport{
+	p.ingestPacket("kystverket", "kystverket", tx, tx, ais.PositionReport{
 		Header: ais.Header{MessageID: 1, UserID: 257152520}, Valid: true,
 		Latitude: 69.9, Longitude: 20.1, Cog: 340, Sog: 6, TrueHeading: 245, NavigationalStatus: 7, RateOfTurn: -128,
 	})
