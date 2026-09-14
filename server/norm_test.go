@@ -105,6 +105,10 @@ func TestNormalizedStream(t *testing.T) {
 		if c.ID != ev.ID {
 			t.Fatalf("copy id %s != event id %s", c.ID, ev.ID)
 		}
+		// each copy carries its own canonical time; the join contract is window proximity, not equality
+		if ct, err := time.Parse(time.RFC3339Nano, c.Time); err != nil || absDur(ct.Sub(ev.Time)) >= dedupeWindow {
+			t.Fatalf("copy canonical time %q outside the window of the event's %s", c.Time, ev.Time)
+		}
 	}
 	if copies[0].License != "NLOD-2.0" || copies[1].License != "CC0-1.0" {
 		t.Fatalf("licenses = %s, %s", copies[0].License, copies[1].License)
