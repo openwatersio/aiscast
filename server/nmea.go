@@ -13,7 +13,8 @@ import (
 
 // /v1/nmea: the deduplicated stream as NMEA text, for feeders who want raw sentences back (AIS-catcher,
 // OpenCPN, a Signal K input). One WebSocket text frame per message, sentences joined by "\r\n", each prefixed
-// with a TAG block carrying the source (`s:`), the canonical time (`c:`), and the license tag (`t:`).
+// with a TAG block carrying the source (`s:`), the canonical time (`c:`), and the license tag (`t:`). Own-ship
+// sentences go out as VDM, since the vessel is someone else's own ship, not the consumer's (see ownShipToVDM).
 // Token required (feeder, peer, partner, admin); bbox via ?bbox=minLat,minLon,maxLat,maxLon (repeatable).
 
 // nmeaRoles: reciprocity. Feeders get the raw feed back; personal and anonymous do not (see PLAN, Stage 1).
@@ -111,6 +112,32 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ownShipToVDM rewrites an own-ship VDO sentence to VDM. The payload bits are identical between the two, but
+// VDO means "this is the receiver's own vessel", so a consumer that honours the convention binds a re-broadcast
+// contributor's VDO to itself: OpenCPN assigns it to the global own-ship position and drops the vessel from the
+// target list and from CPA. Only the talker's last letter and the checksum change ('O'^'M' is 0x02).
+//
+// This is the raw feed's own rendering, not a change to the event: /v1/stream carries the sentence as it
+// arrived, beside the `synthesized` flag and the station. That pairing is what a peer republishing those
+// sentences needs, since ingest reconstructs `synthesized` from VDO plus the `s:self` tag (see Pipeline.ingest).
+func ownShipToVDM(s string) string {
+	i := strings.LastIndexAny(s, "!$")
+	if i < 0 || len(s) < i+7 || s[i+3:i+6] != "VDO" || s[i+6] != ',' {
+		return s
+	}
+	b := []byte(s)
+	b[i+5] = 'M'
+	if j := strings.LastIndexByte(s, '*'); j > i && len(s) >= j+3 {
+		var cs byte
+		for k := i + 1; k < j; k++ {
+			cs ^= b[k]
+		}
+		const hexDigits = "0123456789ABCDEF"
+		b[j+1], b[j+2] = hexDigits[cs>>4], hexDigits[cs&0xf]
+	}
+	return string(b)
+}
+
 // nmeaText renders the event's sentences with our TAG block; an incoming TAG block is replaced, the sentence kept.
 func (ev *Event) nmeaText() string {
 	lic := licenseOf(ev.Source)
@@ -119,6 +146,7 @@ func (ev *Event) nmeaText() string {
 		if i := strings.LastIndexAny(s, "!$"); i > 0 {
 			s = s[i:]
 		}
+		s = ownShipToVDM(s)
 		sb.WriteString(tagBlock(map[byte]string{'s': tagSafe(ev.Station), 'c': fmt.Sprint(ev.Time.Unix()), 't': lic}))
 		sb.WriteString(s)
 		sb.WriteString("\r\n")
