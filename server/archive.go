@@ -12,24 +12,48 @@ import (
 	"time"
 )
 
-// license tag per source; goes in the object path so consumers can filter by terms.
-// All volunteer receptions are CC0 per the contributor agreement and docs/policy.md.
+// license tag per source; goes in the object path so consumers can filter by terms, and on every /v1
+// event. All volunteer receptions are CC0 per the contributor agreement and docs/policy.md.
 var licenses = map[string]string{
 	"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
 	"v1": "CC0-1.0", "http": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
 }
 
+// ownCredit opens every event's attribution: the only credit for volunteer stations, and the prefix to
+// the credit an upstream source's terms require.
+const ownCredit = "Open Waters AIS (https://openwaters.io/ais/)"
+
+// attributions: the further credit a source's terms require, appended to ownCredit on every /v1 event.
+// The strings are the ones the README's licensing table requires; the two tables must not drift.
+var attributions = map[string]string{
+	"kystverket":   "Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration.",
+	"barentswatch": "Data delivered by BarentsWatch. Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration.",
+	"digitraffic":  "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY",
+	"aishub":       "AISHub (https://www.aishub.net)",
+	"aisstream":    "aisstream.io",
+}
+
 // licenseOf resolves a source's license tag: the full source name first, then its prefix (`v1:ed25519:...` → `v1`).
-func licenseOf(source string) string {
-	if lic := licenses[source]; lic != "" {
-		return lic
+func licenseOf(source string) string { return bySource(licenses, source, "unspecified") }
+
+// attributionOf builds a source's credit line: ownCredit, plus the source's own required credit.
+func attributionOf(source string) string {
+	if extra := bySource(attributions, source, ""); extra != "" {
+		return ownCredit + ". " + extra
+	}
+	return ownCredit
+}
+
+func bySource(m map[string]string, source, def string) string {
+	if v := m[source]; v != "" {
+		return v
 	}
 	if i := strings.IndexByte(source, ':'); i > 0 {
-		if lic := licenses[source[:i]]; lic != "" {
-			return lic
+		if v := m[source[:i]]; v != "" {
+			return v
 		}
 	}
-	return "unspecified"
+	return def
 }
 
 type hourFile struct {

@@ -223,14 +223,16 @@ func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		features := []map[string]any{}
+		attribution := map[string]string{}
 		p.vmu.RLock()
 		for mmsi, v := range p.vessels {
 			if v.HasPos && v.Station == id {
 				features = append(features, v.feature(mmsi))
+				noteAttribution(attribution, v.Source)
 			}
 		}
 		p.vmu.RUnlock()
-		json.NewEncoder(w).Encode(map[string]any{"station": row, "vessels": map[string]any{"type": "FeatureCollection", "features": features}})
+		json.NewEncoder(w).Encode(map[string]any{"station": row, "vessels": featureCollection(features, attribution)})
 		return
 	}
 	w.WriteHeader(http.StatusNotFound) // not http.Error: that would override the JSON Content-Type set above

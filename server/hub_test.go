@@ -224,6 +224,15 @@ func TestVesselsSnapshot(t *testing.T) {
 	if res, _ := http.Get(srv.URL + "/v1/vessels?bbox=junk"); res.StatusCode != 400 {
 		t.Errorf("bad bbox: %d", res.StatusCode)
 	}
+	res, err := http.Get(srv.URL + "/v1/vessels?bbox=49,0,50,1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fc struct{ Attribution map[string]string }
+	json.NewDecoder(res.Body).Decode(&fc)
+	if len(fc.Attribution) != 1 || fc.Attribution["t"] != ownCredit {
+		t.Errorf("attribution = %v", fc.Attribution)
+	}
 	if n := p.sweepVessels(time.Now().Add(time.Minute)); n != 0 {
 		t.Errorf("sweep left %d", n)
 	}

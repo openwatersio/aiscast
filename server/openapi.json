@@ -61,7 +61,8 @@
                         "msg_type": "StaticDataReport"
                       }
                     }
-                  ]
+                  ],
+                  "attribution": { "udp": "Open Waters AIS (https://openwaters.io/ais/)" }
                 }
               }
             }
@@ -402,10 +403,15 @@
       "FeatureCollection": {
         "type": "object",
         "description": "GeoJSON FeatureCollection of vessels.",
-        "required": ["type", "features"],
+        "required": ["type", "features", "attribution"],
         "properties": {
           "type": { "type": "string", "const": "FeatureCollection" },
-          "features": { "type": "array", "items": { "$ref": "#/components/schemas/VesselFeature" } }
+          "features": { "type": "array", "items": { "$ref": "#/components/schemas/VesselFeature" } },
+          "attribution": {
+            "type": "object",
+            "description": "Credit lines to display, one per source kind present in the features. The key is a feature's `source` value up to the first `:`. Every credit opens with \"Open Waters AIS (https://openwaters.io/ais/)\"; sources with their own terms add their credit after it.",
+            "additionalProperties": { "type": "string" }
+          }
         }
       },
       "VesselFeature": {

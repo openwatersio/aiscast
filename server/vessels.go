@@ -237,15 +237,30 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	features := []map[string]any{}
+	attribution := map[string]string{}
 	p.vmu.RLock()
 	for mmsi, v := range p.vessels {
 		if v.HasPos && s.match(&Event{MMSI: mmsi, Lat: v.Lat, Lon: v.Lon, HasPos: true}) {
 			features = append(features, v.feature(mmsi))
+			noteAttribution(attribution, v.Source)
 		}
 	}
 	p.vmu.RUnlock()
 	w.Header().Set("Content-Type", "application/geo+json")
-	json.NewEncoder(w).Encode(map[string]any{"type": "FeatureCollection", "features": features})
+	json.NewEncoder(w).Encode(featureCollection(features, attribution))
+}
+
+// noteAttribution records the credit line for the source's kind (its name up to the first `:`).
+func noteAttribution(m map[string]string, source string) {
+	if k := sourceKind(source); m[k] == "" {
+		m[k] = attributionOf(source)
+	}
+}
+
+// featureCollection assembles a GeoJSON response. attribution is a foreign member (RFC 7946 §6.1): per
+// source kind present in the features, the credit line the consumer must display.
+func featureCollection(features []map[string]any, attribution map[string]string) map[string]any {
+	return map[string]any{"type": "FeatureCollection", "features": features, "attribution": attribution}
 }
 
 // ---- snapshot subscriptions: replay the cache so a new client starts with the vessels already tracked ----
