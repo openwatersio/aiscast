@@ -263,6 +263,37 @@ func TestUDPSenderKeyedByOwnMMSI(t *testing.T) {
 	}
 }
 
+// The raw feed renders own-ship reports as VDM, because a raw consumer binds VDO to its own position instead of
+// plotting it (see ownShipToVDM). A /v1 event keeps the sentence as it arrived: that is what lets a peer
+// republishing it derive `synthesized` again, and dropping to VDM there would make the republished position
+// look like a real VHF reception and so eligible for the AISHub feed.
+func TestOwnShipRebroadcastAsVDM(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	body := `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`
+	p.Ingest(Reception{Source: "v1:t", Station: "t", RecvTime: time.Now(), Body: body})
+	ev := <-sub.ch
+	if !ev.Synthesized {
+		t.Errorf("s:self own-ship report not marked synthesized")
+	}
+	if len(ev.Sentences) != 1 || ev.Sentences[0] != body {
+		t.Errorf("sentences %q, want [%q]", ev.Sentences, body)
+	}
+	if nmea := renderV1(ev).NMEA; len(nmea) != 1 || nmea[0] != body {
+		t.Errorf("/v1 nmea %q, want [%q]", nmea, body)
+	}
+	if got := ev.nmeaText(); !strings.Contains(got, `\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`+"\r\n") {
+		t.Errorf("nmea frame %q", got)
+	}
+	// A peer that republishes the /v1 sentence still lands on a synthesized event, not a VHF reception.
+	p2 := testPipeline(t)
+	sub2 := p2.subscribe()
+	p2.Ingest(Reception{Source: "v1:peer", Station: "v1:peer", RecvTime: time.Now(), Body: renderV1(ev).NMEA[0]})
+	if ev2 := <-sub2.ch; !ev2.Synthesized || feedable(ev2) {
+		t.Errorf("republished own-ship report: synthesized=%v feedable=%v", ev2.Synthesized, feedable(ev2))
+	}
+}
+
 // /v1/stream publish: ack per frame, stale buffered sentences archived but not emitted, unsubscribe silences.
 func TestV1PublishAckAndReplay(t *testing.T) {
 	p := testPipeline(t)
