@@ -237,15 +237,21 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	features := []map[string]any{}
+	attribution := map[string]string{}
 	p.vmu.RLock()
 	for mmsi, v := range p.vessels {
 		if v.HasPos && s.match(&Event{MMSI: mmsi, Lat: v.Lat, Lon: v.Lon, HasPos: true}) {
 			features = append(features, v.feature(mmsi))
+			if k := sourceKind(v.Source); attribution[k] == "" {
+				attribution[k] = attributionOf(v.Source)
+			}
 		}
 	}
 	p.vmu.RUnlock()
 	w.Header().Set("Content-Type", "application/geo+json")
-	json.NewEncoder(w).Encode(map[string]any{"type": "FeatureCollection", "features": features})
+	// attribution is a foreign member (RFC 7946 §6.1): per source kind present in the response (a
+	// feature's `source` up to the first `:`), the credit line the consumer must display.
+	json.NewEncoder(w).Encode(map[string]any{"type": "FeatureCollection", "features": features, "attribution": attribution})
 }
 
 // ---- snapshot subscriptions: replay the cache so a new client starts with the vessels already tracked ----

@@ -161,3 +161,29 @@ func TestArchiveSweepSkipsOpenFiles(t *testing.T) {
 		t.Errorf("sweep should reclaim a closed file: %v", err)
 	}
 }
+
+func TestLicenseAndAttribution(t *testing.T) {
+	cases := []struct{ source, license, attribution string }{
+		{"kystverket", "NLOD-2.0", ownCredit + ". " + attributions["kystverket"]},
+		{"v1:ed25519:abc", "CC0-1.0", ownCredit},
+		{"udp:7f3a2b", "CC0-1.0", ownCredit},
+		{"mystery", "unspecified", ownCredit},
+	}
+	for _, c := range cases {
+		if got := licenseOf(c.source); got != c.license {
+			t.Errorf("licenseOf(%q) = %q, want %q", c.source, got, c.license)
+		}
+		if got := attributionOf(c.source); got != c.attribution {
+			t.Errorf("attributionOf(%q) = %q, want %q", c.source, got, c.attribution)
+		}
+	}
+	for src, lic := range licenses { // an upstream source without its credit line would ship under-attributed events
+		if lic != "CC0-1.0" && attributions[src] == "" {
+			t.Errorf("upstream source %q has a license but no attribution", src)
+		}
+	}
+	ev := renderV1(&Event{Source: "digitraffic"})
+	if ev.License != "CC-BY-4.0" || ev.Attribution != ownCredit+". "+attributions["digitraffic"] {
+		t.Errorf("renderV1 license/attribution = %q/%q", ev.License, ev.Attribution)
+	}
+}

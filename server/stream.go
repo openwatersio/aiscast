@@ -323,6 +323,8 @@ type v1Event struct {
 	ID          string     `json:"id,omitempty"` // absent on synthesized snapshot reconstructions
 	Time        time.Time  `json:"time"`
 	Source      string     `json:"source"`
+	License     string     `json:"license"`     // the source's license tag, as in the archive layout
+	Attribution string     `json:"attribution"` // credit line the consumer must display; always opens with the Open Waters AIS credit
 	Station     string     `json:"station"`
 	Channel     string     `json:"channel"`
 	NMEA        []string   `json:"nmea,omitempty"` // absent on synthesized snapshot reconstructions
@@ -550,8 +552,8 @@ func (s *v1Sub) match(ev *Event) bool {
 }
 
 func renderV1(ev *Event) v1Event {
-	out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, Station: ev.Station, Channel: channelString(ev.Channel),
-		NMEA: ev.Sentences, MMSI: ev.MMSI, MsgType: ev.Type, Message: ev.Packet, Synthesized: ev.Synthesized}
+	out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, License: licenseOf(ev.Source), Attribution: attributionOf(ev.Source),
+		Station: ev.Station, Channel: channelString(ev.Channel), NMEA: ev.Sentences, MMSI: ev.MMSI, MsgType: ev.Type, Message: ev.Packet, Synthesized: ev.Synthesized}
 	if ev.HasPos {
 		out.Lat, out.Lon = &ev.Lat, &ev.Lon
 	}

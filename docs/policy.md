@@ -4,7 +4,7 @@ This document states what aiscast re-serves, under what terms, what it refuses, 
 
 ## Licensing is per source
 
-Each reception carries its license. Each output shows that license. Licenses are never merged. aiscast does not relicense the aggregate: each event is re-served under the terms of its source. For this reason, `source` is on every event, every vessel, and every archived hour.
+Each reception carries its license. Each output shows that license. Licenses are never merged. aiscast does not relicense the aggregate: each event is re-served under the terms of its source. For this reason, `source` is on every event, every vessel, and every archived hour, and every `/v1` event carries `license` and `attribution` fields. The consumer's obligation is one sentence: display the attribution message included with each event.
 
 This arrangement is what ODbL calls a collective database. The [ODbL preamble](https://opendatacommons.org/licenses/odbl/1-0/) describes it: "If the contents have multiple sets of different rights, Licensors should describe what rights govern what contents together in the individual record or in some other way that clarifies what rights apply." Share-alike attaches only to the volunteer aggregate (ODbL §4.5(a)). It never reaches the other sources served alongside it.
 
