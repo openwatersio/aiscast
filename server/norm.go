@@ -29,8 +29,11 @@ type normEnvelope struct {
 
 // normCopy is one delivery of a message: the license belongs here, on the delivery, not on the
 // message, and the first copy gets one too since the event record's time is canonical, not receive.
+// Time is the copy's own canonical time: ids repeat for identical payloads minutes apart, and only
+// canonical proximity says which transmission a late copy belongs to (receive time can lag minutes).
 type normCopy struct {
 	ID      string `json:"id"`
+	Time    string `json:"time"` // canonical, RFC3339Nano UTC
 	Source  string `json:"source"`
 	Station string `json:"station"`
 	License string `json:"license"`
@@ -87,7 +90,7 @@ func (p *Pipeline) writeEvent(ev *Event, key string) {
 		return
 	}
 	p.normWrite("event", ev.RecvTime, ev, renderV1(ev))
-	p.normWrite("copy", ev.RecvTime, nil, normCopy{ID: ev.ID, Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)})
+	p.normWrite("copy", ev.RecvTime, nil, normCopy{ID: ev.ID, Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)})
 }
 
 // writeCopy records a deduplicated delivery. The id is the same content hash the accepted copy got,
@@ -97,7 +100,7 @@ func (p *Pipeline) writeCopy(ev *Event, key string) {
 		return
 	}
 	sum := sha256.Sum256([]byte(key))
-	p.normWrite("copy", ev.RecvTime, nil, normCopy{ID: hex.EncodeToString(sum[:16]), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)})
+	p.normWrite("copy", ev.RecvTime, nil, normCopy{ID: hex.EncodeToString(sum[:16]), Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)})
 }
 
 // writeMetHyd archives one BarentsWatch weather broadcast verbatim: decoded type-8 sea state, wind,
