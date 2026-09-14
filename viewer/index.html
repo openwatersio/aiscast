@@ -24,11 +24,6 @@
   const station = params.get("station"); // ?station=<id>: highlight that station's vessels and show its stats
   const TTL = 30 * 60e3; // drop after 30 min unseen, same as aiscast
 
-  // Per-source attribution; licensing is per source, so only sources actually seen are credited.
-  const LICENSES = {
-    kystverket: '<a href="https://www.kystverket.no/">Kystverket</a> (NLOD 2.0)',
-    digitraffic: 'Source: <a href="https://www.digitraffic.fi/">Fintraffic / digitraffic.fi</a>, license CC 4.0 BY',
-  };
   const NAV = ["Under way using engine", "At anchor", "Not under command", "Restricted manoeuvrability", "Constrained by draught", "Moored", "Aground", "Fishing", "Under way sailing", "HSC", "WIG", "", "", "", "AIS-SART", ""];
   const CLASS_COLORS = { cargo: "#2e7d32", tanker: "#c62828", passenger: "#1565c0", fishing: "#ef6c00", pleasure: "#8e24aa", special: "#00838f", aton: "#6d4c41", base: "#37474f", sar: "#d81b60", other: "#616161" };
 
@@ -53,18 +48,23 @@
     attributionControl: false,
   });
   map.addControl(new maplibregl.NavigationControl());
+  // Per-source attribution, delivered on each event; licensing is per source, so only sources actually
+  // seen are credited. Keyed by source kind (the source up to the first `:`), as /v1/vessels keys its
+  // attribution member, so the shared volunteer credit shows once however many stations deliver.
   let attribution = null;
-  const seenSources = new Set();
+  const credits = new Map(); // source kind -> credit line
+  const linkify = (s) => esc(s).replace(/https?:\/\/[^\s)]+/g, (u) => `<a href="${u}">${u}</a>`);
   function updateAttribution() {
     if (attribution) map.removeControl(attribution);
-    const custom = [...seenSources].map((s) => LICENSES[s] || `AIS: ${esc(s)}`);
+    const custom = [...new Set(credits.values())].map(linkify);
     attribution = new maplibregl.AttributionControl({ compact: false, customAttribution: custom });
     map.addControl(attribution);
   }
   updateAttribution();
-  function noteSource(src) {
-    if (seenSources.has(src)) return;
-    seenSources.add(src);
+  function noteSource(ev) {
+    const kind = ev.source.split(":")[0];
+    if (credits.has(kind)) return;
+    credits.set(kind, ev.attribution || `AIS: ${ev.source}`);
     updateAttribution();
   }
 
@@ -123,7 +123,7 @@
     else if (ev.msg_type === "StandardSearchAndRescueAircraftReport") v.kind = "sar";
     if (!stale) Object.assign(v, { seen: t, source: ev.source, station: ev.station, msg_type: ev.msg_type, nmea: ev.nmea });
     vessels.set(ev.mmsi, v);
-    noteSource(ev.source);
+    noteSource(ev);
     dirty = true;
   }
 
