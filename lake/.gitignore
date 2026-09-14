@@ -1,0 +1,5 @@
+warehouse/
+stage/
+.tmp/
+.env
+raw/
