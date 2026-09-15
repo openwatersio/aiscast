@@ -67,8 +67,7 @@ func (m dtMetadata) packet(mmsi uint32) ais.Packet {
 	}
 }
 
-func (p *Pipeline) digitrafficMessage(topic string, body []byte) {
-	now := time.Now()
+func (p *Pipeline) digitrafficMessage(topic string, body []byte, now time.Time) {
 	p.arch.write(Reception{Source: "digitraffic", Station: "digitraffic", RecvTime: now, Body: topic + " " + string(body)})
 	parts := strings.Split(topic, "/") // vessels-v2/<mmsi>/location|metadata
 	if len(parts) != 3 {
@@ -87,6 +86,9 @@ func (p *Pipeline) digitrafficMessage(topic string, body []byte) {
 			p.stats.parseErr.Add(1)
 			return
 		}
+		if shadowSample("digitraffic/location") {
+			shadowCheck("digitraffic/location", body, dtLocKnown)
+		}
 		pkt = l.packet(uint32(mmsi))
 		if st := time.Unix(l.Time, 0); absDur(st.Sub(now)) <= maxSkew {
 			t = st
@@ -97,6 +99,9 @@ func (p *Pipeline) digitrafficMessage(topic string, body []byte) {
 			p.stats.parseErr.Add(1)
 			return
 		}
+		if shadowSample("digitraffic/metadata") {
+			shadowCheck("digitraffic/metadata", body, dtMetaKnown)
+		}
 		pkt = m.packet(uint32(mmsi))
 		if st := time.UnixMilli(m.Timestamp); absDur(st.Sub(now)) <= maxSkew {
 			t = st
@@ -104,7 +109,7 @@ func (p *Pipeline) digitrafficMessage(topic string, body []byte) {
 	default:
 		return
 	}
-	p.ingestPacket("digitraffic", "digitraffic", t, pkt)
+	p.ingestPacket("digitraffic", "digitraffic", t, now, pkt)
 }
 
 func runDigitraffic(p *Pipeline, url string) {
@@ -116,8 +121,8 @@ func runDigitraffic(p *Pipeline, url string) {
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) { log.Printf("digitraffic: connection lost: %v", err) }).
 		SetOnConnectHandler(func(c mqtt.Client) {
 			log.Printf("digitraffic: connected to %s", url)
-			c.Subscribe("vessels-v2/+/location", 0, func(_ mqtt.Client, m mqtt.Message) { p.digitrafficMessage(m.Topic(), m.Payload()) })
-			c.Subscribe("vessels-v2/+/metadata", 0, func(_ mqtt.Client, m mqtt.Message) { p.digitrafficMessage(m.Topic(), m.Payload()) })
+			c.Subscribe("vessels-v2/+/location", 0, func(_ mqtt.Client, m mqtt.Message) { p.digitrafficMessage(m.Topic(), m.Payload(), time.Now()) })
+			c.Subscribe("vessels-v2/+/metadata", 0, func(_ mqtt.Client, m mqtt.Message) { p.digitrafficMessage(m.Topic(), m.Payload(), time.Now()) })
 		})
 	if tok := mqtt.NewClient(opts).Connect(); tok.Wait() && tok.Error() != nil {
 		log.Printf("digitraffic: %v (auto-retrying)", tok.Error())
