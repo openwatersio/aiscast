@@ -54,11 +54,14 @@ func TestFixtureCorpusFullyCaptured(t *testing.T) {
 }
 
 func TestShadowFlagsANovelField(t *testing.T) {
-	shadowCheck("shadow-test", []byte(`{"brandNew": 1, "known": 2}`), map[string]bool{"known": true})
+	shadowCheck("shadow-test", []byte(`{"brandNew": 1, "known": 2, "nest": {"deep": 3}}`), fieldSet{"known": nil, "nest": fieldSet{}})
 	if _, ok := unmappedFld.Load("shadow-test\tbrandNew"); !ok {
 		t.Fatal("novel field not flagged")
 	}
 	if _, ok := unmappedFld.Load("shadow-test\tknown"); ok {
 		t.Fatal("known field flagged")
+	}
+	if _, ok := unmappedFld.Load("shadow-test\tnest.deep"); !ok {
+		t.Fatal("novel nested field not flagged")
 	}
 }

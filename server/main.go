@@ -90,11 +90,15 @@ func main() {
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 		<-sig
 		log.Printf("shutting down")
+		// Producers are not joined: anything they enqueue after the drain empties the queue is a
+		// sub-second tail the raw archive has always accepted losing, and the normalized stream is
+		// rebuildable from raw by replay. State saves come after the drains so they see everything
+		// the archives saw.
+		arch.shutdown()
+		norm.shutdown()
 		p.saveSnapshot(snapshot)
 		p.saveUsage(usage)
 		p.saveDedupe(dedupe)
-		arch.shutdown()
-		norm.shutdown()
 		os.Exit(0)
 	}()
 

@@ -85,13 +85,7 @@ func (p *Pipeline) ingestCatcher(src string, body []byte, now time.Time) bool {
 		return false
 	}
 	if shadowSample("catcher") {
-		shadowCheck("catcher", body, catcherKnown)
-		var raw struct {
-			Msgs []json.RawMessage `json:"msgs"`
-		}
-		if json.Unmarshal(body, &raw) == nil && len(raw.Msgs) > 0 {
-			shadowCheck("catcher/msg", raw.Msgs[0], catcherMsg)
-		}
+		shadowCheck("catcher", body, catcherKnown) // recursive: per-message fields ride the msgs subtree
 	}
 	p.arch.write(Reception{Source: src, Station: src, RecvTime: now, Body: string(body)}) // whole envelope, source-native
 	for _, m := range env.Msgs {

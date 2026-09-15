@@ -61,16 +61,10 @@ func s3NormFromEnv() *s3Client {
 	return c
 }
 
-func (p *Pipeline) normWrite(kind string, recv time.Time, flags *Event, rec any) {
-	if p.norm.dir == "" {
-		return
-	}
-	if !p.normGate.IsZero() && recv.Before(p.normGate) {
-		return // replay warm-up: state-building only
-	}
+func normLine(kind string, recv time.Time, flags *Event, rec any) []byte {
 	raw, err := json.Marshal(rec)
 	if err != nil {
-		return
+		return nil
 	}
 	e := normEnvelope{K: kind, V: normVersion, T: recv.UTC().Format(time.RFC3339Nano), R: raw}
 	if flags != nil {
@@ -78,9 +72,29 @@ func (p *Pipeline) normWrite(kind string, recv time.Time, flags *Event, rec any)
 	}
 	line, err := json.Marshal(e)
 	if err != nil {
+		return nil
+	}
+	return line
+}
+
+func (p *Pipeline) normWrite(recv time.Time, lines ...[]byte) {
+	if p.norm.dir == "" {
 		return
 	}
-	p.norm.write(Reception{Source: "norm", RecvTime: recv, Body: string(line)})
+	if !p.normGate.IsZero() && recv.Before(p.normGate) {
+		return // replay warm-up: state-building only
+	}
+	var body []byte
+	for _, l := range lines {
+		if l == nil {
+			return
+		}
+		if body != nil {
+			body = append(body, '\n')
+		}
+		body = append(body, l...)
+	}
+	p.norm.write(Reception{Source: "norm", RecvTime: recv, Body: string(body)})
 }
 
 // writeEvent records an accepted message and its first copy. Runs after updateVessel, so the
@@ -89,8 +103,10 @@ func (p *Pipeline) writeEvent(ev *Event, key string) {
 	if p.norm.dir == "" {
 		return
 	}
-	p.normWrite("event", ev.RecvTime, ev, renderV1(ev))
-	p.normWrite("copy", ev.RecvTime, nil, normCopy{ID: ev.ID, Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)})
+	// one queue item for the pair: an overloaded queue drops an event with its first copy, never one half
+	p.normWrite(ev.RecvTime,
+		normLine("event", ev.RecvTime, ev, renderV1(ev)),
+		normLine("copy", ev.RecvTime, nil, normCopy{ID: ev.ID, Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))
 }
 
 // writeCopy records a deduplicated delivery. The id is the same content hash the accepted copy got,
@@ -100,13 +116,13 @@ func (p *Pipeline) writeCopy(ev *Event, key string) {
 		return
 	}
 	sum := sha256.Sum256([]byte(key))
-	p.normWrite("copy", ev.RecvTime, nil, normCopy{ID: hex.EncodeToString(sum[:16]), Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)})
+	p.normWrite(ev.RecvTime, normLine("copy", ev.RecvTime, nil, normCopy{ID: hex.EncodeToString(sum[:16]), Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))
 }
 
 // writeMetHyd archives one BarentsWatch weather broadcast verbatim: decoded type-8 sea state, wind,
 // and water level that never map onto an AIS packet.
 func (p *Pipeline) writeMetHyd(line []byte, recv time.Time) {
-	p.normWrite("methyd", recv, nil, json.RawMessage(line))
+	p.normWrite(recv, normLine("methyd", recv, nil, json.RawMessage(line)))
 }
 
 // ---- dedupe window persistence: saved on clean shutdown beside the vessel snapshot, so a deploy
@@ -117,6 +133,9 @@ type dedupeState struct {
 	Seen map[string]string `json:"seen"` // base64(payload+channel) -> event time, RFC3339Nano
 }
 
+// saveDedupe keeps entries by the same event-time window the live prune uses, so a canonical time
+// minutes behind the high water (an AISHub row) ages out of restart protection exactly as it ages
+// out live; the packager's same-id collapse covers either path.
 func (p *Pipeline) saveDedupe(path string) error {
 	p.mu.Lock()
 	st := dedupeState{HW: p.seenHW, Seen: make(map[string]string, len(p.seen))}
