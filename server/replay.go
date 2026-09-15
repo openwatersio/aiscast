@@ -127,7 +127,10 @@ func collectReaders(dir string, start, end time.Time) []*rawReader {
 	return out
 }
 
-// rawReader streams one source's hour files in order, yielding one Reception per record.
+// rawReader streams one source's hour files in order, yielding one Reception per record. Order
+// across files is monotonic by construction, since a record's file key is derived from its own
+// receive time; within a file, per-source FIFO holds except for millisecond races between
+// concurrent producers (parallel HTTP posts), the same interleave live processing tolerated.
 // Digitraffic bodies are pretty-printed JSON spanning lines; continuation lines have no tab
 // columns and a record closes on a line opening with '}'.
 type rawReader struct {
@@ -182,6 +185,9 @@ func (r *rawReader) next() bool {
 			r.cur = rx
 			return true
 		}
+		if err := r.sc.Err(); err != nil {
+			log.Fatalf("replay: %s: %v (a truncated raw hour must fail the run, not shorten history)", r.source, err)
+		}
 		r.closeFile()
 	}
 }
@@ -203,14 +209,11 @@ func (r *rawReader) open() bool {
 	r.paths = r.paths[1:]
 	f, err := os.Open(path)
 	if err != nil {
-		log.Printf("replay: %v", err)
-		return r.open()
+		log.Fatalf("replay: %v", err)
 	}
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		log.Printf("replay: %s: %v", path, err)
-		f.Close()
-		return r.open()
+		log.Fatalf("replay: %s: %v (a corrupt raw hour must fail the run, not vanish from it)", path, err)
 	}
 	gz.Multistream(true)
 	r.f, r.gz, r.sc = f, gz, bufio.NewScanner(gz)
