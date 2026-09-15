@@ -56,13 +56,14 @@ Three properties make replayed output trustworthy, each enforced rather than hop
 - The normalized path takes every timestamp from the reception, never the wall clock. A determinism test replays the same fixture day at two different wall times and requires byte-identical output; anything reaching for `time.Now()` in that path fails it.
 - Replay runs the pipeline with fan-out, the vessel snapshot, and stats disconnected, so its only side effect is normalized files for the requested range.
 - Cross-source order is a merge on archived receive times, ties broken by source name. Live goroutine interleaving of near-simultaneous copies is not reproducible, so a live day and its replay can disagree about which source's copy of a message arrived first; the message sets match, first-copy attribution may not, and the diff harness compares accordingly.
+- Re-encoded sentences carry a multipart sequence id from a per-process counter, so a long-running server and a replay run disagree on it while carrying identical payloads. The id groups fragments for reassembly and is not data; the harness normalizes it and compares the rest of the sentence.
 
 The lake branch's Python decoders do not ship, but they are the executable record of every divergence review found, and diffing replay output against them over real days is a second, independent check.
 
 ## Rollout
 
 1. The server dual-writes: raw as today, plus the normalized stream at emit, with the capture-completeness mechanisms landing alongside. Nothing downstream changes yet.
-2. Confidence: for days with both a live normalized record and raw, replay the raw and diff against what live wrote. Run until the only divergences are the known first-copy races.
+2. Confidence: for days with both a live normalized record and raw, replay the raw and diff against what live wrote with `aiscast normdiff`. Run until it exits clean, meaning the only differences left are first-copy attribution and multipart sequence ids.
 3. Backfill: replay the raw archive from its beginning to populate normalized history, then the packager builds the derived tables from the normalized layer alone.
 4. Raw keeps writing indefinitely as the write-only input log: the replay substrate, and the rewind buffer for the one failure class coverage checks cannot see. Nothing downstream reads it.
 
