@@ -94,14 +94,14 @@ func (a *archive) run() {
 				hf.gz.Flush()
 			}
 		case reply := <-a.done:
-			for { // drain: the select races queued records against shutdown, and the tail must not lose
+			// drain: the select races queued records against shutdown, and the tail must not lose
+			for drained := false; !drained; {
 				select {
 				case rx := <-a.ch:
 					a.handle(rx, files)
-					continue
 				default:
+					drained = true
 				}
-				break
 			}
 			for _, hf := range files {
 				a.close(hf)
