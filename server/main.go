@@ -18,9 +18,15 @@ func env(k, def string) string {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "replay" {
-		runReplay(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "replay":
+			runReplay(os.Args[2:])
+			return
+		case "normdiff":
+			runNormDiff(os.Args[2:])
+			return
+		}
 	}
 	arch := newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv())
 	go arch.sweepLoop() // reclaim what the bucket already has; slow, so it must not hold up ingest
