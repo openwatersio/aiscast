@@ -51,12 +51,14 @@ export class Uplink {
   private limits = { ...DEFAULT_LIMITS };
   private paceUntil = 0;
   private paceWake: (() => void) | null = null;
-  private capping = false;
-  private flushing: Promise<void> = Promise.resolve();
+  private queueOp: Promise<unknown> = Promise.resolve();
   private drainDone: Promise<void> | null = null;
   private readonly dir: string;
   private readonly onOpen = () => this.drain();
-  private readonly onClose = () => this.requeueInFlight("socket closed");
+  private readonly onClose = () => {
+    this.requeueInFlight("socket closed");
+    this.paceWake?.(); // the deadline stands; only the sleep ends, so the reconnect drain starts on time
+  };
   private readonly onFrame = (f: Frame) => this.frame(f);
   stats: UplinkStats = { sent: 0, queued: 0, dropped: 0, inFlight: 0 };
 
@@ -206,36 +208,59 @@ export class Uplink {
     }
   }
 
-  // Flushes run one at a time and in order, so two of them cannot top up the same file and lose one's work.
-  private flush(): Promise<void> {
-    this.flushing = this.flushing.then(() => this.flushOnce());
-    return this.flushing;
+  // Queue-file work runs one operation at a time, in order. The flush timer, the drain and the cap check all
+  // mutate the same directory and the same listing, and every one of them awaits partway through: without
+  // this, a flush could top up a file the drain had already read and was about to delete.
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.queueOp.then(work);
+    this.queueOp = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
   }
 
-  // Backlog → the newest queue file while it has room, a new one otherwise. Topping up is what keeps a long
-  // offline stretch from leaving a file behind every fifteen seconds: the count follows the sentences owed,
-  // not the time spent offline. Never throws: a full or read-only disk must not take the Signal K process
-  // down, so the backlog is kept in memory and retried next time.
+  private flush(): Promise<void> {
+    return this.exclusive(() => this.flushOnce()).catch(() => {});
+  }
+
+  // Backlog → the newest queue file while it has room, then files of FILE_MAX. Topping up is what keeps a
+  // long offline stretch from leaving a file behind every fifteen seconds: the count follows the sentences
+  // owed, not the time spent offline. Never throws: a full or read-only disk must not take the Signal K
+  // process down, so whatever is not on disk yet stays in the backlog and is retried next time.
   private async flushOnce(): Promise<void> {
     if (this.backlog.length === 0) return;
     const sentences = this.backlog;
     this.backlog = [];
-    // The drain takes files off the front of the listing, so the last one is never a file it is sending.
     const tail = this.listing.at(-1);
     const room = tail ? await this.readQueueFile(tail) : null;
-    const name = room && room.length < FILE_MAX ? tail! : this.newName();
+    const topUp = room !== null && room.length < FILE_MAX;
+    const pending = topUp ? room.concat(sentences) : sentences;
+    const onDisk = topUp ? room.length : 0; // the tail's own sentences, already safe, at the front of pending
+    for (let i = 0; i < pending.length; i += FILE_MAX) {
+      const name = i === 0 && topUp ? tail! : this.newName();
+      if (!(await this.write(name, pending.slice(i, i + FILE_MAX)))) {
+        this.backlog.unshift(...pending.slice(Math.max(i, onDisk))); // keep what did not land, oldest first
+        return;
+      }
+      if (name !== tail) this.listing.push(name); // newest name sorts last, so appending keeps the order
+    }
+  }
+
+  // One queue file, written whole. The temp file keeps a half-written array from ever being picked up: the
+  // listing only takes .json, and rename is atomic.
+  private async write(name: string, sentences: string[]): Promise<boolean> {
     const path = join(this.dir, name);
-    const tmp = `${path}.tmp`; // the listing only takes .json, so a torn write is never picked up
+    const tmp = `${path}.tmp`;
     try {
-      await writeFile(tmp, JSON.stringify(room && room.length < FILE_MAX ? room.concat(sentences) : sentences));
+      await writeFile(tmp, JSON.stringify(sentences));
       await rename(tmp, path);
+      return true;
     } catch (err) {
       this.log(`queue write failed: ${(err as Error).message}`);
       await unlink(tmp).catch(() => {});
-      this.backlog.unshift(...sentences);
-      return;
+      return false;
     }
-    if (name !== tail) this.listing.push(name); // newest name sorts last, so appending keeps the order
   }
 
   // Monotonic, so a file written in the same millisecond as the last one cannot take its name.
@@ -274,16 +299,11 @@ export class Uplink {
     return n;
   }
 
-  // Oldest files go when the queue outgrows its cap. Skipped while a drain is running: the drain is already
-  // shrinking the queue, and both work from the same listing.
+  // Oldest files go when the queue outgrows its cap. Skipped while a drain is running, which is already
+  // shrinking the queue by delivering it.
   private async enforceCap(): Promise<void> {
-    if (this.draining || this.capping || this.listing.length === 0) return;
-    this.capping = true;
-    try {
-      await this.trim();
-    } finally {
-      this.capping = false;
-    }
+    if (this.draining || this.listing.length === 0) return;
+    await this.exclusive(() => this.trim());
   }
 
   private async trim(): Promise<void> {
@@ -323,7 +343,7 @@ export class Uplink {
   private async drainLoop(): Promise<void> {
     for (;;) {
       if (this.stopped) return;
-      const batch = await this.nextBatch();
+      const batch = await this.exclusive(() => this.nextBatch());
       if (!batch) {
         if (this.backlog.length === 0) return; // disk and memory both empty: live sending resumes
         // Sentences heard during the drain go out straight from memory. Writing them to a file only to read
@@ -340,8 +360,12 @@ export class Uplink {
       }
       const chunk = batch.sentences.slice(0, this.limits.frame);
       const accepted = await this.publish(chunk);
-      // Nothing acked: the files are untouched on disk, so hand them straight back to the next drain.
-      if (accepted === null || !(await this.keep(batch.files, batch.sentences.slice(accepted)))) {
+      // Nothing acked, or the remainder would not write: the files are as they were on disk, so hand them
+      // straight back to the next drain.
+      const kept =
+        accepted !== null &&
+        (await this.exclusive(() => this.keep(batch.files, batch.sentences.slice(accepted))));
+      if (accepted === null || !kept) {
         this.listing.unshift(...batch.files);
         return;
       }
@@ -381,20 +405,14 @@ export class Uplink {
   // and the caller puts the files back.
   private async keep(files: string[], rest: string[]): Promise<boolean> {
     if (rest.length > 0) {
-      const path = join(this.dir, files[0]);
-      const tmp = `${path}.tmp`; // the listing only takes .json, so a torn write is never picked up
-      try {
-        await writeFile(tmp, JSON.stringify(rest));
-        await rename(tmp, path); // atomic: the file is either the whole frame or the remainder, never half
-      } catch (err) {
-        this.log(`queue rewrite failed: ${(err as Error).message}`);
-        await unlink(tmp).catch(() => {});
-        return false;
-      }
+      if (!(await this.write(files[0], rest))) return false;
       this.listing.unshift(files[0]);
     }
     for (const name of rest.length > 0 ? files.slice(1) : files) {
-      await unlink(join(this.dir, name)).catch(() => {});
+      // A file the server has already taken but that will not delete is left alone rather than put back on
+      // the listing: re-sending it forever is worse than the duplicate the next start will produce, which
+      // aiscast drops anyway. Logged, because it means the queue directory is no longer writable.
+      await unlink(join(this.dir, name)).catch((err: Error) => this.log(`queue delete failed: ${err.message}`));
     }
     return true;
   }
@@ -403,6 +421,7 @@ export class Uplink {
   // and acked all the same, so an unpaced replay loses most of the backlog it is trying to deliver.
   // Resolves with the number of sentences the server took, or null if it never acked.
   private async publish(chunk: string[]): Promise<number | null> {
+    if (this.stopped || !this.link.open) return null; // before the wait: a sleep stop() cannot see holds it up
     const wait = this.paceUntil - Date.now();
     if (wait > 0) {
       await new Promise<void>((resolve) => {

@@ -160,6 +160,53 @@ describe("draining the queue", () => {
     expect(await files()).toHaveLength(2);
   });
 
+  it("loses nothing when a flush lands while the drain is reading the same file", async () => {
+    await seed([[`${VDM}#queued`]]);
+    await up.start();
+    link.connect(); // the drain starts reading the tail file
+    for (let i = 0; i < 500; i++) up.hear(`${VDM}#${i}`); // FILE_MAX: a flush fires mid-read, on that file
+    await until(async () => (await files()).length === 0, 10_000);
+    await up.stop();
+
+    const delivered = link.published.flatMap(sentences);
+    for (const name of await files()) {
+      delivered.push(...(JSON.parse(await readFile(join(queue(), name), "utf8")) as string[]));
+    }
+    const heard = new Set(delivered.map((s) => s.replace(/^\\[^\\]*\\/, "")));
+    expect(heard.has(`${VDM}#queued`)).toBe(true);
+    for (let i = 0; i < 500; i++) expect(heard.has(`${VDM}#${i}`)).toBe(true);
+  }, 20_000);
+
+  it("splits a flush that overfills the newest file", async () => {
+    link.open = false;
+    await up.start();
+    up.hear(VDM);
+    up.hear(VDM);
+    up.hear(VDM);
+    await up.stop(); // a file of 3, with room to spare
+
+    await up.start();
+    for (let i = 0; i < 600; i++) up.hear(VDM); // tops the file up to 500 rather than making one of 503
+    await up.stop();
+    const sizes = await Promise.all(
+      (await files()).map(async (f) => (JSON.parse(await readFile(join(queue(), f), "utf8")) as string[]).length),
+    );
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(500);
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(603);
+  });
+
+  it("stops without waiting out the publish limit", async () => {
+    await seed([[`${VDM}#0`], [`${VDM}#1`]]);
+    await up.start();
+    link.accept = 1; // a short ack parks the drain until the limit window is over
+    link.connect();
+    await until(() => link.published.length === 1);
+    const began = Date.now();
+    await up.stop();
+    expect(Date.now() - began).toBeLessThan(2000);
+    expect(up.stats.queued).toBe(1);
+  });
+
   it("paces a replay under the server's per-minute publish limit", async () => {
     await seed(Array.from({ length: 4 }, (_, i) => [`${VDM}#${i}`]));
     await up.start();
