@@ -17,6 +17,12 @@ const DEFAULT_LIMITS = { frame: 1000, perMin: 6000 };
 const PACE_MARGIN = 0.9; // of the per-minute limit: clock skew and jitter must not push a frame over it
 const LIMIT_WINDOW = 60_000; // the server's publish limit resets on a window this long
 
+// A frame's worth of queued sentences and the files they came from, in order, with how many each holds.
+interface Batch {
+  sentences: string[];
+  files: { name: string; count: number }[];
+}
+
 interface InFlight {
   sentences: string[];
   at: number;
@@ -47,6 +53,8 @@ export class Uplink {
   private capTimer: NodeJS.Timeout | null = null;
   private seen = new Map<string, number>();
   private listing: string[] = []; // queue file names, oldest first; the drain works from this, not readdir
+  private sizes = new Map<string, number>(); // bytes per queue file, kept up to date as files come and go
+  private bytes = 0;
   private lastName = 0;
   private limits = { ...DEFAULT_LIMITS };
   private paceUntil = 0;
@@ -75,6 +83,7 @@ export class Uplink {
     await mkdir(this.dir, { recursive: true });
     this.listing = (await readdir(this.dir)).filter((f) => f.endsWith(".json")).sort();
     this.lastName = Number(this.listing.at(-1)?.slice(0, -".json".length)) || 0;
+    await this.measure();
     this.stats.queued = await this.countQueued();
     this.link.on("open", this.onOpen);
     this.link.on("close", this.onClose);
@@ -137,9 +146,14 @@ export class Uplink {
     const sentences = this.pendingLive;
     this.pendingLive = [];
     if (sentences.length === 0) return;
-    if (!this.sendFrame(sentences, false)) {
-      this.backlog.push(...sentences);
-      this.stats.queued += sentences.length;
+    // Split at the frame limit: over it the server silently keeps the first `frame` sentences and acks
+    // short, which would read here as the per-minute limit and stall live sending for a minute.
+    for (let i = 0; i < sentences.length; i += this.limits.frame) {
+      if (!this.sendFrame(sentences.slice(i, i + this.limits.frame), false)) {
+        this.backlog.push(...sentences.slice(i));
+        this.stats.queued += sentences.length - i;
+        return;
+      }
     }
   }
 
@@ -252,14 +266,47 @@ export class Uplink {
   private async write(name: string, sentences: string[]): Promise<boolean> {
     const path = join(this.dir, name);
     const tmp = `${path}.tmp`;
+    const data = JSON.stringify(sentences);
     try {
-      await writeFile(tmp, JSON.stringify(sentences));
+      await writeFile(tmp, data);
       await rename(tmp, path);
-      return true;
     } catch (err) {
       this.log(`queue write failed: ${(err as Error).message}`);
       await unlink(tmp).catch(() => {});
       return false;
+    }
+    const size = Buffer.byteLength(data);
+    this.bytes += size - (this.sizes.get(name) ?? 0);
+    this.sizes.set(name, size);
+    return true;
+  }
+
+  // Deletes a queue file. False when it would not go: the caller leaves it on the listing rather than
+  // stranding a file on disk that nothing will look at again until the next start.
+  private async remove(name: string): Promise<boolean> {
+    try {
+      await unlink(join(this.dir, name));
+    } catch (err) {
+      this.log(`queue delete failed: ${(err as Error).message}`);
+      return false;
+    }
+    this.bytes -= this.sizes.get(name) ?? 0;
+    this.sizes.delete(name);
+    return true;
+  }
+
+  // Queue size on disk, measured once at start. Batched: a backlog of many thousands of files must not put
+  // that many requests in flight at once.
+  private async measure(): Promise<void> {
+    this.sizes.clear();
+    this.bytes = 0;
+    for (let i = 0; i < this.listing.length; i += READ_BATCH) {
+      const batch = this.listing.slice(i, i + READ_BATCH);
+      const sizes = await Promise.all(batch.map((f) => stat(join(this.dir, f)).then((x) => x.size, () => 0)));
+      sizes.forEach((size, j) => {
+        this.sizes.set(batch[j], size);
+        this.bytes += size;
+      });
     }
   }
 
@@ -292,30 +339,26 @@ export class Uplink {
         else bad.add(batch[j]);
       });
     }
-    if (bad.size > 0) {
-      await Promise.all([...bad].map((f) => unlink(join(this.dir, f)).catch(() => {})));
-      this.listing = this.listing.filter((f) => !bad.has(f));
+    for (const f of bad) {
+      if (!(await this.remove(f))) bad.delete(f); // still on disk: keep it listed rather than lose track of it
     }
+    if (bad.size > 0) this.listing = this.listing.filter((f) => !bad.has(f));
     return n;
   }
 
-  // Oldest files go when the queue outgrows its cap. Skipped while a drain is running, which is already
-  // shrinking the queue by delivering it.
+  // Oldest files go when the queue outgrows its cap. This runs during a drain as well: a replay is paced,
+  // so a receiver busy enough to outrun it would otherwise grow the queue past the cap unchecked.
   private async enforceCap(): Promise<void> {
-    if (this.draining || this.listing.length === 0) return;
+    if (this.bytes <= QUEUE_MAX_BYTES) return; // the running total, so an idle tick touches no files at all
     await this.exclusive(() => this.trim());
   }
 
   private async trim(): Promise<void> {
-    const sizes = await Promise.all(
-      this.listing.map((f) => stat(join(this.dir, f)).then((s) => s.size, () => 0)),
-    );
-    let total = sizes.reduce((a, b) => a + b, 0);
     let i = 0;
-    for (; i < this.listing.length && total > QUEUE_MAX_BYTES; i++) {
-      const n = (await this.readQueueFile(this.listing[i]))?.length ?? 0;
-      await unlink(join(this.dir, this.listing[i])).catch(() => {});
-      total -= sizes[i];
+    for (; i < this.listing.length && this.bytes > QUEUE_MAX_BYTES; i++) {
+      const name = this.listing[i];
+      const n = (await this.readQueueFile(name))?.length ?? 0;
+      if (!(await this.remove(name))) break; // leave it listed: a file nothing can see is a file nothing frees
       this.stats.dropped += n;
       this.stats.queued -= n;
     }
@@ -362,11 +405,9 @@ export class Uplink {
       const accepted = await this.publish(chunk);
       // Nothing acked, or the remainder would not write: the files are as they were on disk, so hand them
       // straight back to the next drain.
-      const kept =
-        accepted !== null &&
-        (await this.exclusive(() => this.keep(batch.files, batch.sentences.slice(accepted))));
+      const kept = accepted !== null && (await this.exclusive(() => this.keep(batch, accepted)));
       if (accepted === null || !kept) {
-        this.listing.unshift(...batch.files);
+        this.listing.unshift(...batch.files.map((f) => f.name));
         return;
       }
       this.stats.queued -= accepted;
@@ -376,22 +417,24 @@ export class Uplink {
   // The oldest queued sentences, up to one frame's worth, and the files they came from. Spanning several
   // files per frame is what lets a backlog of thousands of small files drain in batches rather than one
   // round trip each.
-  private async nextBatch(): Promise<{ sentences: string[]; files: string[] } | null> {
+  private async nextBatch(): Promise<Batch | null> {
     const sentences: string[] = [];
-    const files: string[] = [];
+    const files: Batch["files"] = [];
     while (this.listing.length > 0 && sentences.length < this.limits.frame) {
       const names = this.listing.slice(0, READ_BATCH); // read ahead: one open() at a time crawls on an SD card
       const read = await Promise.all(names.map((f) => this.readQueueFile(f)));
       let taken = 0;
       for (const queued of read) {
         if (!queued) {
-          await unlink(join(this.dir, names[taken++])).catch(() => {});
+          const name = names[taken];
+          if (!(await this.remove(name))) return files.length > 0 ? { sentences, files } : null;
+          taken++;
           continue;
         }
-        // One oversized file still goes on its own; `keep` writes back whatever the frame did not cover.
+        // One oversized file still goes on its own; `keep` puts back whatever the frame did not cover.
         if (files.length > 0 && sentences.length + queued.length > this.limits.frame) break;
         sentences.push(...queued);
-        files.push(names[taken++]);
+        files.push({ name: names[taken++], count: queued.length });
         if (sentences.length >= this.limits.frame) break;
       }
       this.listing.splice(0, taken);
@@ -400,19 +443,27 @@ export class Uplink {
     return files.length > 0 ? { sentences, files } : null;
   }
 
-  // Replace the files a frame came from with whatever the server did not take, under the oldest of their
-  // names so the queue keeps its order. False when the remainder could not be written: nothing is deleted,
-  // and the caller puts the files back.
-  private async keep(files: string[], rest: string[]): Promise<boolean> {
-    if (rest.length > 0) {
-      if (!(await this.write(files[0], rest))) return false;
-      this.listing.unshift(files[0]);
+  // Settles the files a frame came from against what the server actually took. Files it took whole are
+  // deleted; the one the ack stopped inside is rewritten with its own remaining tail, and the files after it
+  // are already right on disk and only go back on the listing. So only ever one file is rewritten, and it
+  // can only shrink: a rate-limited replay cannot pile a whole frame into a single file. False when that
+  // rewrite failed, in which case nothing was deleted and the caller puts every file back.
+  private async keep(batch: Batch, accepted: number): Promise<boolean> {
+    let start = 0; // where the file at `i` begins within batch.sentences
+    let i = 0;
+    while (i < batch.files.length && start + batch.files[i].count <= accepted) {
+      start += batch.files[i].count;
+      i++;
     }
-    for (const name of rest.length > 0 ? files.slice(1) : files) {
-      // A file the server has already taken but that will not delete is left alone rather than put back on
-      // the listing: re-sending it forever is worse than the duplicate the next start will produce, which
-      // aiscast drops anyway. Logged, because it means the queue directory is no longer writable.
-      await unlink(join(this.dir, name)).catch((err: Error) => this.log(`queue delete failed: ${err.message}`));
+    if (i < batch.files.length && accepted > start) {
+      const tail = batch.sentences.slice(accepted, start + batch.files[i].count);
+      if (!(await this.write(batch.files[i].name, tail))) return false;
+    }
+    this.listing.unshift(...batch.files.slice(i).map((f) => f.name));
+    for (const f of batch.files.slice(0, i)) {
+      // A file the server has taken but that will not delete is left where it is rather than put back on the
+      // listing: re-sending it forever is worse than the duplicate the next start makes, which aiscast drops.
+      await this.remove(f.name);
     }
     return true;
   }

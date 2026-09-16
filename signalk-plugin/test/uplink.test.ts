@@ -195,6 +195,52 @@ describe("draining the queue", () => {
     expect(sizes.reduce((a, b) => a + b, 0)).toBe(603);
   });
 
+  it("rewrites only the file a short ack stopped inside", async () => {
+    await seed([
+      [`${VDM}#0`, `${VDM}#1`, `${VDM}#2`],
+      [`${VDM}#3`, `${VDM}#4`, `${VDM}#5`],
+    ]);
+    await up.start();
+    link.accept = 4; // stops inside the second file, which keeps its own tail rather than the whole remainder
+    link.connect();
+    await until(() => link.published.length === 1);
+    await sleep(100);
+    const left = await files();
+    expect(left).toHaveLength(1);
+    expect(JSON.parse(await readFile(join(queue(), left[0]), "utf8"))).toEqual([`${VDM}#4`, `${VDM}#5`]);
+  });
+
+  it("keeps files within FILE_MAX when a replay spanning several is cut short", async () => {
+    const full = (tag: string) => Array.from({ length: 500 }, (_, i) => `${VDM}#${tag}${i}`);
+    await seed([full("a"), full("b")]);
+    await up.start();
+    link.accept = 10; // a frame of 1000 from two files, almost all of it refused
+    link.connect();
+    await until(() => link.published.length === 1);
+    await sleep(200);
+    const sizes = await Promise.all(
+      (await files()).map(async (f) => (JSON.parse(await readFile(join(queue(), f), "utf8")) as string[]).length),
+    );
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(500); // not one file holding the whole refused remainder
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(990);
+  });
+
+  it("splits a live burst at the server's frame limit", async () => {
+    await up.start();
+    link.connect({ publish_frame: 3, publish_per_min: 6_000_000 });
+    up.hear(VDM);
+    await until(() => link.published.length === 1);
+    await sleep(50); // the drain over an empty queue finishes and live sending takes over
+    link.published.length = 0;
+    for (let i = 0; i < 10; i++) up.hear(`${VDM}#${i}`);
+    await until(() => link.published.flatMap(sentences).length === 10);
+    // Over the frame limit the server keeps the first `frame` and acks short, which reads here as the
+    // per-minute limit and would park live sending for a whole minute.
+    expect(link.published.every((f) => !f.replay)).toBe(true);
+    expect(Math.max(...link.published.map((f) => sentences(f).length))).toBeLessThanOrEqual(3);
+    expect(up.stats.queued).toBe(0);
+  });
+
   it("stops without waiting out the publish limit", async () => {
     await seed([[`${VDM}#0`], [`${VDM}#1`]]);
     await up.start();
