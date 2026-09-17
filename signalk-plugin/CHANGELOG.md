@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fixes a queue that never emptied. While the plugin was replaying a backlog to aiscast it wrote every sentence its receiver heard to a new queue file, so it traded one file for another and the replay never reached the end. On a boat that had been offline a while, the queue directory stayed at tens of thousands of files no matter how long the connection was up. A replay now carries up to a thousand sentences from as many files in one frame, and sentences heard mid-replay go out from memory.
+- The queue keeps far fewer files. Time offline used to leave one behind every fifteen seconds; the plugin now fills each file to 500 sentences before starting another, so the count follows how much is owed rather than how long the boat was out of range.
+- Sentences past the server's publish limit are no longer lost. aiscast accepts 6000 sentences a minute and quietly drops the rest, so a large replay used to arrive mostly empty while the plugin counted it as delivered. The plugin now paces a replay under the limit and keeps anything the server did not take.
+
 ## 0.3.0
 
 - Buddy boats: vessels on [signalk-buddylist-plugin](https://github.com/sbender9/signalk-buddylist-plugin)'s list are followed on aiscast wherever they are, far beyond VHF range, in every receive mode. The buddylist plugin keeps raising its buddy flag and proximity alerts, so Freeboard-SK's buddy icon and phone notifications work at any distance. The status line shows how many buddies have been heard from.
