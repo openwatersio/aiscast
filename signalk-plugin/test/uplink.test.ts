@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Frame, Link } from "../src/link.js";
-import { Uplink } from "../src/uplink.js";
+import { SEGMENT_MAX, Uplink } from "../src/uplink.js";
 
 const VDM = "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -46,15 +46,30 @@ let link: FakeLink;
 let up: Uplink;
 
 const queue = () => join(dir, "queue");
-const files = () => readdir(queue());
+const files = async () => (await readdir(queue())).sort();
 const sentences = (f: Frame) => f.nmea as string[];
+const asLines = (ss: string[]) => ss.map((s) => `${s}\n`).join("");
 
-async function seed(names: string[][]): Promise<void> {
+async function seed(segments: string[][]): Promise<void> {
   await mkdir(queue(), { recursive: true });
   await Promise.all(
-    names.map((lines, i) => writeFile(join(queue(), `${1700000000000 + i}.json`), JSON.stringify(lines))),
+    segments.map((ss, i) => writeFile(join(queue(), `${1700000000000 + i}.log`), asLines(ss))),
   );
 }
+
+async function read(name: string): Promise<string[]> {
+  const text = await readFile(join(queue(), name), "utf8");
+  return text === "" ? [] : text.slice(0, -1).split("\n");
+}
+
+// Every sentence still on disk, oldest first, however many segments it takes.
+async function onDisk(): Promise<string[]> {
+  const out: string[] = [];
+  for (const f of await files()) out.push(...(await read(f)));
+  return out;
+}
+
+const bytes = async () => Promise.all((await files()).map((f) => readFile(join(queue(), f))));
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "aiscast-uplink-"));
@@ -69,7 +84,7 @@ afterEach(async () => {
 
 describe("draining the queue", () => {
   it("empties a large backlog while sentences keep arriving", async () => {
-    await seed(Array.from({ length: 2000 }, () => [VDM]));
+    await seed(Array.from({ length: 4 }, (_, s) => Array.from({ length: 500 }, (_, i) => `${VDM}#${s}-${i}`)));
     await up.start();
     // A receiver hearing traffic throughout: every sentence heard mid-drain used to become its own queue
     // file, so the drain traded one file for another and the directory never emptied.
@@ -80,12 +95,14 @@ describe("draining the queue", () => {
     } finally {
       clearInterval(heard);
     }
+    await until(async () => (await files()).length === 0 && up.stats.queued === 0, 10_000);
+    await sleep(50); // the drain's last pass finishes
     up.hear(VDM);
     await until(() => link.published.some((f) => !f.replay)); // live sending resumes once the queue is gone
   }, 30_000);
 
-  it("carries several queue files in one frame", async () => {
-    await seed(Array.from({ length: 50 }, () => [VDM]));
+  it("carries several segments in one frame", async () => {
+    await seed(Array.from({ length: 50 }, (_, i) => [`${VDM}#${i}`]));
     await up.start();
     link.connect();
     await until(async () => (await files()).length === 0);
@@ -94,19 +111,27 @@ describe("draining the queue", () => {
     expect(link.published[0].replay).toBe(true);
   });
 
-  it("keeps a frame's remainder on disk when the server takes only part of it", async () => {
-    await seed([Array.from({ length: 10 }, (_, i) => `${VDM}#${i}`)]);
+  it("reads on from where the last frame stopped inside a segment", async () => {
+    const all = Array.from({ length: 10 }, (_, i) => `${VDM}#${i}`);
+    await seed([all]);
     await up.start();
-    link.accept = 4;
+    link.connect({ publish_frame: 4, publish_per_min: 6_000_000 });
+    await until(async () => (await files()).length === 0);
+    expect(link.published.map((f) => sentences(f).length)).toEqual([4, 4, 2]);
+    expect(link.published.flatMap(sentences)).toEqual(all); // each sentence once, in order
+  });
+
+  it("never rewrites a segment when the server takes only part of a frame", async () => {
+    await seed([Array.from({ length: 10 }, (_, i) => `${VDM}#${i}`)]);
+    const before = await bytes();
+    await up.start();
+    link.accept = 4; // a short ack stops the drain partway through the segment
     link.connect();
     await until(() => link.published.length === 1);
     await sleep(100);
-    const left = await files();
-    expect(left).toHaveLength(1);
-    expect(JSON.parse(await readFile(join(queue(), left[0]), "utf8"))).toEqual([
-      `${VDM}#4`, `${VDM}#5`, `${VDM}#6`, `${VDM}#7`, `${VDM}#8`, `${VDM}#9`,
-    ]);
+    expect(await bytes()).toEqual(before); // untouched on disk: only the head offset moved
     expect(up.stats.sent).toBe(4);
+    expect(up.stats.queued).toBe(6); // the six the server dropped are still owed, not counted as sent
   });
 
   it("requeues the remainder of a live frame the server only partly took", async () => {
@@ -118,11 +143,9 @@ describe("draining the queue", () => {
     await until(() => link.published.some((f) => !f.replay));
     await sleep(100);
     expect(up.stats.sent).toBe(4);
-    expect(up.stats.queued).toBe(6); // the six the server dropped are still owed, not counted as sent
+    expect(up.stats.queued).toBe(6);
     await up.stop(); // stop flushes the backlog, so the remainder survives a restart
-    const left = await files();
-    expect(left).toHaveLength(1);
-    expect(JSON.parse(await readFile(join(queue(), left[0]), "utf8"))).toHaveLength(6);
+    expect(await onDisk()).toHaveLength(6);
   });
 
   it("leaves the queue untouched when the socket drops mid-drain", async () => {
@@ -135,7 +158,20 @@ describe("draining the queue", () => {
     expect(up.stats.queued).toBe(2);
   });
 
-  it("tops up the newest file instead of leaving one behind per flush", async () => {
+  it("leaves every segment intact when a replay spanning several is cut short", async () => {
+    const full = (tag: string) => Array.from({ length: 500 }, (_, i) => `${VDM}#${tag}${i}`);
+    await seed([full("a"), full("b")]);
+    const before = await bytes();
+    await up.start();
+    link.accept = 10; // a frame of 1000 from two segments, almost all of it refused
+    link.connect();
+    await until(() => link.published.length === 1);
+    await sleep(200);
+    expect(await bytes()).toEqual(before);
+    expect(up.stats.queued).toBe(990);
+  });
+
+  it("appends to the newest segment instead of leaving one behind per flush", async () => {
     link.open = false;
     // A boat offline for weeks flushes every fifteen seconds; a file each time is what filled the directory.
     for (let round = 0; round < 3; round++) {
@@ -144,86 +180,37 @@ describe("draining the queue", () => {
       up.hear(VDM);
       await up.stop();
     }
-    const left = await files();
-    expect(left).toHaveLength(1);
-    expect(JSON.parse(await readFile(join(queue(), left[0]), "utf8"))).toHaveLength(6);
+    expect(await files()).toHaveLength(1);
+    expect(await onDisk()).toHaveLength(6);
   });
 
-  it("starts a new file once the newest one is full", async () => {
+  it("rolls to a new segment once the newest one is full", async () => {
     link.open = false;
     await up.start();
-    for (let i = 0; i < 500; i++) up.hear(VDM); // FILE_MAX: the backlog goes to disk on its own
-    await up.stop();
+    for (let i = 0; i < Math.ceil(SEGMENT_MAX / (VDM.length + 1)); i++) up.hear(VDM);
+    await up.stop(); // one flush, one segment: an append is never split, so it overshoots instead
+    expect(await files()).toHaveLength(1);
+    expect((await bytes())[0].length).toBeGreaterThanOrEqual(SEGMENT_MAX);
+
     await up.start();
     up.hear(VDM);
     await up.stop();
     expect(await files()).toHaveLength(2);
-  });
+  }, 20_000);
 
-  it("loses nothing when a flush lands while the drain is reading the same file", async () => {
+  it("loses nothing when a flush lands while the drain is reading the same segment", async () => {
     await seed([[`${VDM}#queued`]]);
     await up.start();
-    link.connect(); // the drain starts reading the tail file
-    for (let i = 0; i < 500; i++) up.hear(`${VDM}#${i}`); // FILE_MAX: a flush fires mid-read, on that file
+    link.connect(); // the drain starts reading the head segment
+    for (let i = 0; i < 500; i++) up.hear(`${VDM}#${i}`); // FLUSH_AT: a flush fires mid-read, on that segment
     await until(async () => (await files()).length === 0, 10_000);
     await up.stop();
 
-    const delivered = link.published.flatMap(sentences);
-    for (const name of await files()) {
-      delivered.push(...(JSON.parse(await readFile(join(queue(), name), "utf8")) as string[]));
-    }
+    const delivered = [...link.published.flatMap(sentences), ...(await onDisk())];
     const heard = new Set(delivered.map((s) => s.replace(/^\\[^\\]*\\/, "")));
     expect(heard.has(`${VDM}#queued`)).toBe(true);
     for (let i = 0; i < 500; i++) expect(heard.has(`${VDM}#${i}`)).toBe(true);
   }, 20_000);
-
-  it("splits a flush that overfills the newest file", async () => {
-    link.open = false;
-    await up.start();
-    up.hear(VDM);
-    up.hear(VDM);
-    up.hear(VDM);
-    await up.stop(); // a file of 3, with room to spare
-
-    await up.start();
-    for (let i = 0; i < 600; i++) up.hear(VDM); // tops the file up to 500 rather than making one of 503
-    await up.stop();
-    const sizes = await Promise.all(
-      (await files()).map(async (f) => (JSON.parse(await readFile(join(queue(), f), "utf8")) as string[]).length),
-    );
-    expect(Math.max(...sizes)).toBeLessThanOrEqual(500);
-    expect(sizes.reduce((a, b) => a + b, 0)).toBe(603);
-  });
-
-  it("rewrites only the file a short ack stopped inside", async () => {
-    await seed([
-      [`${VDM}#0`, `${VDM}#1`, `${VDM}#2`],
-      [`${VDM}#3`, `${VDM}#4`, `${VDM}#5`],
-    ]);
-    await up.start();
-    link.accept = 4; // stops inside the second file, which keeps its own tail rather than the whole remainder
-    link.connect();
-    await until(() => link.published.length === 1);
-    await sleep(100);
-    const left = await files();
-    expect(left).toHaveLength(1);
-    expect(JSON.parse(await readFile(join(queue(), left[0]), "utf8"))).toEqual([`${VDM}#4`, `${VDM}#5`]);
-  });
-
-  it("keeps files within FILE_MAX when a replay spanning several is cut short", async () => {
-    const full = (tag: string) => Array.from({ length: 500 }, (_, i) => `${VDM}#${tag}${i}`);
-    await seed([full("a"), full("b")]);
-    await up.start();
-    link.accept = 10; // a frame of 1000 from two files, almost all of it refused
-    link.connect();
-    await until(() => link.published.length === 1);
-    await sleep(200);
-    const sizes = await Promise.all(
-      (await files()).map(async (f) => (JSON.parse(await readFile(join(queue(), f), "utf8")) as string[]).length),
-    );
-    expect(Math.max(...sizes)).toBeLessThanOrEqual(500); // not one file holding the whole refused remainder
-    expect(sizes.reduce((a, b) => a + b, 0)).toBe(990);
-  });
 
   it("splits a live burst at the server's frame limit", async () => {
     await up.start();
@@ -255,22 +242,22 @@ describe("draining the queue", () => {
 
   it("gets past a queue entry it can neither read nor delete", async () => {
     await mkdir(queue(), { recursive: true });
-    await mkdir(join(queue(), "1600000000000.json")); // a directory: unreadable, and unlink refuses it
-    await writeFile(join(queue(), "1700000000001.json"), JSON.stringify([`${VDM}#real`]));
+    await mkdir(join(queue(), "1600000000000.log")); // a directory: unreadable, and unlink refuses it
+    await writeFile(join(queue(), "1700000000001.log"), `${VDM}#real\n`);
     await up.start();
     link.connect();
-    await until(() => link.published.flatMap(sentences).filter((s) => s.includes("#real")).length === 1);
+    await until(() => link.published.flatMap(sentences).some((s) => s.includes("#real")));
     await sleep(200);
     // The stuck entry is off the queue's books but still on disk, and the sentence behind it still went.
-    expect(await files()).toEqual(["1600000000000.json"]);
+    expect(await files()).toEqual(["1600000000000.log"]);
     expect(link.published.flatMap(sentences).filter((s) => s.includes("#real"))).toHaveLength(1);
   });
 
-  it("does not leave the queue count inflated when a counted file turns unreadable", async () => {
+  it("does not leave the queue count inflated when a counted segment turns unreadable", async () => {
     await seed([[`${VDM}#0`, `${VDM}#1`, `${VDM}#2`]]);
     await up.start();
     expect(up.stats.queued).toBe(3); // counted at start, so discarding it later has to be accounted for
-    await writeFile(join(queue(), (await files())[0]), "{ truncated");
+    await writeFile(join(queue(), (await files())[0]), "no sentence here, and no newline to end one");
     link.connect();
     await until(() => up.stats.queued === 0);
     expect(await files()).toHaveLength(0);
@@ -284,5 +271,20 @@ describe("draining the queue", () => {
     await sleep(300);
     expect(link.published).toHaveLength(1);
     expect(await files()).toHaveLength(3);
+  });
+});
+
+describe("reading a queue off disk", () => {
+  it("drops a sentence left half-written by a crash", async () => {
+    await mkdir(queue(), { recursive: true });
+    await writeFile(join(queue(), "1700000000000.log"), `${VDM}#0\n${VDM}#1\n${VDM}#ha`);
+    link.open = false;
+    await up.start();
+    expect(up.stats.queued).toBe(2);
+    up.hear(`${VDM}#2`); // the append that follows must not splice onto the half-written sentence
+    link.connect();
+    await until(async () => (await files()).length === 0);
+    const heard = link.published.flatMap(sentences).map((s) => s.replace(/^\\[^\\]*\\/, ""));
+    expect(heard).toEqual([`${VDM}#0`, `${VDM}#1`, `${VDM}#2`]);
   });
 });
