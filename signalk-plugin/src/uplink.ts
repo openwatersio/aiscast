@@ -296,8 +296,10 @@ export class Uplink {
     }
   }
 
-  // Retries the files that would not delete. They are never read or replayed, only deleted: the server
-  // already has their sentences, so a queue directory that turns read-only must not resurrect them.
+  // Retries the files that would not delete. For the life of the process they are never read or replayed,
+  // only deleted: the server already has their sentences. The set is not kept on disk, so a restart reads
+  // them back as ordinary queue files and sends them once more; that costs a duplicate aiscast already
+  // drops, which is cheaper than a second durable file to keep correct.
   private async sweep(): Promise<void> {
     for (const name of [...this.stale]) {
       try {
@@ -402,7 +404,13 @@ export class Uplink {
       if (this.stopped) return;
       const batch = await this.exclusive(() => this.nextBatch());
       if (!batch) {
-        if (this.backlog.length === 0) return; // disk and memory both empty: live sending resumes
+        if (this.backlog.length === 0) {
+          // Disk and memory both empty: live sending resumes, and nothing is owed whatever the running
+          // count says. Reconciling here is what keeps the status line honest after a file counted at start
+          // turns unreadable, since its sentences are gone and their number with them.
+          this.stats.queued = 0;
+          return;
+        }
         // Sentences heard during the drain go out straight from memory. Writing them to a file only to read
         // it back would hand the drain a fresh file on every pass, and it would never reach the end.
         const chunk = this.backlog.splice(0, this.limits.frame);

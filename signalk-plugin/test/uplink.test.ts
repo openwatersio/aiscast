@@ -266,6 +266,16 @@ describe("draining the queue", () => {
     expect(link.published.flatMap(sentences).filter((s) => s.includes("#real"))).toHaveLength(1);
   });
 
+  it("does not leave the queue count inflated when a counted file turns unreadable", async () => {
+    await seed([[`${VDM}#0`, `${VDM}#1`, `${VDM}#2`]]);
+    await up.start();
+    expect(up.stats.queued).toBe(3); // counted at start, so discarding it later has to be accounted for
+    await writeFile(join(queue(), (await files())[0]), "{ truncated");
+    link.connect();
+    await until(() => up.stats.queued === 0);
+    expect(await files()).toHaveLength(0);
+  });
+
   it("paces a replay under the server's per-minute publish limit", async () => {
     await seed(Array.from({ length: 4 }, (_, i) => [`${VDM}#${i}`]));
     await up.start();
