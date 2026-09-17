@@ -253,6 +253,29 @@ describe("draining the queue", () => {
     expect(up.stats.queued).toBe(1);
   });
 
+  it("gets past a queue entry it can neither read nor delete", async () => {
+    await mkdir(queue(), { recursive: true });
+    await mkdir(join(queue(), "1600000000000.json")); // a directory: unreadable, and unlink refuses it
+    await writeFile(join(queue(), "1700000000001.json"), JSON.stringify([`${VDM}#real`]));
+    await up.start();
+    link.connect();
+    await until(() => link.published.flatMap(sentences).filter((s) => s.includes("#real")).length === 1);
+    await sleep(200);
+    // The stuck entry is off the queue's books but still on disk, and the sentence behind it still went.
+    expect(await files()).toEqual(["1600000000000.json"]);
+    expect(link.published.flatMap(sentences).filter((s) => s.includes("#real"))).toHaveLength(1);
+  });
+
+  it("does not leave the queue count inflated when a counted file turns unreadable", async () => {
+    await seed([[`${VDM}#0`, `${VDM}#1`, `${VDM}#2`]]);
+    await up.start();
+    expect(up.stats.queued).toBe(3); // counted at start, so discarding it later has to be accounted for
+    await writeFile(join(queue(), (await files())[0]), "{ truncated");
+    link.connect();
+    await until(() => up.stats.queued === 0);
+    expect(await files()).toHaveLength(0);
+  });
+
   it("paces a replay under the server's per-minute publish limit", async () => {
     await seed(Array.from({ length: 4 }, (_, i) => [`${VDM}#${i}`]));
     await up.start();
