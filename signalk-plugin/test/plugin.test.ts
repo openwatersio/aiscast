@@ -23,6 +23,12 @@ let server: FakeServer;
 let app: FakeApp;
 let plugin: Plugin;
 
+// The sentences one queue segment holds, newline-delimited as the uplink writes them.
+async function lines(name: string): Promise<string[]> {
+  const text = await readFile(join(app.dataDir, "queue", name), "utf8");
+  return text === "" ? [] : text.slice(0, -1).split("\n");
+}
+
 function start(config: Partial<Config> = {}): Promise<void> {
   plugin = createPlugin(app);
   plugin.start({ advanced: { server: server.url }, ...config }, () => {});
@@ -97,11 +103,11 @@ describe("uplink", () => {
     app.emit("nmea0183", VDM);
     app.emit("nmea0183", VDM2);
     await sleep(100);
-    // queue files are written on a timer; force the backlog through by restarting the plugin (stop flushes)
+    // segments are written on a timer; force the backlog through by restarting the plugin (stop flushes)
     await plugin.stop!();
     const files = await readdir(join(app.dataDir, "queue"));
     expect(files).toHaveLength(1);
-    expect(JSON.parse(await readFile(join(app.dataDir, "queue", files[0]), "utf8"))).toHaveLength(2);
+    expect(await lines(files[0])).toHaveLength(2);
 
     server = await startFakeServer(port);
     await start();
@@ -113,7 +119,7 @@ describe("uplink", () => {
 
   it("drains a pre-existing backlog before live sentences", async () => {
     await mkdir(join(app.dataDir, "queue"), { recursive: true });
-    await writeFile(join(app.dataDir, "queue", "1.json"), JSON.stringify([VDM2]));
+    await writeFile(join(app.dataDir, "queue", "1.log"), `${VDM2}\n`);
     await start();
     app.emit("nmea0183", VDM);
     await until(() => server.frames.filter((f) => f.type === "publish").length === 2);
@@ -124,7 +130,7 @@ describe("uplink", () => {
 
   it("keeps a file on disk when the socket drops mid-drain, without duplicating it", async () => {
     await mkdir(join(app.dataDir, "queue"), { recursive: true });
-    await writeFile(join(app.dataDir, "queue", "1.json"), JSON.stringify([VDM2]));
+    await writeFile(join(app.dataDir, "queue", "1.log"), `${VDM2}\n`);
     server.ack = false;
     await start();
     await server.waitForFrame((f) => f.type === "publish" && f.replay === true);
@@ -133,8 +139,8 @@ describe("uplink", () => {
     await sleep(100);
     await plugin.stop!(); // flushes anything the drain wrongly copied into memory
     const files = await readdir(join(app.dataDir, "queue"));
-    expect(files).toEqual(["1.json"]);
-    expect(JSON.parse(await readFile(join(app.dataDir, "queue", "1.json"), "utf8"))).toEqual([VDM2]);
+    expect(files).toEqual(["1.log"]);
+    expect(await lines("1.log")).toEqual([VDM2]);
   });
 
   it("re-encodes NMEA 2000 AIS PGNs as sentences tagged s:n2k", async () => {
