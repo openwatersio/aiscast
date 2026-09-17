@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-// wsOnly routes stream over WebSocket/SSE and are pointed at the API reference (openwaters.io/api/ais) by
-// info.description instead of a paths entry. /v1/nmea is also WebSocket but keeps a paths entry for its
-// pre-upgrade HTTP refusals.
-var wsOnly = map[string]bool{"/v0/stream": true, "/v1/stream": true}
+// proseOnly routes are not request/response HTTP (WebSocket/SSE streams, and JSON-RPC on /mcp) and are
+// pointed at the API reference (openwaters.io/api/ais) by info.description instead of a paths entry.
+// /v1/nmea is also WebSocket but keeps a paths entry for its pre-upgrade HTTP refusals.
+var proseOnly = map[string]bool{"/v0/stream": true, "/v1/stream": true, "/mcp": true}
 
 func TestOpenAPIMatchesMux(t *testing.T) {
 	var spec struct {
@@ -53,9 +53,9 @@ func TestOpenAPIMatchesMux(t *testing.T) {
 		if notAPI[pat] {
 			continue
 		}
-		if wsOnly[pat] {
+		if proseOnly[pat] {
 			if !strings.Contains(spec.Info.Description, "`"+pat+"`") {
-				t.Errorf("%s is WebSocket-only and must be named in info.description", pat)
+				t.Errorf("%s has no paths entry and must be named in info.description", pat)
 			}
 			continue
 		}

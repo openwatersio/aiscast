@@ -14,6 +14,8 @@ This is a beta. There is no SLA. Coverage is uneven. The terms for re-serving so
 - `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon` (or `?mmsi=a,b,c`): GeoJSON of every vessel currently in view. Each vessel carries its last position, name, type, course, speed, heading, and when and from where aiscast last heard it. No token.
 - `GET https://ais.openwaters.io/v1/stations`: every source aiscast is hearing, with message counts and age.
 
+**AI assistants.** `https://ais.openwaters.io/mcp` is an MCP (Model Context Protocol) server with five read-only tools: vessels by MMSI, vessels in an area, vessels near a point or another vessel, search by name, and coverage. No sign-in. Claude Code: `claude mcp add --transport http aiscast https://ais.openwaters.io/mcp`. Claude.ai, ChatGPT, Cursor, and VS Code take the URL as a custom connector or `mcp.json` entry; setup for each is in the [API reference](https://openwaters.io/api/ais/). A token in an `Authorization: Bearer` header raises the anonymous limits.
+
 **Tokens.** `/v0/stream` needs a token. A personal token is self-serve and never expires. Use the [token page](https://openwatersio.github.io/aiscast/token.html), or generate an Ed25519 keypair and `POST https://ais.openwaters.io/v1/keys` with `{"pubkey":"<base64url public key>"}`. The response is your token. It carries the personal tier: 2 streams, 50 messages/s, and a 20°×20° area. Feed data from the same token and it becomes a feeder token by itself.
 
 Tiers and limits are in [docs/limits.md](docs/limits.md). For more than the feeder tier, or for commercial use, write to hello@openwaters.io.

@@ -1,4 +1,4 @@
 # Derived from CI: server/go.mod pins Go, .github/workflows/ci.yml pins Node.
 [tools]
-go = "1.24"
+go = "1.27"
 node = "24"

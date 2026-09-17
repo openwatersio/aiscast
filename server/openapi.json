@@ -3,7 +3,7 @@
   "info": {
     "title": "aiscast API",
     "version": "1.0.0",
-    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
+    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, no sign-in, the same tiers as `/v1/vessels`. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
     "contact": {
       "name": "aiscast",
       "url": "https://github.com/openwatersio/aiscast"

@@ -39,7 +39,7 @@ Tokens do not block bad data. Rate caps, plausibility checks (impossible positio
 
 aiscast rate-limits every HTTP endpoint per network address:
 
-- 120 requests per minute for `/v1/vessels`, `/v1/stations`, and `/v1/stats`.
+- 120 requests per minute for `/v1/vessels`, `/v1/stations`, `/v1/stats`, and `/mcp`. An MCP tool call is one request, and the area and MMSI limits above apply to each call as they do to `/v1/vessels`. A call returns at most 200 rows (50 unless asked) and says when it cut the list.
 - 10 per minute for `/v1/keys` and the in-band `register` frame on `/v1/stream`, in one shared window. One token is all a client ever needs, and a shared address may hold several clients.
 - 20 WebSocket connections per minute across `/v0/stream`, `/v1/stream`, and `/v1/nmea`. aiscast counts them per token on `/v1/stream` and `/v1/nmea` when a client presents one, and per address otherwise. `/v0/stream` counts per address, because its token arrives after the handshake. A working client connects once and reconnects only on failure.
 
