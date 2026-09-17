@@ -32,6 +32,27 @@ Go 1.24 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the author
 
 ## Releases
 
-The Signal K plugin publishes to npm from `release.yml` when a GitHub release is created with a `signalk-plugin-v*` tag, using trusted publishing over OIDC with provenance. There is no npm token; the workflow needs `id-token: write`. Set the release tag to the version you want published — the workflow derives `package.json` from it and commits the bump only after a successful publish. Node 24 in that workflow is deliberate: trusted publishing needs npm >= 11.5.1. The server and viewer have no release step; a merge to `main` deploys both.
+The server and viewer have no release step; a merge to `main` deploys both.
+
+The Signal K plugin publishes to npm from `release.yml` when a GitHub release is created with a `signalk-plugin-v*` tag. It uses trusted publishing over OIDC with provenance, so there is no npm token and the workflow needs `id-token: write`. Node 24 in that workflow is deliberate, because trusted publishing needs npm >= 11.5.1.
 
 Before cutting a release, work the [Open Waters release preparation checklist](https://github.com/openwatersio/.github/blob/main/docs/agents/releases.md#release-preparation-checklist): review specs and plans from this cycle, move lasting guidance into the docs above and user-facing changes into the release notes, delete completed ones, and have a human review those deletions in the release PR.
+
+To release the plugin:
+
+1. Rename the `## Unreleased` heading in `signalk-plugin/CHANGELOG.md` to the version, and merge that with the change it describes.
+2. Create a GitHub release targeting `main`, tagged `signalk-plugin-v<version>`, with the notes from that changelog section. The tag sets the version: the workflow derives `package.json` from it, so leave `package.json` alone until step 4.
+3. Watch the run, then confirm the version on the registry.
+4. Land the version bump as a pull request.
+
+Two things about that run look like failures and are not.
+
+**The run ends red after the publish succeeded.** Its last step commits the version bump and pushes it to `main`. A ruleset on `main` declines that push, so the job exits non-zero with `GH013: Repository rule violations found`. Read the `npm publish` step before reacting to the red X. Never re-run the workflow to clear it, because the version is already on npm and publishing it a second time fails.
+
+**The new version does not reach npm right away.** npm accepts a publish and then takes minutes to serve it. Until it does, `npm view signalk-aiscast version` and the registry both answer with the previous version. Treat `+ signalk-aiscast@<version>` at the end of the `npm publish` step as the authority, and poll for the rest:
+
+```sh
+until curl -s https://registry.npmjs.org/signalk-aiscast | grep -q '"<version>"'; do sleep 15; done
+```
+
+The bump the workflow could not push is step 4. It is two lines: `version` in `signalk-plugin/package.json`, and the `signalk-plugin` entry near the end of the root `package-lock.json`. It belongs to the release rather than to the change being released, and until it lands npm and the repository disagree about the current version.

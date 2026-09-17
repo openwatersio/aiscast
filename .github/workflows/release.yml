@@ -38,7 +38,9 @@ jobs:
 
       - run: npm publish # prepack runs the build
 
-      # Only after a successful publish, so a failed release never mutates the repo
+      # Only after a successful publish, so a failed release never mutates the repo. A ruleset on main
+      # declines this push, which fails the run with the package already on npm. CONTRIBUTING.md covers
+      # what to do with the red X and where the bump lands instead.
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
