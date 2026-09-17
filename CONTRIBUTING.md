@@ -4,7 +4,7 @@
 
 - [server/](server/): the server, one Go binary: ingest → reassemble → dedupe → decode → bbox fan-out, hourly archive to R2. [server/README.md](server/README.md) documents endpoints, environment, access tokens, and sources; [server/deploy/](server/deploy/) the production box.
 - [viewer/](viewer/): static MapLibre page, deployed to GitHub Pages from `main`.
-- [signalk-plugin/](signalk-plugin/): `signalk-aiscast`, the Signal K plugin (TypeScript, vitest). `npm install && npm test` runs it against a fake aiscast; `npm run build` emits `dist/`. Published to npm by `release.yml` on a `signalk-plugin-v*` release tag.
+- [signalk-plugin/](signalk-plugin/): `signalk-aiscast`, the Signal K plugin (TypeScript, vitest). `npm install && npm test` runs it against a fake aiscast; `npm run build` emits `dist/`. Published to npm by `release.yml` on a `signalk-plugin-v*` tag.
 - [docs/](docs/): [architecture.md](docs/architecture.md) is how data flows and why; read it before proposing a change to that. [policy.md](docs/policy.md) covers per-source licensing, privacy, and funding; [limits.md](docs/limits.md) the access tiers.
 - [research/](research/): the research behind every claim in the docs.
 
@@ -32,6 +32,23 @@ Go 1.24 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the author
 
 ## Releases
 
-The Signal K plugin publishes to npm from `release.yml` when a GitHub release is created with a `signalk-plugin-v*` tag, using trusted publishing over OIDC with provenance. There is no npm token; the workflow needs `id-token: write`. Set the release tag to the version you want published — the workflow derives `package.json` from it and commits the bump only after a successful publish. Node 24 in that workflow is deliberate: trusted publishing needs npm >= 11.5.1. The server and viewer have no release step; a merge to `main` deploys both.
+The server and viewer have no release step; a merge to `main` deploys both.
+
+The Signal K plugin publishes to npm from `release.yml` when a `signalk-plugin-v*` tag is pushed. It uses trusted publishing over OIDC with provenance, so there is no npm token and the workflow needs `id-token: write`. Node 24 in that workflow is deliberate, because trusted publishing needs npm >= 11.5.1. Tags for other release tracks do not match the prefix and are ignored.
 
 Before cutting a release, work the [Open Waters release preparation checklist](https://github.com/openwatersio/.github/blob/main/docs/agents/releases.md#release-preparation-checklist): review specs and plans from this cycle, move lasting guidance into the docs above and user-facing changes into the release notes, delete completed ones, and have a human review those deletions in the release PR.
+
+To release the plugin:
+
+1. Open a pull request that sets the new version in `signalk-plugin/package.json` and in the `signalk-plugin` entry near the end of the root `package-lock.json`, and renames the `## Unreleased` heading in `signalk-plugin/CHANGELOG.md` to that version. Merge it once CI passes.
+2. Tag that merge commit and push only the tag:
+
+   ```sh
+   git fetch origin && git tag signalk-plugin-v<version> origin/main && git push origin signalk-plugin-v<version>
+   ```
+
+3. Watch the run. It checks the tag against `package.json`, tests, publishes, and creates the GitHub release with that version's changelog entry as the notes.
+
+The version lands before the tag, so a release tag always describes the tree it points at and the workflow never writes to `main`. Push the tag from a terminal rather than creating the release in the web UI, because the workflow triggers on the tag and makes the release itself.
+
+npm accepts a publish and then takes a few minutes to serve it, so `npm view signalk-aiscast version` can still answer with the previous version after a green run. The run is the signal; the registry catches up.
