@@ -54,6 +54,7 @@ export class Uplink {
   private seen = new Map<string, number>();
   private listing: string[] = []; // queue file names, oldest first; the drain works from this, not readdir
   private sizes = new Map<string, number>(); // bytes per queue file, kept up to date as files come and go
+  private stale = new Set<string>(); // files already delivered or dropped that would not delete; retried
   private bytes = 0;
   private lastName = 0;
   private limits = { ...DEFAULT_LIMITS };
@@ -281,24 +282,38 @@ export class Uplink {
     return true;
   }
 
-  // Deletes a queue file. False when it would not go: the caller leaves it on the listing rather than
-  // stranding a file on disk that nothing will look at again until the next start.
-  private async remove(name: string): Promise<boolean> {
+  // Deletes a queue file whose sentences are done with, delivered or dropped. A file that will not go is
+  // remembered for `sweep` and stops being accounted for: it is off the listing either way, so counting
+  // bytes nothing can reclaim would only drive the cap to delete queued data that is still deliverable.
+  private async remove(name: string): Promise<void> {
+    this.bytes -= this.sizes.get(name) ?? 0;
+    this.sizes.delete(name);
     try {
       await unlink(join(this.dir, name));
     } catch (err) {
       this.log(`queue delete failed: ${(err as Error).message}`);
-      return false;
+      this.stale.add(name);
     }
-    this.bytes -= this.sizes.get(name) ?? 0;
-    this.sizes.delete(name);
-    return true;
+  }
+
+  // Retries the files that would not delete. They are never read or replayed, only deleted: the server
+  // already has their sentences, so a queue directory that turns read-only must not resurrect them.
+  private async sweep(): Promise<void> {
+    for (const name of [...this.stale]) {
+      try {
+        await unlink(join(this.dir, name));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") return; // still failing; again next tick
+      }
+      this.stale.delete(name);
+    }
   }
 
   // Queue size on disk, measured once at start. Batched: a backlog of many thousands of files must not put
   // that many requests in flight at once.
   private async measure(): Promise<void> {
     this.sizes.clear();
+    this.stale.clear();
     this.bytes = 0;
     for (let i = 0; i < this.listing.length; i += READ_BATCH) {
       const batch = this.listing.slice(i, i + READ_BATCH);
@@ -339,9 +354,7 @@ export class Uplink {
         else bad.add(batch[j]);
       });
     }
-    for (const f of bad) {
-      if (!(await this.remove(f))) bad.delete(f); // still on disk: keep it listed rather than lose track of it
-    }
+    for (const f of bad) await this.remove(f);
     if (bad.size > 0) this.listing = this.listing.filter((f) => !bad.has(f));
     return n;
   }
@@ -349,6 +362,7 @@ export class Uplink {
   // Oldest files go when the queue outgrows its cap. This runs during a drain as well: a replay is paced,
   // so a receiver busy enough to outrun it would otherwise grow the queue past the cap unchecked.
   private async enforceCap(): Promise<void> {
+    if (this.stale.size > 0) await this.exclusive(() => this.sweep());
     if (this.bytes <= QUEUE_MAX_BYTES) return; // the running total, so an idle tick touches no files at all
     await this.exclusive(() => this.trim());
   }
@@ -358,7 +372,7 @@ export class Uplink {
     for (; i < this.listing.length && this.bytes > QUEUE_MAX_BYTES; i++) {
       const name = this.listing[i];
       const n = (await this.readQueueFile(name))?.length ?? 0;
-      if (!(await this.remove(name))) break; // leave it listed: a file nothing can see is a file nothing frees
+      await this.remove(name);
       this.stats.dropped += n;
       this.stats.queued -= n;
     }
@@ -426,9 +440,7 @@ export class Uplink {
       let taken = 0;
       for (const queued of read) {
         if (!queued) {
-          const name = names[taken];
-          if (!(await this.remove(name))) return files.length > 0 ? { sentences, files } : null;
-          taken++;
+          await this.remove(names[taken++]); // unreadable: its sentences are gone whatever the disk says
           continue;
         }
         // One oversized file still goes on its own; `keep` puts back whatever the frame did not cover.

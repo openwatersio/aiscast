@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The queue keeps working when the plugin cannot delete a file, as happens when an SD card turns read-only. A queue file that could neither be read nor removed used to stop the replay where it stood until the next reconnect, and files the server had already taken could be left behind in a way that made the 100 MB cap discard data that had not been sent yet. Files that will not delete are now set aside, retried in the background, and never replayed.
+
 ## 0.3.1
 
 - Fixes a queue that never emptied. While the plugin was replaying a backlog to aiscast it wrote every sentence its receiver heard to a new queue file, so it traded one file for another and the replay never reached the end. On a boat that had been offline a while, the queue directory stayed at tens of thousands of files no matter how long the connection was up. A replay now carries up to a thousand sentences from as many files in one frame, and sentences heard mid-replay go out from memory.
