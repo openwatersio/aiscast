@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - The offline queue writes far less to the SD card. Each queue file used to be rewritten from scratch every fifteen seconds as sentences were added to it, so a boat at anchor hearing a slow trickle of traffic wrote the same data to the card a dozen times over. Sentences are now appended to the end of a file and nothing is rewritten, which on a quiet anchorage cuts the writing to a fraction of what it was.
 - A replay the server only partly accepts no longer rewrites anything on disk, and a queue file damaged by a power cut costs one sentence instead of the five hundred it was sharing a file with.
