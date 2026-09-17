@@ -95,6 +95,7 @@ export class Uplink {
   private bytes = 0;
   private head = 0; // bytes of listing[0] the server has already taken
   private sending: string | null = null; // newest segment a frame in flight was read from
+  private unwritable: string | null = null; // segment an append failed on; the next one starts elsewhere
   private lastName = 0;
   private limits = { ...DEFAULT_LIMITS };
   private paceUntil = 0;
@@ -285,17 +286,37 @@ export class Uplink {
   // full or read-only disk must not take the Signal K process down, so an append that fails leaves its
   // sentences in the backlog to be retried next time.
   private async flushOnce(): Promise<void> {
-    if (this.backlog.length === 0) return;
-    const sentences = this.backlog;
-    this.backlog = [];
+    // In batches, because the backlog is not bounded by FLUSH_AT. That only brings a flush forward, and a
+    // burst can pile up far past it before the first one gets its turn at the lock. One append has to stay
+    // small next to a segment for the rollover in `append` to bound anything.
+    for (let failures = 0; this.backlog.length > 0; ) {
+      if (await this.append(this.backlog.splice(0, FLUSH_AT))) {
+        failures = 0;
+        continue;
+      }
+      // One retry, which `append` starts on a new segment: the first failure may have been the entry at the
+      // tail rather than the disk, and that is worth finding out now rather than a flush interval from now.
+      if (++failures > 1) return;
+    }
+  }
+
+  // One batch onto the newest segment, or onto a new one. False when it did not land, in which case the
+  // sentences are back at the front of the backlog.
+  private async append(sentences: string[]): Promise<boolean> {
     const data = Buffer.from(sentences.map((s) => `${s}\n`).join(""));
-    // Two reasons to start a segment rather than append to the newest one. A full one rolls over instead of
-    // splitting the append, since a flush is small next to a segment and letting one overshoot costs a little
+    // Three reasons to start a segment rather than append to the newest one. A full one rolls over instead of
+    // splitting the append, since a batch is small next to a segment and letting one overshoot costs a little
     // size and saves writing any part of it twice. One a frame in flight was read from rolls over however
     // much room it has left, since that frame was read against the size it had then and appending would put
-    // sentences behind an end the drain has already passed.
+    // sentences behind an end the drain has already passed. And one an append has already failed on rolls
+    // over whatever is wrong with it: an entry that is not a writable file would otherwise keep every later
+    // sentence out of the queue for as long as it sat at the tail.
     const tail = this.listing.at(-1);
-    const fresh = tail === undefined || tail === this.sending || (this.sizes.get(tail) ?? 0) >= SEGMENT_MAX;
+    const fresh =
+      tail === undefined ||
+      tail === this.sending ||
+      tail === this.unwritable ||
+      (this.sizes.get(tail) ?? 0) >= SEGMENT_MAX;
     const name = fresh ? this.newName() : tail;
     if (fresh) {
       // Listed before the append, not after: a write that fails partway still leaves bytes on disk, and a
@@ -310,11 +331,13 @@ export class Uplink {
       // A disk that filled up can take part of an append. Cutting back to the last whole sentence and
       // re-measuring leaves a clean end for the retry, which re-appends every sentence from the backlog.
       await this.repair(name);
+      this.unwritable = name;
       this.backlog.unshift(...sentences);
-      return;
+      return false;
     }
     this.sizes.set(name, (this.sizes.get(name) ?? 0) + data.length);
     this.bytes += data.length;
+    return true;
   }
 
   // Deletes a segment whose sentences are done with, delivered or dropped. One that will not go is set aside
@@ -433,6 +456,9 @@ export class Uplink {
     while (this.listing.length > 0 && this.bytes > QUEUE_MAX_BYTES) {
       const name = this.listing[0];
       const owed = await this.countFrom(name, this.head); // what goes is what was never sent
+      // Could not be read this time. The cap waits a tick rather than discard a segment whose sentences may
+      // still be sitting there, the same call the drain makes on a read that only failed.
+      if (owed === null) break;
       await this.remove(name);
       this.listing.shift();
       this.head = 0;
@@ -441,14 +467,20 @@ export class Uplink {
     }
   }
 
-  private async countFrom(name: string, from: number): Promise<number> {
+  // Sentences a segment still owes from `from` on. Null when it could not be read this time and may read
+  // fine later, which the caller must not mistake for a segment that owes nothing.
+  private async countFrom(name: string, from: number): Promise<number | null> {
     try {
       const buf = await readFile(join(this.dir, name));
       let n = 0;
       for (let i = from; i < buf.length; i++) if (buf[i] === NEWLINE) n++;
       return n;
-    } catch {
-      return 0;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? "";
+      if (code === "ENOENT") return 0; // already gone, so nothing is owed
+      if (UNREADABLE.has(code)) return 0; // damaged: its sentences went with its contents
+      this.log(`queue count failed: ${(err as Error).message}`);
+      return null;
     }
   }
 

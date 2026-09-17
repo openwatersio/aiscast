@@ -184,19 +184,34 @@ describe("draining the queue", () => {
     expect(await onDisk()).toHaveLength(6);
   });
 
-  it("rolls to a new segment once the newest one is full", async () => {
+  it("keeps segments near their size limit through a burst", async () => {
     link.open = false;
     await up.start();
-    for (let i = 0; i < Math.ceil(SEGMENT_MAX / (VDM.length + 1)); i++) up.hear(VDM);
-    await up.stop(); // one flush, one segment: an append is never split, so it overshoots instead
-    expect(await files()).toHaveLength(1);
-    expect((await bytes())[0].length).toBeGreaterThanOrEqual(SEGMENT_MAX);
-
-    await up.start();
-    up.hear(VDM);
+    // One synchronous burst, so every flush it triggers is still queued when the first one runs and the
+    // whole backlog is there to be written at once. Segments still have to come out bounded.
+    for (let i = 0; i < Math.ceil((3 * SEGMENT_MAX) / (VDM.length + 1)); i++) up.hear(VDM);
     await up.stop();
-    expect(await files()).toHaveLength(2);
+    const sizes = (await bytes()).map((b) => b.length);
+    expect(sizes.length).toBeGreaterThanOrEqual(3);
+    // An append is never split, so a segment can overshoot by one batch of sentences and no more.
+    for (const n of sizes.slice(0, -1)) {
+      expect(n).toBeGreaterThanOrEqual(SEGMENT_MAX);
+      expect(n).toBeLessThan(SEGMENT_MAX + 500 * 200);
+    }
   }, 20_000);
+
+  it("keeps queueing when the newest entry cannot be written to", async () => {
+    await mkdir(queue(), { recursive: true });
+    await mkdir(join(queue(), "9900000000000.log")); // sorts last, so it is the tail a flush would append to
+    link.open = false;
+    await up.start();
+    up.hear(`${VDM}#0`);
+    await up.stop(); // one flush: it has to get past the stuck tail now, not a flush interval from now
+    const written = (await files()).filter((f) => f !== "9900000000000.log");
+    expect(written).toHaveLength(1);
+    expect(await read(written[0])).toHaveLength(1);
+    expect(up.stats.queued).toBe(1);
+  });
 
   it("loses nothing when a flush lands while the drain is reading the same segment", async () => {
     await seed([[`${VDM}#queued`]]);
