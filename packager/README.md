@@ -3,9 +3,12 @@
 The packager turns the server's normalized archive into day-partitioned Iceberg tables that anyone can query. It contains no parsers and no dedup rule: the server decided all of that at ingest, and the normalized stream records what it decided.
 
 ```sh
-./packager.py --normalized ../server/normalized --date 2026-09-01   # one day
-./packager.py --normalized ../server/normalized                     # every closed day of the past week missing from the catalog
+./packager.py                                                       # fetch from the bucket: every closed day of the past week missing from the catalog
+./packager.py --date 2026-09-01                                     # fetch that day from the bucket and package it
+./packager.py --normalized ../server/normalized --date 2026-09-01   # package from a local normalized tree
 ```
+
+Without `--normalized` the job fetches the day's hours from `NORMALIZED_BUCKET` into `raw/`, packages them, and deletes them, so it does not depend on what any box still holds on disk. That needs `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`, the same S3 keys the server uploads with. The layout is flat, so a day costs three prefix listings rather than a walk of the bucket, and listing stays flat as the archive grows.
 
 The local catalog is SQLite under `warehouse/`. Set `LAKE_CATALOG_URI`, `LAKE_WAREHOUSE`, and `LAKE_CATALOG_TOKEN` to write to R2 Data Catalog instead. `PACKAGER_HOME` moves `stage/` and `warehouse/`.
 
@@ -27,3 +30,5 @@ All wire-precision conventions match the stream: lat/lon as 1/600000 degree inte
 - Schema changes are additive; a breaking change means a new table name.
 - Envelope versions the packager does not know fail the run loudly rather than skipping records.
 - Consumers publishing derived work must credit the attribution-requiring sources (NLOD-2.0, CC-BY-4.0); the per-reception `license` column makes finer-grained terms questions filters, not judgment calls.
+
+In production the box runs this nightly: `packager.timer` fires at 01:30 UTC, after the closed day's last hours have rotated into the bucket, and `packager.service` runs `/opt/aiscast/packager.py` under uv for every closed day of the past week still missing from the catalog, so a failed night heals on the next. It skips itself while `/etc/aiscast.env` has no `LAKE_CATALOG_URI`. Both units live in [server/deploy/rootfs](../server/deploy/rootfs/etc/systemd/system), and `packager.py` ships in the same bundle as the server binary, so a deploy updates the script and the units together. `PACKAGER_HOME` points the staging and fetch directories at `/var/lib/aiscast/packager`.
