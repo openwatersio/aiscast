@@ -31,15 +31,15 @@ const (
 	mcpDocsURL         = "https://openwaters.io/api/ais/"
 )
 
-const mcpInstructions = `aiscast serves live AIS vessel positions from open government feeds, aggregators, and volunteer receivers. It is run by Open Waters (https://openwaters.io/ais/).
+const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the open AIS network: live vessel positions from government feeds, partner aggregates, and volunteer receivers, deduplicated into one picture.
 
-- Coverage is uneven: dense around Norway and Finland, thinner elsewhere, absent where no feed or receiver hears. Call get_coverage before telling a user a region has no traffic.
+- Live terrestrial coverage is strongest in the Nordics and wherever volunteer receivers are; elsewhere positions come from partner aggregates, mostly AISHub, and are typically one to six minutes old. Where no feed or receiver hears, there is nothing. Call get_coverage before saying a region has no traffic.
 - A position is the last report heard, up to 30 minutes old. Every row carries seen and age_s. A vessel unheard for 30 minutes is dropped.
-- Anonymous calls may cover 100 square degrees and look up 10 vessels by MMSI per call. A free token from ` + mcpTokenURL + `, sent as an Authorization: Bearer header, raises that to 400 square degrees and 50 vessels. A tool says so when a call exceeds its limit.
+- Anonymous calls may cover 100 square degrees and look up 10 vessels by MMSI per call. A free personal token from ` + mcpTokenURL + `, sent as an Authorization: Bearer header, raises that to 400 square degrees and 50 vessels. A tool says so when a call exceeds its limit.
 - Show the credit lines from each result's attribution field wherever the data is displayed.
-- Not for navigation or collision avoidance.
+- A supplement to onboard AIS, never a substitute, and not for safety of navigation.
 - These tools answer one question at a time. For continuous updates use the WebSocket stream at wss://ais.openwaters.io/v1/stream, documented at ` + mcpDocsURL + `.
-- aiscast holds no port registry, weather, ownership, or inspection data.`
+- The network holds no port registry, weather, ownership, or inspection data.`
 
 // mcpService is the MCP server and its HTTP handler, built once per Pipeline.
 type mcpService struct {
@@ -75,10 +75,10 @@ func newMCPService(p *Pipeline) *mcpService {
 			SetCacheable: func(_ context.Context, _ mcp.Request, c *mcp.Cacheable) { c.TTLMs, c.CacheScope = 3600_000, "public" },
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "get_vessels", Title: "Vessels by MMSI", Annotations: ro("Vessels by MMSI"),
-		Description: "Current position and details of specific vessels by MMSI (Maritime Mobile Service Identity): the last report heard for each, and which MMSIs aiscast has not heard in the last 30 minutes. Use search_vessels_by_name first when you only have a name."},
+		Description: "Current position and details of specific vessels by MMSI (Maritime Mobile Service Identity): the last report heard for each, and which MMSIs have not been heard in the last 30 minutes. Use search_vessels_by_name first when you only have a name."},
 		p.mcpGetVessels)
 	mcp.AddTool(s, &mcp.Tool{Name: "find_vessels_in_area", Title: "Vessels in an area", Annotations: ro("Vessels in an area"),
-		Description: "Vessels currently inside a latitude/longitude bounding box, newest report first, with optional kind and ship-type filters. Use for what is in a harbour, strait, or region. Anonymous calls may cover 100 square degrees per call."},
+		Description: "Vessels currently inside a latitude/longitude bounding box, newest report first, with optional kind and ship-type filters. Use for what is in a port, a strait, or a stretch of coast. Anonymous calls may cover 100 square degrees per call."},
 		p.mcpFindInArea)
 	mcp.AddTool(s, &mcp.Tool{Name: "find_vessels_near", Title: "Vessels near a point or vessel", Annotations: ro("Vessels near a point or vessel"),
 		Description: "Vessels within a radius (default 10 NM, maximum 50) of a point or of another vessel, nearest first, each with distance and bearing from the centre. Use for what is near this position or what is around vessel X."},
@@ -87,7 +87,7 @@ func newMCPService(p *Pipeline) *mcpService {
 		Description: "Vessels whose name contains the text, case-insensitive, among vessels heard in the last 30 minutes. Use to turn a name into an MMSI, then get_vessels or find_vessels_near for detail. An optional bounding box narrows the search."},
 		p.mcpSearchByName)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_coverage", Title: "Coverage and sources", Annotations: ro("Coverage and sources"),
-		Description: "Where aiscast is hearing AIS right now: sources, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Call this before saying a region has no traffic."},
+		Description: "Where Open Waters AIS is hearing AIS right now: sources, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Call this before saying a region has no traffic."},
 		p.mcpGetCoverage)
 	return &mcpService{srv: s, http: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
 		Stateless:           true, // no session state, and the mode the 2026-07-28 protocol revision requires
@@ -160,7 +160,7 @@ type mcpVessels struct {
 	Vessels     []mcpVessel       `json:"vessels"`
 	Total       int               `json:"total" jsonschema:"vessels matched before the limit was applied"`
 	Truncated   bool              `json:"truncated" jsonschema:"true when total exceeds the rows returned; narrow the query or raise limit"`
-	Unknown     []uint32          `json:"unknown_mmsi,omitempty" jsonschema:"requested MMSIs aiscast has not heard in the last 30 minutes"`
+	Unknown     []uint32          `json:"unknown_mmsi,omitempty" jsonschema:"requested MMSIs not heard in the last 30 minutes"`
 	Attribution map[string]string `json:"attribution" jsonschema:"credit line per source kind in the rows, to show with the data"`
 }
 
@@ -569,7 +569,7 @@ var sourceDescriptions = map[string]string{
 	"barentswatch": "BarentsWatch: the Norwegian coast, offshore, and Svalbard, including satellite receivers",
 	"digitraffic":  "Fintraffic Digitraffic: the Finnish coast and lakes",
 	"aisstream":    "aisstream.io: worldwide aggregate, best effort",
-	"aishub":       "AISHub: worldwide aggregate snapshot, positions 1 to 6 minutes old",
+	"aishub":       "AISHub: worldwide aggregate snapshot and the network's largest source; positions 1 to 6 minutes old",
 	"udp":          "volunteer receivers sending raw NMEA over UDP, unauthenticated",
 	"mmsi":         "volunteer receivers identified by their own vessel's MMSI, unauthenticated",
 	"http":         "volunteer receivers posting AIS-catcher output with a token",
