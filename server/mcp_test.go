@@ -42,9 +42,14 @@ func mcpSeed(t *testing.T) *Pipeline {
 
 // mcpClient connects an in-process client; no HTTP request, so tools see the anonymous tier.
 func mcpClient(t *testing.T, p *Pipeline) *mcp.ClientSession {
+	return mcpClientCtx(t, p, context.Background())
+}
+
+// mcpClientCtx connects an in-process client whose tool calls run under ctx, so a test can plant claims
+// the way serveMCP does.
+func mcpClientCtx(t *testing.T, p *Pipeline, ctx context.Context) *mcp.ClientSession {
 	t.Helper()
 	st, ct := mcp.NewInMemoryTransports()
-	ctx := context.Background()
 	if _, err := p.mcp.srv.Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +154,36 @@ func TestMCPGetVessels(t *testing.T) {
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{}}, &out); !strings.Contains(msg, "empty") {
 		t.Errorf("empty list: %q", msg)
 	}
+	// a repeated MMSI counts once against the cap and is reported once
+	var dup []uint32
+	for range 11 {
+		dup = append(dup, 257000001, 1)
+	}
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": dup}, &out); msg != "" || len(out.Vessels) != 1 || len(out.Unknown) != 1 {
+		t.Errorf("duplicates: %q %+v", msg, out)
+	}
+}
+
+// A caller with no MMSI cap can ask for more than one page; the vessels beyond it are known, not unknown.
+func TestMCPGetVesselsBeyondPage(t *testing.T) {
+	p := mcpSeed(t)
+	now := time.Now()
+	var fleet []uint32
+	for i := range 250 {
+		m := uint32(258000000 + i)
+		fleet = append(fleet, m)
+		p.ingestPacket("kystverket", "kystverket", now.Add(-time.Duration(i)*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: m}, Valid: true,
+			NavigationalStatus: 15, Latitude: ais.FieldLatLonFine(62 + float64(i)/1000), Longitude: 5, Sog: 102.3, Cog: 360, TrueHeading: 511})
+	}
+	fleet = append(fleet, 1)
+	cs := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, &Claims{Sub: "fleet", Role: "partner"}))
+	var out mcpVessels
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": fleet}, &out); msg != "" || len(out.Vessels) != mcpMaxLimit || out.Total != 250 || !out.Truncated {
+		t.Fatalf("page: %q %d/%d truncated=%v", msg, len(out.Vessels), out.Total, out.Truncated)
+	}
+	if len(out.Unknown) != 1 || out.Unknown[0] != 1 {
+		t.Errorf("unknown should be only the MMSI never heard: %v", out.Unknown)
+	}
 }
 
 func TestMCPFindInArea(t *testing.T) {
@@ -183,8 +218,20 @@ func TestMCPFindInArea(t *testing.T) {
 }
 
 func TestMCPFindNear(t *testing.T) {
-	cs := mcpClient(t, mcpSeed(t))
+	p := mcpSeed(t)
+	// two vessels 6 NM apart across the antimeridian
+	for i, lon := range []float64{179.95, -179.95} {
+		p.ingestPacket("aishub", "aishub", time.Now(), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: uint32(500000001 + i)}, Valid: true,
+			NavigationalStatus: 15, Latitude: 0, Longitude: ais.FieldLatLonFine(lon), Sog: 102.3, Cog: 360, TrueHeading: 511})
+	}
+	cs := mcpClient(t, p)
 	var out mcpVessels
+	if msg := mcpCall(t, cs, "find_vessels_near", map[string]any{"lat": 0, "lon": 179.9, "radius_nm": 10}, &out); msg != "" || len(out.Vessels) != 2 || out.Vessels[1].MMSI != 500000002 {
+		t.Errorf("search across the antimeridian: %q %+v", msg, out.Vessels)
+	}
+	if msg := mcpCall(t, cs, "find_vessels_near", map[string]any{"mmsi": 500000002, "radius_nm": 10}, &out); msg != "" || len(out.Vessels) != 1 || out.Vessels[0].MMSI != 500000001 {
+		t.Errorf("vessel centre across the antimeridian: %q %+v", msg, out.Vessels)
+	}
 	if msg := mcpCall(t, cs, "find_vessels_near", map[string]any{"lat": 59.9, "lon": 10.7, "radius_nm": 5}, &out); msg != "" {
 		t.Fatal(msg)
 	}
@@ -387,5 +434,36 @@ func TestLabels(t *testing.T) {
 	}
 	if navStatusName(1) != "At anchor" || navStatusName(15) != "" || navStatusName(200) != "" || atonTypeName(9) != "Beacon, cardinal N" || atonTypeName(40) != "" {
 		t.Error("nav status or aton labels")
+	}
+}
+
+func TestRadiusBoxes(t *testing.T) {
+	if b := radiusBoxes(60, 10, 30); len(b) != 1 || b[0][0] != 59.5 || b[0][2] != 60.5 || b[0][1] > 9.01 || b[0][3] < 10.99 {
+		t.Errorf("plain box: %v", b)
+	}
+	// a crossing yields one box ending at 180 and one starting at -180, in either order
+	wrapped := func(b []bbox) bool {
+		if len(b) != 2 {
+			return false
+		}
+		east, west := b[0], b[1]
+		if east[3] != 180 {
+			east, west = west, east
+		}
+		return east[3] == 180 && east[1] > 179 && west[1] == -180 && west[3] < -179
+	}
+	if b := radiusBoxes(0, 179.9, 30); !wrapped(b) {
+		t.Errorf("east of the antimeridian: %v", b)
+	}
+	if b := radiusBoxes(0, -179.9, 30); !wrapped(b) {
+		t.Errorf("west of the antimeridian: %v", b)
+	}
+	if b := radiusBoxes(89.9, 0, 50); len(b) != 1 || b[0][1] != -180 || b[0][3] != 180 || b[0][2] != 90 {
+		t.Errorf("at the pole the band is the whole circle of longitude: %v", b)
+	}
+	for _, b := range radiusBoxes(0, 179.9, 30) {
+		if b[1] > b[3] {
+			t.Errorf("inverted box %v", b)
+		}
 	}
 }

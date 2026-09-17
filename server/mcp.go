@@ -266,20 +266,25 @@ func mcpMatch(kind string, types []uint8, v *vessel) bool {
 }
 
 // mcpCheckBox: the same range and tier rules as /v1/vessels, with messages an assistant can act on.
-func mcpCheckBox(cl *Claims, b bbox) error {
-	if b[0] < -90 || b[2] > 90 || b[1] < -180 || b[3] > 180 {
-		return errors.New("bbox out of range: latitudes -90 to 90, longitudes -180 to 180")
+func mcpCheckBox(cl *Claims, b bbox) error { return mcpCheckBoxes(cl, []bbox{b}) }
+
+func mcpCheckBoxes(cl *Claims, boxes []bbox) error {
+	area := 0.0
+	for _, b := range boxes {
+		if b[0] < -90 || b[2] > 90 || b[1] < -180 || b[3] > 180 {
+			return errors.New("bbox out of range: latitudes -90 to 90, longitudes -180 to 180")
+		}
+		if !cl.allowsBox(b) {
+			return errors.New("bbox lies outside the area this token is limited to")
+		}
+		area += (b[2] - b[0]) * (b[3] - b[1])
 	}
-	if !cl.allowsBox(b) {
-		return errors.New("bbox lies outside the area this token is limited to")
-	}
-	if cl.allowsArea([]bbox{b}) {
+	if cl.allowsArea(boxes) {
 		return nil
 	}
 	if cl.Area < 0 {
 		return errors.New("this token follows vessels by MMSI only; use get_vessels")
 	}
-	area := (b[2] - b[0]) * (b[3] - b[1])
 	msg := fmt.Sprintf("bbox covers %.0f square degrees; this key allows %.0f per call. Split the area into smaller calls", area, cl.Area)
 	if cl.Role == "anonymous" {
 		msg += fmt.Sprintf(", or send a free token from %s as an Authorization: Bearer header for %.0f", mcpTokenURL, personalArea)
@@ -309,22 +314,25 @@ type mcpGetIn struct {
 
 func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in mcpGetIn) (*mcp.CallToolResult, mcpVessels, error) {
 	cl := mcpClaims(ctx)
-	if err := mcpCheckMMSIs(cl, len(in.MMSI)); err != nil {
+	want := map[uint32]int{} // first position of each MMSI; a repeated MMSI counts once, as on /v1/vessels
+	for i, m := range in.MMSI {
+		if _, ok := want[m]; !ok {
+			want[m] = i
+		}
+	}
+	if err := mcpCheckMMSIs(cl, len(want)); err != nil {
 		return nil, mcpVessels{}, err
 	}
-	want := map[uint32]int{}
-	for i, m := range in.MMSI {
-		want[m] = i
-	}
 	rows := p.mcpCollect(time.Now(), func(m uint32, _ *vessel) bool { _, ok := want[m]; return ok })
-	out := mcpPage(rows, func(a, b *mcpVessel) bool { return want[a.MMSI] < want[b.MMSI] }, mcpMaxLimit)
-	found := map[uint32]bool{}
-	for _, r := range out.Vessels {
-		found[r.MMSI] = true
+	known := map[uint32]bool{} // from every match, not the page: a vessel cut by the row cap is still known
+	for _, r := range rows {
+		known[r.MMSI] = true
 	}
+	out := mcpPage(rows, func(a, b *mcpVessel) bool { return want[a.MMSI] < want[b.MMSI] }, mcpMaxLimit)
 	for _, m := range in.MMSI {
-		if !found[m] {
+		if !known[m] {
 			out.Unknown = append(out.Unknown, m)
+			known[m] = true // listed once
 		}
 	}
 	return nil, out, nil
@@ -391,14 +399,15 @@ func (p *Pipeline) mcpFindNear(ctx context.Context, _ *mcp.CallToolRequest, in m
 	case in.MMSI != 0:
 		p.vmu.RLock()
 		v := p.vessels[in.MMSI]
-		if v != nil && v.HasPos {
+		known, hasPos := v != nil, v != nil && v.HasPos // copied under the lock; updateVessel mutates v after it
+		if hasPos {
 			lat, lon = v.Lat, v.Lon
 		}
 		p.vmu.RUnlock()
-		if v == nil {
+		if !known {
 			return nil, mcpVessels{}, fmt.Errorf("vessel %d has not been heard in the last 30 minutes", in.MMSI)
 		}
-		if !v.HasPos {
+		if !hasPos {
 			return nil, mcpVessels{}, fmt.Errorf("vessel %d has been heard but has sent no position", in.MMSI)
 		}
 	case in.Lat != nil && in.Lon != nil:
@@ -409,12 +418,12 @@ func (p *Pipeline) mcpFindNear(ctx context.Context, _ *mcp.CallToolRequest, in m
 	default:
 		return nil, mcpVessels{}, errors.New("give lat and lon, or mmsi")
 	}
-	b := radiusBox(lat, lon, radius)
-	if err := mcpCheckBox(cl, b); err != nil {
+	boxes := radiusBoxes(lat, lon, radius)
+	if err := mcpCheckBoxes(cl, boxes); err != nil {
 		return nil, mcpVessels{}, err
 	}
 	rows := p.mcpCollect(time.Now(), func(m uint32, v *vessel) bool {
-		return m != in.MMSI && v.HasPos && b.contains(v.Lat, v.Lon) && mcpMatch(in.Kind, in.Types, v) && nm(lat, lon, v.Lat, v.Lon) <= radius
+		return m != in.MMSI && v.HasPos && inAny(boxes, v.Lat, v.Lon) && mcpMatch(in.Kind, in.Types, v) && nm(lat, lon, v.Lat, v.Lon) <= radius
 	})
 	for i := range rows {
 		r := &rows[i]
@@ -426,15 +435,35 @@ func (p *Pipeline) mcpFindNear(ctx context.Context, _ *mcp.CallToolRequest, in m
 	}, limit), nil
 }
 
-// radiusBox bounds the circle so the cache walk and the tier check see a box. A 50 NM circle is under
-// 3 square degrees at the equator and under 10 at 80° latitude, inside every tier.
-func radiusBox(lat, lon, radiusNM float64) bbox {
+// radiusBoxes bounds the circle so the cache walk and the tier check see boxes. A circle across the
+// antimeridian is two boxes, one on each side, whose areas sum to the unwrapped box's. A 50 NM circle is
+// under 3 square degrees at the equator and under 10 at 80° latitude, inside every tier.
+func radiusBoxes(lat, lon, radiusNM float64) []bbox {
 	dLat := radiusNM / 60
+	south, north := max(lat-dLat, -90), min(lat+dLat, 90)
 	dLon := 180.0
 	if c := math.Cos(lat * math.Pi / 180); c > 1e-6 {
 		dLon = min(radiusNM/(60*c), 180)
 	}
-	return bbox{max(lat-dLat, -90), max(lon-dLon, -180), min(lat+dLat, 90), min(lon+dLon, 180)}
+	west, east := lon-dLon, lon+dLon
+	switch {
+	case dLon >= 180:
+		return []bbox{{south, -180, north, 180}}
+	case west < -180:
+		return []bbox{{south, -180, north, east}, {south, west + 360, north, 180}}
+	case east > 180:
+		return []bbox{{south, west, north, 180}, {south, -180, north, east - 360}}
+	}
+	return []bbox{{south, west, north, east}}
+}
+
+func inAny(boxes []bbox, lat, lon float64) bool {
+	for _, b := range boxes {
+		if b.contains(lat, lon) {
+			return true
+		}
+	}
+	return false
 }
 
 // bearing is the initial great-circle bearing from point 1 to point 2, degrees true.

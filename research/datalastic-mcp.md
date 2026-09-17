@@ -1,6 +1,6 @@
 # Datalastic's MCP server
 
-Compiled 2026-09-17 from the README of [datalastic/mcp-server-datalastic](https://github.com/datalastic/mcp-server-datalastic) and [datalastic.com/mcp](https://datalastic.com/mcp/). The point is to see the whole surface an AI assistant gets from the incumbent, and mark what aiscast has, can add cheaply, or should leave alone. The plan that acts on this is `specs/mcp.md`.
+Compiled 2026-09-17 from the README of [datalastic/mcp-server-datalastic](https://github.com/datalastic/mcp-server-datalastic) and [datalastic.com/mcp](https://datalastic.com/mcp/). The point is to see the whole surface an AI assistant gets from the incumbent, and mark what aiscast has, can add cheaply, or should leave alone. The aiscast side is `server/mcp.go`, documented at [openwaters.io/api/ais](https://openwaters.io/api/ais/).
 
 ## How it is offered
 
@@ -13,7 +13,7 @@ Compiled 2026-09-17 from the README of [datalastic/mcp-server-datalastic](https:
 
 ## The 25 tools
 
-The verdict column says what aiscast should do. "Now" means the first release in `specs/mcp.md`. "Phase 2" needs the vessel cache to keep more of the type 5 static message. "Phase 3" needs `/v1/history`. "No" means the data is not in AIS and aiscast should not source it.
+The verdict column says what aiscast should do. "Now" means the tools `server/mcp.go` ships. "Phase 2" needs the vessel cache to keep more of the type 5 static message. "Phase 3" needs `/v1/history`. "No" means the data is not in AIS and aiscast should not source it.
 
 ### Vessel tracking
 
