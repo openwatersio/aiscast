@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - Fixes a queue that never emptied. While the plugin was replaying a backlog to aiscast it wrote every sentence its receiver heard to a new queue file, so it traded one file for another and the replay never reached the end. On a boat that had been offline a while, the queue directory stayed at tens of thousands of files no matter how long the connection was up. A replay now carries up to a thousand sentences from as many files in one frame, and sentences heard mid-replay go out from memory.
 - The queue keeps far fewer files. Time offline used to leave one behind every fifteen seconds; the plugin now fills each file to 500 sentences before starting another, so the count follows how much is owed rather than how long the boat was out of range.
