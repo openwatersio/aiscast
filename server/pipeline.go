@@ -84,6 +84,7 @@ type Pipeline struct {
 	usage        usageCounters
 	lastBySource sync.Map // source → time.Time of last event; /metrics reads it
 	delays       delayStats
+	mcp          *mcpService // /mcp: the cache as tools for AI assistants
 	stats        struct {
 		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts atomic.Int64
 		bySource                                                                                                                         sync.Map // source → *counterT
@@ -93,7 +94,7 @@ type Pipeline struct {
 func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
-	return &Pipeline{
+	p := &Pipeline{
 		arch: arch, codec: c, auth: verifierFromEnv(), stations: newStationStats(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
@@ -103,6 +104,8 @@ func newPipeline(arch *archive) *Pipeline {
 		vessels: map[uint32]*vessel{},
 		subs:    map[*subscriber]struct{}{},
 	}
+	p.mcp = newMCPService(p)
+	return p
 }
 
 func (p *Pipeline) lastEvent() time.Time { return time.Unix(0, p.last.Load()) }

@@ -22,7 +22,7 @@ Go 1.24 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the author
 ## Changes
 
 - Open a pull request against `main`. CI runs gofmt, vet, tests, and a linux build on every push and PR; a merge to `main` deploys aiscast to `ais-server-1` and the viewer to GitHub Pages.
-- `/v0/stream` is frozen to aisstream.io's wire format; anything new goes under `/v1`. Additive changes to `/v1` are fine; breaking ones need a note in [docs/architecture.md](docs/architecture.md#the-v0-compatibility-contract).
+- `/v0/stream` is frozen to aisstream.io's wire format; anything new goes under `/v1`. Additive changes to `/v1` are fine; breaking ones need a note in [docs/architecture.md](docs/architecture.md#the-v0-compatibility-contract). `/mcp` is the one exception, because MCP versions itself and clients expect that path; a change to a tool or its schema bumps `mcpVersion` and `server.json` together.
 - Every source gets its own `source` value, license tag in the archive path, and env flag, and stays out of the health gate unless it is an open-licensed feed we commit to.
 - Comments explain why, not what; durable docs describe the current state, not history.
 

@@ -104,6 +104,7 @@ func routes(p *Pipeline) map[string]http.HandlerFunc {
 		"/v1/stations/": p.rateLimited(p.serveStations),
 		"/v1/vessels":   p.rateLimited(p.serveVessels),
 		"/v1/stats":     p.rateLimited(p.serveStats),
+		"/mcp":          p.rateLimited(p.serveMCP),
 		"/health":       p.serveHealth,
 		"/metrics":      p.serveMetrics,
 		"/robots.txt":   serveRobots,
