@@ -15,6 +15,7 @@ import argparse
 import glob
 import os
 import re
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -257,6 +258,63 @@ def refresh_vessels(con, catalog):
     retry(lambda: tbl.overwrite(merged.cast(tbl.schema().as_arrow())))
 
 
+def normalized_bucket():
+    """The normalized stream bucket over the S3 API, with the same keys the server uploads with."""
+    import pyarrow.fs as pafs
+
+    return pafs.S3FileSystem(
+        access_key=os.environ["R2_ACCESS_KEY_ID"],
+        secret_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        endpoint_override=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        region="auto",
+        scheme="https",
+    ), os.environ["NORMALIZED_BUCKET"]
+
+
+def fetch_day(day, dest):
+    """Copy a day's normalized hours, and the two boundary hours, out of the bucket into dest.
+
+    The layout is flat (v1/YYYY/MM/DD/HH.gz), so this lists three day prefixes rather than walking
+    the bucket: listing cost stays flat as the archive grows. Copying before reading keeps a
+    mid-transfer reset a retryable per-file failure instead of a short day, and each file's size is
+    checked against the object it came from.
+    """
+    import pyarrow.fs as pafs
+    from concurrent.futures import ThreadPoolExecutor
+
+    fs, bucket = normalized_bucket()
+    local = pafs.LocalFileSystem()
+    d = datetime.fromisoformat(day)
+    want = day_key(day)
+    infos = []
+    for pd in (d - timedelta(days=1), d, d + timedelta(days=1)):
+        sel = pafs.FileSelector(f"{bucket}/v1/{pd:%Y/%m/%d}", allow_not_found=True)
+        infos += [i for i in retry(lambda sel=sel: fs.get_file_info(sel)) if want.search(i.path)]
+
+    def fetch(info):
+        path = Path(dest) / info.path[len(bucket) + 1 :]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        retry(lambda: _fetch(fs, local, info, path))
+        return str(path)
+
+    with ThreadPoolExecutor(8) as pool:
+        out = list(pool.map(fetch, infos))
+    print(f"{day}: fetched {len(out)} normalized hours from {bucket}", file=sys.stderr)
+    return sorted(out)
+
+
+def _fetch(fs, local, info, path):
+    # compression=None on both sides: these are .gz keys and the default "detect" would decompress
+    # on read and recompress on write, transcoding the archive byte-for-byte.
+    with fs.open_input_stream(info.path, compression=None) as r, local.open_output_stream(str(path), compression=None) as w:
+        while chunk := r.read(8 << 20):
+            w.write(chunk)
+    got = path.stat().st_size
+    if got != info.size:
+        path.unlink(missing_ok=True)  # a partial copy must not look like a complete hour
+        raise OSError(f"{info.path}: copied {got} of {info.size} bytes")
+
+
 def derived_days(catalog):
     """Day partitions already present in ais.positions, from table metadata only."""
     tbl = retry(lambda: catalog.load_table("ais.positions"))
@@ -287,12 +345,12 @@ def get_catalog():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--normalized", required=True, help="local normalized tree (v1/YYYY/MM/DD/HH.gz)")
+    ap.add_argument("--normalized", help="local normalized tree (v1/YYYY/MM/DD/HH.gz); omit to fetch the day from the bucket")
     ap.add_argument("--date", help="UTC day YYYY-MM-DD; default: every closed day of the past week missing from the catalog")
     ap.add_argument("--min-hours", type=int, default=20, help="refuse a day with fewer distinct hours")
     args = ap.parse_args()
 
-    all_files = glob.glob(f"{args.normalized}/**/*.gz", recursive=True)
+    all_files = glob.glob(f"{args.normalized}/**/*.gz", recursive=True) if args.normalized else []
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     catalog = get_catalog()
@@ -313,12 +371,21 @@ def main():
     for day in days:
         if day >= today:
             sys.exit(f"{day} is not over yet")
-        want = day_key(day)
-        files = sorted(f for f in all_files if want.search(f))
-        n_hours = len(hours_present(day, files))
-        if n_hours < args.min_hours:
-            sys.exit(f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}; pass --min-hours to override")
-        process_day(day, files, con, catalog)
+        fetched = None
+        try:
+            if args.normalized:
+                want = day_key(day)
+                files = sorted(f for f in all_files if want.search(f))
+            else:
+                fetched = HERE / "raw" / day
+                files = fetch_day(day, fetched)
+            n_hours = len(hours_present(day, files))
+            if n_hours < args.min_hours:
+                sys.exit(f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}; pass --min-hours to override")
+            process_day(day, files, con, catalog)
+        finally:
+            if fetched:
+                shutil.rmtree(fetched, ignore_errors=True)  # re-fetchable; the bucket is the source of truth
 
 
 if __name__ == "__main__":
