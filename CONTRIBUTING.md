@@ -47,7 +47,7 @@ To release the plugin:
    git fetch origin && git tag signalk-plugin-v<version> origin/main && git push origin signalk-plugin-v<version>
    ```
 
-3. Watch the run. It checks the tag against `package.json`, tests, publishes, and creates the GitHub release with that version's changelog entry as the notes.
+3. Watch the run. Before publishing it checks the tag against `package.json` and that the changelog has an entry under that version, so a tag pushed too early fails with nothing shipped. It then tests, publishes, and creates the GitHub release with that changelog entry as the notes.
 
 The version lands before the tag, so a release tag always describes the tree it points at and the workflow never writes to `main`. Push the tag from a terminal rather than creating the release in the web UI, because the workflow triggers on the tag and makes the release itself.
 
