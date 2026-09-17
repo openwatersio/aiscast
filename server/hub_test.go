@@ -239,6 +239,10 @@ func TestVesselsSnapshot(t *testing.T) {
 }
 
 func TestUDPStationHidesIP(t *testing.T) {
+	// A fixed salt keeps the digest deterministic. With the random one an unset STATION_SALT
+	// generates, a hex digest containing "203" fails the leak check by luck about once in 350 runs.
+	defer func(old []byte) { stationSalt = old }(stationSalt)
+	stationSalt = []byte("aiscast-test")
 	a, b := udpStation("203.0.113.5"), udpStation("203.0.113.6")
 	if a == b || strings.Contains(a, "203") || len(a) != len("udp:")+12 || a != udpStation("203.0.113.5") {
 		t.Errorf("udp station ids: %s %s", a, b)
