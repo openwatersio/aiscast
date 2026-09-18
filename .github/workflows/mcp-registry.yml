@@ -18,6 +18,12 @@ on:
 permissions:
   contents: read
 
+# One run at a time, never cancelled: a queued run finds the version already listed and stops, so two
+# runs for the same version cannot both reach the publish step.
+concurrency:
+  group: mcp-registry
+  cancel-in-progress: false
+
 env:
   # Pinned release of github.com/modelcontextprotocol/registry and the sha256 of its Linux tarball from
   # that release's checksums file. Bump both together.
@@ -26,7 +32,11 @@ env:
 
 jobs:
   publish:
+    # The key lives in the production environment, whose branch policy admits only main, and a manual
+    # run picked from any other ref does nothing. Together they keep the key out of unreviewed code.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - uses: actions/checkout@v7
       - name: look the version up in the registry
