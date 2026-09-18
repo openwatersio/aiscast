@@ -144,3 +144,47 @@ func TestNullIslandIsNotAPosition(t *testing.T) {
 		t.Errorf("Greenwich position rejected: %+v", p.vessels[3])
 	}
 }
+
+func TestStaticParticulars(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 257000009}, Valid: true,
+		NavigationalStatus: 0, Latitude: 60, Longitude: 5, Sog: 10, Cog: 90, TrueHeading: 511})
+	p.ingestPacket("kystverket", "kystverket", now, ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+		Name: "STATIC STAR", Type: 70, ImoNumber: 9319466, CallSign: "LAJB7", Destination: "NOOSL",
+		Eta: ais.FieldETA{Month: 9, Day: 19, Hour: 6, Minute: 0}, MaximumStaticDraught: 5.2,
+		Dimension: ais.FieldDimension{A: 100, B: 50, C: 10, D: 12}})
+	v := p.vessels[257000009]
+	if v.IMO != 9319466 || v.CallSign != "LAJB7" || v.Destination != "NOOSL" || v.Draught != 5.2 || v.Length != 150 || v.Beam != 22 || v.ETA.Month != 9 {
+		t.Fatalf("particulars not folded: %+v", v)
+	}
+	props := v.feature(257000009)["properties"].(map[string]any)
+	if props["flag"] != "NO" || props["imo"] != uint32(9319466) || props["eta"] != "09-19 06:00" || props["length"] != uint16(150) || props["draught"] != 5.2 {
+		t.Errorf("feature: %v", props)
+	}
+	// an ETA without a time keeps the date; an ETA with no month is not folded over a known one
+	p.ingestPacket("kystverket", "kystverket", now.Add(time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+		Name: "STATIC STAR", Type: 70, Eta: ais.FieldETA{Month: 9, Day: 20, Hour: 24, Minute: 60}})
+	if got := etaString(p.vessels[257000009].ETA); got != "09-20" {
+		t.Errorf("date-only eta: %q", got)
+	}
+	p.ingestPacket("kystverket", "kystverket", now.Add(2*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true, Name: "STATIC STAR", Type: 70})
+	if v := p.vessels[257000009]; v.ETA.Day != 20 || v.IMO != 9319466 || v.Destination != "NOOSL" {
+		t.Errorf("empty static wiped particulars: %+v", v)
+	}
+	// type 24 part B carries the call sign and dimensions of a class B vessel
+	p.ingestPacket("kystverket", "kystverket", now, ais.StaticDataReport{Header: ais.Header{MessageID: 24, UserID: 257000010}, Valid: true, PartNumber: true,
+		ReportB: ais.StaticDataReportB{Valid: true, ShipType: 36, CallSign: "LG1234", Dimension: ais.FieldDimension{A: 6, B: 6, C: 2, D: 2}}})
+	if v := p.vessels[257000010]; v.CallSign != "LG1234" || v.Length != 12 || v.Beam != 4 || v.ShipType != 36 {
+		t.Errorf("type 24 B: %+v", v)
+	}
+}
+
+func TestFlagOf(t *testing.T) {
+	for mmsi, want := range map[uint32]string{257000001: "NO", 230000001: "FI", 538005000: "MH", 366999999: "US", 992571234: "NO",
+		825712345: "NO", 111257001: "NO", 2570001: "NO", 25700001: "NO", 970123456: "", 199000000: "", 900000000: ""} {
+		if got := flagOf(mmsi); got != want {
+			t.Errorf("flagOf(%d) = %q, want %q", mmsi, got, want)
+		}
+	}
+}
