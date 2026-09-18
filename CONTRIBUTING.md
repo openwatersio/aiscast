@@ -34,6 +34,8 @@ Go 1.27 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the author
 
 The server and viewer have no release step; a merge to `main` deploys both.
 
+The MCP server's registry listing is `server.json`. When it changes on `main`, `mcp-registry.yml` looks its version up in registry.modelcontextprotocol.io and, if the registry does not have it yet, publishes it, signing in with the `MCP_REGISTRY_KEY` secret; the matching public key is served by the openwaters.io repo at `/.well-known/mcp-registry-auth`. A change to `server.json` reaches the registry only with a new `version`, and `mcpVersion` in `server/mcp.go` moves with it (a test checks the two match). Server deploys need no publish: clients read the tool list live.
+
 The Signal K plugin publishes to npm from `release.yml` when a `signalk-plugin-v*` tag is pushed. It uses trusted publishing over OIDC with provenance, so there is no npm token and the workflow needs `id-token: write`. Node 24 in that workflow is deliberate, because trusted publishing needs npm >= 11.5.1. Tags for other release tracks do not match the prefix and are ignored.
 
 Before cutting a release, work the [Open Waters release preparation checklist](https://github.com/openwatersio/.github/blob/main/docs/agents/releases.md#release-preparation-checklist): review specs and plans from this cycle, move lasting guidance into the docs above and user-facing changes into the release notes, delete completed ones, and have a human review those deletions in the release PR.

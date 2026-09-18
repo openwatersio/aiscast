@@ -1,0 +1,67 @@
+name: mcp-registry
+
+# Publishes server.json to the official MCP registry when it changes on main and carries a version the
+# registry does not have yet. The registry holds metadata only (name, version, description, URL);
+# clients read the tool list live from the server, so server deploys need no publish. A change to
+# server.json without a version bump is a no-op here, and mcp_test.go keeps the version equal to
+# mcpVersion in the binary.
+#
+# Domain proof: the registry checks https://openwaters.io/.well-known/mcp-registry-auth (in the
+# openwaters.io repo) for the public half of the key, and MCP_REGISTRY_KEY is the private half.
+on:
+  push:
+    branches: [main]
+    paths: [server.json]
+  workflow_dispatch:
+
+# Checkout only; the publish talks to the registry with its own key, never to GitHub.
+permissions:
+  contents: read
+
+# One run at a time, never cancelled: a queued run finds the version already listed and stops, so two
+# runs for the same version cannot both reach the publish step.
+concurrency:
+  group: mcp-registry
+  cancel-in-progress: false
+
+env:
+  # Pinned release of github.com/modelcontextprotocol/registry and the sha256 of its Linux tarball from
+  # that release's checksums file. Bump both together.
+  MCP_PUBLISHER_VERSION: v1.8.1
+  MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+
+jobs:
+  publish:
+    # The key lives in the production environment, whose branch policy admits only main, and a manual
+    # run picked from any other ref does nothing. Together they keep the key out of unreviewed code.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - name: look the version up in the registry
+        id: registry
+        run: |
+          name=$(jq -r .name server.json)
+          version=$(jq -r .version server.json)
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.modelcontextprotocol.io/v0.1/servers/$(jq -rn --arg n "$name" '$n|@uri')/versions/$version")
+          case "$code" in
+            200) echo "$name $version is already listed; nothing to publish"; echo "listed=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "$name $version is not listed yet"; echo "listed=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "registry answered $code"; exit 1 ;;
+          esac
+      - name: install mcp-publisher
+        if: steps.registry.outputs.listed == 'false'
+        run: |
+          curl -fsSL -o mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+          rm mcp-publisher.tar.gz
+      - name: publish
+        if: steps.registry.outputs.listed == 'false'
+        run: |
+          mcp-publisher login http --domain openwaters.io --private-key "$MCP_REGISTRY_KEY"
+          mcp-publisher publish
+        env:
+          MCP_REGISTRY_KEY: ${{ secrets.MCP_REGISTRY_KEY }}
