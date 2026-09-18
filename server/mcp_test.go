@@ -420,7 +420,7 @@ func TestMCPServerJSON(t *testing.T) {
 	if doc.Version != mcpVersion {
 		t.Errorf("server.json version %q, binary %q", doc.Version, mcpVersion)
 	}
-	if doc.Name != "io.openwaters/aiscast" || len(doc.Remotes) != 1 || doc.Remotes[0].Type != "streamable-http" || doc.Remotes[0].URL != "https://ais.openwaters.io/mcp" {
+	if doc.Name != "io.openwaters/ais" || len(doc.Remotes) != 1 || doc.Remotes[0].Type != "streamable-http" || doc.Remotes[0].URL != "https://ais.openwaters.io/mcp" {
 		t.Errorf("server.json: %+v", doc)
 	}
 }
