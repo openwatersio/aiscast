@@ -154,9 +154,9 @@ type mcpVessel struct {
 	CallSign      string   `json:"callsign,omitempty"`
 	Destination   string   `json:"destination,omitempty" jsonschema:"destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful"`
 	ETA           string   `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD; AIS carries no year, so read it as the next occurrence"`
-	DraughtM      *float64 `json:"draught_m,omitempty" jsonschema:"maximum static draught, metres"`
-	LengthM       *uint16  `json:"length_m,omitempty" jsonschema:"overall length, metres"`
-	BeamM         *uint16  `json:"beam_m,omitempty" jsonschema:"beam, metres"`
+	Draught       *float64 `json:"draught,omitempty" jsonschema:"maximum static draught, metres"`
+	Length        *uint16  `json:"length,omitempty" jsonschema:"overall length, metres"`
+	Beam          *uint16  `json:"beam,omitempty" jsonschema:"beam, metres"`
 	Seen          string   `json:"seen" jsonschema:"time of the last message heard, RFC 3339 UTC"`
 	AgeS          int64    `json:"age_s" jsonschema:"seconds since seen"`
 	Source        string   `json:"source" jsonschema:"feed or station kind the last message came from"`
@@ -201,13 +201,13 @@ func mcpRow(mmsi uint32, v *vessel, now time.Time) mcpVessel {
 	}
 	r.Flag, r.IMO, r.CallSign, r.Destination, r.ETA = flagOf(mmsi), v.IMO, v.CallSign, v.Destination, etaString(v.ETA)
 	if v.Draught > 0 {
-		r.DraughtM = mcpPtr(v.Draught)
+		r.Draught = mcpPtr(v.Draught)
 	}
 	if v.Length > 0 {
-		r.LengthM = mcpPtr(v.Length)
+		r.Length = mcpPtr(v.Length)
 	}
 	if v.Beam > 0 {
-		r.BeamM = mcpPtr(v.Beam)
+		r.Beam = mcpPtr(v.Beam)
 	}
 	return r
 }

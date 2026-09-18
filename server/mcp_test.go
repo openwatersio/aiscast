@@ -145,7 +145,7 @@ func TestMCPGetVessels(t *testing.T) {
 	if !strings.Contains(out.Attribution["kystverket"], "Norwegian Coastal Administration") {
 		t.Errorf("attribution: %v", out.Attribution)
 	}
-	if v.Flag != "NO" || v.IMO != 9319466 || v.CallSign != "LAJB7" || v.Destination != "NOOSL" || v.ETA != "09-19 06:00" || v.DraughtM == nil || *v.DraughtM != 5.2 || v.LengthM == nil || *v.LengthM != 150 || *v.BeamM != 22 {
+	if v.Flag != "NO" || v.IMO != 9319466 || v.CallSign != "LAJB7" || v.Destination != "NOOSL" || v.ETA != "09-19 06:00" || v.Draught == nil || *v.Draught != 5.2 || v.Length == nil || *v.Length != 150 || *v.Beam != 22 {
 		t.Errorf("particulars: %+v", v)
 	}
 	// by IMO, mixed with an MMSI, unknowns listed per identifier
