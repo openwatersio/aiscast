@@ -3,8 +3,10 @@ package main
 // Flag state from an MMSI. The first three digits of a ship's MMSI are its Maritime Identification
 // Digits (MID), allocated per country by the ITU (Recommendation ITU-R M.585, table of MIDs). Other
 // station kinds carry the MID elsewhere in the number. The table maps a MID to the ISO 3166-1 alpha-2
-// code of the flag, with overseas territories under their own codes where ISO has one. Check it
-// against the ITU list when a new allocation appears; unknown MIDs yield "".
+// code of the flag, with overseas territories under their own codes where ISO has one. Every entry was
+// checked against the published allocation list on 2026-09-18 (Wikipedia's copy of the ITU table; the
+// ITU page renders its list with scripts). Check again when a new allocation appears; unknown MIDs
+// yield "". 306 covers Curaçao, Sint Maarten, and the Caribbean Netherlands together and maps to CW.
 
 // flagOf returns the ISO 3166-1 alpha-2 flag for an MMSI, or "" when the MID is unknown or the MMSI is
 // not a ship, coast, group, handheld, SAR aircraft, or craft-associated identity.

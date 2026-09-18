@@ -193,7 +193,7 @@ func TestStaticParticulars(t *testing.T) {
 
 func TestFlagOf(t *testing.T) {
 	for mmsi, want := range map[uint32]string{257000001: "NO", 230000001: "FI", 538005000: "MH", 366999999: "US", 992571234: "NO",
-		825712345: "NO", 111257001: "NO", 2570001: "NO", 25700001: "NO", 243000001: "HU", 271000001: "TR", 970123456: "", 199000000: "", 900000000: ""} {
+		825712345: "NO", 111257001: "NO", 2570001: "NO", 25700001: "NO", 243000001: "HU", 271000001: "TR", 218000001: "DE", 306000001: "CW", 501000001: "TF", 303000001: "US", 608000001: "SH", 970123456: "", 199000000: "", 900000000: ""} {
 		if got := flagOf(mmsi); got != want {
 			t.Errorf("flagOf(%d) = %q, want %q", mmsi, got, want)
 		}
