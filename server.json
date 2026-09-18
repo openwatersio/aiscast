@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.openwaters/aiscast",
+  "name": "io.openwaters/ais",
   "title": "Open Waters AIS",
   "description": "Live AIS vessel positions by MMSI, name, area, or radius, plus coverage. No sign-in, no key.",
   "version": "0.1.0",
