@@ -14,6 +14,16 @@ on:
     paths: [server.json]
   workflow_dispatch:
 
+# Checkout only; the publish talks to the registry with its own key, never to GitHub.
+permissions:
+  contents: read
+
+env:
+  # Pinned release of github.com/modelcontextprotocol/registry and the sha256 of its Linux tarball from
+  # that release's checksums file. Bump both together.
+  MCP_PUBLISHER_VERSION: v1.8.1
+  MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -33,8 +43,11 @@ jobs:
       - name: install mcp-publisher
         if: steps.registry.outputs.listed == 'false'
         run: |
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          curl -fsSL -o mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
           sudo mv mcp-publisher /usr/local/bin/
+          rm mcp-publisher.tar.gz
       - name: publish
         if: steps.registry.outputs.listed == 'false'
         run: |
