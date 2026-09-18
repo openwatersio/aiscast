@@ -159,6 +159,10 @@ func TestMCPGetVessels(t *testing.T) {
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{}, &out); !strings.Contains(msg, "mmsi or imo") {
 		t.Errorf("nothing asked: %q", msg)
 	}
+	// an IMO of 0 is "not available" on the wire and can match no vessel, even beside a vessel that has none
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{230000001}, "imo": []uint32{0}}, &out); msg != "" || len(out.Vessels) != 1 || len(out.UnknownIMO) != 1 || out.UnknownIMO[0] != 0 {
+		t.Errorf("imo zero: %q %+v", msg, out)
+	}
 	// anonymous: 10 per call, and the refusal says how to get more
 	var many []uint32
 	for i := range 11 {
@@ -230,6 +234,9 @@ func TestMCPFindInArea(t *testing.T) {
 	}
 	if msg := mcpCall(t, cs, "find_vessels_in_area", map[string]any{"bbox": nordic, "flag": "NOR"}, &out); !strings.Contains(msg, "two-letter") {
 		t.Errorf("bad flag: %q", msg)
+	}
+	if msg := mcpCall(t, cs, "find_vessels_in_area", map[string]any{"bbox": nordic, "flag": "12"}, &out); !strings.Contains(msg, "two-letter") {
+		t.Errorf("digits are not a flag: %q", msg)
 	}
 	big := map[string]any{"min_lat": 50, "min_lon": 0, "max_lat": 70, "max_lon": 20}
 	if msg := mcpCall(t, cs, "find_vessels_in_area", map[string]any{"bbox": big}, &out); !strings.Contains(msg, "400 square degrees") || !strings.Contains(msg, "allows 100") {

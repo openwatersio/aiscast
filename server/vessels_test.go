@@ -172,6 +172,17 @@ func TestStaticParticulars(t *testing.T) {
 	if v := p.vessels[257000009]; v.ETA.Day != 20 || v.IMO != 9319466 || v.Destination != "NOOSL" {
 		t.Errorf("empty static wiped particulars: %+v", v)
 	}
+	// a later message with a length but no beam keeps the beam, and the reverse keeps the length
+	p.ingestPacket("kystverket", "kystverket", now.Add(3*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+		Name: "STATIC STAR", Type: 70, Dimension: ais.FieldDimension{A: 120, B: 40}})
+	if v := p.vessels[257000009]; v.Length != 160 || v.Beam != 22 {
+		t.Errorf("partial dimensions wiped a value: length %d beam %d", v.Length, v.Beam)
+	}
+	p.ingestPacket("kystverket", "kystverket", now.Add(4*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+		Name: "STATIC STAR", Type: 70, Dimension: ais.FieldDimension{C: 11, D: 12}})
+	if v := p.vessels[257000009]; v.Length != 160 || v.Beam != 23 {
+		t.Errorf("partial dimensions wiped a value: length %d beam %d", v.Length, v.Beam)
+	}
 	// type 24 part B carries the call sign and dimensions of a class B vessel
 	p.ingestPacket("kystverket", "kystverket", now, ais.StaticDataReport{Header: ais.Header{MessageID: 24, UserID: 257000010}, Valid: true, PartNumber: true,
 		ReportB: ais.StaticDataReportB{Valid: true, ShipType: 36, CallSign: "LG1234", Dimension: ais.FieldDimension{A: 6, B: 6, C: 2, D: 2}}})
@@ -182,7 +193,7 @@ func TestStaticParticulars(t *testing.T) {
 
 func TestFlagOf(t *testing.T) {
 	for mmsi, want := range map[uint32]string{257000001: "NO", 230000001: "FI", 538005000: "MH", 366999999: "US", 992571234: "NO",
-		825712345: "NO", 111257001: "NO", 2570001: "NO", 25700001: "NO", 970123456: "", 199000000: "", 900000000: ""} {
+		825712345: "NO", 111257001: "NO", 2570001: "NO", 25700001: "NO", 243000001: "HU", 271000001: "TR", 970123456: "", 199000000: "", 900000000: ""} {
 		if got := flagOf(mmsi); got != want {
 			t.Errorf("flagOf(%d) = %q, want %q", mmsi, got, want)
 		}

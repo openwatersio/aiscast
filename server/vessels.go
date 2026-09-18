@@ -186,7 +186,10 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		v.Draught = u.Draught
 	}
 	if u.Length > 0 {
-		v.Length, v.Beam = u.Length, u.Beam
+		v.Length = u.Length
+	}
+	if u.Beam > 0 {
+		v.Beam = u.Beam
 	}
 	// Type 24 halves (name in A, ship type in B) are not retained: replaying only the latest half would
 	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
@@ -269,7 +272,10 @@ func (v *vessel) feature(mmsi uint32) map[string]any {
 		props["draught"] = v.Draught
 	}
 	if v.Length > 0 {
-		props["length"], props["beam"] = v.Length, v.Beam
+		props["length"] = v.Length
+	}
+	if v.Beam > 0 {
+		props["beam"] = v.Beam
 	}
 	return map[string]any{
 		"type":       "Feature",

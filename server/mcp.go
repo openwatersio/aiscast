@@ -35,8 +35,8 @@ const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the ope
 
 - Live terrestrial coverage is strongest in the Nordics and wherever volunteer receivers are; elsewhere positions come from partner aggregates, mostly AISHub, and are typically one to six minutes old. Where no feed or receiver hears, there is nothing. Call get_coverage before saying a region has no traffic.
 - A position is the last report heard, up to 30 minutes old. Every row carries seen and age_s. A vessel unheard for 30 minutes is dropped.
-- Destination, ETA, draught, dimensions, call sign, and IMO come from a vessel's static data, which it sends every six minutes, so a vessel heard for the first time may lack them. Flag comes from the MMSI and is always there. ETA has no year: read it as the next occurrence.
-- Anonymous calls may cover 100 square degrees and look up 10 vessels by MMSI per call. A free personal token from ` + mcpTokenURL + `, sent as an Authorization: Bearer header, raises that to 400 square degrees and 50 vessels. A tool says so when a call exceeds its limit.
+- Destination, ETA, draught, dimensions, call sign, and IMO come from a vessel's static data, which it sends every six minutes, so a vessel heard for the first time may lack them. Flag comes from the MMSI's maritime identification digits and is present when those are known. ETA has no year: read it as the next occurrence.
+- Anonymous calls may cover 100 square degrees and look up 10 vessels by MMSI or IMO per call. A free personal token from ` + mcpTokenURL + `, sent as an Authorization: Bearer header, raises that to 400 square degrees and 50 vessels. A tool says so when a call exceeds its limit.
 - Show the credit lines from each result's attribution field wherever the data is displayed.
 - A supplement to onboard AIS, never a substitute, and not for safety of navigation.
 - These tools answer one question at a time. For continuous updates use the WebSocket stream at wss://ais.openwaters.io/v1/stream, documented at ` + mcpDocsURL + `.
@@ -204,7 +204,10 @@ func mcpRow(mmsi uint32, v *vessel, now time.Time) mcpVessel {
 		r.DraughtM = mcpPtr(v.Draught)
 	}
 	if v.Length > 0 {
-		r.LengthM, r.BeamM = mcpPtr(v.Length), mcpPtr(v.Beam)
+		r.LengthM = mcpPtr(v.Length)
+	}
+	if v.Beam > 0 {
+		r.BeamM = mcpPtr(v.Beam)
 	}
 	return r
 }
@@ -268,7 +271,7 @@ func mcpKind(kind string) error {
 // mcpFlag normalises a flag filter: empty, or two letters upper-cased.
 func mcpFlag(f string) (string, error) {
 	f = strings.ToUpper(strings.TrimSpace(f))
-	if f != "" && len(f) != 2 {
+	if f != "" && (len(f) != 2 || f[0] < 'A' || f[0] > 'Z' || f[1] < 'A' || f[1] > 'Z') {
 		return "", fmt.Errorf("flag %q is not a two-letter ISO 3166-1 code", f)
 	}
 	return f, nil
@@ -353,7 +356,7 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 		}
 	}
 	for i, n := range in.IMO {
-		if _, ok := wantIMO[n]; !ok {
+		if _, ok := wantIMO[n]; !ok && n != 0 { // 0 is "not available" on the wire and matches no vessel
 			wantIMO[n] = len(in.MMSI) + i
 		}
 	}
@@ -375,7 +378,10 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 	})
 	known, knownIMO := map[uint32]bool{}, map[uint32]bool{} // from every match, not the page: a vessel cut by the row cap is still known
 	for _, r := range rows {
-		known[r.MMSI], knownIMO[r.IMO] = true, true
+		known[r.MMSI] = true
+		if r.IMO != 0 {
+			knownIMO[r.IMO] = true
+		}
 	}
 	out := mcpPage(rows, func(a, b *mcpVessel) bool { return order(a) < order(b) }, mcpMaxLimit)
 	for _, m := range in.MMSI {

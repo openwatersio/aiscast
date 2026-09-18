@@ -454,7 +454,7 @@
               "eta": { "type": "string", "description": "Estimated arrival as sent, `MM-DD HH:MM` UTC, or `MM-DD` when the time is not available. AIS carries no year. Present only when sent." },
               "draught": { "type": "number", "description": "Maximum static draught, metres. Present only when sent." },
               "length": { "type": "integer", "description": "Overall length, metres, from the dimension fields. Present only when sent." },
-              "beam": { "type": "integer", "description": "Beam, metres. Present with `length`." },
+              "beam": { "type": "integer", "description": "Beam, metres. Present only when sent." },
               "seen": { "type": "string", "format": "date-time", "description": "Time of the last message that updated the vessel." },
               "source": { "type": "string", "description": "Source of that message: an upstream name, `http:<station>`, `udp:<hash>`, `mmsi:<n>`, or `v1:<sub>`." },
               "station": { "type": "string", "description": "Station that delivered that message." },
