@@ -47,7 +47,7 @@ func TestStaleEventNotBroadcast(t *testing.T) {
 		return ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 2}, Valid: true,
 			Latitude: ais.FieldLatLonFine(lat), Longitude: 10, Cog: 360, Sog: 102.3, TrueHeading: 511, NavigationalStatus: 15}
 	}
-	p.ingestPacket("kystverket", "kystverket", t0, report(50))
+	p.ingestPacket("kystverket", "kystverket", t0, t0, report(50))
 	if len(sub.ch) != 1 {
 		t.Fatalf("fresh event not broadcast: %d", len(sub.ch))
 	}
@@ -55,7 +55,7 @@ func TestStaleEventNotBroadcast(t *testing.T) {
 
 	// a slow source's copy of an already-superseded report: archived and folded, never streamed
 	before := p.stats.stale.Load()
-	p.ingestPacket("aishub", "aishub", t0.Add(-90*time.Second), report(49))
+	p.ingestPacket("aishub", "aishub", t0.Add(-90*time.Second), t0.Add(-90*time.Second), report(49))
 	if len(sub.ch) != 0 || p.stats.stale.Load() != before+1 {
 		t.Fatalf("stale event broadcast: events=%d stale=%d→%d", len(sub.ch), before, p.stats.stale.Load())
 	}
@@ -89,7 +89,7 @@ func TestImplausibleJumpFromAnySource(t *testing.T) {
 		p := testPipeline(t)
 		mmsi := uint32(3000 + i)
 		t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
-		p.ingestPacket(src, src, t0, posReport(mmsi, 49.48, 0.13))
+		p.ingestPacket(src, src, t0, t0, posReport(mmsi, 49.48, 0.13))
 
 		before := p.stats.implausible.Load()
 		ev := &Event{Time: t0.Add(3 * time.Second), Source: src, MMSI: mmsi, Type: "PositionReport",
@@ -113,7 +113,7 @@ func TestImplausibleJumpFromAnySource(t *testing.T) {
 func TestShortJumpNotImplausible(t *testing.T) {
 	p := testPipeline(t)
 	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
-	p.ingestPacket("kystverket", "kystverket", t0, posReport(4242, 69.9, 20.1))
+	p.ingestPacket("kystverket", "kystverket", t0, t0, posReport(4242, 69.9, 20.1))
 	ev := &Event{Time: t0.Add(time.Second), Source: "barentswatch", MMSI: 4242, Type: "PositionReport",
 		Packet: posReport(4242, 69.909472, 20.163188)}
 	p.updateVessel(ev)
@@ -128,18 +128,18 @@ func TestNullIslandIsNotAPosition(t *testing.T) {
 	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
 
 	// a vessel already tracked keeps the position it had
-	p.ingestPacket("aisstream", "aisstream", t0, posReport(1, 49.48, 0.13))
-	p.ingestPacket("aisstream", "aisstream", t0.Add(time.Minute), posReport(1, 0, 0))
+	p.ingestPacket("aisstream", "aisstream", t0, t0, posReport(1, 49.48, 0.13))
+	p.ingestPacket("aisstream", "aisstream", t0.Add(time.Minute), t0.Add(time.Minute), posReport(1, 0, 0))
 	if !posAt(t, p.vessels[1], 49.48, 0.13) {
 		t.Errorf("null island folded into the cache: %+v", p.vessels[1])
 	}
 	// a vessel seen only at (0,0) has no position at all, so it never reaches /v1/vessels
-	p.ingestPacket("aishub", "aishub", t0, posReport(2, 0, 0))
+	p.ingestPacket("aishub", "aishub", t0, t0, posReport(2, 0, 0))
 	if v := p.vessels[2]; v.HasPos {
 		t.Errorf("vessel known only at (0,0) has a position: lat=%v lon=%v", v.Lat, v.Lon)
 	}
 	// the meridian and the equator on their own are ordinary water: Greenwich is on longitude 0
-	p.ingestPacket("aishub", "aishub", t0, posReport(3, 51.5, 0))
+	p.ingestPacket("aishub", "aishub", t0, t0, posReport(3, 51.5, 0))
 	if !posAt(t, p.vessels[3], 51.5, 0) {
 		t.Errorf("Greenwich position rejected: %+v", p.vessels[3])
 	}

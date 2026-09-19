@@ -1,0 +1,27 @@
+2026-09-05T18:00:00.052443014Z	digitraffic	vessels-v2/230708000/location {
+  "cog" : 355.5,
+  "heading" : 311,
+  "lat" : 61.132878,
+  "lon" : 21.441973,
+  "navStat" : 0,
+  "posAcc" : true,
+  "raim" : false,
+  "rot" : 0,
+  "sog" : 0.1,
+  "time" : 1788631200
+}
+2026-09-05T18:00:00.219821884Z	digitraffic	vessels-v2/230018240/metadata {
+  "callSign" : "OJ7964",
+  "destination" : "KASKINEN PILOT CH09",
+  "draught" : 10,
+  "eta" : 1596,
+  "imo" : 0,
+  "name" : "PILOT L235",
+  "posType" : 1,
+  "refA" : 10,
+  "refB" : 2,
+  "refC" : 2,
+  "refD" : 2,
+  "timestamp" : 1788631200199,
+  "type" : 50
+}
