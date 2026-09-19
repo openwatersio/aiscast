@@ -29,7 +29,9 @@ func mcpSeed(t *testing.T) *Pipeline {
 		return ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: mmsi}, Valid: true, Name: name, Type: typ}
 	}
 	p.ingestPacket("kystverket", "kystverket", now.Add(-20*time.Second), pos(257000001, 59.9, 10.7, 12, 180, 0))
-	p.ingestPacket("kystverket", "kystverket", now.Add(-19*time.Second), static(257000001, "NORDIC STAR", 70))
+	p.ingestPacket("kystverket", "kystverket", now.Add(-19*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000001}, Valid: true,
+		Name: "NORDIC STAR", Type: 70, ImoNumber: 9319466, CallSign: "LAJB7", Destination: "NOOSL",
+		Eta: ais.FieldETA{Month: 9, Day: 19, Hour: 6, Minute: 0}, MaximumStaticDraught: 5.2, Dimension: ais.FieldDimension{A: 100, B: 50, C: 10, D: 12}})
 	p.ingestPacket("kystverket", "kystverket", now.Add(-10*time.Second), pos(257000002, 59.5, 10.6, 18, 10, 0))
 	p.ingestPacket("kystverket", "kystverket", now.Add(-9*time.Second), static(257000002, "OSLO FERRY", 60))
 	p.ingestPacket("kystverket", "kystverket", now.Add(-5*time.Second), ais.AidsToNavigationReport{Header: ais.Header{MessageID: 21, UserID: 992571234}, Valid: true,
@@ -143,6 +145,24 @@ func TestMCPGetVessels(t *testing.T) {
 	if !strings.Contains(out.Attribution["kystverket"], "Norwegian Coastal Administration") {
 		t.Errorf("attribution: %v", out.Attribution)
 	}
+	if v.Flag != "NO" || v.IMO != 9319466 || v.CallSign != "LAJB7" || v.Destination != "NOOSL" || v.ETA != "09-19 06:00" || v.Draught == nil || *v.Draught != 5.2 || v.Length == nil || *v.Length != 150 || *v.Beam != 22 {
+		t.Errorf("particulars: %+v", v)
+	}
+	// by IMO, mixed with an MMSI, unknowns listed per identifier
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{230000001}, "imo": []uint32{9319466, 1234567}}, &out); msg != "" ||
+		len(out.Vessels) != 2 || out.Vessels[0].MMSI != 230000001 || out.Vessels[1].IMO != 9319466 || len(out.UnknownIMO) != 1 || out.UnknownIMO[0] != 1234567 || len(out.Unknown) != 0 {
+		t.Errorf("by imo: %q %+v", msg, out)
+	}
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"imo": []uint32{9319466}}, &out); msg != "" || len(out.Vessels) != 1 {
+		t.Errorf("imo only: %q %+v", msg, out)
+	}
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{}, &out); !strings.Contains(msg, "mmsi or imo") {
+		t.Errorf("nothing asked: %q", msg)
+	}
+	// an IMO of 0 is "not available" on the wire and can match no vessel, even beside a vessel that has none
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{230000001}, "imo": []uint32{0}}, &out); msg != "" || len(out.Vessels) != 1 || len(out.UnknownIMO) != 1 || out.UnknownIMO[0] != 0 {
+		t.Errorf("imo zero: %q %+v", msg, out)
+	}
 	// anonymous: 10 per call, and the refusal says how to get more
 	var many []uint32
 	for i := range 11 {
@@ -151,7 +171,7 @@ func TestMCPGetVessels(t *testing.T) {
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": many}, &out); !strings.Contains(msg, "allows 10") || !strings.Contains(msg, mcpTokenURL) {
 		t.Errorf("cap message: %q", msg)
 	}
-	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{}}, &out); !strings.Contains(msg, "empty") {
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{}}, &out); !strings.Contains(msg, "at least one") {
 		t.Errorf("empty list: %q", msg)
 	}
 	// a repeated MMSI counts once against the cap and is reported once
@@ -207,6 +227,16 @@ func TestMCPFindInArea(t *testing.T) {
 	}
 	if msg := mcpCall(t, cs, "find_vessels_in_area", map[string]any{"bbox": oslo, "kind": "boat"}, &out); !strings.Contains(msg, "kind") {
 		t.Errorf("bad kind: %q", msg)
+	}
+	nordic := map[string]any{"min_lat": 59, "min_lon": 10, "max_lat": 61, "max_lon": 26}
+	if msg := mcpCall(t, cs, "find_vessels_in_area", map[string]any{"bbox": nordic, "flag": "fi"}, &out); msg != "" || len(out.Vessels) != 1 || out.Vessels[0].Flag != "FI" {
+		t.Errorf("flag filter: %q %+v", msg, out.Vessels)
+	}
+	if msg := mcpCall(t, cs, "find_vessels_in_area", map[string]any{"bbox": nordic, "flag": "NOR"}, &out); !strings.Contains(msg, "two-letter") {
+		t.Errorf("bad flag: %q", msg)
+	}
+	if msg := mcpCall(t, cs, "find_vessels_in_area", map[string]any{"bbox": nordic, "flag": "12"}, &out); !strings.Contains(msg, "two-letter") {
+		t.Errorf("digits are not a flag: %q", msg)
 	}
 	big := map[string]any{"min_lat": 50, "min_lon": 0, "max_lat": 70, "max_lon": 20}
 	if msg := mcpCall(t, cs, "find_vessels_in_area", map[string]any{"bbox": big}, &out); !strings.Contains(msg, "400 square degrees") || !strings.Contains(msg, "allows 100") {
