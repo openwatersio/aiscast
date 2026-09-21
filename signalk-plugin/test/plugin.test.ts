@@ -288,4 +288,45 @@ describe("downlink", () => {
     await until(() => app.deltas.length === 1);
     expect(app.deltas[0].context).toBe("vessels.urn:mrn:imo:mmsi:258857000");
   });
+
+  it("relays injected targets on nmea0183out, but not ones the local receiver already covers", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    app.model["vessels.urn:mrn:imo:mmsi:227006760.navigation.position"] = {
+      $source: "ais-receiver.AI",
+      timestamp: new Date().toISOString(),
+    };
+    const now = new Date().toISOString();
+    server.send({ type: "event", time: now, source: "kystverket", nmea: [`\\c:1755703554342*4B\\${VDM}`], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    server.send({ type: "event", time: now, source: "kystverket", nmea: [`\\c:1755703554342*4B\\${VDM2}`], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length === 1);
+    await sleep(50);
+    expect(out).toEqual([VDM2]); // TAG block stripped, VHF-fresh target not relayed
+  });
+
+  it("keeps replayed and otherwise stale events off nmea0183out while still injecting them", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const stale = new Date(Date.now() - 5 * 60_000).toISOString(); // a snapshot replay, or AISHub's aggregate
+    server.send({ type: "event", time: stale, source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    server.send({ type: "event", source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // no time at all
+    await until(() => app.deltas.length === 2);
+    await sleep(50);
+    expect(out).toEqual([]);
+  });
+
+  it("does not relay on nmea0183out when the setting is off", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always", nmea0183out: false } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    server.send({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length === 1);
+    await sleep(50);
+    expect(out).toEqual([]);
+  });
 });

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- New Receive setting, on by default: *Send aiscast traffic to NMEA 0183 output*. Targets injected from aiscast are re-emitted as `!AIVDM` on the `nmea0183out` event, so chartplotters and tablet apps reading the server's NMEA 0183 connections see over-the-horizon traffic, not only the Signal K apps. Only aiscast-sourced targets are relayed, and in `Always` mode a target the local receiver already covers is left out, so nothing is duplicated. Turn it off if `signalk-vessels-to-ais` is doing the same conversion.
+- Only events received in the last 2 minutes reach the NMEA 0183 output. A chartplotter cannot tell a replayed position from a live one, so the snapshot replayed on subscribe, AISHub's ~5-minute aggregate, and late satellite passes stay in the Signal K data model — timestamped and attributed — and off the wire.
+
 ## 0.4.0
 
 - The offline queue writes far less to the SD card. Each queue file used to be rewritten from scratch every fifteen seconds as sentences were added to it, so a boat at anchor hearing a slow trickle of traffic wrote the same data to the card a dozen times over. Sentences are now appended to the end of a file and nothing is rewritten, which on a quiet anchorage cuts the writing to a fraction of what it was.

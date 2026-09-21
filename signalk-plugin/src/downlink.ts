@@ -12,6 +12,7 @@ export interface DownlinkOptions {
   source: string; // $source on injected deltas
   selfSource: string | null; // aiscast `source` of our own publishes, dropped on the way back
   onReceived?: (sentence: string) => void; // loop guard hook
+  onInjected?: (sentence: string) => void; // relay to NMEA 0183 output, for chartplotters and tablets
 }
 
 export interface DownlinkStats {
@@ -214,6 +215,10 @@ export class Downlink {
       if (ev.time) u.timestamp = ev.time as Delta["updates"][number]["timestamp"];
     }
     this.app.handleMessage(this.opts.source, delta);
+    // Same commit point as the delta, so the "local reception wins" check above suppresses the sentence too
+    // and a target heard both ways goes out once. The TAG block is aiscast's receive time, which no
+    // chartplotter reads and some choke on. ponytail: fragments relay verbatim; the plotter reassembles.
+    if (this.opts.onInjected && isLive(ev.time)) for (const s of ev.nmea) this.opts.onInjected(stripTag(s));
     this.stats.events++;
     this.targets.set(delta.context, Date.now());
     if (this.stats.events % 100 === 0) this.pruneTargets();
@@ -242,6 +247,22 @@ interface AisEvent {
   msg_type?: string;
   lat?: number;
   lon?: number;
+}
+
+// Live enough to put on the 0183 wire. A Signal K app reads the delta's timestamp and `$source` and can
+// tell a replayed position from a VHF one; a chartplotter gets a bare !AIVDM and cannot. Everything the
+// snapshot replays on subscribe carries its original receive time, as do AISHub's ~5-minute aggregate and
+// late satellite passes, so one age gate covers all three. It also keeps the replay burst off the wire:
+// a few hundred sentences at once is minutes of backlog on a 4800-baud serial line. Static messages are
+// gated the same way rather than passed through, and reach the plotter on the target's next
+// retransmission, within about six minutes. An unparseable time counts as stale: for a wire a helmsman
+// steers by, silence beats a confident wrong position.
+// ponytail: one fixed window for every message type, no per-type budget.
+const LIVE_FOR_0183 = 120_000;
+
+function isLive(time: string | undefined, now = Date.now()): boolean {
+  const t = time ? Date.parse(time) : NaN;
+  return now - t < LIVE_FOR_0183; // NaN comparisons are false, so an unreadable time is not live
 }
 
 const POSITION_TYPES = new Set([

@@ -24,7 +24,7 @@ const TOKEN_RETRY_MAX = 30 * 60_000;
 
 export interface Config {
   share?: { targets?: boolean; ownShip?: boolean; position?: boolean };
-  receive?: { mode?: ReceiveMode; radiusNm?: number };
+  receive?: { mode?: ReceiveMode; radiusNm?: number; nmea0183out?: boolean };
   advanced?: { server?: string; token?: string };
   // Pre-"Advanced" layout, still honoured when read.
   server?: string;
@@ -89,6 +89,11 @@ export default function (app: ServerAPI): Plugin {
               minimum: 5,
               maximum: 200,
             },
+            nmea0183out: {
+              type: "boolean",
+              title: "Send aiscast traffic to NMEA 0183 output",
+              default: true,
+            },
           },
         },
         advanced: {
@@ -133,7 +138,13 @@ export default function (app: ServerAPI): Plugin {
               "ui:help": "Needs an MMSI in Vessel settings.",
             },
       },
-      receive: { mode: { "ui:widget": "radio" } },
+      receive: {
+        mode: { "ui:widget": "radio" },
+        nmea0183out: {
+          "ui:help":
+            "Relay aiscast targets as !AIVDM on the nmea0183out event, so chartplotters and tablet apps reading the server's NMEA 0183 connections see them. Turn off if another plugin (signalk-vessels-to-ais) already converts them.",
+        },
+      },
       advanced: { token: { "ui:widget": "password" } },
     }),
 
@@ -166,6 +177,9 @@ export default function (app: ServerAPI): Plugin {
     const sharePosition = config.share?.position ?? false;
     if (sharePosition && !app.getSelfPath("mmsi")) app.debug("self-reported position is on but no MMSI is set; nothing will be synthesized");
     const mode = config.receive?.mode ?? "auto";
+    // On for configs saved before the setting existed, unlike the Share settings: this only decides where
+    // traffic the user already asked for is shown, and a plotter seeing nothing is the surprising default.
+    const relay0183 = config.receive?.nmea0183out ?? true;
     const radiusNm = Math.min(200, Math.max(5, config.receive?.radiusNm ?? 50));
     const dir = app.getDataDirPath();
     const log = (msg: string) => app.debug(msg);
@@ -227,6 +241,8 @@ export default function (app: ServerAPI): Plugin {
         source: `${PLUGIN_ID}.net`,
         selfSource,
         onReceived: (s) => up.noteReceived(s),
+        // The plugin listens on `nmea0183`, never on `nmea0183out`, so this cannot feed back into the uplink.
+        onInjected: relay0183 ? (s) => events.emit("nmea0183out", s) : undefined,
       },
       log,
     );
