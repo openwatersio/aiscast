@@ -49,8 +49,8 @@ export class Downlink {
   private subscribed = false;
   private timer: NodeJS.Timeout | null = null;
   private targets = new Map<string, number>();
-  private relayed = new Map<string, number>(); // context → when its statics last went out on NMEA 0183
-  private statics = new Map<string, Map<string, string[]>>(); // context → latest sentences per static kind
+  private relayed = new Set<string>(); // contexts whose positions go out on NMEA 0183
+  private statics = new Map<string, Map<string, CachedStatic>>(); // context → latest static per kind
   private buddies: number[] = [];
   private sentMmsi = "";
   private mmsiCap = Infinity; // from the welcome frame's limits; the server refuses a too-long list as a whole frame
@@ -233,21 +233,25 @@ export class Downlink {
     const send = (nmea: string[]) => {
       for (const s of nmea) this.opts.onInjected!(asVDM(stripTag(s)));
     };
+    const relayed = this.relayed.has(context);
     const kind = staticKind(ev);
     if (kind) {
-      const cached = this.statics.get(context) ?? new Map<string, string[]>();
-      cached.set(kind, ev.nmea!);
+      const cached = this.statics.get(context) ?? new Map<string, CachedStatic>();
+      cached.set(kind, { nmea: ev.nmea!, sentAt: relayed ? now : 0 }); // relayed: sent just below
       this.statics.set(context, cached);
     }
     if (!isPosition) {
-      if (this.relayed.has(context)) send(ev.nmea!);
+      if (relayed) send(ev.nmea!);
       return;
     }
     send(ev.nmea!);
-    const last = this.relayed.get(context);
-    if (last != null && now - last < STATIC_EVERY) return;
-    for (const nmea of this.statics.get(context)?.values() ?? []) send(nmea);
-    this.relayed.set(context, now);
+    this.relayed.add(context);
+    // Per kind: type 24 parts A and B arrive as separate events and fall due separately.
+    for (const s of this.statics.get(context)?.values() ?? []) {
+      if (now - s.sentAt < STATIC_EVERY) continue;
+      send(s.nmea);
+      s.sentAt = now;
+    }
   }
 
   // Another source (the boat's receiver) updated this target recently: do not overwrite it.
@@ -277,6 +281,11 @@ interface AisEvent {
   msg_type?: string;
   lat?: number;
   lon?: number;
+}
+
+interface CachedStatic {
+  nmea: string[];
+  sentAt: number; // last time it went out on NMEA 0183, 0 if never
 }
 
 const LIVE_POSITION_FOR = 120_000;
