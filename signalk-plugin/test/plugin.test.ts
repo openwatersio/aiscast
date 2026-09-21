@@ -358,7 +358,7 @@ describe("downlink", () => {
       vi.setSystemTime(t0 + 5 * 60_000);
       server.send(position());
       await expectOut([VDM2]); // nothing due yet
-      server.send(statik(STATIC));
+      server.send(statik(STATIC, new Date().toISOString()));
       await expectOut([STATIC]); // a live static goes straight out and restarts its own clock
 
       vi.setSystemTime(t0 + 6 * 60_000);
@@ -371,6 +371,25 @@ describe("downlink", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("holds a replayed static that follows a live snapshot position until the next position", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const position = () => ({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+
+    // The server's snapshot order: last position, then last static.
+    server.send(position());
+    server.send({ type: "event", time: new Date(Date.now() - 30 * 60_000).toISOString(), source: "kystverket", nmea: [STATIC], mmsi: 258857000, msg_type: "StaticDataReport" });
+    await until(() => app.deltas.length === 2);
+    await sleep(50);
+    expect(out).toEqual([VDM2]);
+
+    server.send(position());
+    await until(() => out.length === 3);
+    expect(out).toEqual([VDM2, VDM2, STATIC]);
   });
 
   it("relays a class A's two-sentence type 5 after its first live position", async () => {

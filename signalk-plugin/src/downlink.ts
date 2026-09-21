@@ -228,20 +228,21 @@ export class Downlink {
   // A target reaches NMEA 0183 with its first live position. Statics are cached from any event, snapshot
   // included, and follow a relayed position every STATIC_EVERY: aiscast sends an aggregate's statics only
   // when they change, so without the cache a plotter would never learn the name. Gating on the position
-  // keeps the snapshot burst off slow serial lines.
+  // keeps the snapshot burst off slow serial lines. A replayed static waits for the next position too: the
+  // snapshot sends each vessel's position before its static, so the position alone may already be live.
   private relay(context: string, ev: AisEvent, isPosition: boolean, now = Date.now()): void {
     const send = (nmea: string[]) => {
       for (const s of nmea) this.opts.onInjected!(asVDM(stripTag(s)));
     };
-    const relayed = this.relayed.has(context);
     const kind = staticKind(ev);
+    const sendNow = this.relayed.has(context) && (!kind || isLive(ev.time, now));
     if (kind) {
       const cached = this.statics.get(context) ?? new Map<string, CachedStatic>();
-      cached.set(kind, { nmea: ev.nmea!, sentAt: relayed ? now : 0 }); // relayed: sent just below
+      cached.set(kind, { nmea: ev.nmea!, sentAt: sendNow ? now : 0 }); // sendNow: sent just below
       this.statics.set(context, cached);
     }
     if (!isPosition) {
-      if (relayed) send(ev.nmea!);
+      if (sendNow) send(ev.nmea!);
       return;
     }
     send(ev.nmea!);
