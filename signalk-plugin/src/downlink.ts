@@ -1,7 +1,7 @@
 import type { Delta, ServerAPI } from "@signalk/server-api";
 import { Parser } from "@signalk/nmea0183-signalk";
 import type { Frame, Link } from "./link.js";
-import { stripTag } from "./nmea.js";
+import { stripTag, xorChecksum } from "./nmea.js";
 import { ownPosition } from "./ownship.js";
 
 export type ReceiveMode = "off" | "auto" | "always";
@@ -12,6 +12,7 @@ export interface DownlinkOptions {
   source: string; // $source on injected deltas
   selfSource: string | null; // aiscast `source` of our own publishes, dropped on the way back
   onReceived?: (sentence: string) => void; // loop guard hook
+  onInjected?: (sentence: string) => void; // relay to NMEA 0183 output, for chartplotters and tablets
 }
 
 export interface DownlinkStats {
@@ -48,6 +49,7 @@ export class Downlink {
   private subscribed = false;
   private timer: NodeJS.Timeout | null = null;
   private targets = new Map<string, number>();
+  private relayed = new Set<string>();
   private buddies: number[] = [];
   private sentMmsi = "";
   private mmsiCap = Infinity; // from the welcome frame's limits; the server refuses a too-long list as a whole frame
@@ -193,7 +195,8 @@ export class Downlink {
     if (this.opts.selfSource && ev.source === this.opts.selfSource) return;
     if (!ev.mmsi || String(ev.mmsi) === this.selfMmsi) return;
     for (const s of ev.nmea) this.opts.onReceived?.(s);
-    if (POSITION_TYPES.has(ev.msg_type ?? "") && (ev.lat == null || ev.lon == null)) return; // aiscast rejected the position
+    const isPosition = POSITION_TYPES.has(ev.msg_type ?? "");
+    if (isPosition && (!isLive(ev.time) || ev.lat == null || ev.lon == null)) return;
 
     let delta: Delta | null = null;
     for (const s of ev.nmea) {
@@ -214,6 +217,10 @@ export class Downlink {
       if (ev.time) u.timestamp = ev.time as Delta["updates"][number]["timestamp"];
     }
     this.app.handleMessage(this.opts.source, delta);
+    if (this.opts.onInjected && (isPosition || this.relayed.has(delta.context))) {
+      for (const s of ev.nmea) this.opts.onInjected(asVDM(stripTag(s)));
+      if (isPosition) this.relayed.add(delta.context);
+    }
     this.stats.events++;
     this.targets.set(delta.context, Date.now());
     if (this.stats.events % 100 === 0) this.pruneTargets();
@@ -229,7 +236,11 @@ export class Downlink {
 
   private pruneTargets(): void {
     const cutoff = Date.now() - TARGET_TTL;
-    for (const [k, t] of this.targets) if (t < cutoff) this.targets.delete(k);
+    for (const [k, t] of this.targets) {
+      if (t >= cutoff) continue;
+      this.targets.delete(k);
+      this.relayed.delete(k);
+    }
   }
 }
 
@@ -242,6 +253,21 @@ interface AisEvent {
   msg_type?: string;
   lat?: number;
   lon?: number;
+}
+
+const LIVE_POSITION_FOR = 120_000;
+
+function isLive(time: string | undefined, now = Date.now()): boolean {
+  const t = time ? Date.parse(time) : NaN;
+  const age = now - t;
+  return age >= 0 && age < LIVE_POSITION_FOR;
+}
+
+function asVDM(sentence: string): string {
+  const vdm = sentence.replace(/^([!$][A-Z]{2})VDO,/, "$1VDM,");
+  if (vdm === sentence) return sentence;
+  const body = vdm.split("*", 1)[0];
+  return `${body}*${xorChecksum(body.slice(1))}`;
 }
 
 const POSITION_TYPES = new Set([
