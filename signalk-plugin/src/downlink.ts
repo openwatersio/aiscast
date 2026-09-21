@@ -49,7 +49,8 @@ export class Downlink {
   private subscribed = false;
   private timer: NodeJS.Timeout | null = null;
   private targets = new Map<string, number>();
-  private relayed = new Set<string>();
+  private relayed = new Set<string>(); // contexts whose positions go out on NMEA 0183
+  private statics = new Map<string, Map<string, CachedStatic>>(); // context → latest static per kind
   private buddies: number[] = [];
   private sentMmsi = "";
   private mmsiCap = Infinity; // from the welcome frame's limits; the server refuses a too-long list as a whole frame
@@ -217,14 +218,41 @@ export class Downlink {
       if (ev.time) u.timestamp = ev.time as Delta["updates"][number]["timestamp"];
     }
     this.app.handleMessage(this.opts.source, delta);
-    if (this.opts.onInjected && (isPosition || this.relayed.has(delta.context))) {
-      for (const s of ev.nmea) this.opts.onInjected(asVDM(stripTag(s)));
-      if (isPosition) this.relayed.add(delta.context);
-    }
+    if (this.opts.onInjected) this.relay(delta.context, ev, isPosition);
     this.stats.events++;
     this.targets.set(delta.context, Date.now());
     if (this.stats.events % 100 === 0) this.pruneTargets();
     this.stats.targets = this.targets.size;
+  }
+
+  // A target reaches NMEA 0183 with its first live position. Statics are cached from any event, snapshot
+  // included, and follow a relayed position every STATIC_EVERY: aiscast sends an aggregate's statics only
+  // when they change, so without the cache a plotter would never learn the name. Gating on the position
+  // keeps the snapshot burst off slow serial lines. A replayed static waits for the next position too: the
+  // snapshot sends each vessel's position before its static, so the position alone may already be live.
+  private relay(context: string, ev: AisEvent, isPosition: boolean, now = Date.now()): void {
+    const send = (nmea: string[]) => {
+      for (const s of nmea) this.opts.onInjected!(asVDM(stripTag(s)));
+    };
+    const kind = staticKind(ev);
+    const sendNow = this.relayed.has(context) && (!kind || isLive(ev.time, now));
+    if (kind) {
+      const cached = this.statics.get(context) ?? new Map<string, CachedStatic>();
+      cached.set(kind, { nmea: ev.nmea!, sentAt: sendNow ? now : 0 }); // sendNow: sent just below
+      this.statics.set(context, cached);
+    }
+    if (!isPosition) {
+      if (sendNow) send(ev.nmea!);
+      return;
+    }
+    send(ev.nmea!);
+    this.relayed.add(context);
+    // Per kind: type 24 parts A and B arrive as separate events and fall due separately.
+    for (const s of this.statics.get(context)?.values() ?? []) {
+      if (now - s.sentAt < STATIC_EVERY) continue;
+      send(s.nmea);
+      s.sentAt = now;
+    }
   }
 
   // Another source (the boat's receiver) updated this target recently: do not overwrite it.
@@ -240,6 +268,7 @@ export class Downlink {
       if (t >= cutoff) continue;
       this.targets.delete(k);
       this.relayed.delete(k);
+      this.statics.delete(k);
     }
   }
 }
@@ -255,7 +284,22 @@ interface AisEvent {
   lon?: number;
 }
 
+interface CachedStatic {
+  nmea: string[];
+  sentAt: number; // last time it went out on NMEA 0183, 0 if never
+}
+
 const LIVE_POSITION_FOR = 120_000;
+const STATIC_EVERY = 6 * 60_000; // a class A's own static interval
+
+// Cache key for a static event: type 5, or type 24 part A/B, which arrive as separate events.
+function staticKind(ev: AisEvent): string | null {
+  if (ev.msg_type === "ShipStaticData") return "5";
+  if (ev.msg_type !== "StaticDataReport") return null;
+  const payload = stripTag(ev.nmea![0]).split(",")[5] ?? "";
+  const c = payload.charCodeAt(6) - 48;
+  return `24${((c > 40 ? c - 8 : c) >> 2) & 3}`;
+}
 
 function isLive(time: string | undefined, now = Date.now()): boolean {
   const t = time ? Date.parse(time) : NaN;

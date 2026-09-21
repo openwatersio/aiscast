@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+- Chartplotters now show names, call signs, and dimensions for aiscast targets. aiscast sends a vessel's static data only when it changes, so for most aggregated targets the only copy arrives in the snapshot on connect, which the NMEA 0183 relay held back. The plugin now keeps the latest static data for each target, sends it right after the target's first live position, and repeats it with a position every 6 minutes while the target stays live.
+
 ## 0.5.0
 
 - New Receive setting, on by default: *Send aiscast traffic to NMEA 0183 output*. Targets injected from aiscast are re-emitted as `!AIVDM` on the `nmea0183out` event, so chartplotters and tablet apps reading the server's NMEA 0183 connections see over-the-horizon traffic, not only the Signal K apps. Only aiscast-sourced targets are relayed, and in `Always` mode a target the local receiver already covers is left out, so nothing is duplicated. Turn it off if `signalk-vessels-to-ais` is doing the same conversion.
