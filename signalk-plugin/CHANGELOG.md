@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1
 
 - Chartplotters now show names, call signs, and dimensions for aiscast targets. aiscast sends a vessel's static data only when it changes, so for most aggregated targets the only copy arrives in the snapshot on connect, which the NMEA 0183 relay held back. The plugin now keeps the latest static data for each target, sends it right after the target's first live position, and repeats it with a position every 6 minutes while the target stays live.
 
