@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"time"
@@ -24,13 +25,22 @@ type vessel struct {
 	NavStatus uint8
 	ShipType  uint8  // ITU ship/cargo type code; AtoN type for aids
 	Kind      string // vessel | aton | base | sar
-	Seen      time.Time
-	Source    string
-	Station   string
-	MsgType   string
-	TrustedAt time.Time // last position from a source that is not low-trust
-	PosAt     time.Time // time of the last position folded in (Seen also moves on static messages)
-	StaticAt  time.Time // time of the last static folded in; gates rebuilt copies of the same broadcast
+	// Static particulars from type 5 and 24 messages, zero or empty until heard. Length and beam come
+	// from the dimension fields (reference point to bow plus to stern, port plus starboard).
+	IMO         uint32
+	CallSign    string
+	Destination string       // as typed by the crew: a port name, a UN/LOCODE, or nothing useful
+	ETA         ais.FieldETA // month, day, hour, minute UTC as sent; AIS carries no year
+	Draught     float64      // metres
+	Length      uint16       // metres
+	Beam        uint16       // metres
+	Seen        time.Time
+	Source      string
+	Station     string
+	MsgType     string
+	TrustedAt   time.Time // last position from a source that is not low-trust
+	PosAt       time.Time // time of the last position folded in (Seen also moves on static messages)
+	StaticAt    time.Time // time of the last static folded in; gates rebuilt copies of the same broadcast
 
 	// last events heard, replayed by snapshot subscriptions; unexported so the vessel snapshot file skips
 	// them — nil after a restore, and then a reconstruction is synthesized instead.
@@ -57,6 +67,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	case ais.ExtendedClassBPositionReport:
 		u.Lat, u.Lon, hasPos, u.Name = float64(m.Latitude), float64(m.Longitude), true, m.Name
 		u.Cog, u.Sog, u.Heading, u.ShipType = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.Type
+		u.Length, u.Beam = dimensions(m.Dimension)
 	case ais.LongRangeAisBroadcastMessage:
 		u.Lat, u.Lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
 		u.Cog, u.Sog, u.NavStatus = float64(m.Cog), float64(m.Sog), m.NavigationalStatus
@@ -75,12 +86,18 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		u.Lat, u.Lon, hasPos, u.Name, u.Kind, u.ShipType = float64(m.Latitude), float64(m.Longitude), true, m.Name, "aton", m.Type
 	case ais.ShipStaticData:
 		u.Name, u.ShipType, isStatic = m.Name, m.Type, true
+		u.IMO, u.CallSign, u.Destination, u.Draught = m.ImoNumber, m.CallSign, m.Destination, float64(m.MaximumStaticDraught)
+		u.Length, u.Beam = dimensions(m.Dimension)
+		if m.Eta.Month >= 1 && m.Eta.Month <= 12 && m.Eta.Day >= 1 && m.Eta.Day <= 31 { // 0 is "not available"
+			u.ETA = m.Eta
+		}
 	case ais.StaticDataReport:
 		if m.ReportA.Valid {
 			u.Name = m.ReportA.Name
 		}
 		if m.ReportB.Valid {
-			u.ShipType = m.ReportB.ShipType
+			u.ShipType, u.CallSign = m.ReportB.ShipType, m.ReportB.CallSign
+			u.Length, u.Beam = dimensions(m.ReportB.Dimension)
 		}
 	}
 	// 91/181 are the "not available" sentinels. (0,0) is a valid coordinate, so it passes the range test,
@@ -152,6 +169,28 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if u.Kind != "vessel" {
 		v.Kind = u.Kind
 	}
+	// Particulars are folded like the name: whenever present, stale or not, since they do not move.
+	if u.IMO != 0 {
+		v.IMO = u.IMO
+	}
+	if u.CallSign != "" {
+		v.CallSign = u.CallSign
+	}
+	if u.Destination != "" {
+		v.Destination = u.Destination
+	}
+	if u.ETA.Month != 0 {
+		v.ETA = u.ETA
+	}
+	if u.Draught > 0 {
+		v.Draught = u.Draught
+	}
+	if u.Length > 0 {
+		v.Length = u.Length
+	}
+	if u.Beam > 0 {
+		v.Beam = u.Beam
+	}
 	// Type 24 halves (name in A, ship type in B) are not retained: replaying only the latest half would
 	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
 	if isStatic { // names don't move, so a stale static is still worth keeping
@@ -213,6 +252,30 @@ func (v *vessel) feature(mmsi uint32) map[string]any {
 	}
 	if v.NavStatus != 15 {
 		props["nav_status"] = v.NavStatus
+	}
+	if f := flagOf(mmsi); f != "" {
+		props["flag"] = f
+	}
+	if v.IMO != 0 {
+		props["imo"] = v.IMO
+	}
+	if v.CallSign != "" {
+		props["callsign"] = v.CallSign
+	}
+	if v.Destination != "" {
+		props["destination"] = v.Destination
+	}
+	if eta := etaString(v.ETA); eta != "" {
+		props["eta"] = eta
+	}
+	if v.Draught > 0 {
+		props["draught"] = v.Draught
+	}
+	if v.Length > 0 {
+		props["length"] = v.Length
+	}
+	if v.Beam > 0 {
+		props["beam"] = v.Beam
 	}
 	return map[string]any{
 		"type":       "Feature",
@@ -328,6 +391,23 @@ func (v *vessel) synthStatic(mmsi uint32) *Event {
 func (v *vessel) synthEvent(mmsi uint32, pkt ais.Packet, t time.Time) *Event {
 	return &Event{Time: t, Source: v.Source, Station: v.Station, Packet: pkt, Type: typeName(pkt),
 		MMSI: mmsi, Name: v.Name, Lat: v.Lat, Lon: v.Lon, HasPos: v.HasPos, Synthesized: true}
+}
+
+// dimensions turns the AIS reference-point distances into overall length and beam, 0 when not sent.
+func dimensions(d ais.FieldDimension) (length, beam uint16) {
+	return d.A + d.B, uint16(d.C) + uint16(d.D)
+}
+
+// etaString renders an ETA as "MM-DD HH:MM" UTC, "MM-DD" when the time is not available, "" when unset.
+// AIS carries no year; the reader takes the next occurrence.
+func etaString(e ais.FieldETA) string {
+	if e.Month < 1 || e.Month > 12 || e.Day < 1 || e.Day > 31 {
+		return ""
+	}
+	if e.Hour > 23 || e.Minute > 59 {
+		return fmt.Sprintf("%02d-%02d", e.Month, e.Day)
+	}
+	return fmt.Sprintf("%02d-%02d %02d:%02d", e.Month, e.Day, e.Hour, e.Minute)
 }
 
 // nm is the great-circle distance in nautical miles.
