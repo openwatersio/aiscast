@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Plugin } from "@signalk/server-api";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import createPlugin, { type Config } from "../src/index.js";
 import { fakeApp, type FakeApp } from "./fake-app.js";
 import { startFakeServer, type FakeServer } from "./fake-server.js";
@@ -10,6 +10,7 @@ const VDM = "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"; // MMSI 227006760
 const VDM2 = "!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43"; // MMSI 258857000, position report
 const VDO = "!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23";
 const STATIC = "!AIVDM,1,1,,A,H3noH:1@E=B1HE=<Dh000000000,2*46"; // MMSI 258857000, class B static report
+const STATIC_B = "!AIVDM,1,1,,A,H3noH:4U0000000<1ijkl00`5220,0*13"; // MMSI 258857000, class B static report part B
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until(cond: () => boolean | Promise<boolean>, ms = 5000): Promise<void> {
@@ -323,21 +324,41 @@ describe("downlink", () => {
     expect(out).toEqual([]);
   });
 
-  it("injects static data but relays it only after that vessel has had a live position relayed", async () => {
+  it("holds snapshot statics until a live position, then repeats them with a position every 6 minutes", async () => {
     const out: string[] = [];
     app.on("nmea0183out", (s: string) => out.push(s));
     await start({ receive: { mode: "always" } });
     await server.waitForFrame((f) => f.type === "subscribe");
+    const position = () => ({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    const statik = (nmea: string, time?: string) => ({ type: "event", time, source: "kystverket", nmea: [nmea], mmsi: 258857000, msg_type: "StaticDataReport" });
 
-    server.send({ type: "event", time: new Date(Date.now() - 5 * 60_000).toISOString(), source: "kystverket", nmea: [STATIC], mmsi: 258857000, msg_type: "StaticDataReport" });
-    await until(() => app.deltas.length === 1);
-    expect(out).toEqual([]);
+    const stale = new Date(Date.now() - 5 * 60_000).toISOString();
+    server.send(statik(STATIC, stale));
+    server.send(statik(STATIC_B, stale));
+    await until(() => app.deltas.length === 2);
+    expect(out).toEqual([]); // snapshot statics injected, not relayed
 
-    const now = new Date().toISOString();
-    server.send({ type: "event", time: now, source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
-    server.send({ type: "event", source: "kystverket", nmea: [STATIC], mmsi: 258857000, msg_type: "StaticDataReport" });
-    await until(() => app.deltas.length === 3);
-    expect(out).toEqual([VDM2, STATIC]);
+    server.send(position());
+    await until(() => out.length === 3);
+    expect(out).toEqual([VDM2, STATIC, STATIC_B]); // both type 24 parts follow the first live position
+
+    out.length = 0;
+    server.send(position());
+    server.send(statik(STATIC));
+    await until(() => app.deltas.length === 5);
+    await sleep(50);
+    expect(out).toEqual([VDM2, STATIC]); // no repeat yet; a live static goes straight out
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+      out.length = 0;
+      server.send(position());
+      await until(() => out.length === 3);
+      expect(out).toEqual([VDM2, STATIC, STATIC_B]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("converts relayed remote VDO sentences to VDM", async () => {
