@@ -53,7 +53,7 @@ func main() {
 		kid := fs.String("kid", os.Getenv("ISSUER_KID"), "issuer key id, or ISSUER_KID")
 		sub := fs.String("sub", "", "subject: station id, partner name, device key")
 		role := fs.String("role", "", "personal | feeder | peer | partner | admin")
-		exp := fs.Duration("exp", 365*24*time.Hour, "lifetime")
+		exp := fs.Duration("exp", 365*24*time.Hour, "lifetime (0 = never expires)")
 		conns := fs.Int("conns", 0, "max concurrent WebSockets (0 = unlimited)")
 		rate := fs.Int("rate", 0, "max messages per second per connection, excess thinned (0 = unlimited)")
 		area := fs.Float64("area", 0, "max total subscribed bbox area in square degrees (0 = unlimited, -1 = MMSI subscriptions only)")
@@ -67,7 +67,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "need -seed, -kid, -sub, -role")
 			os.Exit(2)
 		}
-		c := claims{Kid: *kid, Sub: *sub, Role: *role, Iat: time.Now().Unix(), Exp: time.Now().Add(*exp).Unix(), CIDR: cidrs, Conns: *conns, Rate: *rate, Area: *area, MMSIs: *mmsis}
+		c := claims{Kid: *kid, Sub: *sub, Role: *role, Iat: time.Now().Unix(), CIDR: cidrs, Conns: *conns, Rate: *rate, Area: *area, MMSIs: *mmsis}
+		if *exp != 0 {
+			c.Exp = time.Now().Add(*exp).Unix()
+		}
 		for _, b := range boxes {
 			var x bbox
 			if n, _ := fmt.Sscanf(b, "%f,%f,%f,%f", &x[0], &x[1], &x[2], &x[3]); n != 4 {
