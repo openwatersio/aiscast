@@ -20,7 +20,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.2.0"
+const mcpVersion = "0.3.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
