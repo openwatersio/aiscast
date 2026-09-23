@@ -1,28 +1,20 @@
 name: mcp-registry
 
-# Publishes server.json to the official MCP registry when it changes on main and carries a version the
-# registry does not have yet. The registry holds metadata only (name, version, description, URL);
-# clients read the tool list live from the server, so server deploys need no publish. A change to
-# server.json without a version bump is a no-op here, and mcp_test.go keeps the version equal to
-# mcpVersion in the binary.
+# Publishes server.json to the official MCP registry once the version it carries is live. ci.yml calls
+# this after its deploy job succeeds on main, so a listing can never run ahead of the server: the
+# registry holds metadata only (name, version, description, URL) and clients read the tool list live,
+# so a listed version the server does not serve would misdescribe it. A change to server.json without
+# a version bump is a no-op here, and mcp_test.go keeps the version equal to mcpVersion in the binary.
 #
 # Domain proof: the registry checks https://openwaters.io/.well-known/mcp-registry-auth (in the
 # openwaters.io repo) for the public half of the key, and MCP_REGISTRY_KEY is the private half.
 on:
-  push:
-    branches: [main]
-    paths: [server.json]
+  workflow_call:
   workflow_dispatch:
 
 # Checkout only; the publish talks to the registry with its own key, never to GitHub.
 permissions:
   contents: read
-
-# One run at a time, never cancelled: a queued run finds the version already listed and stops, so two
-# runs for the same version cannot both reach the publish step.
-concurrency:
-  group: mcp-registry
-  cancel-in-progress: false
 
 env:
   # Pinned release of github.com/modelcontextprotocol/registry and the sha256 of its Linux tarball from
@@ -37,6 +29,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
+    # One run at a time, never cancelled: a queued run finds the version already listed and stops, so
+    # two runs for the same version cannot both reach the publish step.
+    concurrency:
+      group: mcp-registry
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
       - name: look the version up in the registry
@@ -50,6 +47,23 @@ jobs:
             404) echo "$name $version is not listed yet"; echo "listed=false" >> "$GITHUB_OUTPUT" ;;
             *) echo "registry answered $code"; exit 1 ;;
           esac
+      # The deploy job passing is not proof the new binary is serving: ask the server itself. A
+      # mismatch fails the run rather than skipping, because after a green deploy it means the deploy
+      # shipped something other than this commit.
+      - name: confirm the live server runs this version
+        if: steps.registry.outputs.listed == 'false'
+        run: |
+          version=$(jq -r .version server.json)
+          url=$(jq -r '.remotes[0].url' server.json)
+          live=$(curl -fsS -X POST "$url" \
+            -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"mcp-registry.yml","version":"0"}}}' |
+            jq -r .result.serverInfo.version)
+          if [ "$live" != "$version" ]; then
+            echo "server.json carries $version but $url serves $live; not publishing" >&2
+            exit 1
+          fi
+          echo "$url serves $version"
       - name: install mcp-publisher
         if: steps.registry.outputs.listed == 'false'
         run: |
