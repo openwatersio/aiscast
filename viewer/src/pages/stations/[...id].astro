@@ -1,0 +1,111 @@
+---
+export const prerender = false;
+
+import App from "../../layouts/App.astro";
+import { CLASS_COLORS, formatAge, shipClass, vesselPath } from "../../lib/ais";
+import { getStation } from "../../lib/api";
+
+// Station ids contain slashes (`kystverket/2573010`), which is why this is a rest route.
+const id = Astro.params.id ?? "";
+if (!id) return Astro.rewrite("/404");
+
+const data = await getStation(id);
+const st = data?.station;
+const vessels = data?.vessels.features ?? [];
+const n = (v: number) => v.toLocaleString("en-US");
+
+const title = `${id} receiving station | Open Waters AIS`;
+const description = st
+  ? `AIS receiving station ${id}: ${n(st.events.last_24h)} messages in 24 hours, ${n(st.vessels)} vessels heard, last message ${formatAge(st.last_age_s)}.`
+  : `AIS receiving station ${id}.`;
+
+// The station's own bbox is every position it has heard since it was first seen, which for
+// a satellite or an aggregate is most of the planet. What a reader wants on opening a
+// station is where its traffic is right now, so fit the vessels it is currently reporting
+// and fall back to the recorded extent only when it has none.
+const lats = vessels.map((f) => f.geometry.coordinates[1]);
+const lons = vessels.map((f) => f.geometry.coordinates[0]);
+const fitBBox: [number, number, number, number] | undefined = lats.length
+  ? [Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons)]
+  : st?.bbox;
+
+const span = st?.bbox
+  ? `${(st.bbox[2] - st.bbox[0]).toFixed(2)}° × ${(st.bbox[3] - st.bbox[1]).toFixed(2)}°`
+  : undefined;
+---
+
+<App
+  back="/stations"
+  title={title}
+  description={description}
+  canonical={`/stations/${id}`}
+  noindex={!st}
+  fitBBox={fitBBox}
+>
+  <Fragment slot="stack">
+  <h1 class="text-xl font-semibold break-all" style="color: var(--text)">{id}</h1>
+
+  {
+    !st && (
+      <p class="card mt-4 text-sm" style="color: var(--text-secondary)">
+        No station with this id has been heard since the server started.
+      </p>
+    )
+  }
+
+  {
+    st && (
+      <>
+        <p class="mt-1 text-sm" style="color: var(--text-secondary)">
+          Source {st.source} · last message {formatAge(st.last_age_s)}
+        </p>
+
+        <dl class="mt-4">
+          <dt>Messages 24 h</dt>
+          <dd>{n(st.events.last_24h)}</dd>
+          <dt>Messages 7 d</dt>
+          <dd>{n(st.events.last_7d)}</dd>
+          <dt>Vessels (30 min)</dt>
+          <dd>{n(st.vessels)}</dd>
+          <dt>Heard elsewhere first</dt>
+          <dd>{n(st.duplicates)}</dd>
+          {span && (
+            <>
+              <dt>Coverage span</dt>
+              <dd>{span}</dd>
+            </>
+          )}
+          <dt>First heard</dt>
+          <dd>{new Date(st.first_seen).toISOString().slice(0, 10)}</dd>
+        </dl>
+
+        <h2 class="mt-6 text-sm font-semibold" style="color: var(--text)">
+          Latest to hear these {n(vessels.length)} vessels
+        </h2>
+        <ul class="mt-2 space-y-1">
+          {vessels.slice(0, 200).map((f) => {
+            const cls = shipClass(f.properties.kind, f.properties.type);
+            return (
+              <li>
+                <a
+                  href={`${vesselPath(f.properties.mmsi, f.properties.name)}?from=${encodeURIComponent(`/stations/${id}`)}`}
+                  class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm no-underline hover:bg-[var(--surface-subtle)]"
+                  style="color: var(--text)"
+                >
+                  <span
+                    class="size-2 shrink-0 rounded-full"
+                    style={`background:${CLASS_COLORS[cls]}`}
+                  />
+                  <span class="min-w-0 flex-1 truncate">
+                    {f.properties.name ?? f.properties.mmsi}
+                  </span>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </>
+    )
+  }
+  </Fragment>
+</App>
