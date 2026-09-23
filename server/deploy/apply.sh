@@ -43,7 +43,8 @@ systemctl restart systemd-journald
 systemctl enable aiscast caddy fail2ban
 systemctl reload-or-restart fail2ban
 caddy validate --config /etc/caddy/Caddyfile
-# A reload can time out when long-lived SSE streams hold the old servers open; a restart is bounded.
+# The Caddyfile's stream_close_delay keeps the reload from blocking on open WebSockets; the
+# restart is the bounded fallback if it hangs anyway.
 systemctl reload-or-restart caddy || systemctl restart caddy
 
 if [ -f aiscast-linux ]; then
@@ -53,4 +54,5 @@ fi
 systemctl restart aiscast
 sleep 3
 systemctl is-active aiscast
+systemctl is-active caddy
 curl -fsS localhost:8080/health
