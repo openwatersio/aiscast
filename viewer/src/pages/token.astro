@@ -1,0 +1,167 @@
+---
+import App from "../layouts/App.astro";
+---
+
+<App
+  back="/"
+  title="Get an access token | Open Waters AIS"
+  description="A free personal token for ais.openwaters.io: send your AIS receiver's data and read the live stream with any aisstream.io client. No account, no expiry."
+  canonical="/token"
+>
+  <Fragment slot="stack">
+  <h1 class="text-xl font-semibold" style="color: var(--text)">Get a token</h1>
+  <p class="mt-2 text-sm" style="color: var(--text-secondary)">
+    A token lets you send your receiver's data to <code>ais.openwaters.io</code> and read the
+    live stream with any aisstream.io client. This page makes an Ed25519 key in your browser
+    and asks the server for a personal token bound to it. Both stay in this browser.
+  </p>
+  <p class="mt-2 text-sm" style="color: var(--text-muted)">
+    Personal tokens never expire: 2 connections, 50 messages/s, 400 square degrees. Feed data
+    from it and it earns the feeder tier on its own. Need more, or a named station?
+    <a href="mailto:hello@openwaters.io">hello@openwaters.io</a>.
+  </p>
+
+  <div class="card mt-4 space-y-3 text-sm">
+    <label class="flex gap-2">
+      <input type="checkbox" id="agree" class="mt-0.5 shrink-0" />
+      <span>
+        I accept the
+        <a href="https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md">
+          contributor agreement</a
+        >: the data I send is my station's own reception, my receptions are dedicated to the
+        public domain (CC0), and the aggregate is published under ODbL.
+      </span>
+    </label>
+    <label class="flex gap-2">
+      <input type="checkbox" id="bind" class="mt-0.5 shrink-0" />
+      <span style="color: var(--text-secondary)">
+        Also bind this network address, so a UDP receiver sending from here counts toward this
+        token. The token then only works from this address.
+      </span>
+    </label>
+    <div class="flex items-center gap-3">
+      <button id="go" class="btn btn-primary text-sm" disabled>Get token</button>
+      <span id="status" class="text-xs" style="color: var(--text-muted)"></span>
+    </div>
+  </div>
+
+  <div id="out" hidden class="mt-6 space-y-4 text-sm">
+    <div>
+      <h2 class="text-sm font-semibold" style="color: var(--text)">Your token</h2>
+      <pre
+        id="token"
+        class="mt-1 rounded-lg p-3 text-xs break-all whitespace-pre-wrap"
+        style="background-color: var(--surface-subtle)"></pre>
+      <p class="mt-1 text-xs" style="color: var(--text-muted)">
+        Station id <code id="sub"></code>. Your data appears as
+        <code>http:&lt;station id&gt;</code>. See it on <a id="stlink" href="/stations">your station page</a>.
+      </p>
+      <p class="mt-2 text-xs" style="color: var(--text-secondary)" id="limits"></p>
+    </div>
+    <div>
+      <h2 class="text-sm font-semibold" style="color: var(--text)">Send your receiver's data</h2>
+      <p class="mt-1 text-xs" style="color: var(--text-secondary)">AIS-catcher over HTTP, which works behind any NAT:</p>
+      <pre
+        id="cmd"
+        class="mt-1 rounded-lg p-3 text-xs break-all whitespace-pre-wrap"
+        style="background-color: var(--surface-subtle)"></pre>
+      <p class="mt-2 text-xs" style="color: var(--text-secondary)">
+        Any UDP forwarder: host <code>ais.openwaters.io</code>, port <code>10110</code>, no
+        token needed. Signal K: install <code>signalk-aiscast</code>, which makes its own token.
+      </p>
+    </div>
+  </div>
+  </Fragment>
+</App>
+
+<script>
+  const b64url = (buf: ArrayBuffer) =>
+    btoa(String.fromCharCode(...new Uint8Array(buf)))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+
+  const $ = (id: string) => document.getElementById(id);
+
+  function apiBase() {
+    return (
+      document.querySelector<HTMLMetaElement>('meta[name="aiscast:api"]')?.content ??
+      "https://ais.openwaters.io"
+    );
+  }
+
+  async function deviceKey() {
+    const saved = localStorage.getItem("aiscast.device");
+    if (saved) return JSON.parse(saved);
+    const kp = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+      "sign",
+      "verify",
+    ])) as CryptoKeyPair;
+    const pub = b64url(await crypto.subtle.exportKey("raw", kp.publicKey));
+    const priv = await crypto.subtle.exportKey("jwk", kp.privateKey);
+    const dev = { pub, priv };
+    localStorage.setItem("aiscast.device", JSON.stringify(dev));
+    return dev;
+  }
+
+  function show(token: string, claims: { sub: string; area?: number; rate?: number; conns?: number }) {
+    $("token")!.textContent = token;
+    $("sub")!.textContent = claims.sub;
+    ($("stlink") as HTMLAnchorElement).href = `/stations/http:${claims.sub}`;
+    $("cmd")!.textContent =
+      `AIS-catcher -H ${apiBase()}/v1/receive USERPWD x:${token} GZIP on INTERVAL 15`;
+    // This browser's own map uses the token from here on, which is the difference the
+    // reader can see immediately: a wider view and a faster stream.
+    $("limits")!.textContent =
+      `This map is now using your token: ${claims.conns ?? 2} connections, ` +
+      `${claims.rate ?? 50} messages/s, ${claims.area ?? 400} square degrees of view. ` +
+      `Reload to apply it.`;
+    $("out")!.hidden = false;
+  }
+
+  function wire() {
+    const agree = $("agree") as HTMLInputElement | null;
+    const go = $("go") as HTMLButtonElement | null;
+    if (!agree || !go) return;
+
+    agree.onchange = () => (go.disabled = !agree.checked);
+    go.onclick = async () => {
+      const status = $("status")!;
+      status.textContent = "…";
+      try {
+        if (!crypto?.subtle) throw new Error("this browser has no WebCrypto");
+        const dev = await deviceKey();
+        const res = await fetch(`${apiBase()}/v1/keys`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pubkey: dev.pub,
+            bind_ip: ($("bind") as HTMLInputElement).checked,
+          }),
+        });
+        if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+        const { token, claims } = await res.json();
+        localStorage.setItem("aiscast.token", JSON.stringify({ token, claims }));
+        show(token, claims);
+        status.textContent = "";
+      } catch (e) {
+        const msg = String((e as Error).message ?? e);
+        status.textContent =
+          msg + (msg.includes("Ed25519") ? " (Ed25519 needs a current browser)" : "");
+        status.style.color = "var(--status-red-text)";
+      }
+    };
+
+    const prev = localStorage.getItem("aiscast.token");
+    if (prev) {
+      const { token, claims } = JSON.parse(prev);
+      if (!claims.exp || claims.exp * 1000 > Date.now()) {
+        show(token, claims);
+        $("status")!.textContent = "existing token";
+      }
+    }
+  }
+
+  wire();
+  document.addEventListener("astro:page-load", wire);
+</script>

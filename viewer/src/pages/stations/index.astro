@@ -1,0 +1,50 @@
+---
+export const prerender = false;
+
+import App from "../../layouts/App.astro";
+import { formatAge } from "../../lib/ais";
+import { getStations } from "../../lib/api";
+
+const stations = (await getStations())?.sort((a, b) => b.events.last_24h - a.events.last_24h);
+const active = stations?.filter((s) => s.last_age_s < 300).length ?? 0;
+const n = (v: number) => v.toLocaleString("en-US");
+---
+
+<App
+  back="/"
+  title="Receiving stations | Open Waters AIS"
+  description="Every receiver feeding the Open Waters AIS network: government feeds and volunteer stations, with message counts, vessels heard, and coverage."
+  canonical="/stations"
+>
+  <Fragment slot="stack">
+  <h1 class="text-xl font-semibold" style="color: var(--text)">Stations</h1>
+  <p class="mt-1 text-sm" style="color: var(--text-secondary)">
+    {stations ? `${n(stations.length)} heard, ${n(active)} active in the last five minutes.` : "Station list unavailable."}
+    Open one to see where its traffic is now.
+  </p>
+
+  {
+    stations && (
+      <ul class="mt-4 space-y-1">
+        {stations.map((s) => (
+          <li>
+            <a
+              href={`/stations/${s.station}`}
+              class="flex items-baseline gap-2 rounded-md px-2 py-1.5 text-sm no-underline hover:bg-[var(--surface-subtle)]"
+              style="color: var(--text)"
+            >
+              <span class="min-w-0 flex-1 truncate font-medium">{s.station}</span>
+              <span class="shrink-0 tabular-nums" style="color: var(--text-secondary)">
+                {n(s.events.last_24h)}
+              </span>
+              <span class="w-16 shrink-0 text-right tabular-nums" style="color: var(--text-muted)">
+                {formatAge(s.last_age_s)}
+              </span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+  </Fragment>
+</App>

@@ -1,0 +1,114 @@
+---
+export const prerender = false;
+
+import App from "../layouts/App.astro";
+import { API_SERVER } from "../lib/api";
+import { formatAge } from "../lib/ais";
+
+interface Stats {
+  time: string;
+  stations: { total: number; active: number; by_source: Record<string, number> };
+  vessels: { total: number; with_position: number; by_kind: Record<string, number> };
+  events: { per_second: number; last_24h: number; last_7d: number };
+  sources: Record<
+    string,
+    {
+      events: { last_24h: number };
+      last_age_s: number;
+      vessels: number;
+      vessels_exclusive: number;
+      delay?: { n: number; p50: number; p99: number };
+    }
+  >;
+}
+
+let stats: Stats | undefined;
+try {
+  const res = await fetch(`${API_SERVER}/v1/stats`);
+  if (res.ok) stats = await res.json();
+} catch {
+  stats = undefined;
+}
+
+const n = (v: number) => v.toLocaleString("en-US");
+const sources = Object.entries(stats?.sources ?? {}).sort(
+  (a, b) => b[1].events.last_24h - a[1].events.last_24h,
+);
+---
+
+<App
+  back="/"
+  title="Network status | Open Waters AIS"
+  description="What the Open Waters AIS network is receiving right now: sources, message rates, delivery delay, vessels tracked, and stations feeding."
+  canonical="/network"
+>
+  <Fragment slot="stack">
+  <h1 class="text-xl font-semibold" style="color: var(--text)">Network</h1>
+
+  {
+    !stats && (
+      <p class="card mt-4 text-sm" style="color: var(--text-secondary)">
+        The status endpoint is not reachable right now.
+      </p>
+    )
+  }
+
+  {
+    stats && (
+      <>
+        <div class="mt-4 grid grid-cols-3 gap-2">
+          {[
+            ["Messages/s", Math.round(stats.events.per_second).toString()],
+            ["Vessels", n(stats.vessels.total)],
+            ["Stations", `${stats.stations.active}/${stats.stations.total}`],
+          ].map(([label, value]) => (
+            <div class="card text-center">
+              <div class="text-xl font-semibold tabular-nums" style="color: var(--text)">
+                {value}
+              </div>
+              <div class="text-xs" style="color: var(--text-muted)">
+                {label}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <h2 class="mt-6 text-sm font-semibold" style="color: var(--text)">Sources</h2>
+        <table class="mt-2 w-full text-sm">
+          <thead>
+            <tr style="color: var(--text-muted)" class="text-left text-xs">
+              <th class="pb-1 font-medium">Source</th>
+              <th class="pb-1 text-right font-medium">24 h</th>
+              <th class="pb-1 text-right font-medium">Only here</th>
+              <th class="pb-1 text-right font-medium">Delay p50</th>
+              <th class="pb-1 text-right font-medium">Last</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sources.map(([name, s]) => (
+              <tr class="border-t">
+                <td class="py-1.5">{name}</td>
+                <td class="py-1.5 text-right tabular-nums">{n(s.events.last_24h)}</td>
+                <td class="py-1.5 text-right tabular-nums" style="color: var(--text-secondary)">
+                  {n(s.vessels_exclusive)}
+                </td>
+                <td class="py-1.5 text-right tabular-nums" style="color: var(--text-secondary)">
+                  {s.delay ? `${s.delay.p50.toFixed(1)}s` : "—"}
+                </td>
+                <td class="py-1.5 text-right tabular-nums" style="color: var(--text-muted)">
+                  {formatAge(s.last_age_s)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <p class="mt-4 text-xs" style="color: var(--text-muted)">
+          "Only here" counts vessels no other source kind heard in the last 30 minutes.
+          Counts are rolling windows, not totals since start.
+        </p>
+      </>
+    )
+  }
+  </Fragment>
+</App>
