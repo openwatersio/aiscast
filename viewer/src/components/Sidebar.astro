@@ -1,0 +1,286 @@
+---
+interface Props {
+  /** Present when this view was pushed onto the stack; the arrow pops back to it. */
+  back?: string;
+  /** True at the stack root: search box, destinations, and whatever search turns up. */
+  showRoot: boolean;
+}
+
+const { back, showRoot } = Astro.props;
+
+const DESTINATIONS = [
+  {
+    href: "/stations",
+    label: "Stations",
+    hint: "Who is receiving, and where",
+    icon: "M12 2a3 3 0 0 1 3 3c0 1.3-.8 2.4-2 2.8V22h-2V7.8A3 3 0 0 1 12 2Zm-6.4.9 1.4 1.4a8 8 0 0 0 0 11.3l-1.4 1.4a10 10 0 0 1 0-14.1Zm12.8 0a10 10 0 0 1 0 14.1l-1.4-1.4a8 8 0 0 0 0-11.3l1.4-1.4ZM8.4 5.7 9.8 7a4 4 0 0 0 0 5.6l-1.4 1.4a6 6 0 0 1 0-8.4Zm7.2 0a6 6 0 0 1 0 8.4L14.2 12a4 4 0 0 0 0-5.6l1.4-1.4Z",
+  },
+  {
+    href: "/network",
+    label: "Network",
+    hint: "Sources, rates and delay",
+    icon: "M3 13h3.5l2.5 6 4-14 2.5 8H21",
+    stroke: true,
+  },
+  {
+    href: "/token",
+    label: "Get a token",
+    hint: "Feed your receiver, read the stream",
+    icon: "M14 7a5 5 0 1 1-4.6 6.9L8 15H5.5l-1 1H3v-2.5l5.1-5.1A5 5 0 0 1 14 7Zm2 2.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z",
+  },
+];
+---
+
+<div class="flex h-full flex-col">
+  {
+    back && (
+      <div class="px-3 pt-3">
+        <a
+          href={back}
+          class="inline-flex size-8 items-center justify-center rounded-full no-underline hover:bg-[var(--surface-subtle)]"
+          style="color: var(--text-secondary)"
+          aria-label="Back"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-5">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </a>
+      </div>
+    )
+  }
+
+  {
+    showRoot ? (
+      <>
+        <div class="p-3">
+          <form class="relative" data-search-form role="search">
+            <svg
+              class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2"
+              style="color: var(--text-muted)"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            <label class="sr-only" for="q">
+              Search vessels by name or MMSI
+            </label>
+            <input
+              id="q"
+              name="q"
+              type="search"
+              autocomplete="off"
+              placeholder="Search vessels by name or MMSI"
+              class="w-full rounded-full border py-2.5 pr-9 pl-9 text-sm outline-none focus:border-[var(--accent)]"
+              style="background-color: var(--surface-subtle); color: var(--text)"
+              data-search-input
+            />
+            <button
+              type="button"
+              class="absolute top-1/2 right-2 hidden size-6 -translate-y-1/2 items-center justify-center rounded-full"
+              style="color: var(--text-muted)"
+              data-search-clear
+              aria-label="Clear search"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-4">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </form>
+        </div>
+
+        <div class="sidebar-scroll min-h-0 flex-1 px-2 pb-2">
+          <nav data-destinations>
+            <ul>
+              {DESTINATIONS.map((d) => (
+                <li>
+                  <a
+                    href={d.href}
+                    class="flex items-center gap-3 rounded-lg px-2 py-2.5 no-underline hover:bg-[var(--surface-subtle)]"
+                    style="color: var(--text)"
+                  >
+                    <span
+                      class="flex size-9 shrink-0 items-center justify-center rounded-full"
+                      style="background-color: var(--accent-bg); color: var(--accent)"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        class="size-5"
+                        fill={d.stroke ? "none" : "currentColor"}
+                        stroke={d.stroke ? "currentColor" : "none"}
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d={d.icon} />
+                      </svg>
+                    </span>
+                    <span class="min-w-0">
+                      <span class="block text-sm font-medium">{d.label}</span>
+                      <span class="block text-xs" style="color: var(--text-muted)">
+                        {d.hint}
+                      </span>
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+
+          <div data-results hidden>
+            <ul class="space-y-0.5" data-result-list />
+            <p class="px-2 py-3 text-sm" style="color: var(--text-muted)" data-result-empty hidden />
+          </div>
+        </div>
+      </>
+    ) : (
+      <div class="sidebar-scroll min-h-0 flex-1 px-4 pb-3">
+        <slot />
+      </div>
+    )
+  }
+
+  <footer class="border-t px-3 py-2 text-xs" style="color: var(--text-muted)">
+    <span data-stream-status>connecting</span> ·
+    <a href="https://openwaters.io/ais/">Open Waters AIS</a> · not for navigation
+  </footer>
+</div>
+
+<script>
+  import { CLASS_COLORS, shipClass, vesselPath } from "../lib/ais";
+  import { navigate } from "astro:transitions/client";
+
+  // The query outlives the element: opening a vessel replaces the sidebar with the stack
+  // root again, and a map app that forgets what you searched for the moment you click a
+  // result is infuriating.
+  const SAVED = "aiscast.query";
+
+  const rows = new Map<number, HTMLLIElement>();
+
+  function input() {
+    return document.querySelector<HTMLInputElement>("[data-search-input]");
+  }
+
+  function row(mmsi: number): HTMLLIElement {
+    let li = rows.get(mmsi);
+    if (li) return li;
+    li = document.createElement("li");
+    li.innerHTML = `<a class="flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm no-underline hover:bg-[var(--surface-subtle)]" style="color: var(--text)">
+      <span data-dot class="size-2.5 shrink-0 rounded-full"></span>
+      <span class="min-w-0 flex-1">
+        <span data-name class="block truncate"></span>
+        <span data-sub class="block text-xs" style="color: var(--text-muted)"></span>
+      </span>
+      <span data-age class="shrink-0 text-xs tabular-nums" style="color: var(--text-muted)"></span>
+    </a>`;
+    rows.set(mmsi, li);
+    return li;
+  }
+
+  function paint() {
+    const el = input();
+    const app = window.aiscast;
+    const nav = document.querySelector<HTMLElement>("[data-destinations]");
+    const results = document.querySelector<HTMLElement>("[data-results]");
+    const list = document.querySelector<HTMLUListElement>("[data-result-list]");
+    const empty = document.querySelector<HTMLElement>("[data-result-empty]");
+    const clear = document.querySelector<HTMLElement>("[data-search-clear]");
+    if (!el || !nav || !results || !list || !empty || !clear) return;
+
+    const q = el.value.trim();
+    const searching = q.length > 0;
+    nav.hidden = searching;
+    results.hidden = !searching;
+    clear.classList.toggle("hidden", !searching);
+    clear.classList.toggle("flex", searching);
+    if (!searching || !app) return;
+
+    const lower = q.toLowerCase();
+    const now = Date.now();
+    const matches = [...app.stream.vessels.values()]
+      .filter((v) => v.name?.toLowerCase().includes(lower) || String(v.mmsi).includes(q))
+      .sort((a, b) => b.seen - a.seen)
+      .slice(0, 100);
+
+    const wanted: HTMLLIElement[] = [];
+
+    if (/^\d{7,9}$/.test(q) && !matches.some((v) => String(v.mmsi) === q)) {
+      const li = row(-1);
+      li.querySelector("a")!.setAttribute("href", `/vessels/${q}?from=%2F`);
+      li.querySelector<HTMLElement>("[data-dot]")!.style.background = "var(--accent)";
+      li.querySelector<HTMLElement>("[data-name]")!.textContent = `Open MMSI ${q}`;
+      li.querySelector<HTMLElement>("[data-sub]")!.textContent = "Look up this vessel";
+      li.querySelector<HTMLElement>("[data-age]")!.textContent = "";
+      wanted.push(li);
+    }
+
+    for (const v of matches) {
+      const li = row(v.mmsi);
+      li.querySelector("a")!.setAttribute("href", `${vesselPath(v.mmsi, v.name)}?from=%2F`);
+      li.querySelector<HTMLElement>("[data-dot]")!.style.background =
+        CLASS_COLORS[shipClass(v.kind, v.shipType)];
+      li.querySelector<HTMLElement>("[data-name]")!.textContent = v.name ?? String(v.mmsi);
+      const speed = v.sog != null ? `${v.sog.toFixed(1)} kn · ` : "";
+      li.querySelector<HTMLElement>("[data-sub]")!.textContent = `${speed}MMSI ${v.mmsi}`;
+      const age = Math.round((now - v.seen) / 1000);
+      li.querySelector<HTMLElement>("[data-age]")!.textContent =
+        age < 60 ? `${age}s` : `${Math.round(age / 60)}m`;
+      wanted.push(li);
+    }
+
+    for (const [mmsi, li] of rows) {
+      if (!wanted.includes(li)) {
+        li.remove();
+        rows.delete(mmsi);
+      }
+    }
+    wanted.forEach((li, i) => {
+      if (list.children[i] !== li) list.insertBefore(li, list.children[i] ?? null);
+    });
+
+    empty.hidden = wanted.length > 0;
+    empty.textContent = "No vessel in view matches that. Enter a full MMSI to look one up.";
+  }
+
+  function wire() {
+    const el = input();
+    if (!el || el.dataset.wired) return;
+    el.dataset.wired = "1";
+    el.value = sessionStorage.getItem(SAVED) ?? "";
+
+    el.addEventListener("input", () => {
+      sessionStorage.setItem(SAVED, el.value);
+      paint();
+    });
+    document.querySelector("[data-search-clear]")?.addEventListener("click", () => {
+      el.value = "";
+      sessionStorage.removeItem(SAVED);
+      paint();
+      el.focus();
+    });
+    document.querySelector("[data-search-form]")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const q = el.value.trim();
+      if (/^\d{7,9}$/.test(q)) navigate(`/vessels/${q}?from=%2F`);
+    });
+  }
+
+  function start() {
+    // The sidebar can survive a navigation (opening a vessel from a list keeps the list),
+    // in which case its rows are still in the DOM while this module's map of them is not.
+    // Dropping one without the other leaves every row rendered twice.
+    rows.clear();
+    document.querySelector("[data-result-list]")?.replaceChildren();
+    wire();
+    paint();
+  }
+
+  start();
+  document.addEventListener("astro:after-swap", start);
+  setInterval(paint, 1000);
+</script>

@@ -1,0 +1,13 @@
+---
+// Rendered on demand so middleware sees the request: `?station=` redirects from the old
+// viewer arrive here, and a prerendered page is served as a file without ever reaching it.
+export const prerender = false;
+
+import App from "../layouts/App.astro";
+---
+
+<App
+  title="Live AIS vessel traffic | Open Waters AIS"
+  description="Live AIS vessel positions from open government feeds and volunteer receivers, streamed by bounding box. Free, open, no account."
+  canonical="/"
+/>
