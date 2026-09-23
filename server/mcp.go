@@ -33,7 +33,7 @@ const (
 
 const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the open AIS network: live vessel positions from government feeds, partner aggregates, and volunteer receivers, deduplicated into one picture.
 
-- Live terrestrial coverage is strongest in the Nordics and wherever volunteer receivers are; elsewhere positions come from partner aggregates, mostly AISHub, and are typically one to six minutes old. Where no feed or receiver hears, there is nothing. Call get_coverage before saying a region has no traffic.
+- Live terrestrial coverage is strongest in the Nordics and wherever volunteer receivers are; elsewhere positions come from partner aggregates, mostly AISHub, which runs about a minute behind. get_coverage reports each source's current delay, also published at https://ais.openwaters.io/v1/stats. Where no feed or receiver hears, there is nothing. Call get_coverage before saying a region has no traffic.
 - A position is the last report heard, up to 30 minutes old. Every row carries seen and age_s. A vessel unheard for 30 minutes is dropped.
 - Destination, ETA, draught, dimensions, call sign, and IMO come from a vessel's static data, which it sends every six minutes, so a vessel heard for the first time may lack them. Flag comes from the MMSI's maritime identification digits and is present when those are known. ETA has no year: read it as the next occurrence.
 - Anonymous calls may cover 100 square degrees and look up 10 vessels by MMSI or IMO per call. A free personal token from ` + mcpTokenURL + `, sent as an Authorization: Bearer header, raises that to 400 square degrees and 50 vessels. A tool says so when a call exceeds its limit.
@@ -88,7 +88,7 @@ func newMCPService(p *Pipeline) *mcpService {
 		Description: "Vessels whose name contains the text, case-insensitive, among vessels heard in the last 30 minutes. Use to turn a name into an MMSI, then get_vessels or find_vessels_near for detail. An optional bounding box narrows the search."},
 		p.mcpSearchByName)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_coverage", Title: "Coverage and sources", Annotations: ro("Coverage and sources"),
-		Description: "Where Open Waters AIS is hearing AIS right now: sources, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Call this before saying a region has no traffic."},
+		Description: "Where Open Waters AIS is hearing AIS right now: sources with their current delay, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Call this before saying a region has no traffic."},
 		p.mcpGetCoverage)
 	return &mcpService{srv: s, http: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
 		Stateless:           true, // no session state, and the mode the 2026-07-28 protocol revision requires
@@ -592,14 +592,20 @@ type mcpCoverageIn struct {
 }
 
 type mcpSource struct {
-	Kind             string `json:"kind"`
-	Description      string `json:"description,omitempty"`
-	Vessels          int    `json:"vessels" jsonschema:"distinct vessels heard from this source in the last 30 minutes"`
-	VesselsExclusive int    `json:"vessels_exclusive" jsonschema:"of those, heard by no other source"`
-	Events24h        int64  `json:"events_24h"`
-	LastAgeS         int64  `json:"last_age_s" jsonschema:"seconds since the source last delivered a message"`
-	License          string `json:"license"`
-	Attribution      string `json:"attribution"`
+	Kind             string    `json:"kind"`
+	Description      string    `json:"description,omitempty"`
+	Vessels          int       `json:"vessels" jsonschema:"distinct vessels heard from this source in the last 30 minutes"`
+	VesselsExclusive int       `json:"vessels_exclusive" jsonschema:"of those, heard by no other source"`
+	Events24h        int64     `json:"events_24h"`
+	LastAgeS         int64     `json:"last_age_s" jsonschema:"seconds since the source last delivered a message"`
+	Delay            *mcpDelay `json:"delay,omitempty" jsonschema:"seconds from broadcast to arrival over the last position reports from this source"`
+	License          string    `json:"license"`
+	Attribution      string    `json:"attribution"`
+}
+
+type mcpDelay struct {
+	P50 float64 `json:"p50" jsonschema:"median delay in seconds"`
+	P99 float64 `json:"p99" jsonschema:"99th percentile delay in seconds"`
 }
 
 type mcpStation struct {
@@ -645,7 +651,7 @@ var sourceDescriptions = map[string]string{
 	"barentswatch": "BarentsWatch: the Norwegian coast, offshore, and Svalbard, including satellite receivers",
 	"digitraffic":  "Fintraffic Digitraffic: the Finnish coast and lakes",
 	"aisstream":    "aisstream.io: worldwide aggregate, best effort",
-	"aishub":       "AISHub: worldwide aggregate snapshot and the network's largest source; positions 1 to 6 minutes old",
+	"aishub":       "AISHub: worldwide aggregate snapshot and the network's largest source; about a minute behind, see delay",
 	"udp":          "volunteer receivers sending raw NMEA over UDP, unauthenticated",
 	"mmsi":         "volunteer receivers identified by their own vessel's MMSI, unauthenticated",
 	"http":         "volunteer receivers posting AIS-catcher output with a token",
@@ -686,8 +692,12 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 		if !ok {
 			a = int64(now.Sub(bootTime).Seconds())
 		}
-		out.Sources = append(out.Sources, mcpSource{Kind: k, Description: sourceDescriptions[k], Vessels: vs[0], VesselsExclusive: vs[1],
-			Events24h: p.usage.source(k).sum(now, 24), LastAgeS: a, License: licenseOf(k), Attribution: attributionOf(k)})
+		src := mcpSource{Kind: k, Description: sourceDescriptions[k], Vessels: vs[0], VesselsExclusive: vs[1],
+			Events24h: p.usage.source(k).sum(now, 24), LastAgeS: a, License: licenseOf(k), Attribution: attributionOf(k)}
+		if d := p.delays.snapshot(k); d != nil {
+			src.Delay = &mcpDelay{P50: d["p50"].(float64), P99: d["p99"].(float64)}
+		}
+		out.Sources = append(out.Sources, src)
 	}
 	sort.Slice(out.Sources, func(i, j int) bool {
 		return out.Sources[i].Vessels > out.Sources[j].Vessels || (out.Sources[i].Vessels == out.Sources[j].Vessels && out.Sources[i].Kind < out.Sources[j].Kind)

@@ -34,14 +34,16 @@ Your station page is the [map](https://openwatersio.github.io/aiscast/) with `?s
 
 ## Coverage
 
-| Source                 | Where                                                                     | Freshness                                       |
-| ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------------- |
-| Kystverket             | Norwegian coast, 40–60 nm out                                             | live                                            |
-| BarentsWatch           | Norwegian EEZ, Svalbard, Jan Mayen (satellite + offshore receivers)       | live                                            |
-| Fintraffic Digitraffic | Finnish waters                                                            | live                                            |
-| Volunteer receivers    | wherever they are (Buzzards Bay / Vineyard Sound as of the first station) | live                                            |
-| AISHub aggregate       | worldwide terrestrial, ~50k vessels                                       | 1–6 min (their snapshot refreshes every ~5 min) |
-| aisstream.io           | worldwide, when it is up                                                  | live, but frequently down                       |
+| Source                 | Where                                                                     | Freshness                 |
+| ---------------------- | ------------------------------------------------------------------------- | ------------------------- |
+| Kystverket             | Norwegian coast, 40–60 nm out                                             | live                      |
+| BarentsWatch           | Norwegian EEZ, Svalbard, Jan Mayen (satellite + offshore receivers)       | live                      |
+| Fintraffic Digitraffic | Finnish waters                                                            | live                      |
+| Volunteer receivers    | wherever they are (Buzzards Bay / Vineyard Sound as of the first station) | live                      |
+| AISHub aggregate       | worldwide terrestrial, ~50k vessels                                       | about a minute behind     |
+| aisstream.io           | worldwide, when it is up                                                  | live, but frequently down |
+
+[`/v1/stats`](https://ais.openwaters.io/v1/stats) reports each source's current delay from broadcast to arrival (`delay.p50` and `delay.p99`, in seconds).
 
 Every event names the source it came from. [docs/policy.md](docs/policy.md#sources-deliberately-not-used) lists the sources this project leaves out on purpose, and why.
 

@@ -56,7 +56,7 @@ None of that makes aisstream a bad idea. It proved that free, push-based, boundi
 An open AIS network that speaks aisstream's protocol. We built it because we had the same problem: our chart app streamed from aisstream and went dark with it.
 
 - **Protocol:** WebSocket push, bounding box or MMSI list. `/v0/stream` is aisstream-compatible: change the hostname, use your aiscast token as `APIKey`, and `aisstream-ts`, the official Go/Python/JS examples, and `signalk-aisstream` run unmodified. `/v1/stream` is the native API and needs no token to subscribe. `GET /v1/vessels?bbox=` returns a GeoJSON snapshot so a view fills instantly instead of waiting for the next position report.
-- **Coverage:** live from the Norwegian and Finnish coastal authorities and from volunteer receivers; worldwide terrestrial via the AISHub snapshot, which is 1 to 6 minutes old; aisstream.io itself as an upstream when it is up. Every event names its source and station, and `/v1/stations` shows each source's message rate and age, so you can tell a gap from a fault.
+- **Coverage:** live from the Norwegian and Finnish coastal authorities and from volunteer receivers; worldwide terrestrial via the AISHub snapshot, which runs about a minute behind; aisstream.io itself as an upstream when it is up. Every event names its source and station, and `/v1/stations` shows each source's message rate and age, so you can tell a gap from a fault.
 - **Price:** free without a token (2 streams, 20 msg/s, about 10°×10°); free personal token in one click, never expires (2 streams, 50 msg/s, about 20°×20°, or 50 vessels by MMSI anywhere); feeder tier is earned by feeding a receiver; commercial by arrangement.
 - **License:** per source, published, with the attribution string you must carry. Norway NLOD, Finland CC BY 4.0, volunteer receptions CC0 with the aggregate under ODbL, AISHub with attribution. Code is MIT.
 - **Operations:** subscription ack, heartbeat, close reasons, documented limits per token rather than per IP, a public status page at status.openwaters.io, and hello@openwaters.io answers.
@@ -68,11 +68,11 @@ Best for: anyone with an aisstream client that needs to keep running today, Sign
 
 The reciprocal exchange: run a receiver, feed it, get the aggregate.
 
-- **Protocol:** REST snapshot (JSON, XML, CSV) polled at most once a minute. No push. The worldwide snapshot regenerates about every 5 minutes, so positions are 1 to 6 minutes old.
+- **Protocol:** REST snapshot (JSON, XML, CSV) polled at most once a minute. No push. The worldwide snapshot regenerates about once a minute, so positions run about a minute behind.
 - **Coverage:** the largest volunteer network with published numbers: 1,600+ stations in 83 countries, ~98,000 vessels a day.
 - **Price:** free, but only if your receiver meets the bar (10+ vessels average, 90% uptime, 60 s max downsampling, 10 s max delay). No receiver, no API.
 - **License:** no written terms document. AISHub confirmed to us in writing (22 August 2026) that use, commercial use, and redistribution are unrestricted. The key is revocable at will.
-- **Honest limits:** polling only, minutes old, and the gate is a working station.
+- **Honest limits:** polling only, about a minute old, and the gate is a working station.
 
 Best for: station operators who want a global "who is out there" view. Not for close-quarters use or anyone without a receiver.
 
@@ -124,9 +124,9 @@ Also seen: MyShipTracking (REST from €90/month, public or third-party use of t
 
 | | Push stream | Snapshot API | Coverage | Free tier | Redistribution | Status page |
 |---|---|---|---|---|---|---|
-| aiscast | yes, aisstream-compatible | yes | Nordic live, world via AISHub (1–6 min), volunteers | yes, no account | yes, per-source license published | yes |
+| aiscast | yes, aisstream-compatible | yes | Nordic live, world via AISHub (~1 min), volunteers | yes, no account | yes, per-source license published | yes |
 | aisstream.io | yes | no | global terrestrial, when up | only tier | no terms | no |
-| AISHub | no (≤1/min) | yes | global, 1,600+ stations, 1–6 min | feeders only | yes, confirmed by email | no |
+| AISHub | no (≤1/min) | yes | global, 1,600+ stations, ~1 min | feeders only | yes, confirmed by email | no |
 | Government feeds | MQTT/TCP | some | Finland, Norway, EU inland | yes | yes | per agency |
 | VesselFinder | quote | credits | global + satellite | no | no | no |
 | Datalastic | no | credits | global | trial | no public display | no |
@@ -159,7 +159,7 @@ When you have a minute, move to `/v1/stream`: no token for subscribing, one JSON
 
 **Can I use aisstream.io data commercially?** aisstream publishes no terms, and its licensing issues have gone unanswered since 2023. aiscast publishes the license of every source it re-serves and carries it on every event.
 
-**Does aiscast have the same coverage as aisstream.io?** Not yet in the same way. aiscast is live in Norway, Finland, and wherever volunteer receivers are, and carries worldwide terrestrial positions from AISHub that are one to six minutes old. It also uses aisstream.io as an upstream when aisstream is up, so you lose nothing by switching.
+**Does aiscast have the same coverage as aisstream.io?** Not yet in the same way. aiscast is live in Norway, Finland, and wherever volunteer receivers are, and carries worldwide terrestrial positions from AISHub that run about a minute behind. It also uses aisstream.io as an upstream when aisstream is up, so you lose nothing by switching.
 
 ---
 
@@ -182,7 +182,7 @@ aiscast speaks aisstream.io's protocol, so the choice is not about rewriting cod
 | Snapshot API | `GET /v1/vessels?bbox=` GeoJSON | none |
 | Limits | documented, per token: 2 streams, 50 msg/s, ~20°×20° personal; more for feeders | 1 connection per IP, undocumented 429s, browsers banned |
 | Failure signalling | ack, heartbeat, close reason, `/health`, public status page | none |
-| Coverage | Norway and Finland live, volunteers live, world via AISHub 1–6 min, aisstream.io when up | global terrestrial when up |
+| Coverage | Norway and Finland live, volunteers live, world via AISHub ~1 min, aisstream.io when up | global terrestrial when up |
 | Source on each event | yes, with station | no |
 | Data license | per source, published, attribution strings given | none |
 | Contribute a receiver | yes: HTTP, UDP, Signal K | no |
@@ -204,7 +204,7 @@ aisstream claims a global network of stations about 200 km off coastlines and pu
 
 aiscast publishes every source: Kystverket and BarentsWatch for Norway, Digitraffic for Finland, volunteer receivers wherever they are, the AISHub aggregate for the rest of the world, and aisstream.io itself when it is delivering. `/v1/stations` gives each source's message count and age, and the live map draws the same data. Where aisstream is honest by accident (no data means no data), aiscast is honest on purpose (no data means this source has been silent for this long).
 
-The gap: outside the Nordics and the volunteer footprint, aiscast's positions are AISHub's, regenerated every five minutes. That is fine for "what is out there" and wrong for close quarters. It closes as receivers join.
+The gap: outside the Nordics and the volunteer footprint, aiscast's positions are AISHub's, about a minute behind. That is fine for "what is out there" and wrong for close quarters. It closes as receivers join.
 
 ### Limits and connection model
 
@@ -247,7 +247,7 @@ See the steps on the alternatives page. Support: hello@openwaters.io, or an issu
 
 **Title:** AISHub vs aisstream.io: the two free AIS APIs compared
 1. Overview: AISHub is a reciprocal snapshot exchange; aisstream is a push stream with no gate and no terms.
-2. Compare: access (receiver required vs OAuth key), transport (poll ≤1/min vs WebSocket), freshness (1–6 min vs live), coverage (1,600+ stations vs unpublished), terms (unrestricted by email vs none), reliability (stable vs 190 open issues).
+2. Compare: access (receiver required vs OAuth key), transport (poll ≤1/min vs WebSocket), freshness (~1 min vs live), coverage (1,600+ stations vs unpublished), terms (unrestricted by email vs none), reliability (stable vs 190 open issues).
 3. Who each is for.
 4. The third option: aiscast is an AISHub contributor and an aisstream consumer, serves both over one protocol, with the source on every event.
 5. Three-way table, CTA to the token page.

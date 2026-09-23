@@ -23,7 +23,7 @@ self:
     - feeders get the live deduplicated aggregate back (raw NMEA) and an open license on it
   weaknesses:
     - beta, no SLA, launched 2026
-    - live coverage is Norway, Finland, and volunteer stations; the rest of the world arrives via AISHub snapshots 1–6 min old (or aisstream.io when it is up)
+    - live coverage is Norway, Finland, and volunteer stations; the rest of the world arrives via AISHub snapshots about a minute behind (or aisstream.io when it is up)
     - no history or bulk export yet
     - satellite AIS only via a partner feed (BarentsWatch, Norwegian EEZ); no open-ocean coverage elsewhere
     - small project; commercial terms are per arrangement, not a rate card
@@ -68,7 +68,7 @@ competitors:
       - confirmed in writing (2026-08-22) that use, commercial use, and redistribution are unrestricted
       - stable since 2010s; same operator as VesselFinder
     weaknesses:
-      - no push: REST/XML/JSON snapshot polled at most once a minute; the world snapshot regenerates every ~5 min so positions are 1–6 min old
+      - no push: REST/XML/JSON snapshot polled at most once a minute; the world snapshot regenerates about once a minute so positions run about a minute behind
       - you must operate a receiver; no receiver, no API
       - no written terms document, no termination clause, key revocable at will
       - no raw NMEA back, no history
