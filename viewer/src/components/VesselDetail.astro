@@ -1,0 +1,261 @@
+---
+import { CLASS_COLORS, CLASS_LABELS, NAV_STATUS, flagEmoji, flagName, formatCoord, parseEta, parseLocode, relativeTime, shipClass } from "../lib/ais";
+import type { VesselFeature } from "../lib/api";
+
+interface Props {
+  mmsi: number;
+  feature: VesselFeature | undefined;
+}
+
+const { mmsi, feature } = Astro.props;
+const p = feature?.properties;
+const cls = shipClass(p?.kind, p?.type);
+const [lon, lat] = feature?.geometry.coordinates ?? [];
+const country = flagName(p?.flag);
+
+// `/v1/vessels` carries the particulars now, so the page is complete in its first response
+// instead of filling in when a type 5 happens to arrive over the stream.
+const size = p?.length ? `${p.length} × ${p.beam ?? "?"} m` : undefined;
+
+// AIS gives a destination and an ETA and nothing else about the voyage: no origin, no
+// departure time, no distance run. So this shows where the crew says they are going and
+// when, and does not draw a progress bar it has no way to position.
+const eta = parseEta(p?.eta);
+const etaText = eta
+  ? eta.toLocaleString("en-GB", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "UTC",
+    })
+  : p?.eta;
+const locode = parseLocode(p?.destination);
+const hasVoyage = Boolean(p?.destination || p?.eta);
+
+// Identifiers belong with the name, not in the table of things that change.
+// Speed, course and heading are what a reader glances at, so they are read at a glance
+// rather than looked up in a table. Shown even when absent: a blank under "Speed" says the
+// vessel is not reporting it, where an omitted row says nothing at all.
+const motion = [
+  // A degree sign sits tight against its number; a unit word takes a non-breaking space.
+  { label: "Speed", value: p?.sog != null ? p.sog.toFixed(1) : undefined, unit: "\u00a0kn" },
+  { label: "Course", value: p?.cog != null ? Math.round(p.cog).toString() : undefined, unit: "°" },
+  { label: "Heading", value: p?.heading != null ? String(p.heading) : undefined, unit: "°" },
+];
+
+// Navigational status is what the speed, course and heading below mean: 0.0 knots reads
+// very differently under "At anchor" than under "Under way using engine".
+const navStatus =
+  p?.nav_status != null ? (NAV_STATUS[p.nav_status] ?? `Status ${p.nav_status}`) : undefined;
+
+const ids = [
+  `MMSI ${mmsi}`,
+  p?.imo ? `IMO ${p.imo}` : undefined,
+  p?.callsign ? `Call sign ${p.callsign}` : undefined,
+].filter(Boolean);
+const LABEL = "text-[11px] font-medium tracking-wide uppercase";
+const TILE = "tile-surface mt-1.5 rounded-lg p-3";
+
+const rows: Array<[string, string | undefined]> = [
+  ["Draught", p?.draught ? `${p.draught.toFixed(1)} m` : undefined],
+  ["Size", size],
+];
+---
+
+<article
+  data-vessel={mmsi}
+  data-seed={feature
+    ? JSON.stringify({
+        mmsi,
+        name: p!.name,
+        shipType: p!.type,
+        kind: p!.kind,
+        lat,
+        lon,
+        cog: p!.cog,
+        sog: p!.sog,
+        heading: p!.heading,
+        navStatus: p!.nav_status,
+        seen: Date.parse(p!.seen),
+        source: p!.source,
+        station: p!.station,
+      })
+    : undefined}
+>
+  <div class="flex items-start gap-3">
+    <div class="min-w-0">
+      <p class="text-sm" style="color: var(--text-muted)">
+        {country && <span class="mr-1">{flagEmoji(p!.flag)} {country}</span>}
+      </p>
+      <h1 class="truncate text-2xl font-semibold" style="color: var(--text)">
+        {p?.name ?? `MMSI ${mmsi}`}
+      </h1>
+      <p class="text-xs" style="color: var(--text-muted)">
+        <span>{CLASS_LABELS[cls]}</span>
+        {p?.type && <span> · type {p.type}</span>}
+      </p>
+      <p class="mt-0.5 text-xs" style="color: var(--text-muted)">
+        {ids.join(" · ")}
+      </p>
+    </div>
+  </div>
+
+
+  {/* Three sections, one shape: a label row above a tile, and every tile the same
+      surface. The label row's right-hand slot carries whatever qualifies the tile. */}
+  {
+    feature && lat != null && (
+      <>
+        <div class="mt-4 flex items-baseline justify-between gap-2">
+          <h2 class={LABEL} style="color: var(--text-muted)">Last position</h2>
+          <time
+            class="text-[11px] first-letter:uppercase"
+            style="color: var(--text-muted)"
+            datetime={p!.seen}
+            title={p!.seen}
+          >
+            {relativeTime(new Date(p!.seen))}
+          </time>
+        </div>
+        <section class={`${TILE} flex items-center gap-3`}>
+          <span
+            class="flex size-9 shrink-0 items-center justify-center rounded-full"
+            style="background-color: var(--surface); color: var(--accent)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-5">
+              <path d="M12 21s7-5.5 7-11a7 7 0 1 0-14 0c0 5.5 7 11 7 11Z" />
+              <circle cx="12" cy="10" r="2.5" />
+            </svg>
+          </span>
+          <div class="min-w-0 font-mono text-xs" style="color: var(--text-secondary)">
+            {formatCoord(lat, lon!)}
+          </div>
+        </section>
+      </>
+    )
+  }
+
+  {hasVoyage && (
+    <>
+      <div class="mt-4 flex items-baseline justify-between gap-2">
+        <h2 class={LABEL} style="color: var(--text-muted)">Destination</h2>
+      </div>
+      <section class={TILE}>
+        {locode ? (
+          <>
+            <div class="flex items-baseline gap-2">
+              <span class="text-base font-semibold" style="color: var(--text)">
+                {locode.flag} {locode.port}
+              </span>
+              <span class="text-sm" style="color: var(--text-secondary)">
+                {locode.country}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div class="text-base font-semibold wrap-break-words" style="color: var(--text)">
+            {p!.destination || "Not reported"}
+          </div>
+        )}
+        {etaText && (
+          <span class="text-[11px] tabular-nums" style="color: var(--text-muted)">
+            <span style="color: var(--text-secondary)">ETA</span>
+            {etaText} UTC{eta && ` · ${relativeTime(eta)}`}
+          </span>
+        )}
+      </section>
+    </>
+  )}
+
+  {
+    feature && (
+      <>
+        <div class="mt-4 flex items-baseline justify-between gap-2">
+          <h2 class={LABEL} style="color: var(--text-muted)">{navStatus ?? "Motion"}</h2>
+        </div>
+        <section class={`${TILE} grid grid-cols-3 gap-2`}>
+          {motion.map((m) => (
+            <div class="text-center">
+              {/* Value and unit stay on one source line: a newline between them collapses
+                  to a space, which puts a gap in front of the degree sign. */}
+              <div class="text-xl leading-tight font-semibold tabular-nums" style="color: var(--text)">
+                {m.value ?? "–"}<span class="font-light" style="color: var(--text-muted)">{m.value ? m.unit : ""}</span></div>
+              <div class="text-[11px] tracking-wide uppercase" style="color: var(--text-muted)">
+                {m.label}
+              </div>
+            </div>
+          ))}
+        </section>
+      </>
+    )
+  }
+
+  {
+    feature && (
+      <>
+        <dl class="mt-4">
+          {rows
+            .filter(([, v]) => v)
+            .map(([k, v]) => (
+              <>
+                <dt>{k}</dt>
+                <dd>{v}</dd>
+              </>
+            ))}
+          <dt>Station</dt>
+          <dd class="truncate">
+            <a href={`/stations/${p!.station}`}>{p!.station}</a>
+          </dd>
+        </dl>
+
+
+        {/* Only what the stream knows and the snapshot does not: positions seen since this
+            page opened, plus the credit that came with this vessel's own last message. */}
+        <dl class="mt-4" data-live-fields hidden></dl>
+        <p class="mt-4 text-xs" style="color: var(--text-muted)" data-attribution hidden></p>
+
+      </>
+    )
+  }
+</article>
+
+<script>
+  let seeded = false;
+
+  function hydrate() {
+    const article = document.querySelector<HTMLElement>("[data-vessel]");
+    const app = window.aiscast;
+    if (!article || !app) return;
+    const mmsi = Number(article.dataset.vessel);
+
+    if (!seeded && article.dataset.seed) {
+      seeded = true;
+      app.stream.seed(JSON.parse(article.dataset.seed));
+      app.ctl.setFocus(mmsi);
+    }
+
+    const v = app.stream.vessels.get(mmsi);
+    const dl = article.querySelector<HTMLElement>("[data-live-fields]");
+    if (!v || !dl) return;
+
+    if (v.track.length > 1) {
+      dl.innerHTML = `<dt>Track this session</dt><dd>${v.track.length} positions</dd>`;
+      dl.hidden = false;
+    }
+
+    const credit = article.querySelector<HTMLElement>("[data-attribution]");
+    if (credit && v.attribution) {
+      credit.textContent = v.license ? `${v.attribution} Licence: ${v.license}.` : v.attribution;
+      credit.hidden = false;
+    }
+
+  }
+
+  hydrate();
+  document.addEventListener("astro:page-load", () => {
+    seeded = false;
+    hydrate();
+  });
+  setInterval(hydrate, 2000);
+</script>

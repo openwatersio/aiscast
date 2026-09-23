@@ -1,0 +1,67 @@
+---
+export const prerender = false;
+
+import VesselDetail from "../../components/VesselDetail.astro";
+import App from "../../layouts/App.astro";
+import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselPath, vesselSlug } from "../../lib/ais";
+import { getVessel } from "../../lib/api";
+
+const parsed = parseVesselParam(Astro.params.param ?? "");
+if (!parsed) return Astro.rewrite("/404");
+const { mmsi, slug } = parsed;
+
+const feature = await getVessel(mmsi);
+const props = feature?.properties;
+const name = props?.name;
+
+// The MMSI is canonical and the slug is cosmetic, so a stale or absent slug is corrected
+// with one permanent redirect rather than served as a second URL for the same vessel.
+const canonical = vesselPath(mmsi, name);
+
+// `from` records the list this vessel was opened from, and only a path within the app is
+// accepted. With one, the vessel takes the second pane so the list stays put; without one
+// (a map click, a pasted link) it pushes onto the sidebar stack like any other view.
+const raw = Astro.url.searchParams.get("from") ?? "";
+const from = /^\/[^/\\]/.test(raw) || raw === "/" ? raw : "";
+const suffix = from ? `?from=${encodeURIComponent(from)}` : "";
+if (slug !== vesselSlug(name)) return Astro.redirect(canonical + suffix, 301);
+
+const country = flagName(props?.flag);
+const cls = shipClass(props?.kind, props?.type);
+const label = name ?? `MMSI ${mmsi}`;
+
+const title = name
+  ? `${name} (${mmsi}) live position | Open Waters AIS`
+  : `MMSI ${mmsi} live position | Open Waters AIS`;
+
+const description = props
+  ? `Live AIS position for ${label}${country ? `, ${country}` : ""}. ${CLASS_LABELS[cls]}. ` +
+    `Last heard ${new Date(props.seen).toUTCString()}.`
+  : `AIS vessel ${label}. Not heard in the last 30 minutes.`;
+
+const jsonLd = feature
+  ? {
+      "@context": "https://schema.org",
+      "@type": "Vehicle",
+      name: label,
+      identifier: String(mmsi),
+      ...(country ? { countryOfOrigin: country } : {}),
+    }
+  : undefined;
+---
+
+<App
+  title={title}
+  description={description}
+  canonical={canonical}
+  jsonLd={jsonLd}
+  focusMmsi={mmsi}
+  focusAt={feature?.geometry.coordinates}
+  back={from ? undefined : "/"}
+  sidebarKey={from || canonical}
+  closeTo={from || "/"}
+>
+  <Fragment slot={from ? "detail" : "stack"}>
+    <VesselDetail mmsi={mmsi} feature={feature} />
+  </Fragment>
+</App>
