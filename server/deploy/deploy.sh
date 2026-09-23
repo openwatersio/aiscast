@@ -17,5 +17,7 @@ fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp "$bin" "$stage/aiscast-linux"
+# The box is silent for most of the converge and GitHub-hosted runners drop idle TCP after
+# about four minutes, so keep the session alive from this side.
 tar czf - apply.sh aiscast.env.example rootfs -C "$stage" aiscast-linux |
-	ssh "$host" 'rm -rf aiscast-deploy && mkdir aiscast-deploy && tar xzf - -C aiscast-deploy && sh aiscast-deploy/apply.sh'
+	ssh -o ServerAliveInterval=30 "$host" 'rm -rf aiscast-deploy && mkdir aiscast-deploy && tar xzf - -C aiscast-deploy && sh aiscast-deploy/apply.sh'
