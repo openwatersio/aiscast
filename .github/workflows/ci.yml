@@ -54,6 +54,14 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
 
+  # The registry listing follows the deploy so it never advertises a version the server is not
+  # serving yet. It is a no-op unless server.json carries a version the registry lacks.
+  mcp-registry:
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/mcp-registry.yml
+    secrets: inherit
+
   signalk-plugin:
     runs-on: ubuntu-latest
     defaults:
