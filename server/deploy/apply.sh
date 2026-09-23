@@ -53,5 +53,6 @@ if [ -f aiscast-linux ]; then
 fi
 systemctl restart aiscast
 sleep 3
-systemctl is-active aiscast caddy
+systemctl is-active aiscast
+systemctl is-active caddy
 curl -fsS localhost:8080/health
