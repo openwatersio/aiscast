@@ -2,10 +2,17 @@
   "name": "aiscast",
   "private": true,
   "workspaces": [
-    "signalk-plugin"
+    "signalk-plugin",
+    "viewer"
   ],
   "scripts": {
-    "build": "npm run build -w signalk-plugin",
-    "test": "npm test -w signalk-plugin"
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm test --workspaces --if-present"
+  },
+  "overrides": {
+    "typescript": "$typescript"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

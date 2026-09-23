@@ -1,0 +1,257 @@
+@import "tailwindcss";
+
+/* The Open Waters palette, matching openwaters.io so the app and the site read as one
+   product. Kept as the same token names rather than a private copy, so a component can
+   move between this repo and the website without a restyle. */
+@theme {
+  --color-ocean-50: #f0f9ff;
+  --color-ocean-100: #e0f2fe;
+  --color-ocean-200: #bae6fd;
+  --color-ocean-300: #7dd3fc;
+  --color-ocean-400: #38bdf8;
+  --color-ocean-500: #0ea5e9;
+  --color-ocean-600: #0284c7;
+  --color-ocean-700: #0369a1;
+  --color-ocean-800: #075985;
+  --color-ocean-900: #0c4a6e;
+  --color-ocean-950: #082f49;
+
+  --color-navy-50: #f8fafc;
+  --color-navy-100: #f1f5f9;
+  --color-navy-200: #e2e8f0;
+  --color-navy-300: #cbd5e1;
+  --color-navy-400: #94a3b8;
+  --color-navy-500: #64748b;
+  --color-navy-600: #475569;
+  --color-navy-700: #334155;
+  --color-navy-800: #1e293b;
+  --color-navy-900: #0f172a;
+  --color-navy-950: #020617;
+
+  --color-coral-50: #fef2f2;
+  --color-coral-100: #fee2e2;
+  --color-coral-200: #fecaca;
+  --color-coral-300: #fca5a5;
+  --color-coral-400: #f87171;
+  --color-coral-500: #ef4444;
+  --color-coral-600: #dc2626;
+  --color-coral-700: #b91c1c;
+  --color-coral-800: #991b1b;
+  --color-coral-900: #7f1d1d;
+}
+
+:root {
+  color-scheme: dark;
+
+  --surface: var(--color-navy-900);
+  --surface-subtle: var(--color-navy-800);
+  /* The panes float over the map, so they are glass rather than opaque: the chart reads
+     through them and the app stops feeling like a sidebar bolted onto a map. */
+  --surface-glass: rgba(5, 7, 14, 0.4);
+  --text: var(--color-navy-100);
+  --text-secondary: var(--color-navy-300);
+  --text-muted: var(--color-navy-400);
+  --border: var(--color-navy-700);
+  --border-subtle: var(--color-navy-800);
+  --accent: var(--color-ocean-400);
+  --accent-hover: var(--color-ocean-300);
+  --accent-bg: var(--color-ocean-950);
+  --accent-bg-subtle: var(--color-ocean-900);
+  --shadow: rgba(0, 0, 0, 0.45);
+
+  --status-green-bg: rgba(22, 101, 52, 0.2);
+  --status-green-text: #86efac;
+  --status-red-bg: rgba(153, 27, 27, 0.2);
+  --status-red-text: #fca5a5;
+  --status-yellow-bg: rgba(133, 77, 14, 0.2);
+  --status-yellow-text: #fde047;
+}
+
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop {
+    border-color: var(--border);
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--surface);
+    color: var(--text);
+    @apply overflow-hidden antialiased;
+  }
+
+  a {
+    color: var(--accent);
+    @apply transition-colors;
+  }
+  a:hover {
+    color: var(--accent-hover);
+  }
+
+  dl {
+    @apply grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm;
+  }
+  dt {
+    color: var(--text-secondary);
+    @apply font-semibold;
+  }
+  dd {
+    @apply m-0 tabular-nums;
+  }
+}
+
+@utility card {
+  background-color: var(--surface-subtle);
+  border-color: var(--border-subtle);
+  @apply rounded-lg border p-4;
+}
+
+@utility btn {
+  @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 font-medium transition-colors duration-200;
+}
+
+@utility btn-primary {
+  background-color: var(--accent);
+  color: white;
+  &:hover {
+    background-color: var(--accent-hover);
+  }
+}
+
+/* The sidebar is the app's scroll container; the map never scrolls. */
+/* Every floating pane. Dark mode only, so the blur always sits over the basemap. */
+@utility pane {
+  background-color: var(--surface-glass);
+  border-color: var(--border);
+  box-shadow: 0 10px 30px var(--shadow);
+  @apply rounded-xl border backdrop-blur-xl;
+}
+
+/* The pane is translucent, so a tile painted with a fixed navy lands within a few percent
+   of it and disappears. A light wash plus a hairline lifts off whatever is actually behind,
+   dark chart or bright coastline. */
+@utility tile-surface {
+  background-color: rgba(4, 8, 12, 0.2);
+}
+
+@utility sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  @apply overflow-y-auto overscroll-contain;
+}
+
+/* MapLibre puts `position: relative` on its own container and its stylesheet loads after
+   this one, so an equal-specificity `fixed` utility loses on source order and the map
+   collapses to zero height behind the panels. The id selector settles it. */
+#map {
+  position: fixed;
+  top: 0;
+  left: 0;
+  /* Sized in viewport units rather than `inset: 0`. The element carries a
+     `view-transition-name` for persistence across navigation, which makes it a containing
+     block, and `inset` then resolves against that instead of the viewport and collapses to
+     zero. Viewport units do not care. */
+  width: 100vw;
+  height: 100dvh;
+}
+
+/* MapLibre's stylesheet is imported after this one, so an equal-specificity override loses
+   on source order and the controls stay white on a dark chart. The controls live inside
+   #map, so prefixing with the id settles it wherever the imports end up. */
+#map .maplibregl-ctrl-group {
+  background: var(--color-navy-800);
+  border: 1px solid var(--color-navy-700);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+#map .maplibregl-ctrl-group button + button {
+  border-top-color: var(--color-navy-700);
+}
+#map .maplibregl-ctrl-group button:hover {
+  background: var(--color-navy-700);
+}
+#map .maplibregl-ctrl-group button:not(:disabled) .maplibregl-ctrl-icon {
+  /* MapLibre ships its control glyphs as dark SVG data URIs. */
+  filter: invert(1);
+}
+#map .maplibregl-ctrl-group button:disabled .maplibregl-ctrl-icon {
+  filter: invert(1);
+  opacity: 0.35;
+}
+/* Geolocate ships its own coloured glyphs for the tracking states: blue when following,
+   red on error. Inverting those turns the blue orange, so every state that is already
+   coloured keeps MapLibre's glyph. Matching `button.<state>` keeps the specificity level
+   with the invert rule above, which a bare `.<state>` does not. */
+#map
+  .maplibregl-ctrl-group
+  button.maplibregl-ctrl-geolocate-active
+  .maplibregl-ctrl-icon,
+#map
+  .maplibregl-ctrl-group
+  button.maplibregl-ctrl-geolocate-active-error
+  .maplibregl-ctrl-icon,
+#map
+  .maplibregl-ctrl-group
+  button.maplibregl-ctrl-geolocate-background
+  .maplibregl-ctrl-icon,
+#map
+  .maplibregl-ctrl-group
+  button.maplibregl-ctrl-geolocate-background-error
+  .maplibregl-ctrl-icon,
+#map
+  .maplibregl-ctrl-group
+  button.maplibregl-ctrl-geolocate-waiting
+  .maplibregl-ctrl-icon {
+  filter: none;
+}
+#map .maplibregl-user-location-dot,
+#map .maplibregl-user-location-dot::before {
+  background-color: var(--color-ocean-400);
+}
+#map .maplibregl-user-location-dot::after {
+  border-color: var(--color-navy-900);
+}
+#map .maplibregl-ctrl-attrib {
+  background: rgba(15, 23, 42, 0.8);
+  color: var(--color-navy-300);
+}
+#map .maplibregl-ctrl-attrib a {
+  color: var(--color-ocean-300);
+}
+#map .maplibregl-ctrl-attrib-button {
+  filter: invert(1);
+}
+
+/* Hovercard. MapLibre's popup ships a white bubble and a white tip, both keyed to classes
+   it defines after this file, so these need the #map prefix to win on source order. */
+#map .vessel-hovercard .maplibregl-popup-content {
+  background: var(--surface-glass);
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: 0 6px 20px var(--shadow);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font:
+    12px/1.45 system-ui,
+    sans-serif;
+  backdrop-filter: blur(12px);
+}
+#map .vessel-hovercard .meta {
+  color: var(--text-muted);
+}
+/* No tip. MapLibre builds it from borders and colours a different side white for each of
+   its eight anchors, so near an edge the card flips and an unstyled side shows through. A
+   tip also cannot inherit the bubble's backdrop-filter, so it could never match the glass.
+   The cursor is already pointing at the vessel. */
+#map .vessel-hovercard .maplibregl-popup-tip {
+  display: none;
+}
+/* The card follows the cursor, so it must never eat the click that opens the vessel. */
+#map .vessel-hovercard {
+  pointer-events: none;
+}

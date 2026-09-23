@@ -2,4 +2,6 @@
 .env
 node_modules/
 signalk-plugin/dist/
+viewer/dist/
+viewer/.astro/
 spec

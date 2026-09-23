@@ -1,0 +1,25 @@
+{
+  "name": "@openwaters/aiscast-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro check && astro build",
+    "preview": "astro preview",
+    "start": "node ./dist/server/entry.mjs",
+    "test": "vitest run",
+    "typecheck": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@astrojs/node": "^11.1.5",
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^7.3.2",
+    "maplibre-gl": "^6.9.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.11"
+  }
+}
