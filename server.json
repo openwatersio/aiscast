@@ -3,7 +3,7 @@
   "name": "io.openwaters/ais",
   "title": "Open Waters AIS",
   "description": "Live AIS vessel positions by MMSI, name, area, or radius, plus coverage. No sign-in, no key.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "websiteUrl": "https://openwaters.io/ais/",
   "repository": {
     "url": "https://github.com/openwatersio/aiscast",

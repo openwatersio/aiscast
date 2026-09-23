@@ -135,7 +135,7 @@ type aishubState struct {
 
 // ingestAishub maps one snapshot into events: a position when TIME advanced, a static when static fields changed.
 // Rows are spread evenly over budget: emitted back to back, a ~45k-row snapshot overruns every subscriber's
-// channel (a far client drains ~3k events/s); paced under 1k/s it does not. The rows are minutes old already.
+// channel (a far client drains ~3k events/s); paced under 1k/s it does not. The rows are about a minute old already.
 func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, budget time.Duration) (int, error) {
 	var parts []json.RawMessage
 	if err := json.Unmarshal(body, &parts); err != nil {
@@ -216,14 +216,14 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			if err != nil {
 				return 0, err
 			}
-			// AISHub regenerates the world snapshot only every ~5 min and serves the same bytes in between
+			// AISHub regenerates the world snapshot about once a minute and serves the same bytes in between
 			if h := sha256.Sum256(body); h == lastHash {
 				return -1, nil
 			} else {
 				lastHash = h
 			}
 			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
-			// paced independently of the poll interval: a new snapshot only appears every ~5 min, so ingest can outlast a poll
+			// paced independently of the poll interval: a new snapshot appears about once a minute, so ingest can outlast a poll
 			return p.ingestAishub(body, start, st, 45*time.Second)
 		}()
 		switch {

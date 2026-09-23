@@ -330,6 +330,9 @@ func TestMCPCoverage(t *testing.T) {
 	if s := out.Sources[0]; s.Kind != "kystverket" || s.Vessels != 4 || s.VesselsExclusive != 4 || s.Events24h != 6 || s.License != "NLOD-2.0" || !strings.Contains(s.Description, "Norwegian") {
 		t.Errorf("largest source first: %+v", s)
 	}
+	if d := out.Sources[0].Delay; d == nil || d.P99 < d.P50 {
+		t.Errorf("delay from the source's position reports: %+v", d)
+	}
 	if !strings.Contains(out.Summary, "4 vessels with a position") {
 		t.Errorf("summary: %q", out.Summary)
 	}
