@@ -459,7 +459,7 @@ func TestTiersAndTrust(t *testing.T) {
 		t.Errorf("personal before feeding: %+v", e)
 	}
 	for i := 0; i < feederMinEvents24h; i++ {
-		p.stations.event(&Event{Station: "v1:ed25519:dev1", Source: "v1:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
+		p.stations.event(&Event{Station: "station:ed25519:dev1", Source: "station:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
 	}
 	if e := p.effective(&personal); !e.Feeder || e.Conns != feederConns || e.Rate != feederRate || e.Area != 0 || !e.mayRaw() {
 		t.Errorf("personal after feeding: %+v", e)
@@ -467,7 +467,7 @@ func TestTiersAndTrust(t *testing.T) {
 	// events older than 24 h do not count
 	old := Claims{Sub: "ed25519:dev2", Role: "personal"}
 	for i := 0; i < feederMinEvents24h; i++ {
-		p.stations.event(&Event{Station: "v1:ed25519:dev2", Source: "v1:ed25519:dev2", Time: now.Add(-30 * time.Hour), MMSI: 1})
+		p.stations.event(&Event{Station: "station:ed25519:dev2", Source: "station:ed25519:dev2", Time: now.Add(-30 * time.Hour), MMSI: 1})
 	}
 	if e := p.effective(&old); e.Feeder {
 		t.Error("stale contribution earned the tier")

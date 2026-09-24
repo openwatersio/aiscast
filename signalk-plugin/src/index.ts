@@ -199,7 +199,7 @@ export default function (app: ServerAPI): Plugin {
       errorShown = false;
       app.setPluginStatus(""); // an empty status deletes the entry, lastError included
     };
-    const selfSource = `v1:ed25519:${identity.pubkey}`;
+    const selfSub = `ed25519:${identity.pubkey}`;
     const refreshToken = async (): Promise<void> => {
       if (configuredToken) {
         token = {
@@ -239,7 +239,7 @@ export default function (app: ServerAPI): Plugin {
         mode,
         radiusNm,
         source: `${PLUGIN_ID}.net`,
-        selfSource,
+        selfSub,
         onReceived: (s) => up.noteReceived(s),
         // The plugin listens on `nmea0183`, never on `nmea0183out`, so this cannot feed back into the uplink.
         onInjected: relay0183 ? (s) => events.emit("nmea0183out", s) : undefined,

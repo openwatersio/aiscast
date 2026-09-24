@@ -269,7 +269,7 @@ describe("downlink", () => {
     server.send({ type: "event", time, source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
     server.send({ type: "event", time, source: "kystverket", nmea: [VDM2], mmsi: 123456789, msg_type: "PositionReport", lat: 1, lon: 1 }); // self MMSI
     const pub = server.keyRequests[0].pubkey;
-    server.send({ type: "event", time, source: `v1:ed25519:${pub}`, nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // our echo
+    server.send({ type: "event", time, source: `station:ed25519:${pub}`, nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // our echo
     await until(() => app.deltas.length >= 1);
     await sleep(50);
     expect(app.deltas).toHaveLength(1);

@@ -98,6 +98,7 @@ func routes(p *Pipeline) map[string]http.HandlerFunc {
 		"/v0/stream":    p.serveV0,
 		"/v1/stream":    p.serveV1,
 		"/v1/receive":   p.serveReceive,
+		"/v1/mqtt":      p.serveMQTT,
 		"/v1/keys":      p.serveKeys,
 		"/v1/nmea":      p.serveNMEA,
 		"/v1/stations":  p.rateLimited(p.serveStations),

@@ -446,7 +446,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				now := time.Now()
-				src := "v1:" + cl.Sub
+				src := stationSource(cl.Sub)
 				n := 0
 				for _, line := range f.NMEA {
 					if n >= maxPublishFrame || !publishLimit.allow(cl.Sub) {

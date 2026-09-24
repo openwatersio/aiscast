@@ -46,7 +46,7 @@ Claims:
 
 `tiers.go` holds the defaults, and [docs/limits.md](../docs/limits.md) documents them: anonymous 2 per address / 20 / 100 (subscribe only), personal 2 / 50 / 400 with no expiry, feeder 5 / 200 / unlimited plus `/v1/nmea`. A personal token earns the feeder tier when its stations deliver 1,000 events in 24 h. You can also mint a feeder token directly. The cap is 8 streams per address across tokens.
 
-The token goes everywhere an API key went: aisstream `APIKey`, `Authorization: Bearer`, Basic-auth password (AIS-catcher `USERPWD x:ak1...`), or `?key=`. `POST /v1/keys {"pubkey": "<base64url ed25519 public key>"}` returns a personal token (no expiry) for that device key. The Signal K plugin and the chart plugin use this, and they bundle no secret. `/v1/stream` subscribe and `/v1/vessels` are open. `/v0/stream`, publishing, and `/v1/receive` need a token.
+The token goes everywhere an API key went: aisstream `APIKey`, `Authorization: Bearer`, Basic-auth password (AIS-catcher `USERPWD x:ak1...`), MQTT CONNECT password (AIS-catcher `-Q wssmqtt://x:ak1...@`), or `?key=`. `POST /v1/keys {"pubkey": "<base64url ed25519 public key>"}` returns a personal token (no expiry) for that device key. The Signal K plugin and the chart plugin use this, and they bundle no secret. `/v1/stream` subscribe and `/v1/vessels` are open. `/v0/stream`, publishing, `/v1/receive`, and `/v1/mqtt` need a token.
 
 `aiscast-key issuer` makes an issuer keypair. `aiscast-key new -sub station-42 -role feeder -exp 8760h` mints a token. `aiscast-key inspect <token>` shows the claims.
 
@@ -57,5 +57,7 @@ Sources:
 - Digitraffic (Finland, CC BY 4.0). The server maps its MQTT JSON to go-ais structs and re-encodes it, and the events carry `synthesized: true`.
 - aisstream.io when `AISSTREAM_API_KEY` is set. The server maps its `/v0` envelopes back to structs, also `synthesized`. Anything the open feeds already delivered dedupes.
 - AISHub's aggregate snapshot when `AISHUB_USERNAME` is set (`synthesized`, source `aishub`, reciprocal with `AISHUB_FEED`). AISHub regenerates its world snapshot about once a minute, so positions from it run about a minute behind (`sources.aishub.delay` in `/v1/stats`). The server skips unchanged snapshots.
+
+Volunteer stations feed over `/v1/mqtt` (MQTT 3.1.1 over WebSocket, receive-only: the token is the CONNECT password, each PUBLISH payload is newline-separated NMEA on any topic, QoS 0 to 2 acknowledged, SUBSCRIBE refused), `/v1/receive` (AIS-catcher HTTP output), or `/v1/stream` publish frames. All three name the station by the token's `sub` alone, `station:<sub>`, so a feeder can switch transports without changing identity. UDP senders are `udp:<hash>`, or `mmsi:<n>` once their own `!AIVDO` names the vessel.
 
 Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received.

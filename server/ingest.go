@@ -63,7 +63,7 @@ func (p *Pipeline) serveReceive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	src := "http:" + id
+	src := stationSource(id)
 	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) {
 		var env jsonaiscatcher
 		if err := json.Unmarshal(body, &env); err != nil {
@@ -85,6 +85,10 @@ func (p *Pipeline) serveReceive(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 }
+
+// stationSource names an authenticated contributor by its token's sub alone. HTTP, MQTT, and /v1/stream
+// publishes from one token are one station: the transport is the feeder's business, not a fact about the data.
+func stationSource(sub string) string { return "station:" + sub }
 
 // stationSalt keys the UDP station ids. STATION_SALT keeps them stable across restarts; unset = per-boot random.
 var stationSalt = func() []byte {

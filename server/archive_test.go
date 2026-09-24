@@ -165,7 +165,7 @@ func TestArchiveSweepSkipsOpenFiles(t *testing.T) {
 func TestLicenseAndAttribution(t *testing.T) {
 	cases := []struct{ source, license, attribution string }{
 		{"kystverket", "NLOD-2.0", ownCredit + ". " + attributions["kystverket"]},
-		{"v1:ed25519:abc", "CC0-1.0", ownCredit},
+		{"station:ed25519:abc", "CC0-1.0", ownCredit},
 		{"udp:7f3a2b", "CC0-1.0", ownCredit},
 		{"mystery", "unspecified", ownCredit},
 	}

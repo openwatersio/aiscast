@@ -18,7 +18,7 @@ import (
 
 // Reception is one thing received, exactly as received. Immutable; archived before any processing.
 type Reception struct {
-	Source     string // kystverket, http:<id>, udp:<ip>, v1:<id>
+	Source     string // kystverket, station:<sub>, udp:<hash>, mmsi:<n>
 	Station    string // refined by TAG s: when present
 	RecvTime   time.Time
 	SourceTime time.Time // feeder-supplied, zero if none
