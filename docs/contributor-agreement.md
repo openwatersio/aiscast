@@ -18,7 +18,7 @@ The dedication is permanent for data already released. If you stop sharing, we r
 
 ## Our commitments
 
-- **The aggregate stays open.** We publish the aggregate dataset from all stations' receptions under the [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/). Anyone may use the dataset, including for commercial purposes. What they build from it must stay open under the same terms. We never relicense it. We never put it behind terms that forbid redistribution. We never grant anyone an exclusive license to it. A buyer of Open Water Software, LLC holds the same rights to the data as everyone else. Anyone can mirror the public archive and operate a successor network. We may withhold specific vessels from publication under our privacy policy.
+- **The aggregate stays open.** We publish the aggregate dataset from all stations' receptions under the [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/). Anyone may use the dataset, including for commercial purposes. What they build from it must stay open under the same terms. We never relicense it. We never put it behind terms that forbid redistribution. We never grant anyone an exclusive license to it. A buyer of Open Water Software, LLC holds the same rights to the data as everyone else. Anyone can mirror the public archive and operate a successor network. We may withhold specific vessels from publication under our [privacy policy](privacy-policy.md).
 - **We charge for hosted access.** The data is free. We charge for the hosted service: reliable streaming at scale, history queries, and an SLA. That revenue pays for the infrastructure. Contributors get the commercial tier at no cost.
 
 ## Your representations
