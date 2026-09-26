@@ -279,14 +279,16 @@ func TestMQTTConnectLimitPerToken(t *testing.T) {
 	a, _ := signToken(priv, Claims{Kid: kid, Sub: "a", Role: "feeder", Exp: exp})
 	b, _ := signToken(priv, Claims{Kid: kid, Sub: "b", Role: "feeder", Exp: exp})
 	c, _ := signToken(priv, Claims{Kid: kid, Sub: "c", Role: "feeder", Exp: exp})
+	d, _ := signToken(priv, Claims{Kid: kid, Sub: "d", Role: "feeder", Exp: exp})
 	srv := httptest.NewServer(httpHandler(p))
 	defer srv.Close()
 	// a is charged for its first connect; b is charged when CONNECT names it even though the request
-	// carried c and was charged for that, so b's next connect is over the limit.
+	// carried c and was charged for that, so b's next connect is over the limit; d on both the request
+	// and CONNECT is charged once, not twice.
 	for i, want := range []struct {
 		query, pass string
 		code        byte
-	}{{"", a, mqttAccepted}, {"", a, mqttUnavailable}, {"?key=" + c, b, mqttAccepted}, {"", b, mqttUnavailable}} {
+	}{{"", a, mqttAccepted}, {"", a, mqttUnavailable}, {"?key=" + c, b, mqttAccepted}, {"", b, mqttUnavailable}, {"?key=" + d, d, mqttAccepted}} {
 		m := dialMQTT(t, srv, want.query)
 		m.send(mqttConnect, 0, connectPacket("x", want.pass))
 		if pk := m.expect(mqttConnack); pk.body[1] != want.code {
