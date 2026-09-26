@@ -325,3 +325,20 @@ func TestHistoricalContributorSourcesStayCC0(t *testing.T) {
 		}
 	}
 }
+
+// The writer is opt-in: an env with neither variable, like a box set up before the stream existed,
+// must not stage hours that nothing uploads or reclaims.
+func TestNormalizedWriterIsOptIn(t *testing.T) {
+	for _, c := range []struct{ dir, bucket, want string }{
+		{"", "", ""},
+		{"", "ais-archive", "normalized"},
+		{"/var/lib/aiscast/normalized", "", "/var/lib/aiscast/normalized"},
+		{"/var/lib/aiscast/normalized", "ais-archive", "/var/lib/aiscast/normalized"},
+	} {
+		t.Setenv("NORMALIZED_DIR", c.dir)
+		t.Setenv("NORMALIZED_BUCKET", c.bucket)
+		if got := normDir(); got != c.want {
+			t.Errorf("NORMALIZED_DIR=%q NORMALIZED_BUCKET=%q: dir %q, want %q", c.dir, c.bucket, got, c.want)
+		}
+	}
+}

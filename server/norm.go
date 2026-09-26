@@ -44,6 +44,19 @@ type normCopy struct {
 // starts with a license tag, so the stream sits beside them without ever reading as one.
 const normPrefix = "normalized"
 
+// normDir is where the normalized stream is staged, or "" for no writer when neither variable is set.
+// It is opt-in: a box whose env predates the stream would otherwise stage hours no sweep uploads or
+// reclaims, until the disk filled and the blocking writers stalled ingest.
+func normDir() string {
+	if d := os.Getenv("NORMALIZED_DIR"); d != "" {
+		return d
+	}
+	if os.Getenv("NORMALIZED_BUCKET") != "" {
+		return "normalized"
+	}
+	return ""
+}
+
 // newNormArchive is the archive writer configured for the merged normalized stream.
 func newNormArchive(dir string, s3 *s3Client) *archive {
 	a := newArchive(dir, s3)

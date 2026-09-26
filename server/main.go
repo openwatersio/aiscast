@@ -30,7 +30,7 @@ func main() {
 	}
 	arch := newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv())
 	go arch.sweepLoop() // reclaim what the bucket already has; slow, so it must not hold up ingest
-	norm := newNormArchive(env("NORMALIZED_DIR", "normalized"), s3NormFromEnv())
+	norm := newNormArchive(normDir(), s3NormFromEnv())
 	go norm.sweepLoop()
 	p := newPipeline(arch)
 	p.norm = norm
