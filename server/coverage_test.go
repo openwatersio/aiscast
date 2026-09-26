@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -85,4 +86,33 @@ func TestMetHydNovelFieldIsFlagged(t *testing.T) {
 		return
 	}
 	t.Fatal("fixture has no MetHyd record; resample testdata/sources/barentswatch.lines")
+}
+
+// A sender rotating field names must not grow the tracked set, and /metrics with it, without bound.
+func TestUnmappedFieldsAreBounded(t *testing.T) {
+	t.Cleanup(func() { // give the cap back so later tests still see their own names
+		unmappedFld.Range(func(k, _ any) bool {
+			if strings.HasPrefix(k.(string), "rotating-test\t") {
+				unmappedFld.Delete(k)
+				unmappedN.Add(-1)
+			}
+			return true
+		})
+	})
+	for i := 0; i < 2*maxUnmapped; i++ {
+		flagUnmapped("rotating-test", fmt.Sprintf("nonce%d", i))
+	}
+	n := 0
+	unmappedFld.Range(func(k, _ any) bool {
+		if strings.HasPrefix(k.(string), "rotating-test\t") {
+			n++
+		}
+		return true
+	})
+	if n > maxUnmapped+1 {
+		t.Fatalf("tracked %d distinct fields for one sender, cap is %d plus overflow", n, maxUnmapped)
+	}
+	if _, ok := unmappedFld.Load("rotating-test\t(other)"); !ok {
+		t.Fatal("names past the cap were not counted under (other)")
+	}
 }

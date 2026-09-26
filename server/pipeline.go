@@ -330,7 +330,7 @@ func (p *Pipeline) emit(ev *Event) {
 	ev.MMSI = ev.Packet.GetHeader().UserID
 	ev.LowTrust = lowTrust(ev.Source)
 	p.updateVessel(ev)
-	p.writeEvent(ev, key) // flagged or not: the normalized archive keeps what the raw archive keeps
+	p.writeEvent(ev) // flagged or not: the normalized archive keeps what the raw archive keeps
 	if ev.Implausible {
 		p.stats.implausible.Add(1)
 		return

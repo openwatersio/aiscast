@@ -119,7 +119,7 @@ func (p *Pipeline) normWrite(recv time.Time, lines ...[]byte) {
 
 // writeEvent records an accepted message and its first copy. Runs after updateVessel, so the
 // implausible and stale flags are settled; flagged events are archived and not emitted, matching raw.
-func (p *Pipeline) writeEvent(ev *Event, key string) {
+func (p *Pipeline) writeEvent(ev *Event) {
 	if p.norm.dir == "" {
 		return
 	}

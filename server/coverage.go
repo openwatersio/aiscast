@@ -101,19 +101,39 @@ func trimLeft(b []byte) []byte {
 	return b
 }
 
-func flagUnmapped(site, path string) {
-	c, loaded := unmappedFld.LoadOrStore(site+"\t"+path, new(atomic.Int64))
+// maxUnmapped bounds the distinct field paths and record types tracked. Names come from source
+// payloads, including envelopes any feeder can post, so one rotating its key names must not grow
+// memory or /metrics without end. Past the cap, new names count under one "(other)" per site.
+const maxUnmapped = 256
+
+var unmappedN atomic.Int64
+
+// countUnmapped counts one sighting and reports whether the name is newly tracked.
+func countUnmapped(m *sync.Map, site, name string) (string, bool) {
+	key := site + "\t" + name
+	c, ok := m.Load(key)
+	if !ok {
+		if unmappedN.Load() >= maxUnmapped {
+			name, key = "(other)", site+"\t(other)"
+		}
+		c, ok = m.LoadOrStore(key, new(atomic.Int64))
+		if !ok {
+			unmappedN.Add(1)
+		}
+	}
 	c.(*atomic.Int64).Add(1)
-	if !loaded {
-		log.Printf("coverage: %s sends field %q we do not capture", site, path)
+	return name, !ok
+}
+
+func flagUnmapped(site, path string) {
+	if name, fresh := countUnmapped(&unmappedFld, site, path); fresh {
+		log.Printf("coverage: %s sends field %q we do not capture", site, name)
 	}
 }
 
 func countUnmappedType(site, typ string) {
-	c, loaded := unmappedType.LoadOrStore(site+"\t"+typ, new(atomic.Int64))
-	c.(*atomic.Int64).Add(1)
-	if !loaded {
-		log.Printf("coverage: %s sends record type %q we do not handle", site, typ)
+	if name, fresh := countUnmapped(&unmappedType, site, typ); fresh {
+		log.Printf("coverage: %s sends record type %q we do not handle", site, name)
 	}
 }
 
