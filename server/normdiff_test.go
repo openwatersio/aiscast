@@ -170,8 +170,11 @@ func TestNormDiffSeesEveryRecordAndField(t *testing.T) {
 	ev := func(extra string) string {
 		return `{"k":"event","v":1,"t":"2026-09-01T12:00:00Z","r":{"id":"a","time":"2026-09-01T12:00:00Z","source":"s","mmsi":1,"msg_type":"X","message":{"a":1}` + extra + `}}`
 	}
-	cp := func(license string) string {
-		return `{"k":"copy","v":1,"t":"2026-09-01T12:00:00Z","r":{"id":"a","time":"2026-09-01T12:00:00Z","source":"s","station":"s","license":"` + license + `"}}`
+	cp := func(license, recv string) string {
+		return `{"k":"copy","v":1,"t":"` + recv + `","r":{"id":"a","time":"2026-09-01T12:00:00Z","tx":"2026-09-01T12:00:00Z","source":"s","station":"s","license":"` + license + `"}}`
+	}
+	wx := func(recv string) string {
+		return `{"k":"methyd","v":1,"t":"` + recv + `","r":{"mmsi":1,"msgtime":"2026-09-01T12:00:00Z"}}`
 	}
 	cases := []struct {
 		name         string
@@ -180,7 +183,9 @@ func TestNormDiffSeesEveryRecordAndField(t *testing.T) {
 		{"earlier repeat differs", []string{ev(`,"lat":1`), ev(`,"lat":2`)}, []string{ev(`,"lat":2`), ev(`,"lat":2`)}},
 		{"position differs", []string{ev(`,"lat":1,"lon":1`)}, []string{ev(`,"lat":1,"lon":3`)}},
 		{"synthesized differs", []string{ev(``)}, []string{ev(`,"synthesized":true`)}},
-		{"license differs", []string{cp("CC0-1.0")}, []string{cp("NLOD-2.0")}},
+		{"license differs", []string{cp("CC0-1.0", "2026-09-01T12:00:00Z")}, []string{cp("NLOD-2.0", "2026-09-01T12:00:00Z")}},
+		{"copy receive time differs", []string{cp("CC0-1.0", "2026-09-01T23:59:59Z")}, []string{cp("CC0-1.0", "2026-09-02T00:00:01Z")}},
+		{"weather receive time differs", []string{wx("2026-09-01T12:00:01Z")}, []string{wx("2026-09-01T12:00:02Z")}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

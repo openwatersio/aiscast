@@ -60,9 +60,9 @@ def event_at(tpl, id, ts, recv=None, **flags):
     return e
 
 
-def copy_at(tpl, id, ts, source="aishub", license="aishub-terms", recv=None):
+def copy_at(tpl, id, ts, source="aishub", license="aishub-terms", recv=None, tx=None):
     c = copy.deepcopy(tpl)
-    c["r"].update(id=id, time=ts, source=source, station=source, license=license)
+    c["r"].update(id=id, time=ts, tx=tx or ts, source=source, station=source, license=license)
     c["t"] = recv or ts
     return c
 
@@ -75,7 +75,7 @@ def crafted(envs):
         # a transmission and a late aishub copy of it: one position, two receptions
         event_at(ev, "aaaa0001", "2026-09-01T13:00:00Z"),
         copy_at(cp, "aaaa0001", "2026-09-01T13:00:00Z", source="kystverket", license="NLOD-2.0"),
-        copy_at(cp, "aaaa0001", "2026-09-01T13:00:03Z"),
+        copy_at(cp, "aaaa0001", "2026-09-01T13:00:03Z", tx="2026-09-01T13:00:00Z"),
         # a crash-window re-accept: two events, same id, 3 s apart, collapses to one row
         event_at(ev, "bbbb0002", "2026-09-01T13:10:00Z"),
         copy_at(cp, "bbbb0002", "2026-09-01T13:10:00Z"),
@@ -159,6 +159,8 @@ def test_package_day(packaged):
     assert sum(1 for p in positions if p["id"] == "bbbb0002") == 1, "crash pair must collapse"
     assert sorted(p["ts"].second for p in positions if p["id"] == "abab0008") == [0, 18], "collapse anchors on the kept row"
     assert sum(1 for p in positions if p["id"] == "abab0009") == 1, "a same-instant re-accept folds to one row"
+    joined = sorted(r["ts"].second for r in rows(catalog, "receptions") if r["id"] == "abab0008")
+    assert joined == [0, 0, 18], "each copy joins the one transmission it names; the folded 9 s copy follows its row"
     assert sum(1 for p in positions if p["id"] == "cccc0003") == 2, "re-transmission must not collapse"
     assert not any(p["id"] == "dddd0004" for p in positions), "implausible stays out"
     assert not any(p["id"] == "eeee0005" for p in positions), "a transmission received after midnight belongs to the next day"
@@ -210,8 +212,10 @@ def test_positions_without_copies_fails(tmp_path):
     packager.HERE = tmp_path / "home"
     packager.HERE.mkdir()
     envs = fixture_envelopes()
-    ev = template(envs, "event", "PositionReport")
-    only_events = [event_at(ev, "ffff0006", "2026-09-01T13:00:00Z")]
+    ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+    # totals match (two positions, two receptions) while one position has none of its own
+    only_events = [event_at(ev, "ffff0006", "2026-09-01T13:00:00Z"), event_at(ev, "ffff0007", "2026-09-01T13:01:00Z"),
+                   copy_at(cp, "ffff0007", "2026-09-01T13:01:00Z"), copy_at(cp, "ffff0007", "2026-09-01T13:01:01Z", tx="2026-09-01T13:01:00Z")]
     root = tmp_path / "normalized"
     d = root / "normalized/v1/2026/09/01"
     d.mkdir(parents=True)
@@ -288,3 +292,53 @@ def test_weather_columns_cover_every_methyd_field():
     known |= set(packager.WEATHER_READ) | set(packager.WEATHER_IGNORED)
     record = template(fixture_envelopes(), "methyd")["r"]
     assert set(record) - known == set(), f"unhandled MetHyd fields: {sorted(set(record) - known)}"
+
+
+def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatch, capsys):
+    """A day is skipped only when packaged from exactly its current hours; an hour that lands late
+    repackages it. A day that fails does not stop the rest of the week, but fails the run."""
+    from datetime import datetime, timedelta, timezone
+
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    envs = fixture_envelopes()
+    ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+    root = tmp_path / "normalized"
+    now = datetime.now(timezone.utc)
+    d1, d2, d3 = ((now - timedelta(days=n)).strftime("%Y-%m-%d") for n in (1, 2, 3))
+
+    def hour(day, hh, envelopes):
+        d = root / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True, exist_ok=True)
+        with gzip.open(d / f"{hh}.gz", "wt") as f:
+            f.writelines(json.dumps(e) + "\n" for e in envelopes)
+
+    def tx(day, hh, id):
+        t = f"{day}T{hh}:00:00Z"
+        return [event_at(ev, id, t), copy_at(cp, id, t)]
+
+    def run():
+        monkeypatch.setattr(sys, "argv", ["packager", "--normalized", str(root), "--min-hours", "1"])
+        try:
+            packager.main()
+        except SystemExit as e:
+            return str(e)
+
+    hour(d2, "01", tx(d2, "01", "d2000001"))
+    hour(d1, "01", tx(d1, "01", "d1000001"))
+    bad = copy.deepcopy(ev)
+    bad["v"] = 99
+    hour(d3, "01", [bad])
+    assert run() == f"failed: {d3}", "the bad day fails the run"
+    days = {p["day"].isoformat() for p in rows(packager.get_catalog(), "positions")}
+    assert days == {d1, d2}, "the days after the bad one still package"
+
+    capsys.readouterr()
+    run()
+    assert "positions" not in capsys.readouterr().err, "unchanged days are not repackaged"
+
+    hour(d2, "05", tx(d2, "05", "d2000002"))  # an upload that arrived late
+    run()
+    err = capsys.readouterr().err
+    assert f"{d2}: 2 positions" in err and f"{d1}:" not in err, "only the changed day repackages"
+    assert sum(1 for p in rows(packager.get_catalog(), "positions") if p["day"].isoformat() == d2) == 2

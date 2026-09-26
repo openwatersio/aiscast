@@ -93,11 +93,6 @@ def day_key(day):
     return re.compile(hour_pattern(datetime.fromisoformat(day)))
 
 
-def hours_present(day, files):
-    pat = re.compile(hour_pattern(datetime.fromisoformat(day)))
-    return {m.group(1) for f in files if (m := pat.search(f))}
-
-
 # camelCase source fields -> snake_case columns, verbatim values.
 def weather_cols():
     def camel(snake):
@@ -120,6 +115,7 @@ def load_envelopes(con, files):
                coalesce(implausible, false) AS implausible, coalesce(stale, false) AS stale,
                r->>'id' AS id,
                CAST(r->>'time' AS TIMESTAMP) AS ct,
+               CAST(r->>'tx' AS TIMESTAMP) AS tx,
                CAST(r->>'mmsi' AS INTEGER) AS mmsi,
                r->>'msg_type' AS mt,
                r->>'source' AS source, r->>'station' AS station, r->>'license' AS license,
@@ -135,7 +131,7 @@ def load_envelopes(con, files):
         sys.exit(f"{bad} envelopes with an unknown version or kind; this packager speaks v{NORM_VERSION} {KINDS}")
 
 
-def process_day(day, files, con, catalog):
+def process_day(day, files, con, catalog, fingerprint=None):
     load_envelopes(con, files)
     day_start = datetime.fromisoformat(day)
     day_end = day_start + timedelta(days=1)
@@ -177,17 +173,19 @@ def process_day(day, files, con, catalog):
     con.register("prior_positions", prior_positions(catalog, day))
     collapse_reaccepts(con)
 
-    # receptions: every copy of a position received in the day, joined to its transmission by id and
-    # canonical proximity, the same rule the server used to call it a copy in the first place. A copy
-    # can arrive after midnight for a transmission the server received before it, so the previous
-    # day's positions join too; a copy more than a day behind its transmission drops.
+    # receptions: every copy of a position received in the day, joined to the transmission the server
+    # named on it (tx). Proximity would be ambiguous: transmissions 0 s and 18 s apart both sit within
+    # the window of a copy at 9 s. A copy of a re-accept the collapse folded follows it into the kept
+    # row. A copy can arrive after midnight for a transmission the server received before it, so the
+    # previous day's positions join too; a copy more than a day behind its transmission drops.
     con.execute(
         f"""
         CREATE OR REPLACE TABLE receptions AS
         SELECT p.id, p.ts, c.source, c.station, c.recv AS recv_ts, c.license, CAST(c.recv AS DATE) AS day
-        FROM (SELECT id, ct, source, station, recv, license FROM env WHERE k = 'copy' AND recv >= ? AND recv < ?) c
+        FROM (SELECT id, tx, source, station, recv, license FROM env WHERE k = 'copy' AND recv >= ? AND recv < ?) c
+        LEFT JOIN folded f ON f.id = c.id AND f.ts = c.tx
         JOIN (SELECT id, ts FROM positions UNION ALL SELECT id, ts FROM prior_positions) p
-          ON p.id = c.id AND abs(epoch(c.ct - p.ts)) < {WINDOW_S}
+          ON p.id = c.id AND p.ts = coalesce(f.to_ts, c.tx)
         ORDER BY source, station, recv
         """,
         [day_start, day_end],
@@ -209,15 +207,18 @@ def process_day(day, files, con, catalog):
     )
 
     n_pos, n_rx, n_wx = (con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("positions", "receptions", "weather"))
-    if n_pos and n_rx < n_pos:
-        sys.exit(f"{day}: {n_pos} positions but only {n_rx} receptions; every transmission has a first copy, so the join lost data")
+    orphans = con.execute(
+        "SELECT count(*) FROM positions p WHERE NOT EXISTS (SELECT 1 FROM receptions r WHERE r.id = p.id AND r.ts = p.ts)"
+    ).fetchone()[0]
+    if orphans:
+        sys.exit(f"{day}: {orphans} positions without a reception; every transmission has a first copy, so the join lost data")
 
     refresh_vessels(con, catalog)
-    # Iceberg has no cross-table transaction, so order is the guarantee: positions commits last and
-    # its day partition is the completion marker.
+    # Iceberg has no cross-table transaction, so order is the guarantee: positions commits last, with
+    # the inputs' fingerprint in the same transaction, and that fingerprint is the completion marker.
     for name in ("weather", "receptions"):
         replace_day(con, catalog, day, name)
-    replace_day(con, catalog, day, "positions")
+    replace_day(con, catalog, day, "positions", {f"packaged.{day}": fingerprint} if fingerprint else None)
     print(f"{day}: {n_pos} positions, {n_rx} receptions, {n_wx} weather", file=sys.stderr)
 
 
@@ -236,7 +237,7 @@ def collapse_reaccepts(con):
         ORDER BY id, ts, row NULLS FIRST
         """
     ).fetchall()
-    drop, last_id, anchor = [], None, None
+    drop, folded, last_id, anchor = [], [], None, None
     for id, ts, row in near:  # only ids with a pair inside the window: a handful a day
         if id != last_id:
             last_id, anchor = id, None
@@ -244,6 +245,11 @@ def collapse_reaccepts(con):
             anchor = ts
         else:
             drop.append(row)
+            folded.append((id, ts, anchor))
+    # ponytail: a fold is known only on the day it happened, so a copy arriving after midnight for a
+    # re-accept folded the previous day drops; persist folds if that ever shows up in the counts
+    con.register("folded", pa.table({"id": [f[0] for f in folded], "ts": [f[1] for f in folded], "to_ts": [f[2] for f in folded]},
+                                    schema=pa.schema([("id", pa.string()), ("ts", pa.timestamp("us")), ("to_ts", pa.timestamp("us"))])))
     if drop:
         con.register("dropped", pa.table({"row": drop}))
         con.execute("DELETE FROM positions WHERE rowid IN (SELECT row FROM dropped)")
@@ -256,13 +262,15 @@ def prior_positions(catalog, day):
     return retry(lambda: tbl.scan(row_filter=f"day = '{prev}'", selected_fields=("id", "ts")).to_arrow())
 
 
-def replace_day(con, catalog, day, name):
+def replace_day(con, catalog, day, name, properties=None):
     def go():
         tbl = catalog.load_table(f"ais.{name}")
         data = con.execute(f"SELECT * FROM {name}").to_arrow_table().cast(tbl.schema().as_arrow())
         with tbl.transaction() as tx:
             tx.delete(f"day = '{day}'")  # rerunning a day replaces it
             tx.append(data)
+            if properties:
+                tx.set_properties(properties)
 
     retry(go)
 
@@ -322,23 +330,30 @@ def normalized_bucket():
     ), os.environ["NORMALIZED_BUCKET"]
 
 
-def fetch_day(day, dest):
-    """Copy a day's normalized hours out of the bucket into dest.
+def list_day(day):
+    """A day's normalized hours in the bucket, as (fs, bucket, file infos).
 
     The layout is flat (normalized/v1/YYYY/MM/DD/HH.gz), so this lists one day prefix rather than walking
-    the bucket: listing cost stays flat as the archive grows. Copying before reading keeps a
-    mid-transfer reset a retryable per-file failure instead of a short day, and each file's size is
-    checked against the object it came from.
+    the bucket: listing cost stays flat as the archive grows.
     """
     import pyarrow.fs as pafs
-    from concurrent.futures import ThreadPoolExecutor
 
     fs, bucket = normalized_bucket()
-    local = pafs.LocalFileSystem()
     d = datetime.fromisoformat(day)
     want = day_key(day)
     sel = pafs.FileSelector(f"{bucket}/{PREFIX}/{d:%Y/%m/%d}", allow_not_found=True)
-    infos = [i for i in retry(lambda: fs.get_file_info(sel)) if want.search(i.path)]
+    return fs, bucket, [i for i in retry(lambda: fs.get_file_info(sel)) if want.search(i.path)]
+
+
+def fetch_day(day, dest, listing):
+    """Copy a listed day's hours into dest. Copying before reading keeps a mid-transfer reset a
+    retryable per-file failure instead of a short day, and each file's size is checked against the
+    object it came from."""
+    import pyarrow.fs as pafs
+    from concurrent.futures import ThreadPoolExecutor
+
+    fs, bucket, infos = listing
+    local = pafs.LocalFileSystem()
 
     def fetch(info):
         path = Path(dest) / info.path[len(bucket) + 1 :]
@@ -352,6 +367,14 @@ def fetch_day(day, dest):
     return sorted(out)
 
 
+def fingerprint(day, sized):
+    """The day's inputs as hour:size pairs. Packaging records it, and a later run repackages the day
+    when it differs: an hour whose upload was delayed, or one re-uploaded longer, lands in the tables
+    instead of being skipped because the day was already there."""
+    pat = re.compile(hour_pattern(datetime.fromisoformat(day)))
+    return ",".join(sorted(f"{m.group(1)}:{size}" for path, size in sized if (m := pat.search(path))))
+
+
 def _fetch(fs, local, info, path):
     # compression=None on both sides: these are .gz keys and the default "detect" would decompress
     # on read and recompress on write, transcoding the archive byte-for-byte.
@@ -362,12 +385,6 @@ def _fetch(fs, local, info, path):
     if got != info.size:
         path.unlink(missing_ok=True)  # a partial copy must not look like a complete hour
         raise OSError(f"{info.path}: copied {got} of {info.size} bytes")
-
-
-def derived_days(catalog):
-    """Day partitions already present in ais.positions, from table metadata only."""
-    tbl = retry(lambda: catalog.load_table("ais.positions"))
-    return {str(r["partition"]["day"]) for r in retry(lambda: tbl.inspect.partitions()).to_pylist()}
 
 
 def get_catalog():
@@ -403,38 +420,45 @@ def main():
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     catalog = get_catalog()
-    if args.date:
-        days = [args.date]
-    else:
-        window = [(now - timedelta(days=n)).strftime("%Y-%m-%d") for n in range(7, 0, -1)]
-        done = derived_days(catalog)
-        days = [d for d in window if d not in done]
-        if not days:
-            print("nothing to package: the last 7 days are all present", file=sys.stderr)
-            return
+    days = [args.date] if args.date else [(now - timedelta(days=n)).strftime("%Y-%m-%d") for n in range(7, 0, -1)]
+    packaged = retry(lambda: catalog.load_table("ais.positions")).properties
 
     stage = HERE / "stage"
     stage.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(stage / "packager.duckdb"))
     con.execute(f"SET memory_limit='4GB'; SET temp_directory='{stage}/tmp'")
+    failed = []
     for day in days:
-        if day >= today:
-            sys.exit(f"{day} is not over yet")
         fetched = None
         try:
+            if day >= today:
+                sys.exit(f"{day} is not over yet")
             if args.normalized:
-                want = day_key(day)
-                files = sorted(f for f in all_files if want.search(f))
+                files = sorted(f for f in all_files if day_key(day).search(f))
+                fp = fingerprint(day, ((f, os.path.getsize(f)) for f in files))
             else:
-                fetched = HERE / "raw" / day
-                files = fetch_day(day, fetched)
-            n_hours = len(hours_present(day, files))
+                listing = list_day(day)
+                fp = fingerprint(day, ((i.path, i.size) for i in listing[2]))
+            if not args.date and packaged.get(f"packaged.{day}") == fp:
+                continue  # packaged from exactly these hours
+            if not fp:
+                print(f"{day}: no normalized hours; nothing to package", file=sys.stderr)
+                continue  # before the stream existed, or a day the server never ran
+            n_hours = len(fp.split(","))
             if n_hours < args.min_hours:
                 sys.exit(f"{day}: only {n_hours} distinct hours present, wanted {args.min_hours}; pass --min-hours to override")
-            process_day(day, files, con, catalog)
+            if not args.normalized:
+                fetched = HERE / "raw" / day
+                files = fetch_day(day, fetched, listing)
+            process_day(day, files, con, catalog, fp)
+        except (Exception, SystemExit) as e:  # one bad day must not hold back the rest of the week
+            print(f"{day}: {e}", file=sys.stderr)
+            failed.append(day)
         finally:
             if fetched:
                 shutil.rmtree(fetched, ignore_errors=True)  # re-fetchable; the bucket is the source of truth
+    if failed:
+        sys.exit(f"failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

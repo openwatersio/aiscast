@@ -75,7 +75,7 @@ type normSide struct {
 	events   map[string]map[string]int // id \t canonical time -> each compared payload, counted
 	eventN   map[string]int
 	sources  map[string]string         // id \t canonical time -> source that won the race (informational)
-	copies   map[string]int            // id \t canonical time \t source \t station \t license
+	copies   map[string]int            // id \t canonical time \t transmission \t source \t station \t license \t receive time
 	weather  map[string]map[string]int // mmsi \t msgtime -> each record, counted
 	weatherN map[string]int
 	files    int
@@ -160,7 +160,8 @@ func (s *normSide) add(e normEnvelope) error {
 		k := ev.ID + "\t" + ev.Time.UTC().Format(time.RFC3339Nano)
 		// Every field of the event is under comparison, and the flags ride along because withholding
 		// an event from the stream is a decision replay must reproduce. Source, station, license, and
-		// attribution are deliberately excluded: they name the first copy, and that is the race.
+		// attribution are deliberately excluded: they name the first copy, and that is the race. So is
+		// the envelope's receive time, which is the first copy's; every copy's own is compared below.
 		body, _ := json.Marshal(struct {
 			Msg         json.RawMessage `json:"m"`
 			NMEA        []string        `json:"n,omitempty"`
@@ -184,10 +185,10 @@ func (s *normSide) add(e normEnvelope) error {
 		if err := json.Unmarshal(e.R, &c); err != nil {
 			return fmt.Errorf("copy record: %w", err)
 		}
-		if c.ID == "" || c.Time == "" || c.Source == "" {
-			return errors.New("copy record without an id, time, and source")
+		if c.ID == "" || c.Time == "" || c.Tx == "" || c.Source == "" {
+			return errors.New("copy record without an id, time, transmission, and source")
 		}
-		s.copies[c.ID+"\t"+c.Time+"\t"+c.Source+"\t"+c.Station+"\t"+c.License]++
+		s.copies[strings.Join([]string{c.ID, c.Time, c.Tx, c.Source, c.Station, c.License, e.T}, "\t")]++
 	case "methyd":
 		var w struct {
 			MMSI    int    `json:"mmsi"`
@@ -200,7 +201,7 @@ func (s *normSide) add(e normEnvelope) error {
 			return errors.New("weather record without an mmsi and msgtime")
 		}
 		k := fmt.Sprintf("%d\t%s", w.MMSI, w.Msgtime)
-		count(s.weather, k, string(e.R))
+		count(s.weather, k, e.T+"\t"+string(e.R))
 		s.weatherN[k]++
 	default:
 		return fmt.Errorf("unknown record kind %q", e.K)

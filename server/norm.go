@@ -33,7 +33,8 @@ type normEnvelope struct {
 // canonical proximity says which transmission a late copy belongs to (receive time can lag minutes).
 type normCopy struct {
 	ID      string `json:"id"`
-	Time    string `json:"time"` // canonical, RFC3339Nano UTC
+	Time    string `json:"time"` // this copy's canonical time, RFC3339Nano UTC
+	Tx      string `json:"tx"`   // canonical time of the accepted transmission it is a copy of
 	Source  string `json:"source"`
 	Station string `json:"station"`
 	License string `json:"license"`
@@ -112,17 +113,17 @@ func (p *Pipeline) writeEvent(ev *Event, key string) {
 	// one queue item for the pair, so a shutdown drain can never split an event from its first copy
 	p.normWrite(ev.RecvTime,
 		normLine("event", ev.RecvTime, ev, renderV1(ev)),
-		normLine("copy", ev.RecvTime, nil, normCopy{ID: ev.ID, Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))
+		normLine("copy", ev.RecvTime, nil, normCopy{ID: ev.ID, Time: ev.Time.UTC().Format(time.RFC3339Nano), Tx: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))
 }
 
 // writeCopy records a deduplicated delivery. The id is the same content hash the accepted copy got,
 // so it is computable from the duplicate alone.
-func (p *Pipeline) writeCopy(ev *Event, key string) {
+func (p *Pipeline) writeCopy(ev *Event, key string, tx time.Time) {
 	if p.norm.dir == "" {
 		return
 	}
 	sum := sha256.Sum256([]byte(key))
-	p.normWrite(ev.RecvTime, normLine("copy", ev.RecvTime, nil, normCopy{ID: hex.EncodeToString(sum[:16]), Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))
+	p.normWrite(ev.RecvTime, normLine("copy", ev.RecvTime, nil, normCopy{ID: hex.EncodeToString(sum[:16]), Time: ev.Time.UTC().Format(time.RFC3339Nano), Tx: tx.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))
 }
 
 // writeMetHyd archives one BarentsWatch weather broadcast verbatim: decoded type-8 sea state, wind,
