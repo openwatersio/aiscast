@@ -368,3 +368,38 @@ func TestNormalizedStreamRecordsCorroboration(t *testing.T) {
 		}
 	}
 }
+
+// A multipart message's recorded sentences are exactly its own. Real traffic from one station: part 1
+// of sequence 7 never completed, then sequence 9 arrived whole. And another station sends parts in
+// reverse order, which still assembles with both sentences.
+func TestMultipartRecordsOnlyItsOwnSentences(t *testing.T) {
+	stale := "!AIVDM,2,1,7,A,55RGLH82G=qO<DuSB20d4d58TdV2222222222216?hP7B6LB0C3VUk1p,0*1A"
+	seq9 := []string{"!AIVDM,2,1,9,B,55RGLH82G=qO<DuSB20d4d58TdV2222222222216?hP7B6LB0C3VUk1p,0*17", "!AIVDM,2,2,9,B,888888888888880,2*2E"}
+	reversed := []string{"!AIVDM,2,2,0,B,000000000000000,2*27", "!AIVDM,2,1,0,B,53GQrVH2HFaLD4Hv221@4h5HE86222222222220l1P;4840Ht0000000,0*1E"}
+	for _, c := range []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{"stale fragment before a whole message", append([]string{stale}, seq9...), seq9},
+		{"fragments in reverse order", reversed, reversed},
+	} {
+		p, dir := normPipeline(t)
+		recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+		for i, l := range c.lines {
+			p.ingestLine(Reception{Source: "station:s", Station: "station:s", RecvTime: recv.Add(time.Duration(i) * time.Second), Body: l})
+		}
+		p.norm.shutdown()
+		var got [][]string
+		for _, e := range readNorm(t, dir) {
+			if e.K == "event" {
+				var ev struct{ NMEA []string }
+				json.Unmarshal(e.R, &ev)
+				got = append(got, ev.NMEA)
+			}
+		}
+		if len(got) != 1 || strings.Join(got[0], "|") != strings.Join(c.want, "|") {
+			t.Fatalf("%s: events recorded sentences %q, want one with %q", c.name, got, c.want)
+		}
+	}
+}

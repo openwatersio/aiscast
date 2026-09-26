@@ -66,8 +66,8 @@ type Pipeline struct {
 	mu      sync.Mutex         // ponytail: one lock around parse+dedupe; shard per station if it shows up in profiles
 	encoder *aisnmea.NMEACodec // for synthesized events; has its own sequence counter
 	codecs  map[string]*aisnmea.NMEACodec
-	pending map[string][]string // per-station fragment lines awaiting assembly
-	ownOf   map[string]string   // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
+	pending map[string][]fragment // per station, sequence id, and channel: fragment lines awaiting assembly
+	ownOf   map[string]string     // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
 	// intake is the shutdown barrier. Every reception is archived raw and processed under the read
 	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
 	// recorded (raw without its normalized events, or the reverse) and none can start.
@@ -108,7 +108,7 @@ func newPipeline(arch *archive) *Pipeline {
 		arch: arch, norm: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
-		pending: map[string][]string{},
+		pending: map[string][]fragment{},
 		ownOf:   map[string]string{},
 		seen:    map[string]time.Time{},
 		vessels: map[uint32]*vessel{},
@@ -171,6 +171,24 @@ func (p *Pipeline) closeArchives() {
 	p.norm.shutdown()
 }
 
+// fragment is one sentence of a multipart message awaiting the rest.
+type fragment struct {
+	n    int64
+	line string
+}
+
+// addFragment adds f to a message's collected sentences. The same fragment number arriving again
+// means the earlier sentences belong to a message that never completed and whose sequence id has
+// come around again, so they are dropped rather than recorded with this one.
+func addFragment(have []fragment, f fragment) []fragment {
+	for _, h := range have {
+		if h.n == f.n {
+			return []fragment{f}
+		}
+	}
+	return append(have, f)
+}
+
 // ingestLine parses one NMEA sentence (callers archive separately when the body isn't line-per-sentence).
 func (p *Pipeline) ingestLine(rx Reception) {
 	line := strings.TrimSpace(rx.Body)
@@ -203,14 +221,17 @@ func (p *Pipeline) ingestLine(rx Reception) {
 		p.codecs[station] = nc
 	}
 	var sentences []string
+	pk := fmt.Sprintf("%s\x00%d\x00%s", station, vdm.MessageID, vdm.Channel)
 	if vdm.NumFragments > 1 {
-		// ponytail: assumes one multipart sequence in flight per station; interleaved sequences mix their sentence lists
-		p.pending[station] = append(p.pending[station], line)
+		p.pending[pk] = addFragment(p.pending[pk], fragment{vdm.FragmentNumber, line})
 	}
 	pkt, err := nc.ParseVDMVDO(&vdm)
 	if pkt != nil {
 		if vdm.NumFragments > 1 {
-			sentences, p.pending[station] = p.pending[station], nil
+			for _, f := range p.pending[pk] {
+				sentences = append(sentences, f.line)
+			}
+			delete(p.pending, pk)
 		} else {
 			sentences = []string{line}
 		}
