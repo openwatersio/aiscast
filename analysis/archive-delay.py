@@ -51,15 +51,18 @@ def key(mmsi, lat, lon, sog):
 def nmea_lines(f):
     for line in f:
         recv, _, body = line.rstrip("\n").split("\t", 2)
-        up = None
-        if body.startswith("\\"):
-            tag, body = body[1:].split("\\", 1)
-            for kv in tag.split("*")[0].split(","):
-                if kv.startswith("c:"):
-                    up = int(kv[2:]) / (1000 if len(kv) > 12 else 1)
-        if body.startswith("!"):
-            d = decode(body)
-            yield ts(recv), up, d and key(*d)
+        yield from nmea_record(recv, body)
+
+def nmea_record(recv, body):
+    up = None
+    if body.startswith("\\"):
+        tag, body = body[1:].split("\\", 1)
+        for kv in tag.split("*")[0].split(","):
+            if kv.startswith("c:"):
+                up = int(kv[2:]) / (1000 if len(kv) > 12 else 1)
+    if body.startswith("!"):
+        d = decode(body)
+        yield ts(recv), up, d and key(*d)
 
 HEADER = re.compile(r"\d{4}-\d\d-\d\dT\S+\t")
 
@@ -79,12 +82,20 @@ def records(f):
 
 def aiscatcher(f):
     for recv, body in records(f):
-        if not body.startswith("{"):
-            continue
-        for m in json.loads(body).get("msgs", []):
-            up = m.get("rxuxtime") or datetime.strptime(m["rxtime"], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
-            d = decode(m["nmea"][0])
-            yield ts(recv), up, d and key(*d)
+        yield from envelope_record(recv, body)
+
+def envelope_record(recv, body):
+    if not body.startswith("{"):
+        return
+    for m in json.loads(body).get("msgs", []):
+        up = m.get("rxuxtime") or datetime.strptime(m["rxtime"], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+        d = decode(m["nmea"][0])
+        yield ts(recv), up, d and key(*d)
+
+def station(f):
+    """One authenticated station, any transport: AIS-catcher envelopes (HTTP) and NMEA lines (MQTT, WebSocket) share a file."""
+    for recv, body in records(f):
+        yield from (envelope_record if body.startswith("{") else nmea_record)(recv, body)
 
 def digitraffic(f):
     for recv, body in records(f):
@@ -134,7 +145,7 @@ def aishub(f):
 
 RELAYS = {"aishub", "aisstream"}  # aggregators; never the reference for "first heard"
 
-READERS = {"aishub": aishub, "aisstream": aisstream, "barentswatch": barentswatch, "digitraffic": digitraffic, "http": aiscatcher}
+READERS = {"aishub": aishub, "aisstream": aisstream, "barentswatch": barentswatch, "digitraffic": digitraffic, "http": aiscatcher, "station": station}
 
 def pct(xs, p):
     return xs[min(len(xs) - 1, int(p * len(xs)))]
