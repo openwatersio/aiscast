@@ -59,10 +59,12 @@ caddy validate --config /etc/caddy/Caddyfile
 systemctl reload-or-restart caddy || systemctl restart caddy
 
 # Alloy runs only once /etc/alloy.env names the Grafana Cloud endpoint; without one it would crash-loop.
-alloy validate /etc/alloy/config.alloy
 alloy=
 if grep -q '^GRAFANA_CLOUD_PROM_URL=.' /etc/alloy.env; then
 	alloy=1
+	# With the unit's environment, so the config is checked as Alloy will run it.
+	# shellcheck source=/dev/null
+	(set -a && . /etc/alloy.env && alloy validate /etc/alloy/config.alloy)
 	systemctl enable alloy
 	systemctl restart alloy
 else
