@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -230,5 +231,28 @@ func TestArchiveStopsOnAWriteItCannotMake(t *testing.T) {
 	case <-failed:
 	case <-time.After(5 * time.Second):
 		t.Fatal("an unwritable archive directory went unreported")
+	}
+}
+
+// The gzip footer and the close can be the first writes a failing disk refuses; they stop the
+// process like any other write instead of passing a short hour on to upload.
+func TestArchiveStopsOnACloseItCannotMake(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "12.gz")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	gz.Write([]byte("record\n"))
+	f.Close() // the footer has nowhere to go
+	var got error
+	orig := ioFatal
+	t.Cleanup(func() { ioFatal = orig })
+	ioFatal = func(err error) { got = errors.Join(got, err) }
+	a := &archive{}
+	a.hold(path)
+	a.close(&hourFile{path: path, f: f, gz: gz})
+	if got == nil {
+		t.Fatal("a failed gzip close went unreported")
 	}
 }

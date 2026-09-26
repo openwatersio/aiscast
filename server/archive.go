@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"errors"
 	"io/fs"
 	"log"
 	"os"
@@ -233,12 +234,10 @@ func (a *archive) open(source string, hour time.Time) *hourFile {
 }
 
 func (a *archive) close(hf *hourFile) {
+	// The gzip footer and the close can be the first to hit a full disk. The hour stays on disk,
+	// held by no one, and the next process's sweep uploads it.
 	gzErr, fErr := hf.gz.Close(), hf.f.Close()
-	if gzErr != nil || fErr != nil {
-		// The hour on disk may be short. Upload it anyway, since it is the only copy, but say so:
-		// silence here looks identical to a healthy rotation.
-		log.Printf("archive: close %s: gzip=%v file=%v", hf.path, gzErr, fErr)
-	}
+	ioFatal(errors.Join(gzErr, fErr))
 	if a.s3 == nil {
 		a.release(hf.path)
 		return

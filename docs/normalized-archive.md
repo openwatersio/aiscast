@@ -76,7 +76,7 @@ Multipart reassembly buffers do not survive a restart. A message whose fragments
 Raw and normalized must hold the same receptions, or replay cannot regenerate the stream. Several rules keep them in step:
 
 - Both writers block when their queue is full instead of dropping. The writer only touches local disk, and uploads run beside it, so a full queue means the disk has stalled. Ingest waits.
-- A write, open, or flush the disk refuses stops the process. The stream goes down, `/health` reports it, and systemd restarts the server once the disk recovers. The next sweep uploads files left open.
+- A write, open, flush, or close the disk refuses stops the process. The stream goes down, `/health` reports it, and systemd restarts the server once the disk recovers. The next sweep uploads files left open.
 - Shutdown turns away new receptions, waits for the ones in flight, and then drains both writers. No reception is recorded in one archive and not the other.
 - An event and its first copy are one queue item, so a drain never splits them.
 - A raw record from a sender's offline backlog carries ` buffered` after its station id. Station ids never contain a space. Live withholds a stale backlog from the stream, and replay reads the mark and withholds it the same way.
@@ -98,7 +98,7 @@ Replayed output is trustworthy for these reasons:
 - The normalized path takes every time from the reception, never the wall clock. The dedupe map prunes on an event-time high-water mark. A test replays one day at two wall times and requires identical output.
 - Replay runs with fan-out, the vessel snapshot, and stats disconnected.
 - A range starts with a warm-up lead-in, 30 minutes by default, that rebuilds dedupe, AISHub, trust, and multipart state and is not written.
-- Replay stops on anything it cannot read: an unreadable directory, a truncated hour, a line with no record header, a header with no station. History never comes out shorter than the archive.
+- Replay stops on anything it cannot read or place: an unreadable directory, a file outside the raw layout, a truncated hour, a line with no record header, a header with no station, a Digitraffic record with no topic. History never comes out shorter than the archive.
 - Replay refuses a non-empty output tree, because hour files open for append.
 
 Two differences between live and replay are expected. Live goroutines interleave near-simultaneous copies in an order replay cannot reproduce, so the two can disagree about which source's copy arrived first. Re-encoded multipart sentences carry a sequence id from a per-process counter. Neither is data.
@@ -120,7 +120,7 @@ The nightly [packager](../packager/README.md) turns closed days of the stream in
 
 A row belongs to the UTC day the server received it, not the day of its transmission. Satellite relays and aggregate snapshots arrive hours late, BarentsWatch up to about ten, so a day keyed on transmission time could never be complete when written. Keyed on arrival, a day is exactly its own hours of the stream. A copy that arrives just after midnight joins its transmission in the previous day's partition.
 
-Each day commits vessels, weather, and receptions, then positions last. Iceberg has no cross-table transaction, so the positions commit is the completion marker. It records a fingerprint of the day's input hours and their sizes. Each night the packager re-lists the past seven days and repackages any day whose inputs changed, so an upload that landed late is picked up. A day that fails is reported, and the rest of the week still runs.
+Each day commits vessels, weather, and receptions, then positions last. Iceberg has no cross-table transaction, so the positions commit is the completion marker. It records a fingerprint of the day's input hours with each one's size and modification time. Each night the packager re-lists the past seven days and repackages any day whose inputs changed, so an upload that landed late, or an hour a replay rewrote, is picked up. A day that fails is reported, and the rest of the week still runs.
 
 The packager fails a day rather than write a short one. An unknown envelope version fails, and so does a position without a reception, since every transmission has a first copy.
 

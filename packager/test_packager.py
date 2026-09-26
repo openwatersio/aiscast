@@ -5,6 +5,7 @@ import copy
 import glob
 import gzip
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -342,3 +343,9 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
     err = capsys.readouterr().err
     assert f"{d2}: 2 positions" in err and f"{d1}:" not in err, "only the changed day repackages"
     assert sum(1 for p in rows(packager.get_catalog(), "positions") if p["day"].isoformat() == d2) == 2
+
+    # a replay can overwrite an hour with different content of the same size
+    f1 = root / f"normalized/v1/{d1.replace('-', '/')}/01.gz"
+    os.utime(f1, (f1.stat().st_atime, f1.stat().st_mtime + 60))
+    run()
+    assert f"{d1}: 1 positions" in capsys.readouterr().err, "an overwritten hour repackages its day"

@@ -65,7 +65,9 @@ func runReplay(args []string) {
 			heap.Pop(h) // this source is past the range; its remaining files only get later
 			continue
 		}
-		dispatch(p, r.source, rx, st)
+		if err := dispatch(p, r.source, rx, st); err != nil {
+			log.Fatalf("replay: %v", err)
+		}
 		n++
 		if r.next() {
 			heap.Fix(h, 0)
@@ -87,15 +89,16 @@ func failOn(r *rawReader) {
 }
 
 // dispatch feeds one archived reception to the adapter that consumed it live.
-func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) {
+func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) error {
 	switch {
 	case source == "barentswatch":
 		p.barentswatchLine([]byte(rx.Body), rx.RecvTime)
 	case source == "digitraffic":
 		topic, body, ok := strings.Cut(rx.Body, " ")
-		if ok {
-			p.digitrafficMessage(topic, []byte(body), rx.RecvTime)
+		if !ok {
+			return fmt.Errorf("digitraffic record without a topic: %.60q", rx.Body)
 		}
+		p.digitrafficMessage(topic, []byte(body), rx.RecvTime)
 	case source == "aisstream":
 		p.aisstreamMessage([]byte(rx.Body), rx.RecvTime)
 	case source == "aishub":
@@ -107,6 +110,7 @@ func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) {
 	default:
 		p.ingestLine(rx)
 	}
+	return nil
 }
 
 // collectReaders builds one sequential reader per source over its hour files in [start, end).
@@ -130,13 +134,14 @@ func collectReaders(dir string, start, end time.Time) ([]*rawReader, error) {
 		if !strings.HasSuffix(path, ".gz") {
 			return nil
 		}
+		// A raw hour replay cannot place is history it would leave out, so an unexpected path fails.
 		parts := strings.Split(filepath.ToSlash(rel), "/")
 		if len(parts) < 6 { // license, source..., Y, M, D, HH.gz
-			return nil
+			return fmt.Errorf("%s: not a raw hour path (<license>/<source>/YYYY/MM/DD/HH.gz)", rel)
 		}
-		hour, err := time.ParseInLocation("2006/01/02/15", strings.Join(parts[len(parts)-4:], "/")[:13], time.UTC)
+		hour, err := time.ParseInLocation("2006/01/02/15.gz", strings.Join(parts[len(parts)-4:], "/"), time.UTC)
 		if err != nil {
-			return nil
+			return fmt.Errorf("%s: not a raw hour path: %w", rel, err)
 		}
 		if hour.Before(start.Truncate(time.Hour)) || !hour.Before(end) {
 			return nil

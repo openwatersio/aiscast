@@ -367,12 +367,13 @@ def fetch_day(day, dest, listing):
     return sorted(out)
 
 
-def fingerprint(day, sized):
-    """The day's inputs as hour:size pairs. Packaging records it, and a later run repackages the day
-    when it differs: an hour whose upload was delayed, or one re-uploaded longer, lands in the tables
-    instead of being skipped because the day was already there."""
+def fingerprint(day, stats):
+    """The day's inputs as hour:size:mtime triples. Packaging records it, and a later run repackages
+    the day when it differs: an hour whose upload was delayed, one re-uploaded longer, or one
+    overwritten by a replay at the same size lands in the tables instead of being skipped because
+    the day was already there. Every write of an object changes its modification time."""
     pat = re.compile(hour_pattern(datetime.fromisoformat(day)))
-    return ",".join(sorted(f"{m.group(1)}:{size}" for path, size in sized if (m := pat.search(path))))
+    return ",".join(sorted(f"{m.group(1)}:{size}:{mtime}" for path, size, mtime in stats if (m := pat.search(path))))
 
 
 def _fetch(fs, local, info, path):
@@ -435,10 +436,10 @@ def main():
                 sys.exit(f"{day} is not over yet")
             if args.normalized:
                 files = sorted(f for f in all_files if day_key(day).search(f))
-                fp = fingerprint(day, ((f, os.path.getsize(f)) for f in files))
+                fp = fingerprint(day, ((f, os.path.getsize(f), os.path.getmtime(f)) for f in files))
             else:
                 listing = list_day(day)
-                fp = fingerprint(day, ((i.path, i.size) for i in listing[2]))
+                fp = fingerprint(day, ((i.path, i.size, i.mtime.timestamp()) for i in listing[2]))
             if not args.date and packaged.get(f"packaged.{day}") == fp:
                 continue  # packaged from exactly these hours
             if not fp:

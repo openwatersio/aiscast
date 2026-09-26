@@ -121,3 +121,18 @@ func TestReplayWithholdsABufferedBacklog(t *testing.T) {
 		t.Fatalf("replay emitted what live withheld:\n%s", rep.render(3))
 	}
 }
+
+// A raw hour replay cannot place, or a record it cannot route, is history it would leave out.
+func TestReplayRefusesWhatItCannotPlace(t *testing.T) {
+	dir := t.TempDir()
+	stray := filepath.Join(dir, "NLOD-2.0", "kystverket", "2026", "09", "01", "twelve.gz")
+	os.MkdirAll(filepath.Dir(stray), 0o755)
+	os.WriteFile(stray, nil, 0o644)
+	if _, err := collectReaders(dir, time.Time{}, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)); err == nil {
+		t.Fatal("a raw hour with an unparseable path was skipped")
+	}
+	p := testPipeline(t)
+	if err := dispatch(p, "digitraffic", Reception{Source: "digitraffic", Body: "no-topic-separator"}, nil); err == nil {
+		t.Fatal("a digitraffic record without a topic was skipped")
+	}
+}
