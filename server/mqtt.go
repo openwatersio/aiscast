@@ -264,7 +264,12 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 		}
 	}
 	src := stationSource(cl.Sub)
-	inflight := map[uint16]struct{}{} // QoS 2 packet ids delivered but not yet released: a retransmit is acknowledged, not ingested again
+	// QoS 2 the way MQTT 3.1.1 §4.3.3 calls Method B: the packet id is stored and the message ingested on the
+	// first PUBLISH, so a retransmit before PUBREL is acknowledged again but not ingested again. Storing the
+	// payload until PUBREL instead (Method A) would delay every realtime message by a round trip and hold
+	// up to 65,536 packets per session. Sessions are clean, so nothing survives a reconnect on either side;
+	// a retransmit across one is a repeat like any other, and the pipeline's dedupe window catches it.
+	inflight := map[uint16]struct{}{}
 	for {
 		readDeadline()
 		pk, err := readMQTTPacket(br)
