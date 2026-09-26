@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"container/heap"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -44,6 +45,8 @@ func runReplay(args []string) {
 	for _, r := range readers {
 		if r.next() {
 			heap.Push(h, r)
+		} else {
+			failOn(r)
 		}
 	}
 	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
@@ -60,12 +63,20 @@ func runReplay(args []string) {
 		if r.next() {
 			heap.Fix(h, 0)
 		} else {
+			failOn(r)
 			heap.Pop(h)
 		}
 	}
 	p.norm.shutdown()
 	log.Printf("replay: %d receptions -> %d events, %d dups, %d parse errors",
 		n, p.stats.events.Load()+p.stats.implausible.Load()+p.stats.stale.Load(), p.stats.dup.Load(), p.stats.parseErr.Load())
+}
+
+// failOn stops replay on a reader that ended on corrupt input: history must not come out shorter than the archive.
+func failOn(r *rawReader) {
+	if r.err != nil {
+		log.Fatalf("replay: %v", r.err)
+	}
 }
 
 // dispatch feeds one archived reception to the adapter that consumed it live. Receptions a live
@@ -140,74 +151,67 @@ func collectReaders(dir string, start, end time.Time) []*rawReader {
 // across files is monotonic by construction, since a record's file key is derived from its own
 // receive time; within a file, per-source FIFO holds except for millisecond races between
 // concurrent producers (parallel HTTP posts), the same interleave live processing tolerated.
-// Digitraffic bodies are pretty-printed JSON spanning lines; continuation lines have no tab
-// columns and a record closes on a line opening with '}'.
+//
+// A record is a header line (recv time, tab, station, tab, body) plus every continuation line after
+// it: the raw writer keeps a body's own newlines, so a pretty-printed JSON body from any source
+// spans lines, and the record ends at the next header or the end of its file. A continuation line
+// with no header before it is corrupt framing and fails the run rather than being skipped.
 type rawReader struct {
 	source string
 	paths  []string
 	floor  time.Time // records before this never reach the heap; files start at the truncated hour
+	file   string
 	f      *os.File
 	gz     *gzip.Reader
 	sc     *bufio.Scanner
 	pend   *Reception
 	cur    Reception
+	err    error // set when next returns false because the input is corrupt, not exhausted
 }
 
 func (r *rawReader) next() bool {
 	for {
 		if r.sc == nil && !r.open() {
-			if r.pend != nil {
-				r.cur, r.pend = *r.pend, nil
-				return true
-			}
 			return false
 		}
 		for r.sc.Scan() {
 			line := r.sc.Text()
 			recv, rest, ok := cutRecord(line)
 			if !ok {
-				if r.pend != nil {
-					r.pend.Body += "\n" + line
-					if strings.HasPrefix(line, "}") {
-						r.cur, r.pend = *r.pend, nil
-						return true
-					}
+				if r.pend == nil {
+					r.err = fmt.Errorf("%s: a line with no record before it: %.60q", r.file, line)
+					return false
 				}
+				r.pend.Body += "\n" + line
 				continue
 			}
 			station, body, _ := strings.Cut(rest, "\t")
-			rx := Reception{Source: r.source, Station: station, RecvTime: recv, Body: body}
-			if r.pend != nil { // a new record closes a dangling multi-line body
-				r.cur, r.pend = *r.pend, nil
-				if r.startPend(rx) {
-					return true
-				}
-				r.pend = &rx
+			done := r.pend
+			r.pend = &Reception{Source: r.source, Station: station, RecvTime: recv, Body: body}
+			if done != nil && r.emit(done) {
 				return true
 			}
-			if rx.RecvTime.Before(r.floor) {
-				continue
-			}
-			if r.startPend(rx) {
-				continue
-			}
-			r.cur = rx
-			return true
 		}
 		if err := r.sc.Err(); err != nil {
-			log.Fatalf("replay: %s: %v (a truncated raw hour must fail the run, not shorten history)", r.source, err)
+			r.err = fmt.Errorf("%s: %w (a truncated raw hour must fail the run, not shorten history)", r.file, err)
+			return false
 		}
 		r.closeFile()
+		done := r.pend // a record never spans files
+		r.pend = nil
+		if done != nil && r.emit(done) {
+			return true
+		}
 	}
 }
 
-// startPend reports whether rx opens a multi-line digitraffic body and must wait for its close.
-func (r *rawReader) startPend(rx Reception) bool {
-	if r.source == "digitraffic" && strings.Contains(rx.Body, " {") && !strings.HasSuffix(strings.TrimSpace(rx.Body), "}") {
-		r.pend = &rx
-		return true
+// emit makes rx the current record unless it falls before the warm-up floor.
+func (r *rawReader) emit(rx *Reception) bool {
+	if rx.RecvTime.Before(r.floor) {
+		return false
 	}
-	return false
+	r.cur = *rx
+	return true
 }
 
 func (r *rawReader) open() bool {
@@ -225,7 +229,7 @@ func (r *rawReader) open() bool {
 		log.Fatalf("replay: %s: %v (a corrupt raw hour must fail the run, not vanish from it)", path, err)
 	}
 	gz.Multistream(true)
-	r.f, r.gz, r.sc = f, gz, bufio.NewScanner(gz)
+	r.file, r.f, r.gz, r.sc = path, f, gz, bufio.NewScanner(gz)
 	r.sc.Buffer(make([]byte, 1<<20), 256<<20) // an aishub snapshot is one very long line
 	return true
 }
