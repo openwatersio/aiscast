@@ -216,9 +216,10 @@ func (p *Pipeline) mqttConnect(body []byte, ip string, reqClaims *Claims, reqErr
 }
 
 // serveMQTT runs the MQTT session on an accepted /v1/stream socket whose subprotocol is mqtt. The caller has
-// started the ping loop; the connect limit (unless the caller applied it to a request token) and the
-// stream slots are taken here, once CONNECT says whose they are.
-func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Request, reqClaims *Claims, reqErr error, connectChecked bool) {
+// started the ping loop; the connect limit and the stream slots are taken here, once CONNECT says whose
+// they are. A request token was charged before the upgrade, so it is charged again only if CONNECT names
+// a different one.
+func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Request, reqClaims *Claims, reqErr error) {
 	ip := clientIP(r)
 	nc := websocket.NetConn(ctx, c, websocket.MessageBinary)
 	c.SetReadLimit(maxMQTTPacket + 16) // after NetConn, which lifts the limit; a frame is at most one packet's worth
@@ -238,7 +239,7 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 	if err != nil {
 		return
 	}
-	if code == mqttAccepted && !connectChecked && !wsConnectLimit.allow(cl.Sub) {
+	if code == mqttAccepted && cl != reqClaims && !wsConnectLimit.allow(cl.Sub) {
 		p.stats.rateLimited.Add(1)
 		code = mqttUnavailable
 	}

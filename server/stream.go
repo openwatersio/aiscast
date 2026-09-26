@@ -378,7 +378,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	go p.pingLoop(ctx, c, cancel)
 	if c.Subprotocol() == "mqtt" {
-		p.serveMQTT(ctx, c, r, cl, claimsErr, connectChecked)
+		p.serveMQTT(ctx, c, r, cl, claimsErr)
 		return
 	}
 
