@@ -203,7 +203,7 @@ groups:
         expr: changes(process_start_time_seconds{job="aiscast"}[1h]) > 1
         labels: {severity: warning}
         annotations:
-          summary: aiscast started {{ $value }} times in the last hour
+          summary: aiscast restarted {{ $value }} times in the last hour
           description: A crash loop. Check journalctl -u aiscast.
 
       # Every rule above reads nothing when the samples stop, so their silence needs its own alert.
