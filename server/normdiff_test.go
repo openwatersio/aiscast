@@ -11,8 +11,22 @@ import (
 // normTree writes a normalized tree from raw lines, as the writer would have.
 func normTree(t *testing.T, lines []string) string {
 	t.Helper()
+	return normHours(t, map[string][]string{"12": lines})
+}
+
+// normHours writes one hour file per entry of hours (HH -> lines) for 2026-09-01.
+func normHours(t *testing.T, hours map[string][]string) string {
+	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, normPrefix, "v1", "2026", "09", "01", "12.gz")
+	for hh, lines := range hours {
+		writeNormHour(t, dir, hh, lines)
+	}
+	return dir
+}
+
+func writeNormHour(t *testing.T, dir, hh string, lines []string) {
+	t.Helper()
+	path := filepath.Join(dir, normPrefix, "v1", "2026", "09", "01", hh+".gz")
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	f, err := os.Create(path)
 	if err != nil {
@@ -24,7 +38,6 @@ func normTree(t *testing.T, lines []string) string {
 	}
 	gz.Close()
 	f.Close()
-	return dir
 }
 
 // liveAndReplay produces two normalized trees from the same fixture raw day: one by replay, and
@@ -81,14 +94,14 @@ func TestNormDiffCatchesEachDivergence(t *testing.T) {
 		break_ func(s *normSide)
 		want   string
 	}{
-		{"missing transmission", func(s *normSide) { delete(s.eventN, someEvent) }, "transmissions only live"},
-		{"changed decode", func(s *normSide) { s.events[someEvent] = map[string]int{`{"m":"tampered"}`: 1} }, "transmissions decoded differently"},
+		{"missing transmission", func(s *normSide) { delete(s.events, someEvent) }, "transmissions only live"},
+		{"changed decode", func(s *normSide) { s.events[someEvent] = digest([]byte("tampered")) }, "transmissions decoded differently"},
 		{"missing copy", func(s *normSide) { delete(s.copies, someCopy) }, "copies only live"},
-		{"extra copy", func(s *normSide) { s.copies["ffff\t2026-09-01T12:00:00Z\tghost\tghost"] = 1 }, "copies only replay"},
-		{"missing weather", func(s *normSide) { delete(s.weatherN, someWeather) }, "weather only live"},
-		{"transmission recorded twice", func(s *normSide) { s.eventN[someEvent]++ }, "transmissions only replay"},
+		{"extra copy", func(s *normSide) { s.copies[digest([]byte("ghost"))] = 1 }, "copies only replay"},
+		{"missing weather", func(s *normSide) { delete(s.weather, someWeather) }, "weather only live"},
+		{"transmission recorded twice", func(s *normSide) { s.events[someEvent] = mergeDigests(s.events[someEvent], s.events[someEvent]) }, "transmissions only replay"},
 		{"copy recorded twice", func(s *normSide) { s.copies[someCopy]++ }, "copies only replay"},
-		{"changed weather", func(s *normSide) { s.weather[someWeather] = map[string]int{`{"tampered":true}`: 1} }, "weather differing"},
+		{"changed weather", func(s *normSide) { s.weather[someWeather] = digest([]byte("tampered")) }, "weather differing"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -194,5 +207,50 @@ func TestNormDiffSeesEveryRecordAndField(t *testing.T) {
 				t.Fatalf("%s went unreported:\n%s", c.name, rep.render(3))
 			}
 		})
+	}
+}
+
+// normdiff compares hour by hour so a production day fits in memory. That must not change the verdict:
+// real trees still match, an event whose first copies raced across an hour boundary still matches,
+// and an event one side lacks is still reported.
+func TestNormDiffHourByHour(t *testing.T) {
+	live, replay := liveAndReplay(t)
+	if rep, err := diffTrees(live, replay); err != nil || !rep.clean() || rep.live.eventCount() == 0 {
+		t.Fatalf("diffTrees on matching trees: err %v\n%s", err, rep.render(3))
+	}
+
+	ev := func(id, recv string) string {
+		return `{"k":"event","v":1,"t":"` + recv + `","r":{"id":"` + id + `","time":"2026-09-01T12:59:59Z","source":"s","mmsi":1,"msg_type":"X","message":{"a":1}}}`
+	}
+	raced := [2]string{
+		normHours(t, map[string][]string{"12": {ev("a", "2026-09-01T12:59:59.999Z")}, "13": {ev("b", "2026-09-01T13:00:01Z")}}),
+		normHours(t, map[string][]string{"13": {ev("a", "2026-09-01T13:00:00.001Z"), ev("b", "2026-09-01T13:00:01Z")}}),
+	}
+	for _, pair := range [][2]string{raced, {raced[1], raced[0]}} {
+		if rep, err := diffTrees(pair[0], pair[1]); err != nil || !rep.clean() {
+			t.Fatalf("an event split across an hour boundary by a race was reported: err %v\n%s", err, rep.render(3))
+		}
+	}
+
+	missing := normHours(t, map[string][]string{"12": {ev("a", "2026-09-01T12:59:59.999Z")}, "14": {ev("c", "2026-09-01T14:00:00Z")}})
+	rep, err := diffTrees(missing, raced[1])
+	if err != nil || rep.clean() || len(rep.eventsOnlyLive) != 1 || len(rep.eventsOnlyReplay) != 1 {
+		t.Fatalf("want c only live and b only replay: err %v\n%s", err, rep.render(3))
+	}
+	// b was carried out of its hour before it counted; both still print by name, not digest
+	out := rep.render(3)
+	for _, want := range []string{"c  2026-09-01T12:59:59Z", "b  2026-09-01T12:59:59Z"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("report does not name %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestResequencedCountsOnlySequenceIDs(t *testing.T) {
+	if hasSeqID([]string{"!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) {
+		t.Fatal("a single-part sentence with no sequence id counted as resequenced")
+	}
+	if !hasSeqID([]string{"!AIVDM,2,1,7,A,54`V0cP2CNtt,0*70", "!AIVDM,2,2,7,A,DjCP0000000,2*1E"}) {
+		t.Fatal("a multipart sentence with a sequence id was not counted")
 	}
 }

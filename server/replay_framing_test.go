@@ -27,7 +27,7 @@ func TestReplayReassemblesMultiLineBodiesFromAnySource(t *testing.T) {
 	out := t.TempDir()
 	runReplay([]string{"-archive", rawDir, "-out", out, "-from", "2026-09-01", "-to", "2026-09-02"})
 	rep := diffNorm(loadNorm(normDir), loadNorm(out))
-	if n := total(rep.live.eventN); n != 1 {
+	if n := rep.live.eventCount(); n != 1 {
 		t.Fatalf("live produced %d transmissions, want 1", n)
 	}
 	if !rep.clean() {
@@ -111,7 +111,7 @@ func TestReplayWithholdsABufferedBacklog(t *testing.T) {
 	out := t.TempDir()
 	runReplay([]string{"-archive", rawDir, "-out", out, "-from", "2026-09-01", "-to", "2026-09-02"})
 	rep := diffNorm(loadNorm(normDir), loadNorm(out))
-	if n := total(rep.live.eventN); n != 0 {
+	if n := rep.live.eventCount(); n != 0 {
 		t.Fatalf("live emitted %d transmissions from a stale backlog, want 0", n)
 	}
 	if p.stats.replayed.Load() != 1 {
