@@ -1,8 +1,14 @@
 # Reloads and shutdown must not wait on in-flight requests, including open /v1/stream SSE
 # responses: close them after 10s and let clients reconnect. WebSockets are hijacked and not
 # covered by this; stream_close_delay below handles them.
+# `servers { metrics }` adds per-request series to the admin endpoint's /metrics on localhost:2019,
+# which Alloy scrapes. Caddy 2.9 and later log it as deprecated in favor of a top-level `metrics`
+# option, but that option fails validation before 2.9, and this form works on every Caddy 2 release.
 {
 	grace_period 10s
+	servers {
+		metrics
+	}
 }
 
 # TLS for the hub. Let's Encrypt HTTP-01 works through the Cloudflare proxy; ACME retries until DNS points here.

@@ -72,6 +72,9 @@ type archive struct {
 	drops   atomic.Int64
 	uploads sync.WaitGroup
 
+	uploadFailures atomic.Int64
+	staged         atomic.Int64 // bytes on disk after the last sweep; grows when uploads fail
+
 	// held is every path run() still owns, including one being uploaded. The sweep skips these: a
 	// quiet source keeps its hour open indefinitely, and deleting it out from under the writer would
 	// strand the gzip footer. Zero value is usable, so tests can build an archive as a literal.
@@ -188,6 +191,7 @@ func (a *archive) close(hf *hourFile) {
 		defer a.uploads.Done()
 		defer a.held.Delete(hf.path) // stay held until the upload is done, so no sweep deletes it mid-put
 		if err := a.s3.put(filepath.ToSlash(rel), hf.path); err != nil {
+			a.uploadFailures.Add(1)
 			log.Printf("archive: upload %s: %v", rel, err) // the next sweep retries it
 			return
 		}
@@ -212,16 +216,17 @@ func (a *archive) sweep() {
 		return
 	}
 	cutoff := time.Now().Add(-archiveGrace)
-	var freed, kept int64
+	var freed, kept, total int64
 	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
 			return nil
 		}
-		if _, open := a.held.Load(path); open {
+		fi, err := d.Info()
+		if err != nil {
 			return nil
 		}
-		fi, err := d.Info()
-		if err != nil || fi.ModTime().After(cutoff) {
+		total += fi.Size()
+		if _, open := a.held.Load(path); open || fi.ModTime().After(cutoff) {
 			return nil
 		}
 		rel, err := filepath.Rel(a.dir, path)
@@ -242,6 +247,7 @@ func (a *archive) sweep() {
 			return nil
 		case stored < fi.Size():
 			if err := a.s3.put(key, path); err != nil {
+				a.uploadFailures.Add(1)
 				log.Printf("archive: sweep upload %s: %v", key, err)
 				kept += fi.Size()
 				return nil
@@ -262,6 +268,7 @@ func (a *archive) sweep() {
 		freed += fi.Size()
 		return nil
 	})
+	a.staged.Store(total - freed)
 	log.Printf("archive: sweep freed %d MiB, kept %d MiB not yet reclaimed", freed>>20, kept>>20)
 }
 

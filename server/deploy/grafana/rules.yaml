@@ -1,0 +1,215 @@
+# Alert rules for the aiscast box, in Prometheus rule format. push.sh imports them into Grafana Cloud as
+# Grafana-managed rules in the "aiscast" folder, routed to the aiscast email contact point. The folder
+# comes from `namespace`, which mimirtool reads and promtool does not, so check with:
+#   grep -v '^namespace:' rules.yaml | promtool check rules
+# Outside-in availability is Upptime's /health check, not a rule here.
+namespace: aiscast
+groups:
+  - name: aiscast
+    interval: 1m
+    rules:
+      # Capacity. Plan on 4 vCPU of sustained use on the shared 8 vCPU box.
+      - alert: AiscastCPUHigh
+        expr: sum(rate(process_cpu_seconds_total{job="aiscast"}[30m])) > 2
+        labels: {severity: warning}
+        annotations:
+          summary: aiscast is using {{ $value | printf "%.1f" }} vCPU over 30 minutes
+          description: Capacity is getting tight. Start planning a bigger box.
+      - alert: AiscastCPUCritical
+        expr: sum(rate(process_cpu_seconds_total{job="aiscast"}[30m])) > 4
+        labels: {severity: critical}
+        annotations:
+          summary: aiscast is using {{ $value | printf "%.1f" }} vCPU over 30 minutes
+          description: The box is at its sustained CPU line. Resize this week or shed load.
+
+      # A deploy that regresses fan-out cost shows up as more CPU per open stream than the same hour yesterday.
+      - alert: AiscastCPUPerStreamRegressed
+        expr: |
+          (sum(rate(process_cpu_seconds_total{job="aiscast"}[1h])) / avg_over_time(sum(aiscast_streams{protocol!="mqtt"})[1h:5m]))
+          > 1.5 * (sum(rate(process_cpu_seconds_total{job="aiscast"}[1h] offset 1d)) / avg_over_time(sum(aiscast_streams{protocol!="mqtt"})[1h:5m] offset 1d))
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: CPU per stream is more than 50% above the same hour yesterday
+          description: A deploy may have regressed fan-out cost. Compare with the last deploy time and revert.
+
+      - alert: HostCPUStealHigh
+        expr: avg(rate(node_cpu_seconds_total{mode="steal"}[1h])) > 0.05
+        labels: {severity: warning}
+        annotations:
+          summary: CPU steal is {{ $value | humanizePercentage }} over the last hour
+          description: The shared host is contended. Consider a dedicated server type.
+      - alert: HostCPUStealCritical
+        expr: avg(rate(node_cpu_seconds_total{mode="steal"}[1h])) > 0.15
+        labels: {severity: critical}
+        annotations:
+          summary: CPU steal is {{ $value | humanizePercentage }} over the last hour
+          description: The shared host is badly contended. Move to a dedicated server type.
+
+      - alert: AiscastMemoryHigh
+        expr: process_resident_memory_bytes{job="aiscast"} > 4e9
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: aiscast RSS is {{ $value | humanize1024 }}B
+          description: A leak or a connection flood. Check streams by tier.
+      - alert: AiscastMemoryCritical
+        expr: process_resident_memory_bytes{job="aiscast"} > 8e9
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: aiscast RSS is {{ $value | humanize1024 }}B
+          description: A leak or a connection flood. Check streams by tier.
+
+      # MQTT sockets only publish, so they carry no fan-out cost.
+      - alert: AiscastStreamsHigh
+        expr: sum(aiscast_streams{protocol!="mqtt"}) > 600
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value }} open streams'
+          description: Approaching the fan-out CPU ceiling for this box.
+      - alert: AiscastStreamsCritical
+        expr: sum(aiscast_streams{protocol!="mqtt"}) > 900
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: '{{ $value }} open streams'
+          description: At the fan-out CPU ceiling for this box.
+
+      - alert: VesselsLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(aiscast_http_request_duration_seconds_bucket{route="/v1/vessels"}[5m]))) > 0.1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: /v1/vessels p99 is {{ $value | humanizeDuration }}
+          description: Scan cost or read-lock contention with the vessel writer.
+      - alert: VesselsLatencyCritical
+        expr: histogram_quantile(0.99, sum by (le) (rate(aiscast_http_request_duration_seconds_bucket{route="/v1/vessels"}[5m]))) > 0.5
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: /v1/vessels p99 is {{ $value | humanizeDuration }}
+          description: Scan cost or read-lock contention with the vessel writer.
+
+      - alert: VesselsRequestRateHigh
+        expr: sum(rate(aiscast_http_requests_total{route="/v1/vessels"}[5m])) > 30
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: /v1/vessels is serving {{ $value | printf "%.0f" }} requests per second
+          description: Pollers. Identify the addresses in the Caddy log. A customer belongs on a stream; an abuser gets revoked.
+
+      - alert: RateLimitedHigh
+        expr: sum(rate(aiscast_ratelimited_total[5m])) > 5
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | printf "%.1f" }} rate-limited requests per second'
+          description: Someone is hammering the API. Identify the addresses in the Caddy log.
+
+      # /health and Upptime cover total silence; these catch the big sources going away.
+      - alert: EventRateLow
+        expr: sum(rate(aiscast_events_total[3m])) < 150
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | printf "%.0f" }} events per second'
+          description: A pipeline stall, or the big sources are gone. Check the source ages.
+      - alert: EventRateCritical
+        expr: sum(rate(aiscast_events_total[3m])) < 50
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: '{{ $value | printf "%.0f" }} events per second'
+          description: A pipeline stall, or the big sources are gone. Check the source ages.
+
+      - alert: UpstreamSilent
+        expr: aiscast_source_last_age_seconds{source=~"kystverket|digitraffic|barentswatch"} > 300
+        labels: {severity: warning}
+        annotations:
+          summary: No events from {{ $labels.source }} for {{ $value | humanizeDuration }}
+          description: Upstream outage. Check the reconnect lines in journalctl -u aiscast.
+      - alert: AISHubSilent
+        expr: aiscast_source_last_age_seconds{source="aishub"} > 600
+        labels: {severity: warning}
+        annotations:
+          summary: No events from AISHub for {{ $value | humanizeDuration }}
+          description: AISHub is down or the credentials expired.
+
+      - alert: VesselsCachedLow
+        expr: aiscast_vessels < 30000
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value }} vessels cached'
+          description: Upstream sources are missing. Check the source ages.
+
+      - alert: ClientDropsHigh
+        expr: sum(rate(aiscast_client_drops_total[5m])) > 1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | printf "%.1f" }} client queue drops per second'
+          description: Slow clients or fan-out saturation. The writers cannot keep up.
+
+      - alert: PingTimeoutsHigh
+        expr: sum(rate(aiscast_ping_timeouts_total[5m])) > 1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | printf "%.1f" }} ping timeouts per second'
+          description: Network trouble, or a client library that never answers pings.
+
+      # 20 TB a month is included; each TB over costs €1.
+      - alert: EgressHigh
+        expr: sum(rate(node_network_transmit_bytes_total{device!="lo"}[24h])) > 4e6
+        labels: {severity: warning}
+        annotations:
+          summary: Egress averaged {{ $value | humanize }}B/s over 24 hours
+          description: A 10 TB a month pace.
+      - alert: EgressCritical
+        expr: sum(rate(node_network_transmit_bytes_total{device!="lo"}[24h])) > 7e6
+        labels: {severity: critical}
+        annotations:
+          summary: Egress averaged {{ $value | humanize }}B/s over 24 hours
+          description: The pace of the 20 TB a month included traffic. Time to add relays.
+
+      - alert: ArchiveStagedHigh
+        expr: aiscast_archive_staged_bytes > 5e9
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | humanize1024 }}B of archive waiting on disk'
+          description: R2 uploads are failing. Check the credentials and the archive sweep lines in journalctl -u aiscast.
+
+      - alert: DiskFreeLow
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | humanizePercentage }} of the root disk is free'
+          description: An archive backlog, or the journal cap slipped.
+      - alert: DiskFreeCritical
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.1
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: '{{ $value | humanizePercentage }} of the root disk is free'
+          description: An archive backlog, or the journal cap slipped.
+
+      # A deploy restarts aiscast once, so a second start inside the hour is a crash.
+      - alert: AiscastRestarting
+        expr: changes(process_start_time_seconds{job="aiscast"}[1h]) > 1
+        labels: {severity: warning}
+        annotations:
+          summary: aiscast started {{ $value }} times in the last hour
+          description: A crash loop. Check journalctl -u aiscast.
+
+      # Every rule above reads nothing when the samples stop, so their silence needs its own alert.
+      - alert: MetricsMissing
+        expr: absent(up{job="aiscast"} == 1)
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: No aiscast metrics for 10 minutes
+          description: Alloy cannot scrape aiscast or cannot reach Grafana Cloud. Check systemctl status alloy aiscast on the box.

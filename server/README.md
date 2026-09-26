@@ -7,7 +7,7 @@ ALLOW_ANON=1 go run .          # Kystverket upstream on, HTTP :8080, UDP :10110,
 go test ./...
 ```
 
-[openwaters.io/api/ais](https://openwaters.io/api/ais/) documents the endpoints. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, stateless, five read-only tools over the vessel cache and station stats (`mcp.go`), the same claims and rate limit as `/v1/vessels`. `server.json` at the repo root is its registry listing; its version and `mcpVersion` move together. Operator-only: `GET /metrics` serves Prometheus text (events, duplicates, parse/decode failures, client and archive drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age).
+[openwaters.io/api/ais](https://openwaters.io/api/ais/) documents the endpoints. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, stateless, five read-only tools over the vessel cache and station stats (`mcp.go`), the same claims and rate limit as `/v1/vessels`. `server.json` at the repo root is its registry listing; its version and `mcpVersion` move together. Operator-only: `GET /metrics` serves Prometheus text (events, duplicates, parse/decode failures, client and archive drops, rate-limit rejections, vessels, open streams by protocol and tier, fan-out sends and bytes, HTTP requests by route and status with latency histograms for `/v1/vessels` and `/mcp`, per-source event counts, last-event age, and delay percentiles, archive upload failures and staged bytes, and the standard `process_` series). The alert rules and dashboard in [deploy/grafana/](deploy/grafana/) query these names.
 
 Environment:
 
@@ -28,6 +28,7 @@ Environment:
 - `WS_CONNECTS_PER_MIN` (`60` per IP).
 - `STATION_SALT`: keys the UDP station ids. Set it on a public host.
 - `TRUST_CF_HEADERS=1`: use it only when Cloudflare proxies the hostname. It makes rate limits key on `CF-Connecting-IP`.
+- `PPROF_ADDR` (`127.0.0.1:6060`): serves `net/http/pprof` on this address, never on `ADDR`. `off` turns it off.
 
 ## Access tokens
 

@@ -4,6 +4,7 @@ package main
 import (
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -84,6 +85,11 @@ func main() {
 		arch.shutdown()
 		os.Exit(0)
 	}()
+
+	// net/http/pprof registers on the default mux, which only this listener serves; the public mux never has it.
+	if a := env("PPROF_ADDR", "127.0.0.1:6060"); a != "off" {
+		go func() { log.Printf("pprof: %v", http.ListenAndServe(a, nil)) }()
+	}
 
 	addr := env("ADDR", ":8080")
 	log.Printf("listening on %s (udp %s)", addr, env("UDP_ADDR", ":10110"))
