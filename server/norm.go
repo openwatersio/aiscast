@@ -109,7 +109,7 @@ func (p *Pipeline) writeEvent(ev *Event, key string) {
 	if p.norm.dir == "" {
 		return
 	}
-	// one queue item for the pair: an overloaded queue drops an event with its first copy, never one half
+	// one queue item for the pair, so a shutdown drain can never split an event from its first copy
 	p.normWrite(ev.RecvTime,
 		normLine("event", ev.RecvTime, ev, renderV1(ev)),
 		normLine("copy", ev.RecvTime, nil, normCopy{ID: ev.ID, Time: ev.Time.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))

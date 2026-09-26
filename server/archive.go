@@ -77,15 +77,13 @@ type hourFile struct {
 // archive writes every reception source-native to hourly gzip files per source, then uploads to R2 when rotated.
 // The normalized stream reuses it with keyFn and bare set: one merged file per hour, envelope-only lines.
 type archive struct {
-	dir      string
-	s3       objectStore                                // nil = keep files local only
-	keyFn    func(source string, hour time.Time) string // nil = per-source license-prefixed layout
-	bare     bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
-	blocking bool                                       // replay: block on a full queue instead of dropping, so output is complete
-	ch       chan Reception
-	done     chan chan struct{} // shutdown request; replied to when files are closed and uploaded
-	drops    atomic.Int64
-	uploads  sync.WaitGroup
+	dir     string
+	s3      objectStore                                // nil = keep files local only
+	keyFn   func(source string, hour time.Time) string // nil = per-source license-prefixed layout
+	bare    bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
+	ch      chan Reception
+	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
+	uploads sync.WaitGroup
 
 	// held is every path run() still owns, including one being uploaded. The sweep skips these: a
 	// quiet source keeps its hour open indefinitely, and deleting it out from under the writer would
@@ -117,15 +115,10 @@ func (a *archive) write(rx Reception) {
 	if a.dir == "" {
 		return
 	}
-	if a.blocking {
-		a.ch <- rx
-		return
-	}
-	select {
-	case a.ch <- rx:
-	default: // drop rather than stall ingest
-		a.drops.Add(1)
-	}
+	// Block rather than drop: raw and normalized must hold the same receptions for replay to
+	// regenerate the stream, and the writer only touches local disk (uploads run beside it), so a
+	// full queue means the disk has stalled and ingest waits for it.
+	a.ch <- rx
 }
 
 func (a *archive) run() {
@@ -159,6 +152,10 @@ func (a *archive) run() {
 	}
 }
 
+// bufferedMark follows the station of a reception its sender marked as an offline backlog. Station
+// ids never contain a space, so the mark cannot collide with one.
+const bufferedMark = " buffered"
+
 func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 	hour := rx.RecvTime.UTC().Truncate(time.Hour)
 	stream := a.key(rx.Source, time.Time{}) // the key with the hour zeroed: one per source raw, one in total merged
@@ -178,7 +175,11 @@ func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 	if a.bare {
 		hf.gz.Write([]byte(strings.TrimRight(rx.Body, "\r\n") + "\n"))
 	} else {
-		hf.gz.Write([]byte(rx.RecvTime.UTC().Format(time.RFC3339Nano) + "\t" + rx.Station + "\t" + strings.TrimRight(rx.Body, "\r\n") + "\n"))
+		station := rx.Station
+		if rx.Buffered {
+			station += bufferedMark // replay needs it to suppress the same stale backlog live did
+		}
+		hf.gz.Write([]byte(rx.RecvTime.UTC().Format(time.RFC3339Nano) + "\t" + station + "\t" + strings.TrimRight(rx.Body, "\r\n") + "\n"))
 	}
 }
 

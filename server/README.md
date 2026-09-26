@@ -7,7 +7,7 @@ ALLOW_ANON=1 go run .          # Kystverket upstream on, HTTP :8080, UDP :10110,
 go test ./...
 ```
 
-[openwaters.io/api/ais](https://openwaters.io/api/ais/) documents the endpoints. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, stateless, five read-only tools over the vessel cache and station stats (`mcp.go`), the same claims and rate limit as `/v1/vessels`. `server.json` at the repo root is its registry listing; its version and `mcpVersion` move together. Operator-only: `GET /metrics` serves Prometheus text (events, duplicates, parse/decode failures, client and archive drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age).
+[openwaters.io/api/ais](https://openwaters.io/api/ais/) documents the endpoints. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, stateless, five read-only tools over the vessel cache and station stats (`mcp.go`), the same claims and rate limit as `/v1/vessels`. `server.json` at the repo root is its registry listing; its version and `mcpVersion` move together. Operator-only: `GET /metrics` serves Prometheus text (events, duplicates, parse/decode failures, client drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age).
 
 Environment:
 
@@ -62,4 +62,4 @@ Sources:
 
 Volunteer stations feed over `/v1/stream` as MQTT (a socket that negotiates the `mqtt` subprotocol gets a receive-only MQTT 3.1.1 session: the token is the CONNECT password or the request's, each PUBLISH payload is newline-separated NMEA on any topic, QoS 0 to 2 acknowledged, SUBSCRIBE refused), `/v1/receive` (AIS-catcher HTTP output), or `/v1/stream` publish frames. All three name the station by the token's `sub` alone, `station:<sub>`, so a feeder can switch transports without changing identity. UDP senders are `udp:<hash>`, or `mmsi:<n>` once their own `!AIVDO` names the vessel.
 
-Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received.
+Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received. A station followed by ` buffered` marks a sender's offline backlog, which live withheld from the stream when stale and replay withholds the same way.

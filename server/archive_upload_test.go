@@ -190,7 +190,6 @@ func hasLine(lines []string, want string) bool {
 func TestMergedStreamKeepsOneWriterPerHour(t *testing.T) {
 	dir := t.TempDir()
 	a := newNormArchive(dir, nil)
-	a.blocking = true
 	hour := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	const n = 20000
 	for i := 0; i < n; i++ {

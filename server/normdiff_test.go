@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // normTree writes a normalized tree from raw lines, as the writer would have.
@@ -39,9 +38,8 @@ func liveAndReplay(t *testing.T) (live, replay string) {
 	live = t.TempDir()
 	p := testPipeline(t)
 	p.norm = newNormArchive(live, nil)
-	p.norm.blocking = true
 	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
-	for _, r := range collectReaders(raw, time.Time{}, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)) {
+	for _, r := range allReaders(t, raw) {
 		for r.next() {
 			dispatch(p, r.source, r.cur, st)
 		}
@@ -84,13 +82,13 @@ func TestNormDiffCatchesEachDivergence(t *testing.T) {
 		want   string
 	}{
 		{"missing transmission", func(s *normSide) { delete(s.eventN, someEvent) }, "transmissions only live"},
-		{"changed decode", func(s *normSide) { s.events[someEvent] = `{"m":"tampered"}` }, "transmissions decoded differently"},
+		{"changed decode", func(s *normSide) { s.events[someEvent] = map[string]int{`{"m":"tampered"}`: 1} }, "transmissions decoded differently"},
 		{"missing copy", func(s *normSide) { delete(s.copies, someCopy) }, "copies only live"},
 		{"extra copy", func(s *normSide) { s.copies["ffff\t2026-09-01T12:00:00Z\tghost\tghost"] = 1 }, "copies only replay"},
 		{"missing weather", func(s *normSide) { delete(s.weatherN, someWeather) }, "weather only live"},
 		{"transmission recorded twice", func(s *normSide) { s.eventN[someEvent]++ }, "transmissions only replay"},
 		{"copy recorded twice", func(s *normSide) { s.copies[someCopy]++ }, "copies only replay"},
-		{"changed weather", func(s *normSide) { s.weather[someWeather] = `{"tampered":true}` }, "weather differing"},
+		{"changed weather", func(s *normSide) { s.weather[someWeather] = map[string]int{`{"tampered":true}`: 1} }, "weather differing"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -161,6 +159,34 @@ func TestNormDiffRefusesUnreadableRecords(t *testing.T) {
 			dir := normTree(t, []string{line})
 			if _, err := readNormTree(dir); err == nil || !strings.Contains(err.Error(), "record 1") {
 				t.Fatalf("want an error naming the record, got %v", err)
+			}
+		})
+	}
+}
+
+// Differences the per-key tamper cases above cannot reach: a repeated key whose earlier payload
+// differs, fields of the event beyond the decoded message, and the license on a copy.
+func TestNormDiffSeesEveryRecordAndField(t *testing.T) {
+	ev := func(extra string) string {
+		return `{"k":"event","v":1,"t":"2026-09-01T12:00:00Z","r":{"id":"a","time":"2026-09-01T12:00:00Z","source":"s","mmsi":1,"msg_type":"X","message":{"a":1}` + extra + `}}`
+	}
+	cp := func(license string) string {
+		return `{"k":"copy","v":1,"t":"2026-09-01T12:00:00Z","r":{"id":"a","time":"2026-09-01T12:00:00Z","source":"s","station":"s","license":"` + license + `"}}`
+	}
+	cases := []struct {
+		name         string
+		live, replay []string
+	}{
+		{"earlier repeat differs", []string{ev(`,"lat":1`), ev(`,"lat":2`)}, []string{ev(`,"lat":2`), ev(`,"lat":2`)}},
+		{"position differs", []string{ev(`,"lat":1,"lon":1`)}, []string{ev(`,"lat":1,"lon":3`)}},
+		{"synthesized differs", []string{ev(``)}, []string{ev(`,"synthesized":true`)}},
+		{"license differs", []string{cp("CC0-1.0")}, []string{cp("NLOD-2.0")}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rep := diffNorm(loadNorm(normTree(t, c.live)), loadNorm(normTree(t, c.replay)))
+			if rep.clean() {
+				t.Fatalf("%s went unreported:\n%s", c.name, rep.render(3))
 			}
 		})
 	}

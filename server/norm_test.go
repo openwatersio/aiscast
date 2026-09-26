@@ -67,7 +67,6 @@ func normPipeline(t *testing.T) (*Pipeline, string) {
 	dir := t.TempDir()
 	p := testPipeline(t)
 	p.norm = newNormArchive(dir, nil)
-	p.norm.blocking = true // a test must never lose a record to the queue
 	return p, dir
 }
 
@@ -305,7 +304,7 @@ func TestReplaySkipsTheNormalizedStream(t *testing.T) {
 	gz.Close()
 	f.Close()
 
-	for _, r := range collectReaders(raw, time.Time{}, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)) {
+	for _, r := range allReaders(t, raw) {
 		for _, path := range r.paths {
 			if strings.Contains(filepath.ToSlash(path), "/"+normPrefix+"/") {
 				t.Fatalf("replay would read the normalized stream as source %q: %s", r.source, path)

@@ -163,7 +163,7 @@ func (p *Pipeline) admit() bool {
 // closeArchives stops intake, then drains both archives. Setting closing turns away receptions not
 // yet started; the write lock waits out those in flight; only then do the writers drain, so raw and
 // normalized hold the same receptions and replay regenerates the stream across a restart. A
-// producer turned away blocks or drops; the process is exiting.
+// producer turned away is dropped; the process is exiting.
 func (p *Pipeline) closeArchives() {
 	p.closing.Store(true)
 	p.intake.Lock()

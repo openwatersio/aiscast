@@ -13,9 +13,7 @@ func TestShutdownKeepsArchivesConsistent(t *testing.T) {
 	rawDir, normDir := t.TempDir(), t.TempDir()
 	p := testPipeline(t)
 	p.arch = newArchive(rawDir, nil)
-	p.arch.blocking = true // no overload drops: the only way to diverge is the shutdown itself
 	p.norm = newNormArchive(normDir, nil)
-	p.norm.blocking = true
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 	go func() {

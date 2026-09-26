@@ -34,10 +34,12 @@ func runReplay(args []string) {
 
 	p := newPipeline(newArchive("", nil)) // no raw writes: the raw archive is the input here
 	p.norm = newNormArchive(*out, nil)
-	p.norm.blocking = true // completeness over liveness: replay must never drop a record
-	p.normGate = from      // the warm-up builds dedupe and per-source state, silently
+	p.normGate = from // the warm-up builds dedupe and per-source state, silently
 
-	readers := collectReaders(*archiveDir, from.Add(-*warmup), to)
+	readers, err := collectReaders(*archiveDir, from.Add(-*warmup), to)
+	if err != nil {
+		log.Fatalf("replay: %v", err)
+	}
 	if len(readers) == 0 {
 		log.Fatalf("replay: no raw files under %s for %s..%s", *archiveDir, *fromS, *toS)
 	}
@@ -79,9 +81,7 @@ func failOn(r *rawReader) {
 	}
 }
 
-// dispatch feeds one archived reception to the adapter that consumed it live. Receptions a live
-// feeder marked Buffered are not distinguishable in the archive, so a replayed backlog can emit
-// where live suppressed it; the diff harness tolerates that the way it tolerates first-copy races.
+// dispatch feeds one archived reception to the adapter that consumed it live.
 func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) {
 	switch {
 	case source == "barentswatch":
@@ -106,15 +106,15 @@ func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) {
 
 // collectReaders builds one sequential reader per source over its hour files in [start, end).
 // The path is the inverse of archive.key: <license>/<source with ':' as '/'>/YYYY/MM/DD/HH.gz.
-func collectReaders(dir string, start, end time.Time) []*rawReader {
+func collectReaders(dir string, start, end time.Time) ([]*rawReader, error) {
 	files := map[string][]string{} // source -> files, appended in walk order (lexical = chronological)
-	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err // a directory replay cannot read is history it would silently leave out
 		}
 		rel, err := filepath.Rel(dir, path)
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			if filepath.ToSlash(rel) == normPrefix {
@@ -140,11 +140,14 @@ func collectReaders(dir string, start, end time.Time) []*rawReader {
 		files[source] = append(files[source], path)
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 	var out []*rawReader
 	for source, paths := range files {
 		out = append(out, &rawReader{source: source, paths: paths, floor: start})
 	}
-	return out
+	return out, nil
 }
 
 // rawReader streams one source's hour files in order, yielding one Reception per record. Order
@@ -185,9 +188,14 @@ func (r *rawReader) next() bool {
 				r.pend.Body += "\n" + line
 				continue
 			}
-			station, body, _ := strings.Cut(rest, "\t")
+			station, body, ok := strings.Cut(rest, "\t")
+			if !ok {
+				r.err = fmt.Errorf("%s: a record with no station column: %.60q", r.file, line)
+				return false
+			}
+			station, buffered := strings.CutSuffix(station, bufferedMark)
 			done := r.pend
-			r.pend = &Reception{Source: r.source, Station: station, RecvTime: recv, Body: body}
+			r.pend = &Reception{Source: r.source, Station: station, RecvTime: recv, Body: body, Buffered: buffered}
 			if done != nil && r.emit(done) {
 				return true
 			}

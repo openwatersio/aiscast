@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -71,11 +72,11 @@ func rawNMEA(lines []string) string { return strings.Join(lines, "|") }
 // copies, and weather by station and time. Every map counts occurrences, so a record written twice on
 // one side and once on the other is a difference, not a collapse.
 type normSide struct {
-	events   map[string]string // id \t canonical time -> canonical JSON of the decoded message
+	events   map[string]map[string]int // id \t canonical time -> each compared payload, counted
 	eventN   map[string]int
-	sources  map[string]string // id \t canonical time -> source that won the race (informational)
-	copies   map[string]int    // id \t canonical time \t source \t station
-	weather  map[string]string // mmsi \t msgtime -> the record
+	sources  map[string]string         // id \t canonical time -> source that won the race (informational)
+	copies   map[string]int            // id \t canonical time \t source \t station \t license
+	weather  map[string]map[string]int // mmsi \t msgtime -> each record, counted
 	weatherN map[string]int
 	files    int
 	lines    int
@@ -94,8 +95,8 @@ func loadNorm(dir string) *normSide {
 }
 
 func readNormTree(dir string) (*normSide, error) {
-	s := &normSide{events: map[string]string{}, eventN: map[string]int{}, sources: map[string]string{},
-		copies: map[string]int{}, weather: map[string]string{}, weatherN: map[string]int{}}
+	s := &normSide{events: map[string]map[string]int{}, eventN: map[string]int{}, sources: map[string]string{},
+		copies: map[string]int{}, weather: map[string]map[string]int{}, weatherN: map[string]int{}}
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
 			return err
@@ -138,13 +139,17 @@ func (s *normSide) add(e normEnvelope) error {
 		// v1Event carries Message as an ais.Packet interface, which cannot be unmarshalled into;
 		// the comparison wants the decoded message as bytes anyway.
 		var ev struct {
-			ID      string          `json:"id"`
-			Time    time.Time       `json:"time"`
-			Source  string          `json:"source"`
-			MMSI    uint32          `json:"mmsi"`
-			MsgType string          `json:"msg_type"`
-			NMEA    []string        `json:"nmea"`
-			Message json.RawMessage `json:"message"`
+			ID          string          `json:"id"`
+			Time        time.Time       `json:"time"`
+			Source      string          `json:"source"`
+			Channel     string          `json:"channel"`
+			MMSI        uint32          `json:"mmsi"`
+			MsgType     string          `json:"msg_type"`
+			Lat         *float64        `json:"lat"`
+			Lon         *float64        `json:"lon"`
+			NMEA        []string        `json:"nmea"`
+			Message     json.RawMessage `json:"message"`
+			Synthesized bool            `json:"synthesized"`
 		}
 		if err := json.Unmarshal(e.R, &ev); err != nil {
 			return fmt.Errorf("event record: %w", err)
@@ -153,18 +158,22 @@ func (s *normSide) add(e normEnvelope) error {
 			return errors.New("event record without an id and time")
 		}
 		k := ev.ID + "\t" + ev.Time.UTC().Format(time.RFC3339Nano)
-		// The decoded message is the payload under comparison, with the sentences that produced it;
-		// flags ride along because withholding an event from the stream is a decision replay must
-		// reproduce. Source is deliberately excluded: that is the first-copy race.
+		// Every field of the event is under comparison, and the flags ride along because withholding
+		// an event from the stream is a decision replay must reproduce. Source, station, license, and
+		// attribution are deliberately excluded: they name the first copy, and that is the race.
 		body, _ := json.Marshal(struct {
 			Msg         json.RawMessage `json:"m"`
 			NMEA        []string        `json:"n,omitempty"`
 			Type        string          `json:"t"`
 			MMSI        uint32          `json:"mmsi"`
+			Channel     string          `json:"c"`
+			Lat         *float64        `json:"lat"`
+			Lon         *float64        `json:"lon"`
+			Synthesized bool            `json:"syn,omitempty"`
 			Implausible bool            `json:"i,omitempty"`
 			Stale       bool            `json:"s,omitempty"`
-		}{ev.Message, canonNMEA(ev.NMEA), ev.MsgType, ev.MMSI, e.Implausible, e.Stale})
-		s.events[k] = string(body)
+		}{ev.Message, canonNMEA(ev.NMEA), ev.MsgType, ev.MMSI, ev.Channel, ev.Lat, ev.Lon, ev.Synthesized, e.Implausible, e.Stale})
+		count(s.events, k, string(body))
 		s.eventN[k]++
 		s.sources[k] = ev.Source
 		if rawNMEA(ev.NMEA) != rawNMEA(canonNMEA(ev.NMEA)) {
@@ -178,7 +187,7 @@ func (s *normSide) add(e normEnvelope) error {
 		if c.ID == "" || c.Time == "" || c.Source == "" {
 			return errors.New("copy record without an id, time, and source")
 		}
-		s.copies[c.ID+"\t"+c.Time+"\t"+c.Source+"\t"+c.Station]++
+		s.copies[c.ID+"\t"+c.Time+"\t"+c.Source+"\t"+c.Station+"\t"+c.License]++
 	case "methyd":
 		var w struct {
 			MMSI    int    `json:"mmsi"`
@@ -191,12 +200,21 @@ func (s *normSide) add(e normEnvelope) error {
 			return errors.New("weather record without an mmsi and msgtime")
 		}
 		k := fmt.Sprintf("%d\t%s", w.MMSI, w.Msgtime)
-		s.weather[k] = string(e.R)
+		count(s.weather, k, string(e.R))
 		s.weatherN[k]++
 	default:
 		return fmt.Errorf("unknown record kind %q", e.K)
 	}
 	return nil
+}
+
+// count adds one occurrence of v under k. A key can legitimately repeat (a crash-window re-accept),
+// and each occurrence's payload must be compared, not only the last one written.
+func count(m map[string]map[string]int, k, v string) {
+	if m[k] == nil {
+		m[k] = map[string]int{}
+	}
+	m[k][v]++
 }
 
 func total(m map[string]int) (n int) {
@@ -229,7 +247,7 @@ func diffNorm(live, replay *normSide) *normReport {
 		}
 		switch {
 		case rn == 0:
-		case live.events[k] != replay.events[k]:
+		case !maps.Equal(live.events[k], replay.events[k]):
 			r.eventsDiffer = append(r.eventsDiffer, k)
 		case live.sources[k] != replay.sources[k]:
 			r.firstCopyRaces++
@@ -255,7 +273,7 @@ func diffNorm(live, replay *normSide) *normReport {
 		for i := rn; i < ln; i++ {
 			r.weatherOnlyLive = append(r.weatherOnlyLive, k)
 		}
-		if rn > 0 && live.weather[k] != replay.weather[k] {
+		if rn > 0 && !maps.Equal(live.weather[k], replay.weather[k]) {
 			r.weatherDiffer = append(r.weatherDiffer, k)
 		}
 	}
