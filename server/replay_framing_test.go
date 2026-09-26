@@ -135,4 +135,7 @@ func TestReplayRefusesWhatItCannotPlace(t *testing.T) {
 	if err := dispatch(p, "digitraffic", Reception{Source: "digitraffic", Body: "no-topic-separator"}, nil); err == nil {
 		t.Fatal("a digitraffic record without a topic was skipped")
 	}
+	if err := dispatch(p, "station:x", Reception{Source: "station:x", Body: `{"msgs": [`}, nil); err == nil {
+		t.Fatal("a catcher envelope that does not parse was skipped")
+	}
 }

@@ -43,6 +43,9 @@ RECEPTIONS_SCHEMA = pa.schema([
 VESSELS_SCHEMA = pa.schema([
     ("mmsi", pa.int32()), ("name", pa.string()), ("callsign", pa.string()), ("ship_type", pa.int16()),
     ("draught10", pa.int16()), ("cls", pa.string()), ("updated_ts", pa.timestamp("us")),
+    # each field's own observation time, so a merge decides field by field in any day order
+    ("name_ts", pa.timestamp("us")), ("callsign_ts", pa.timestamp("us")), ("ship_type_ts", pa.timestamp("us")),
+    ("draught_ts", pa.timestamp("us")), ("cls_ts", pa.timestamp("us")),
 ])
 WEATHER_NUM = [
     "avg_wind_speed", "wind_gust", "wind_direction", "wind_gust_direction", "air_temperature",
@@ -286,7 +289,8 @@ def refresh_vessels(con, catalog):
         f"""
         WITH evidence AS (  -- position message types are the truthful class signal; statics are not
           SELECT mmsi, CASE WHEN bool_or(mt IN ('StandardClassBPositionReport', 'ExtendedClassBPositionReport')) THEN 'B'
-                            WHEN bool_or(mt = 'PositionReport') THEN 'A' END AS ev_cls
+                            WHEN bool_or(mt = 'PositionReport') THEN 'A' END AS cls,
+                 max(ct) AS ts
           FROM env WHERE k = 'event' AND mt IN {POS_TYPES}
           GROUP BY mmsi
         ), statics AS (  -- stale statics still carry names; nothing here rots
@@ -298,24 +302,39 @@ def refresh_vessels(con, catalog):
                  CASE WHEN mt = 'StaticDataReport' THEN 'B' ELSE 'A' END AS cls,
                  ct AS ts
           FROM env WHERE k = 'event' AND mt IN ('ShipStaticData', 'StaticDataReport')
-        ), all_static AS (
-          SELECT * FROM statics
+        ), fields AS (
+          -- one row per observation, each field with its own time; fresh ranks this run's inputs
+          -- over the stored row on a tie, so repackaging a day with corrected inputs replaces
+          -- what that day contributed rather than keeping the old value
+          SELECT mmsi, name, ts AS name_ts, callsign, ts AS callsign_ts, ship_type, ts AS ship_type_ts,
+                 draught10, ts AS draught_ts, NULL AS cls, NULL::TIMESTAMP AS cls_ts, 1 AS fresh FROM statics
+          UNION ALL  -- the static's own class claim is the weakest signal: it only fills a gap
+          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, TIMESTAMP '1970-01-01', 1 FROM statics
           UNION ALL
-          SELECT mmsi, name, callsign, ship_type, draught10, cls, updated_ts FROM existing_vessels
+          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, ts, 1 FROM evidence
+          UNION ALL
+          SELECT mmsi, name, name_ts, callsign, callsign_ts, ship_type, ship_type_ts,
+                 draught10, draught_ts, cls, cls_ts, 0 FROM existing_vessels
         ), merged AS (
           -- latest-wins per field, not per row: a type 24 part B can carry a callsign and no name,
-          -- and that must not discard a name learned earlier
+          -- and that must not discard a name learned earlier, whatever order the days arrive in
           SELECT mmsi,
-            arg_max(name, ts) FILTER (WHERE name IS NOT NULL) AS name,
-            arg_max(callsign, ts) FILTER (WHERE callsign IS NOT NULL) AS callsign,
-            coalesce(arg_max(ship_type, ts) FILTER (WHERE ship_type > 0), 0) AS ship_type,
-            coalesce(arg_max(draught10, ts) FILTER (WHERE draught10 > 0), 0) AS draught10,
-            arg_max(cls, ts) FILTER (WHERE cls IS NOT NULL) AS cls,
-            max(ts) AS updated_ts
-          FROM all_static GROUP BY mmsi
+            arg_max(name, (name_ts, fresh)) FILTER (WHERE name IS NOT NULL) AS name,
+            max(name_ts) FILTER (WHERE name IS NOT NULL) AS name_ts,
+            arg_max(callsign, (callsign_ts, fresh)) FILTER (WHERE callsign IS NOT NULL) AS callsign,
+            max(callsign_ts) FILTER (WHERE callsign IS NOT NULL) AS callsign_ts,
+            coalesce(arg_max(ship_type, (ship_type_ts, fresh)) FILTER (WHERE ship_type > 0), 0) AS ship_type,
+            max(ship_type_ts) FILTER (WHERE ship_type > 0) AS ship_type_ts,
+            coalesce(arg_max(draught10, (draught_ts, fresh)) FILTER (WHERE draught10 > 0), 0) AS draught10,
+            max(draught_ts) FILTER (WHERE draught10 > 0) AS draught_ts,
+            arg_max(cls, (cls_ts, fresh)) FILTER (WHERE cls IS NOT NULL) AS cls,
+            max(cls_ts) FILTER (WHERE cls IS NOT NULL) AS cls_ts
+          FROM fields GROUP BY mmsi
         )
-        SELECT m.mmsi, name, callsign, ship_type, draught10, coalesce(ev_cls, cls) AS cls, updated_ts
-        FROM merged m LEFT JOIN evidence ON m.mmsi = evidence.mmsi ORDER BY m.mmsi
+        SELECT mmsi, name, callsign, ship_type, draught10, cls,
+               greatest(name_ts, callsign_ts, ship_type_ts, draught_ts) AS updated_ts,
+               name_ts, callsign_ts, ship_type_ts, draught_ts, cls_ts
+        FROM merged WHERE coalesce(name_ts, callsign_ts, ship_type_ts, draught_ts) IS NOT NULL ORDER BY mmsi
         """
     ).to_arrow_table()
     retry(lambda: tbl.overwrite(merged.cast(tbl.schema().as_arrow())))

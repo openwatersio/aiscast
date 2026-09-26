@@ -20,7 +20,7 @@ All wire-precision conventions match the stream: lat/lon as 1/600000 degree inte
 
 **ais.receptions** — one row per copy heard of each position: `id`, `ts`, `source`, `station`, `recv_ts`, `license`, joined to the transmission the server named on the copy when it called it one; a copy of a collapsed re-accept follows it into the kept row. `day` is the day the copy arrived, which can be the day after its transmission's for a copy received just past midnight. Licenses live here because a license governs a delivery, not the broadcast it carried.
 
-**ais.vessels** — latest-wins static data per MMSI, per field: `name`, `callsign`, `ship_type`, `draught10`, `cls` (from position message types, the truthful class signal), `updated_ts`. Overwritten each run.
+**ais.vessels** — latest-wins static data per MMSI, per field: `name`, `callsign`, `ship_type`, `draught10`, `cls` (from position message types, the truthful class signal; a static's own class claim only fills a gap), `updated_ts`. Each field carries its own observation time (`name_ts`, `callsign_ts`, `ship_type_ts`, `draught_ts`, `cls_ts`), so days merge correctly in any order, and a repackaged day's values replace the stored ones on a tie. Overwritten each run. A value that only a repackaged day's old inputs contained stays until a newer one replaces it.
 
 **ais.weather** — BarentsWatch MetHyd broadcasts (IMO SN.1/Circ.289 DAC 1 FI 31, and its FI 11 predecessor, both live): one row per broadcast from an instrumented aid to navigation, measurements as sent, enums as strings, nulls where the station has no such sensor. `functional_id` distinguishes the two message generations; the payload's embedded observation time is broken on real stations and is not carried.
 

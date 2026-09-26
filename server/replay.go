@@ -106,7 +106,10 @@ func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) error {
 			p.stats.parseErr.Add(1)
 		}
 	case strings.HasPrefix(strings.TrimSpace(rx.Body), "{"):
-		p.ingestCatcher(source, []byte(rx.Body), rx.RecvTime)
+		// live archives an envelope only after it parses, so one that does not is corrupt
+		if !p.ingestCatcher(source, []byte(rx.Body), rx.RecvTime) {
+			return fmt.Errorf("%s: catcher envelope that does not parse: %.60q", source, rx.Body)
+		}
 	default:
 		p.ingestLine(rx)
 	}

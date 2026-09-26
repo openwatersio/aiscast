@@ -361,3 +361,37 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
     os.utime(f1, (f1.stat().st_atime, f1.stat().st_mtime + 60))
     run()
     assert f"{d1}: 1 positions" in capsys.readouterr().err, "an overwritten hour repackages its day"
+
+
+def test_vessel_fields_merge_on_their_own_times_in_any_day_order(tmp_path):
+    """Each vessel field keeps its own observation time. A day packaged after a later one (a backfill,
+    a late hour) must win a field it saw more recently than what is stored, even when the stored row
+    was touched later by a different field."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    envs = fixture_envelopes()
+    st, cp = template(envs, "event", "ShipStaticData"), template(envs, "copy")
+    mmsi = st["r"]["mmsi"]
+
+    def static(id, ts, recv, name="", callsign=""):
+        e = event_at(st, id, ts, recv=recv)
+        e["r"]["message"].update(Name=name, CallSign=callsign)
+        return [e, copy_at(cp, id, ts, recv=recv)]
+
+    root = tmp_path / "normalized"
+    days = {  # packaged in this order
+        "2026-09-02": static("st000001", "2026-09-01T05:00:00Z", "2026-09-02T01:00:00Z", callsign="C5")
+                      + static("st000002", "2026-09-01T10:00:00Z", "2026-09-02T01:00:00Z", name="N10"),
+        "2026-09-01": static("st000003", "2026-09-01T08:00:00Z", "2026-09-01T08:00:00Z", callsign="C8"),
+    }
+    catalog = packager.get_catalog()
+    con = duckdb.connect()
+    for day, envelopes in days.items():
+        d = root / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True)
+        with gzip.open(d / "08.gz", "wt") as f:
+            f.writelines(json.dumps(e) + "\n" for e in envelopes)
+        packager.process_day(day, sorted(glob.glob(f"{d}/*.gz")), con, catalog)
+
+    [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == mmsi]
+    assert (v["name"], v["callsign"]) == ("N10", "C8"), "the callsign seen at 08:00 beats the one seen at 05:00"

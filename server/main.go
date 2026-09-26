@@ -97,9 +97,15 @@ func main() {
 		<-sig
 		log.Printf("shutting down")
 		p.closeArchives() // state saves follow, so they see everything the archives saw
-		p.saveSnapshot(snapshot)
-		p.saveUsage(usage)
-		p.saveDedupe(dedupe)
+		if err := p.saveSnapshot(snapshot); err != nil {
+			log.Printf("snapshot: %v", err)
+		}
+		if err := p.saveUsage(usage); err != nil {
+			log.Printf("usage: %v", err)
+		}
+		if err := p.saveDedupe(dedupe); err != nil {
+			log.Printf("dedupe: %v (the next process may re-accept copies inside the window)", err)
+		}
 		os.Exit(0)
 	}()
 
