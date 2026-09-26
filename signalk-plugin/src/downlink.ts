@@ -294,8 +294,8 @@ const STATIC_EVERY = 6 * 60_000; // a class A's own static interval
 
 // Cache key for a static event: type 5, or type 24 part A/B, which arrive as separate events.
 // sourceSub is the station behind a `source`: what follows the kind before the first colon.
-function sourceSub(source: string): string {
-  return source.slice(source.indexOf(":") + 1);
+function sourceSub(source: string | undefined): string {
+  return source ? source.slice(source.indexOf(":") + 1) : "";
 }
 
 function staticKind(ev: AisEvent): string | null {
