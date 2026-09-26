@@ -63,11 +63,17 @@ type Pipeline struct {
 	norm  *archive // normalized stream: accepted events, reception copies, weather; no-op unless configured
 	codec *ais.Codec
 
-	mu       sync.Mutex         // ponytail: one lock around parse+dedupe; shard per station if it shows up in profiles
-	encoder  *aisnmea.NMEACodec // for synthesized events; has its own sequence counter
-	codecs   map[string]*aisnmea.NMEACodec
-	pending  map[string][]string // per-station fragment lines awaiting assembly
-	ownOf    map[string]string   // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
+	mu      sync.Mutex         // ponytail: one lock around parse+dedupe; shard per station if it shows up in profiles
+	encoder *aisnmea.NMEACodec // for synthesized events; has its own sequence counter
+	codecs  map[string]*aisnmea.NMEACodec
+	pending map[string][]string // per-station fragment lines awaiting assembly
+	ownOf   map[string]string   // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
+	// intake is the shutdown barrier. Every reception is archived raw and processed under the read
+	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
+	// recorded (raw without its normalized events, or the reverse) and none can start.
+	intake  sync.RWMutex
+	closing atomic.Bool
+
 	seen     map[string]time.Time
 	seenHW   time.Time // newest event time folded into seen; prune cutoff, so replay needs no wall clock
 	normGate time.Time // replay warm-up: records received before this are state-building only, not written
@@ -136,8 +142,33 @@ var bootTime = time.Now()
 
 // Ingest archives a reception and feeds it to the pipeline.
 func (p *Pipeline) Ingest(rx Reception) {
+	if !p.admit() {
+		return
+	}
+	defer p.intake.RUnlock()
 	p.arch.write(rx)
 	p.ingestLine(rx)
+}
+
+// admit holds the intake read lock for one reception, or refuses it once shutdown has begun.
+func (p *Pipeline) admit() bool {
+	p.intake.RLock()
+	if p.closing.Load() {
+		p.intake.RUnlock()
+		return false
+	}
+	return true
+}
+
+// closeArchives stops intake, then drains both archives. Setting closing turns away receptions not
+// yet started; the write lock waits out those in flight; only then do the writers drain, so raw and
+// normalized hold the same receptions and replay regenerates the stream across a restart. A
+// producer turned away blocks or drops; the process is exiting.
+func (p *Pipeline) closeArchives() {
+	p.closing.Store(true)
+	p.intake.Lock()
+	p.arch.shutdown()
+	p.norm.shutdown()
 }
 
 // ingestLine parses one NMEA sentence (callers archive separately when the body isn't line-per-sentence).

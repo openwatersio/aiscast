@@ -167,7 +167,7 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 	n := 0
 	t0 := time.Now()
 	for i, r := range rows {
-		if budget > 0 {
+		if budget > 0 && !p.closing.Load() { // shutdown waits on this snapshot, so finish it unpaced
 			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(rows)))); d > 0 {
 				time.Sleep(d)
 			}
@@ -228,6 +228,10 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			} else {
 				lastHash = h
 			}
+			if !p.admit() {
+				return -1, nil
+			}
+			defer p.intake.RUnlock() // held across the paced rows: a snapshot is one reception
 			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
 			// paced independently of the poll interval: a new snapshot appears about once a minute, so ingest can outlast a poll
 			return p.ingestAishub(body, start, st, 45*time.Second)
