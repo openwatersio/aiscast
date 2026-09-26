@@ -263,6 +263,7 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 		}
 	}
 	src := stationSource(cl.Sub)
+	inflight := map[uint16]struct{}{} // QoS 2 packet ids delivered but not yet released: a retransmit is acknowledged, not ingested again
 	for {
 		readDeadline()
 		pk, err := readMQTTPacket(br)
@@ -281,8 +282,15 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 			if f.err != nil || qos == 3 {
 				return
 			}
+			_, redelivered := inflight[id]
+			if qos == 2 && !redelivered {
+				inflight[id] = struct{}{}
+			}
 			now := time.Now()
 			for _, line := range bytes.Split(f.b, []byte{'\n'}) {
+				if qos == 2 && redelivered {
+					break
+				}
 				if len(bytes.TrimSpace(line)) == 0 {
 					continue
 				}
@@ -296,7 +304,7 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 			switch qos {
 			case 1:
 				ack = mqttEncode(mqttPuback, 0, mqttID(id))
-			case 2: // taken on the first delivery; the pipeline dedupes a retransmit as it would any repeat
+			case 2:
 				ack = mqttEncode(mqttPubrec, 0, mqttID(id))
 			}
 			if ack != nil && write(ack) != nil {
@@ -305,6 +313,7 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 		case mqttPubrel:
 			f := mqttFields{b: pk.body}
 			id := f.uint16()
+			delete(inflight, id)
 			if f.err != nil || write(mqttEncode(mqttPubcomp, 0, mqttID(id))) != nil {
 				return
 			}

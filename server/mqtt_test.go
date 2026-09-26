@@ -138,15 +138,47 @@ func TestMQTTPublish(t *testing.T) {
 		t.Errorf("dup=%d want 1", d)
 	}
 
-	// QoS 2: PUBREC, then PUBCOMP for the PUBREL
+	// QoS 2: PUBREC, then PUBCOMP for the PUBREL. A retransmit before the release is acknowledged again but
+	// not ingested again, whatever the pipeline's own dedupe window would say.
+	forget := func() { // drop the pipeline's dedupe memory, so only the packet id can stop a repeat
+		p.mu.Lock()
+		p.seen = map[string]time.Time{}
+		p.mu.Unlock()
+	}
+	forget()
 	m.send(mqttPublish, 0x04, publishPacket("ais/data", 7, sentence))
 	if pk := m.expect(mqttPubrec); string(pk.body) != string(mqttID(7)) {
 		t.Errorf("pubrec id %v", pk.body)
+	}
+	select {
+	case <-sub.ch:
+	case <-time.After(time.Second):
+		t.Fatal("no event from QoS 2 publish")
+	}
+	forget()
+	m.send(mqttPublish, 0x0c, publishPacket("ais/data", 7, sentence)) // DUP + QoS 2
+	if pk := m.expect(mqttPubrec); string(pk.body) != string(mqttID(7)) {
+		t.Errorf("pubrec on retransmit %v", pk.body)
+	}
+	select {
+	case ev := <-sub.ch:
+		t.Errorf("retransmit ingested again: %+v", ev.MMSI)
+	case <-time.After(200 * time.Millisecond):
 	}
 	m.send(mqttPubrel, 0x02, mqttID(7))
 	if pk := m.expect(mqttPubcomp); string(pk.body) != string(mqttID(7)) {
 		t.Errorf("pubcomp id %v", pk.body)
 	}
+	forget()
+	m.send(mqttPublish, 0x04, publishPacket("ais/data", 7, sentence)) // id reused after release: a new message
+	m.expect(mqttPubrec)
+	select {
+	case <-sub.ch:
+	case <-time.After(time.Second):
+		t.Error("reused packet id after release not ingested")
+	}
+	m.send(mqttPubrel, 0x02, mqttID(7))
+	m.expect(mqttPubcomp)
 
 	m.send(mqttPingreq, 0, nil)
 	m.expect(mqttPingresp)
