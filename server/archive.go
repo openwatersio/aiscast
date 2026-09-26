@@ -84,6 +84,7 @@ type archive struct {
 	ch      chan Reception
 	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
 	uploads sync.WaitGroup
+	stopped sync.Once // shutdown runs once; the writer is gone after the first
 
 	// holds counts the open writer and every in-flight upload per path; the sweep skips any path with
 	// a count. A quiet source keeps its hour open indefinitely, and deleting it out from under the
@@ -146,7 +147,6 @@ func (a *archive) run() {
 			for _, hf := range files {
 				a.close(hf)
 			}
-			a.uploads.Wait()
 			reply <- struct{}{}
 			return
 		}
@@ -196,21 +196,27 @@ var ioFatal = func(err error) {
 	}
 }
 
-// shutdown closes open hours (uploading them) and waits up to 90 s.
+// shutdown drains the queue to disk, closes open hours, and waits up to 45 s for their uploads.
 func (a *archive) shutdown() {
 	if a.dir == "" {
 		return
 	}
-	reply := make(chan struct{})
-	select {
-	case a.done <- reply:
+	a.stopped.Do(func() {
+		// No timeout on the drain: every queued reception reaches disk before the process exits, or
+		// systemd's stop timeout kills it with the disk as the reason. Uploads get a bound instead,
+		// since an hour left on disk is uploaded by the next process's sweep; both archives shut down
+		// in turn, and two bounds must fit inside TimeoutStopSec.
+		reply := make(chan struct{})
+		a.done <- reply
+		<-reply
+		uploaded := make(chan struct{})
+		go func() { a.uploads.Wait(); close(uploaded) }()
 		select {
-		case <-reply:
-		case <-time.After(90 * time.Second):
+		case <-uploaded:
+		case <-time.After(45 * time.Second):
 			log.Printf("archive: shutdown timed out waiting for uploads")
 		}
-	case <-time.After(5 * time.Second):
-	}
+	})
 }
 
 func (a *archive) key(source string, hour time.Time) string {
