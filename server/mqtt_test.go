@@ -260,6 +260,22 @@ func TestMQTTConnectLimitPerToken(t *testing.T) {
 	}
 }
 
+// Before CONNECT names a token, MQTT upgrades are bounded per address, so an unidentified flood cannot
+// hold sockets open until their CONNECT deadline.
+func TestMQTTAdmitLimitPerAddress(t *testing.T) {
+	p := testPipeline(t)
+	mqttAdmitLimit = newLimiter(1)
+	defer func() { mqttAdmitLimit = newLimiter(200) }()
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	dialMQTT(t, srv, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/stream", &websocket.DialOptions{Subprotocols: []string{"mqtt"}}); err == nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("second unidentified MQTT upgrade: %v %v", err, resp)
+	}
+}
+
 // Anything but CONNECT first is refused without leaking a CONNACK, and a JSON client on the same URL that
 // does not ask for mqtt still gets its welcome frame.
 func TestMQTTRefusals(t *testing.T) {

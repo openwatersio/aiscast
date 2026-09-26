@@ -127,6 +127,7 @@ var (
 	udpLimit       = newLimiter(udpLinesPerMinute)                 // per source address
 	publishLimit   = newLimiter(6000)                              // /v1/stream publish sentences per key per minute (a single receiver hears <75/s)
 	receiveLimit   = newLimiter(600)                               // /v1/receive posts per feeder per minute (AIS-catcher posts ~4/min)
+	mqttAdmitLimit = newLimiter(200)                               // MQTT upgrades per address per minute before CONNECT names the token: a flood ceiling, loose enough that one egress can carry many feeders
 )
 
 func envInt(k string, def int) int {

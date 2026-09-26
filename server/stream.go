@@ -358,9 +358,14 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	// claims (cidr, conns, bbox) bind the socket whatever its role; publishing needs a publish role.
 	cl, claimsErr := p.socketClaims(r)
 	// An MQTT socket without a request token identifies itself in CONNECT, after the upgrade, so its
-	// connect limit is applied there, keyed by token like everyone else's, rather than by address here.
+	// connect limit is applied there, keyed by token like everyone else's. Until then it is an unidentified
+	// socket waiting up to the CONNECT deadline, so a looser address-keyed ceiling bounds those.
 	connectChecked := cl != nil || !offersMQTT(r)
-	if connectChecked && p.limited(w, wsConnectLimit, connectKey(cl, r)) {
+	lim := wsConnectLimit
+	if !connectChecked {
+		lim = mqttAdmitLimit
+	}
+	if p.limited(w, lim, connectKey(cl, r)) {
 		return
 	}
 	c, err := websocket.Accept(w, r, v1Opts)
