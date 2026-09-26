@@ -12,7 +12,7 @@ import (
 
 // The normalized archive: every accepted event, every reception copy, and BarentsWatch weather,
 // written at emit time as line-delimited JSON envelopes into one merged hourly stream. The raw
-// archive stays the input log; this layer is what downstream reads. See specs/normalized-archive.md.
+// archive stays the input log; this layer is what downstream reads. See docs/normalized-archive.md.
 
 const normVersion = 1
 

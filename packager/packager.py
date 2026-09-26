@@ -8,7 +8,7 @@
 Reads the server's normalized stream (versioned envelopes: accepted events, reception
 copies, weather broadcasts) and packages closed UTC days into ais.positions,
 ais.receptions, ais.vessels, and ais.weather. No parsers and no dedup rule live here;
-the server decided all of that at ingest. See specs/normalized-archive.md.
+the server decided all of that at ingest. See docs/normalized-archive.md.
 """
 
 import argparse
