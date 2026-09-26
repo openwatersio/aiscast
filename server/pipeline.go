@@ -30,6 +30,7 @@ type Reception struct {
 type Event struct {
 	ID           string
 	Time         time.Time // canonical: validated source time, else receive time
+	RecvTime     time.Time // when this copy arrived; Time can precede it by the source's claim
 	Source       string
 	Station      string
 	Channel      byte // 'A' or 'B'
@@ -59,18 +60,28 @@ type subscriber struct {
 
 type Pipeline struct {
 	arch  *archive
+	norm  *archive // normalized stream: accepted events, reception copies, weather; no-op unless configured
 	codec *ais.Codec
 
 	mu      sync.Mutex         // ponytail: one lock around parse+dedupe; shard per station if it shows up in profiles
 	encoder *aisnmea.NMEACodec // for synthesized events; has its own sequence counter
 	codecs  map[string]*aisnmea.NMEACodec
-	pending map[string][]string // per-station fragment lines awaiting assembly
-	ownOf   map[string]string   // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
-	seen    map[string]time.Time
-	nSeen   int
+	pending map[string][]fragment // per station, sequence id, and channel: fragment lines awaiting assembly
+	ownOf   map[string]string     // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
+	// intake is the shutdown barrier. Every reception is archived raw and processed under the read
+	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
+	// recorded (raw without its normalized events, or the reverse) and none can start.
+	intake  sync.RWMutex
+	closing atomic.Bool
 
-	vmu     sync.RWMutex
-	vessels map[uint32]*vessel
+	seen     map[string]time.Time
+	seenHW   time.Time // newest event time folded into seen; prune cutoff, so replay needs no wall clock
+	normGate time.Time // replay warm-up: records received before this are state-building only, not written
+	nSeen    int
+
+	vmu       sync.RWMutex
+	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu
+	vessels   map[uint32]*vessel
 
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
@@ -95,10 +106,10 @@ func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
 	p := &Pipeline{
-		arch: arch, codec: c, auth: verifierFromEnv(), stations: newStationStats(),
+		arch: arch, norm: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
-		pending: map[string][]string{},
+		pending: map[string][]fragment{},
 		ownOf:   map[string]string{},
 		seen:    map[string]time.Time{},
 		vessels: map[uint32]*vessel{},
@@ -132,8 +143,51 @@ var bootTime = time.Now()
 
 // Ingest archives a reception and feeds it to the pipeline.
 func (p *Pipeline) Ingest(rx Reception) {
+	if !p.admit() {
+		return
+	}
+	defer p.intake.RUnlock()
 	p.arch.write(rx)
 	p.ingestLine(rx)
+}
+
+// admit holds the intake read lock for one reception, or refuses it once shutdown has begun.
+func (p *Pipeline) admit() bool {
+	p.intake.RLock()
+	if p.closing.Load() {
+		p.intake.RUnlock()
+		return false
+	}
+	return true
+}
+
+// closeArchives stops intake, then drains both archives. Setting closing turns away receptions not
+// yet started; the write lock waits out those in flight; only then do the writers drain, so raw and
+// normalized hold the same receptions and replay regenerates the stream across a restart. A
+// producer turned away is dropped; the process is exiting.
+func (p *Pipeline) closeArchives() {
+	p.closing.Store(true)
+	p.intake.Lock()
+	p.arch.shutdown()
+	p.norm.shutdown()
+}
+
+// fragment is one sentence of a multipart message awaiting the rest.
+type fragment struct {
+	n    int64
+	line string
+}
+
+// addFragment adds f to a message's collected sentences. The same fragment number arriving again
+// means the earlier sentences belong to a message that never completed and whose sequence id has
+// come around again, so they are dropped rather than recorded with this one.
+func addFragment(have []fragment, f fragment) []fragment {
+	for _, h := range have {
+		if h.n == f.n {
+			return []fragment{f}
+		}
+	}
+	return append(have, f)
 }
 
 // ingestLine parses one NMEA sentence (callers archive separately when the body isn't line-per-sentence).
@@ -168,14 +222,17 @@ func (p *Pipeline) ingestLine(rx Reception) {
 		p.codecs[station] = nc
 	}
 	var sentences []string
+	pk := fmt.Sprintf("%s\x00%d\x00%s", station, vdm.MessageID, vdm.Channel)
 	if vdm.NumFragments > 1 {
-		// ponytail: assumes one multipart sequence in flight per station; interleaved sequences mix their sentence lists
-		p.pending[station] = append(p.pending[station], line)
+		p.pending[pk] = addFragment(p.pending[pk], fragment{vdm.FragmentNumber, line})
 	}
 	pkt, err := nc.ParseVDMVDO(&vdm)
 	if pkt != nil {
 		if vdm.NumFragments > 1 {
-			sentences, p.pending[station] = p.pending[station], nil
+			for _, f := range p.pending[pk] {
+				sentences = append(sentences, f.line)
+			}
+			delete(p.pending, pk)
 		} else {
 			sentences = []string{line}
 		}
@@ -216,21 +273,21 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	}
 	// TAG s:self on an own-ship sentence is signalk-aiscast building reports from GPS on a boat with no
 	// transponder: not a VHF reception. VDO-only, so the tag cannot mislabel received traffic as synthesized.
-	p.emit(&Event{Time: t, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self"})
+	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self"})
 }
 
 // ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).
 // The packet is re-encoded so dedupe, the event id, and the /v1 `nmea` field work exactly as for VHF receptions,
 // and decoded again so the struct is what a receiver would have produced (quantized lat/lon, sentinels).
-func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Packet) {
+func (p *Pipeline) ingestPacket(source, station string, t, recv time.Time, pkt ais.Packet) {
 	// Source times are trusted arbitrarily far back (satellite passes and AISHub snapshots deliver late;
 	// the stale check keeps old reports off the live stream) but never into the future: a future stamp
 	// would fold into the vessel's clock, mark every later genuine report stale until wall time caught
 	// up, and survive snapshot restarts. No skew allowance — a rebuilt source's legitimate stamps are
 	// always in the past, and an upstream clock running consistently fast would otherwise keep vessel
 	// clocks ahead of wall time and suppress genuine raw reports.
-	if now := time.Now(); t.IsZero() || t.After(now) {
-		t = now
+	if t.IsZero() || t.After(recv) {
+		t = recv // receive time is the ceiling, not the wall clock, so replayed history caps identically
 	}
 	payload := p.codec.EncodePacket(pkt)
 	if payload == nil {
@@ -245,7 +302,7 @@ func (p *Pipeline) ingestPacket(source, station string, t time.Time, pkt ais.Pac
 	p.mu.Lock()
 	sentences := p.encoder.EncodeSentence(aisnmeaPacket('A', payload))
 	p.mu.Unlock()
-	p.emit(&Event{Time: t, Source: source, Station: station, Payload: payload, Packet: decoded, Sentences: sentences, Synthesized: true, rebuilt: true})
+	p.emit(&Event{Time: t, RecvTime: recv, Source: source, Station: station, Payload: payload, Packet: decoded, Sentences: sentences, Synthesized: true, rebuilt: true})
 }
 
 // aisnmeaPacket builds a VdmPacket for EncodeSentence, which wants the channel as 1/2, not 'A'/'B'.
@@ -264,6 +321,7 @@ func (p *Pipeline) emit(ev *Event) {
 	p.mu.Lock()
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
 		p.mu.Unlock()
+		p.writeCopy(ev, key, prev) // prev is the accepted transmission: proximity alone is ambiguous between two of them
 		p.stats.dup.Add(1)
 		p.usage.dups.add(time.Now())
 		p.stations.dup(ev.Station, ev.Source, ev.Packet.GetHeader().UserID, ev.Time)
@@ -274,9 +332,12 @@ func (p *Pipeline) emit(ev *Event) {
 		return
 	}
 	p.seen[key] = ev.Time
+	if ev.Time.After(p.seenHW) {
+		p.seenHW = ev.Time
+	}
 	p.nSeen++
 	if p.nSeen%4096 == 0 {
-		cutoff := time.Now().Add(-6 * dedupeWindow) // generous: canonical times can skew from wall clock
+		cutoff := p.seenHW.Add(-6 * dedupeWindow) // event-time high water, so replayed history prunes identically
 		for k, v := range p.seen {
 			if v.Before(cutoff) {
 				delete(p.seen, k)
@@ -291,6 +352,7 @@ func (p *Pipeline) emit(ev *Event) {
 	ev.MMSI = ev.Packet.GetHeader().UserID
 	ev.LowTrust = lowTrust(ev.Source)
 	p.updateVessel(ev)
+	p.writeEvent(ev) // flagged or not: the normalized archive keeps what the raw archive keeps
 	if ev.Implausible {
 		p.stats.implausible.Add(1)
 		return
@@ -403,7 +465,7 @@ func (p *Pipeline) broadcast(ev *Event) {
 
 func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
-		nv := p.sweepVessels(time.Now().Add(-vesselTTL))
+		nv := p.vesselCount() // updateVessel sweeps, on the reception clock
 		p.stations.sweep(time.Now().Add(-vesselTTL))
 		p.sampleRate(time.Now())
 		p.smu.RLock()

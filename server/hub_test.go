@@ -233,12 +233,19 @@ func TestVesselsSnapshot(t *testing.T) {
 	if len(fc.Attribution) != 1 || fc.Attribution["t"] != ownCredit {
 		t.Errorf("attribution = %v", fc.Attribution)
 	}
-	if n := p.sweepVessels(time.Now().Add(time.Minute)); n != 0 {
+	p.vmu.Lock()
+	p.sweepLocked(time.Now().Add(time.Minute))
+	p.vmu.Unlock()
+	if n := p.vesselCount(); n != 0 {
 		t.Errorf("sweep left %d", n)
 	}
 }
 
 func TestUDPStationHidesIP(t *testing.T) {
+	// A fixed salt keeps the digest deterministic. With the random one an unset STATION_SALT
+	// generates, a hex digest containing "203" fails the leak check by luck about once in 350 runs.
+	defer func(old []byte) { stationSalt = old }(stationSalt)
+	stationSalt = []byte("aiscast-test")
 	a, b := udpStation("203.0.113.5"), udpStation("203.0.113.6")
 	if a == b || strings.Contains(a, "203") || len(a) != len("udp:")+12 || a != udpStation("203.0.113.5") {
 		t.Errorf("udp station ids: %s %s", a, b)

@@ -7,7 +7,7 @@ ALLOW_ANON=1 go run .          # Kystverket upstream on, HTTP :8080, UDP :10110,
 go test ./...
 ```
 
-[openwaters.io/api/ais](https://openwaters.io/api/ais/) documents the endpoints. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, stateless, five read-only tools over the vessel cache and station stats (`mcp.go`), the same claims and rate limit as `/v1/vessels`. `server.json` at the repo root is its registry listing; its version and `mcpVersion` move together. Operator-only: `GET /metrics` serves Prometheus text (events, duplicates, parse/decode failures, client and archive drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age).
+[openwaters.io/api/ais](https://openwaters.io/api/ais/) documents the endpoints. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, stateless, five read-only tools over the vessel cache and station stats (`mcp.go`), the same claims and rate limit as `/v1/vessels`. `server.json` at the repo root is its registry listing; its version and `mcpVersion` move together. Operator-only: `GET /metrics` serves Prometheus text (events, duplicates, parse/decode failures, client drops, rate-limit rejections, vessels, clients, per-source event counts and last-event age).
 
 Environment:
 
@@ -19,6 +19,8 @@ Environment:
 - `AISHUB_FEED` (`data.aishub.net:<port>`): forward volunteer-station events to AISHub as plain `!AIVDM`. The server never forwards public feeds or synthesized events, per their terms.
 - `AISHUB_USERNAME` (set = poll AISHub's aggregate snapshot), `AISHUB_INTERVAL` (`20s`, the limit AISHub set for our account).
 - `ARCHIVE_DIR` (`archive`).
+- `NORMALIZED_DIR` + `NORMALIZED_BUCKET`: the normalized archive, off unless one of them is set. With only the bucket, staging defaults to `normalized`; with only the directory, it stays local and nothing reclaims it. It is written at emit as one merged hourly gzip of versioned JSON envelopes: an `event` record per accepted message (the `/v1` event, persisted), a `copy` record per delivery heard with its license (the first copy included), and BarentsWatch `methyd` weather broadcasts verbatim. Uploads to `NORMALIZED_BUCKET`, normally the raw archive's own bucket, under `normalized/v1/`, with the same R2 credentials. Every raw key starts with a license tag, so the stream sits beside them without ever reading as one, and `aiscast replay` walks past it. `aiscast replay -archive <raw> -out <dir> -from YYYY-MM-DD -to YYYY-MM-DD` regenerates it from archived raw days through the same adapters, deterministically; `-warmup` (30m) replays a lead-in for dedupe and per-source state without writing it. `aiscast normdiff -live <dir> -replay <dir>` compares a tree written live against one replayed from the same days and exits non-zero on any divergence beyond the two that carry no data: which source won a copy race, and the per-process multipart sequence id.
+- `DEDUPE` (`dedupe.json`): the dedupe window, saved on shutdown and restored on boot so a restart cannot re-accept a copy inside the 10 s window.
 - `R2_BUCKET` + `R2_ACCOUNT_ID` + `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY`: unset = archive stays local. Otherwise the server PUTs each hour to R2 over the S3 API on rotation and on shutdown. Use `S3_ENDPOINT`/`S3_REGION` for non-R2 targets.
 - `ISSUER_PUBKEYS` (`kid:base64url-pubkey,...`): the issuers whose tokens aiscast accepts.
 - `PERSONAL_ISSUER_KEY` (`kid:base64url-seed`): lets `POST /v1/keys` mint personal-tier tokens.
@@ -60,4 +62,4 @@ Sources:
 
 Volunteer stations feed over `/v1/stream` as MQTT (a socket that negotiates the `mqtt` subprotocol gets a receive-only MQTT 3.1.1 session: the token is the CONNECT password or the request's, each PUBLISH payload is newline-separated NMEA on any topic, QoS 0 to 2 acknowledged, SUBSCRIBE refused), `/v1/receive` (AIS-catcher HTTP output), or `/v1/stream` publish frames. All three name the station by the token's `sub` alone, `station:<sub>`, so a feeder can switch transports without changing identity. UDP senders are `udp:<hash>`, or `mmsi:<n>` once their own `!AIVDO` names the vessel.
 
-Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received.
+Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received. A station followed by ` buffered` marks a sender's offline backlog, which live withheld from the stream when stale and replay withholds the same way.
