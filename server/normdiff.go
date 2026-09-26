@@ -3,8 +3,10 @@ package main
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -65,21 +67,35 @@ func canonNMEA(lines []string) []string {
 
 func rawNMEA(lines []string) string { return strings.Join(lines, "|") }
 
-// normSide is one tree reduced to what the comparison is about: messages by id and time, the set
-// of copies per transmission, and weather by station and time.
+// normSide is one tree reduced to what the comparison is about: transmissions by id and time,
+// copies, and weather by station and time. Every map counts occurrences, so a record written twice on
+// one side and once on the other is a difference, not a collapse.
 type normSide struct {
-	events  map[string]string // id \t canonical time -> canonical JSON of the decoded message
-	sources map[string]string // id \t canonical time -> source that won the race (informational)
-	copies  map[string]bool   // id \t canonical time \t source \t station
-	weather map[string]string // mmsi \t msgtime -> canonical JSON of the record
-	files   int
-	lines   int
+	events   map[string]string // id \t canonical time -> canonical JSON of the decoded message
+	eventN   map[string]int
+	sources  map[string]string // id \t canonical time -> source that won the race (informational)
+	copies   map[string]int    // id \t canonical time \t source \t station
+	weather  map[string]string // mmsi \t msgtime -> the record
+	weatherN map[string]int
+	files    int
+	lines    int
 
 	resequenced int // multipart sentences whose sequence id was normalized away
 }
 
+// loadNorm reads a tree or stops the run: normdiff is the check the rollout trusts, so a record it
+// cannot read must fail the comparison, never quietly leave it.
 func loadNorm(dir string) *normSide {
-	s := &normSide{events: map[string]string{}, sources: map[string]string{}, copies: map[string]bool{}, weather: map[string]string{}}
+	s, err := readNormTree(dir)
+	if err != nil {
+		log.Fatalf("normdiff: %v", err)
+	}
+	return s
+}
+
+func readNormTree(dir string) (*normSide, error) {
+	s := &normSide{events: map[string]string{}, eventN: map[string]int{}, sources: map[string]string{},
+		copies: map[string]int{}, weather: map[string]string{}, weatherN: map[string]int{}}
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
 			return err
@@ -96,25 +112,27 @@ func loadNorm(dir string) *normSide {
 		}
 		defer gz.Close()
 		dec := json.NewDecoder(gz)
-		for {
+		for n := 1; ; n++ {
 			var e normEnvelope
 			if err := dec.Decode(&e); err != nil {
-				if err.Error() == "EOF" {
+				if errors.Is(err, io.EOF) {
 					return nil
 				}
-				return fmt.Errorf("%s: %w", path, err)
+				return fmt.Errorf("%s: record %d: %w", path, n, err)
 			}
 			s.lines++
-			s.add(e)
+			if err := s.add(e); err != nil {
+				return fmt.Errorf("%s: record %d: %w", path, n, err)
+			}
 		}
 	})
-	if err != nil {
-		log.Fatalf("normdiff: %v", err)
-	}
-	return s
+	return s, err
 }
 
-func (s *normSide) add(e normEnvelope) {
+func (s *normSide) add(e normEnvelope) error {
+	if e.V != normVersion {
+		return fmt.Errorf("envelope version %d; normdiff speaks v%d", e.V, normVersion)
+	}
 	switch e.K {
 	case "event":
 		// v1Event carries Message as an ais.Packet interface, which cannot be unmarshalled into;
@@ -128,8 +146,11 @@ func (s *normSide) add(e normEnvelope) {
 			NMEA    []string        `json:"nmea"`
 			Message json.RawMessage `json:"message"`
 		}
-		if json.Unmarshal(e.R, &ev) != nil {
-			return
+		if err := json.Unmarshal(e.R, &ev); err != nil {
+			return fmt.Errorf("event record: %w", err)
+		}
+		if ev.ID == "" || ev.Time.IsZero() {
+			return errors.New("event record without an id and time")
 		}
 		k := ev.ID + "\t" + ev.Time.UTC().Format(time.RFC3339Nano)
 		// The decoded message is the payload under comparison, with the sentences that produced it;
@@ -144,26 +165,45 @@ func (s *normSide) add(e normEnvelope) {
 			Stale       bool            `json:"s,omitempty"`
 		}{ev.Message, canonNMEA(ev.NMEA), ev.MsgType, ev.MMSI, e.Implausible, e.Stale})
 		s.events[k] = string(body)
+		s.eventN[k]++
 		s.sources[k] = ev.Source
 		if rawNMEA(ev.NMEA) != rawNMEA(canonNMEA(ev.NMEA)) {
 			s.resequenced++
 		}
 	case "copy":
 		var c normCopy
-		if json.Unmarshal(e.R, &c) != nil {
-			return
+		if err := json.Unmarshal(e.R, &c); err != nil {
+			return fmt.Errorf("copy record: %w", err)
 		}
-		s.copies[c.ID+"\t"+c.Time+"\t"+c.Source+"\t"+c.Station] = true
+		if c.ID == "" || c.Time == "" || c.Source == "" {
+			return errors.New("copy record without an id, time, and source")
+		}
+		s.copies[c.ID+"\t"+c.Time+"\t"+c.Source+"\t"+c.Station]++
 	case "methyd":
 		var w struct {
 			MMSI    int    `json:"mmsi"`
 			Msgtime string `json:"msgtime"`
 		}
-		if json.Unmarshal(e.R, &w) != nil {
-			return
+		if err := json.Unmarshal(e.R, &w); err != nil {
+			return fmt.Errorf("weather record: %w", err)
 		}
-		s.weather[fmt.Sprintf("%d\t%s", w.MMSI, w.Msgtime)] = string(e.R)
+		if w.MMSI == 0 || w.Msgtime == "" {
+			return errors.New("weather record without an mmsi and msgtime")
+		}
+		k := fmt.Sprintf("%d\t%s", w.MMSI, w.Msgtime)
+		s.weather[k] = string(e.R)
+		s.weatherN[k]++
+	default:
+		return fmt.Errorf("unknown record kind %q", e.K)
 	}
+	return nil
+}
+
+func total(m map[string]int) (n int) {
+	for _, v := range m {
+		n += v
+	}
+	return n
 }
 
 type normReport struct {
@@ -181,43 +221,46 @@ type normReport struct {
 
 func diffNorm(live, replay *normSide) *normReport {
 	r := &normReport{live: live, replay: replay}
-	for k, lv := range live.events {
-		rv, ok := replay.events[k]
-		switch {
-		case !ok:
+	// Each instance one side has beyond the other is its own difference.
+	for k, ln := range live.eventN {
+		rn := replay.eventN[k]
+		for i := rn; i < ln; i++ {
 			r.eventsOnlyLive = append(r.eventsOnlyLive, k)
-		case lv != rv:
+		}
+		switch {
+		case rn == 0:
+		case live.events[k] != replay.events[k]:
 			r.eventsDiffer = append(r.eventsDiffer, k)
 		case live.sources[k] != replay.sources[k]:
 			r.firstCopyRaces++
 		}
 	}
-	for k := range replay.events {
-		if _, ok := live.events[k]; !ok {
+	for k, rn := range replay.eventN {
+		for i := live.eventN[k]; i < rn; i++ {
 			r.eventsOnlyReplay = append(r.eventsOnlyReplay, k)
 		}
 	}
-	for k := range live.copies {
-		if !replay.copies[k] {
+	for k, ln := range live.copies {
+		for i := replay.copies[k]; i < ln; i++ {
 			r.copiesOnlyLive = append(r.copiesOnlyLive, k)
 		}
 	}
-	for k := range replay.copies {
-		if !live.copies[k] {
+	for k, rn := range replay.copies {
+		for i := live.copies[k]; i < rn; i++ {
 			r.copiesOnlyReplay = append(r.copiesOnlyReplay, k)
 		}
 	}
-	for k, lv := range live.weather {
-		rv, ok := replay.weather[k]
-		switch {
-		case !ok:
+	for k, ln := range live.weatherN {
+		rn := replay.weatherN[k]
+		for i := rn; i < ln; i++ {
 			r.weatherOnlyLive = append(r.weatherOnlyLive, k)
-		case lv != rv:
+		}
+		if rn > 0 && live.weather[k] != replay.weather[k] {
 			r.weatherDiffer = append(r.weatherDiffer, k)
 		}
 	}
-	for k := range replay.weather {
-		if _, ok := live.weather[k]; !ok {
+	for k, rn := range replay.weatherN {
+		for i := live.weatherN[k]; i < rn; i++ {
 			r.weatherOnlyReplay = append(r.weatherOnlyReplay, k)
 		}
 	}
@@ -234,9 +277,9 @@ func (r *normReport) clean() bool {
 func (r *normReport) render(sample int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "live:   %d files, %d records, %d transmissions, %d copies, %d weather\n",
-		r.live.files, r.live.lines, len(r.live.events), len(r.live.copies), len(r.live.weather))
+		r.live.files, r.live.lines, total(r.live.eventN), total(r.live.copies), total(r.live.weatherN))
 	fmt.Fprintf(&b, "replay: %d files, %d records, %d transmissions, %d copies, %d weather\n",
-		r.replay.files, r.replay.lines, len(r.replay.events), len(r.replay.copies), len(r.replay.weather))
+		r.replay.files, r.replay.lines, total(r.replay.eventN), total(r.replay.copies), total(r.replay.weatherN))
 	fmt.Fprintf(&b, "first-copy races: %d (expected: concurrent copies have no reproducible arrival order)\n", r.firstCopyRaces)
 	fmt.Fprintf(&b, "multipart sentences resequenced: live %d, replay %d (expected: the sequence id comes from a per-process counter)\n",
 		r.live.resequenced, r.replay.resequenced)

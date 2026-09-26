@@ -83,11 +83,13 @@ func TestNormDiffCatchesEachDivergence(t *testing.T) {
 		break_ func(s *normSide)
 		want   string
 	}{
-		{"missing transmission", func(s *normSide) { delete(s.events, someEvent) }, "transmissions only live"},
+		{"missing transmission", func(s *normSide) { delete(s.eventN, someEvent) }, "transmissions only live"},
 		{"changed decode", func(s *normSide) { s.events[someEvent] = `{"m":"tampered"}` }, "transmissions decoded differently"},
 		{"missing copy", func(s *normSide) { delete(s.copies, someCopy) }, "copies only live"},
-		{"extra copy", func(s *normSide) { s.copies["ffff\t2026-09-01T12:00:00Z\tghost\tghost"] = true }, "copies only replay"},
-		{"missing weather", func(s *normSide) { delete(s.weather, someWeather) }, "weather only live"},
+		{"extra copy", func(s *normSide) { s.copies["ffff\t2026-09-01T12:00:00Z\tghost\tghost"] = 1 }, "copies only replay"},
+		{"missing weather", func(s *normSide) { delete(s.weatherN, someWeather) }, "weather only live"},
+		{"transmission recorded twice", func(s *normSide) { s.eventN[someEvent]++ }, "transmissions only replay"},
+		{"copy recorded twice", func(s *normSide) { s.copies[someCopy]++ }, "copies only replay"},
 		{"changed weather", func(s *normSide) { s.weather[someWeather] = `{"tampered":true}` }, "weather differing"},
 	}
 	for _, c := range cases {
@@ -141,5 +143,25 @@ func TestNormDiffToleratesSequenceIDButNotPayload(t *testing.T) {
 	chanSwap := []string{"!AIVDM,2,1,1,B,54`V0cP2CNtt,0*76", "!AIVDM,2,2,1,A,DjCP0000000,2*18"}
 	if rawNMEA(canonNMEA(seq1)) == rawNMEA(canonNMEA(chanSwap)) {
 		t.Fatal("a changed channel survived normalization")
+	}
+}
+
+// An envelope normdiff cannot read must stop the comparison: dropping it would let a record present
+// on one side only disappear and the diff come back clean.
+func TestNormDiffRefusesUnreadableRecords(t *testing.T) {
+	cases := map[string]string{
+		"unknown version":    `{"k":"copy","v":99,"t":"2026-09-01T12:00:00Z","r":{"id":"a","time":"2026-09-01T12:00:00Z","source":"s"}}`,
+		"unknown kind":       `{"k":"mystery","v":1,"t":"2026-09-01T12:00:00Z","r":{}}`,
+		"malformed record":   `{"k":"event","v":1,"t":"2026-09-01T12:00:00Z","r":{"id":7}}`,
+		"missing identity":   `{"k":"copy","v":1,"t":"2026-09-01T12:00:00Z","r":{"source":"s"}}`,
+		"missing weather id": `{"k":"methyd","v":1,"t":"2026-09-01T12:00:00Z","r":{"airTemperature":4.5}}`,
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := normTree(t, []string{line})
+			if _, err := readNormTree(dir); err == nil || !strings.Contains(err.Error(), "record 1") {
+				t.Fatalf("want an error naming the record, got %v", err)
+			}
+		})
 	}
 }
