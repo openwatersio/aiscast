@@ -16,9 +16,9 @@ The local catalog is SQLite under `warehouse/`. Set `LAKE_CATALOG_URI`, `LAKE_WA
 
 All wire-precision conventions match the stream: lat/lon as 1/600000 degree integers, SOG in 0.1 kn (1023 = n/a), COG in 0.1 degree (3600 = n/a), heading in degrees (511 = n/a).
 
-**ais.positions** — one row per accepted position transmission (types 1, 2, 3, 18, 19, 27). Key: (`id`, `ts`). `id` is the server's content hash, so identical payloads transmitted minutes apart share an `id` and are distinct rows; a consumer counting transmissions counts rows, one tracking content changes takes `DISTINCT id`. Events the stream flagged implausible or stale are archived upstream but withheld here, exactly as the live stream withheld them. A same-`id` pair inside the server's 10 s window (a crash-window re-accept) collapses to one row.
+**ais.positions** — one row per accepted position transmission (types 1, 2, 3, 18, 19, 27). Key: (`id`, `ts`). `id` is the server's content hash, so identical payloads transmitted minutes apart share an `id` and are distinct rows; a consumer counting transmissions counts rows, one tracking content changes takes `DISTINCT id`. Events the stream flagged implausible or stale are archived upstream but withheld here, exactly as the live stream withheld them. A same-`id` pair inside the server's 10 s window (a crash-window re-accept) collapses to one row. `ts` is the transmission's own time; `day` is the UTC day the server received it, so a report relayed late sits in the day it arrived with its true `ts`.
 
-**ais.receptions** — one row per copy heard of each position: `id`, `ts`, `source`, `station`, `recv_ts`, `license`, joined to its transmission by id and canonical proximity, the same rule the server used to call it a copy. Licenses live here because a license governs a delivery, not the broadcast it carried.
+**ais.receptions** — one row per copy heard of each position: `id`, `ts`, `source`, `station`, `recv_ts`, `license`, joined to its transmission by id and canonical proximity, the same rule the server used to call it a copy. `day` is the day the copy arrived, which can be the day after its transmission's for a copy received just past midnight. Licenses live here because a license governs a delivery, not the broadcast it carried.
 
 **ais.vessels** — latest-wins static data per MMSI, per field: `name`, `callsign`, `ship_type`, `draught10`, `cls` (from position message types, the truthful class signal), `updated_ts`. Overwritten each run.
 
@@ -26,6 +26,7 @@ All wire-precision conventions match the stream: lat/lon as 1/600000 degree inte
 
 ## Contract
 
+- Every table assigns rows to the UTC day the server received them. BarentsWatch satellite passes arrive hours after transmission, nearly ten at the worst observed, so a day keyed on transmission time could never be finished when it is written; keyed on arrival, a day is exactly its own hours of the stream. To select by transmission time, filter on `ts`, and expect a few late reports in the following day's partition.
 - A day partition is written once, after the UTC day closes. Its presence in `ais.positions` means the day is done: Iceberg has no cross-table transaction, so weather, receptions, and vessels commit first and positions last. Reruns and backfills replace whole days.
 - Schema changes are additive; a breaking change means a new table name.
 - Envelope versions the packager does not know fail the run loudly rather than skipping records.

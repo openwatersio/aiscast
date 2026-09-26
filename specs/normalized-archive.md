@@ -37,6 +37,8 @@ Multipart reassembly buffers die with the process too. A message whose sentences
 
 ## What the packager is
 
+Rows are assigned to the day the server received them, not the day of their transmission time. The adapters that relay satellite passes and aggregate snapshots trust source time arbitrarily far back, and BarentsWatch runs up to about ten hours late, so a day keyed on transmission time could never be complete when written; keyed on arrival, a day is exactly its own hours of the stream and nothing arriving later belongs to it. A copy received just after midnight joins its transmission in the previous day's partition.
+
 The nightly job keeps the operational shell built for the lake and loses everything semantic: fetch the closed day's normalized hours, sort, write day-partitioned Parquet for positions, receptions, and weather, commit weather and receptions and vessels then positions last in atomic per-table transactions, reconcile output against input, self-heal missing recent days from partition metadata, delete the fetched copy. No parsers, no sentinels, no license map, no dedup rule; nothing left in it can drift from the server.
 
 Licenses ride each reception copy at write time using the server's own `licenseOf`, and no license wins at the message level: a license governs a delivery, not the broadcast it carried, so a message heard by three sources is available under each of the three terms independently, and the message record carries none. Terms questions become filters over receptions rather than judgment calls; a CC0-only subset is the set of messages with at least one CC0-1.0 reception, and the blanket contract stays as it is: credit the attribution-requiring sources when publishing derived work.

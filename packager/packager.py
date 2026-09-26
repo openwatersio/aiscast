@@ -81,9 +81,8 @@ def hour_pattern(d, hour=r"\d{2}"):
 
 
 def day_key(day):
-    """The day's hour files plus the neighbouring hours whose canonical times can cross midnight."""
-    d = datetime.fromisoformat(day)
-    return re.compile("|".join((hour_pattern(d), hour_pattern(d - timedelta(days=1), "23"), hour_pattern(d + timedelta(days=1), "00"))))
+    """A day's hour files. Records are filed and assigned to days by receive time, so a day is its own hours."""
+    return re.compile(hour_pattern(datetime.fromisoformat(day)))
 
 
 def hours_present(day, files):
@@ -133,17 +132,22 @@ def process_day(day, files, con, catalog):
     day_start = datetime.fromisoformat(day)
     day_end = day_start + timedelta(days=1)
 
-    # positions: accepted position events inside the day. Implausible and stale events are archived
-    # in the normalized stream but withheld here, exactly as the live stream withheld them. The
-    # LAG collapse folds a crash-window re-accept (same id inside the server's window) into one row.
+    # A record belongs to the day the server received it, not the day of its canonical time.
+    # BarentsWatch satellite passes arrive hours late (nearly ten, observed), and a day written once
+    # after it closes can only be complete if nothing that arrives later belongs to it. ts keeps the
+    # transmission's own time, so a late report sits in the day it arrived with its true timestamp.
+
+    # positions: accepted position events received in the day. Implausible and stale events are
+    # archived in the normalized stream but withheld here, exactly as the live stream withheld them.
+    # The LAG collapse folds a crash-window re-accept (same id inside the server's window) into one row.
     con.execute(
         f"""
         CREATE OR REPLACE TABLE positions AS
         SELECT * EXCLUDE (prev) FROM (
-          SELECT id, mmsi, ts, msg_type, lat6, lon6, sog10, cog10, heading, navstat, CAST(ts AS DATE) AS day,
+          SELECT id, mmsi, ts, msg_type, lat6, lon6, sog10, cog10, heading, navstat, CAST(recv AS DATE) AS day,
                  LAG(ts) OVER (PARTITION BY id ORDER BY ts) AS prev
           FROM (
-            SELECT id, mmsi, ct AS ts,
+            SELECT id, mmsi, ct AS ts, recv,
                    CAST(message->>'MessageID' AS TINYINT) AS msg_type,
                    CAST(round(CAST(message->>'Latitude' AS DOUBLE) * 600000) AS INTEGER) AS lat6,
                    CAST(round(CAST(message->>'Longitude' AS DOUBLE) * 600000) AS INTEGER) AS lon6,
@@ -158,7 +162,7 @@ def process_day(day, files, con, catalog):
             FROM env
             WHERE k = 'event' AND NOT implausible AND NOT stale
               AND mt IN {POS_TYPES}
-              AND ct >= ? AND ct < ?
+              AND recv >= ? AND recv < ?
           )
         ) WHERE prev IS NULL OR ts - prev >= INTERVAL {WINDOW_S} SECONDS
         ORDER BY mmsi, ts
@@ -166,28 +170,33 @@ def process_day(day, files, con, catalog):
         [day_start, day_end],
     )
 
-    # receptions: every copy heard of a position in the day, joined to its transmission by id and
-    # canonical proximity, the same rule the server used to call it a copy in the first place.
+    # receptions: every copy of a position received in the day, joined to its transmission by id and
+    # canonical proximity, the same rule the server used to call it a copy in the first place. A copy
+    # can arrive after midnight for a transmission the server received before it, so the previous
+    # day's positions join too; a copy more than a day behind its transmission drops.
+    con.register("prior_positions", prior_positions(catalog, day))
     con.execute(
         f"""
         CREATE OR REPLACE TABLE receptions AS
-        SELECT p.id, p.ts, c.source, c.station, c.recv AS recv_ts, c.license, p.day
-        FROM (SELECT id, ct, source, station, recv, license FROM env WHERE k = 'copy') c
-        JOIN positions p ON p.id = c.id AND abs(epoch(c.ct - p.ts)) < {WINDOW_S}
+        SELECT p.id, p.ts, c.source, c.station, c.recv AS recv_ts, c.license, CAST(c.recv AS DATE) AS day
+        FROM (SELECT id, ct, source, station, recv, license FROM env WHERE k = 'copy' AND recv >= ? AND recv < ?) c
+        JOIN (SELECT id, ts FROM positions UNION ALL SELECT id, ts FROM prior_positions) p
+          ON p.id = c.id AND abs(epoch(c.ct - p.ts)) < {WINDOW_S}
         ORDER BY source, station, recv
-        """
+        """,
+        [day_start, day_end],
     )
 
-    # weather: BarentsWatch MetHyd verbatim, day-assigned by its own timestamp. The payload's
-    # embedded observation day/hour/minute is broken on real stations and stays out of the table.
+    # weather: BarentsWatch MetHyd verbatim, received in the day; ts is the broadcast's own time. The
+    # payload's embedded observation day/hour/minute is broken on real stations and stays out.
     con.execute(
         f"""
         CREATE OR REPLACE TABLE weather AS
         SELECT mmsi, wxts AS ts,
                CAST(r->>'functionalId' AS TINYINT) AS functional_id,
                CAST(r->>'latitude' AS DOUBLE) AS lat, CAST(r->>'longitude' AS DOUBLE) AS lon,
-               {weather_cols()}, CAST(wxts AS DATE) AS day
-        FROM env WHERE k = 'methyd' AND wxts >= ? AND wxts < ?
+               {weather_cols()}, CAST(recv AS DATE) AS day
+        FROM env WHERE k = 'methyd' AND recv >= ? AND recv < ?
         ORDER BY mmsi, ts
         """,
         [day_start, day_end],
@@ -204,6 +213,13 @@ def process_day(day, files, con, catalog):
         replace_day(con, catalog, day, name)
     replace_day(con, catalog, day, "positions")
     print(f"{day}: {n_pos} positions, {n_rx} receptions, {n_wx} weather", file=sys.stderr)
+
+
+def prior_positions(catalog, day):
+    """The previous day's transmissions (id, ts), for copies that arrive after midnight."""
+    prev = (datetime.fromisoformat(day) - timedelta(days=1)).date().isoformat()
+    tbl = retry(lambda: catalog.load_table("ais.positions"))
+    return retry(lambda: tbl.scan(row_filter=f"day = '{prev}'", selected_fields=("id", "ts")).to_arrow())
 
 
 def replace_day(con, catalog, day, name):
@@ -273,9 +289,9 @@ def normalized_bucket():
 
 
 def fetch_day(day, dest):
-    """Copy a day's normalized hours, and the two boundary hours, out of the bucket into dest.
+    """Copy a day's normalized hours out of the bucket into dest.
 
-    The layout is flat (normalized/v1/YYYY/MM/DD/HH.gz), so this lists three day prefixes rather than walking
+    The layout is flat (normalized/v1/YYYY/MM/DD/HH.gz), so this lists one day prefix rather than walking
     the bucket: listing cost stays flat as the archive grows. Copying before reading keeps a
     mid-transfer reset a retryable per-file failure instead of a short day, and each file's size is
     checked against the object it came from.
@@ -287,10 +303,8 @@ def fetch_day(day, dest):
     local = pafs.LocalFileSystem()
     d = datetime.fromisoformat(day)
     want = day_key(day)
-    infos = []
-    for pd in (d - timedelta(days=1), d, d + timedelta(days=1)):
-        sel = pafs.FileSelector(f"{bucket}/{PREFIX}/{pd:%Y/%m/%d}", allow_not_found=True)
-        infos += [i for i in retry(lambda sel=sel: fs.get_file_info(sel)) if want.search(i.path)]
+    sel = pafs.FileSelector(f"{bucket}/{PREFIX}/{d:%Y/%m/%d}", allow_not_found=True)
+    infos = [i for i in retry(lambda: fs.get_file_info(sel)) if want.search(i.path)]
 
     def fetch(info):
         path = Path(dest) / info.path[len(bucket) + 1 :]

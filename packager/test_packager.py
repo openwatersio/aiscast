@@ -53,17 +53,17 @@ def make_tree(tmp_path, extra_day=(), extra_boundary=()):
     return root
 
 
-def event_at(tpl, id, ts, **flags):
+def event_at(tpl, id, ts, recv=None, **flags):
     e = copy.deepcopy(tpl)
-    e["r"]["id"], e["r"]["time"], e["t"] = id, ts, ts
+    e["r"]["id"], e["r"]["time"], e["t"] = id, ts, recv or ts
     e.update(flags)
     return e
 
 
-def copy_at(tpl, id, ts, source="aishub", license="aishub-terms"):
+def copy_at(tpl, id, ts, source="aishub", license="aishub-terms", recv=None):
     c = copy.deepcopy(tpl)
     c["r"].update(id=id, time=ts, source=source, station=source, license=license)
-    c["t"] = ts
+    c["t"] = recv or ts
     return c
 
 
@@ -89,14 +89,18 @@ def crafted(envs):
         # implausible: archived in the stream, withheld from the table like the live stream withheld it
         event_at(ev, "dddd0004", "2026-09-01T13:30:00Z", implausible=True),
         copy_at(cp, "dddd0004", "2026-09-01T13:30:00Z"),
+        # a satellite pass relayed nearly eighteen hours late: transmitted the previous evening,
+        # received today, so it belongs to today with its own timestamp
+        event_at(ev, "ffff0006", "2026-08-31T20:00:00Z", recv="2026-09-01T13:50:00Z"),
+        copy_at(cp, "ffff0006", "2026-08-31T20:00:00Z", source="barentswatch", license="NLOD-2.0", recv="2026-09-01T13:50:00Z"),
     ]
     wx = copy.deepcopy(methyd)
     wx["r"]["msgtime"] = "2026-09-01T13:40:00+00:00"
     extra_day.append(wx)
     boundary = [
-        # received in D+1's first hour, transmitted before midnight: belongs to D
-        event_at(ev, "eeee0005", "2026-09-01T23:59:58Z"),
-        copy_at(cp, "eeee0005", "2026-09-01T23:59:59Z"),
+        # transmitted just before midnight, received just after: it belongs to the day it arrived
+        event_at(ev, "eeee0005", "2026-09-01T23:59:58Z", recv="2026-09-02T00:00:01Z"),
+        copy_at(cp, "eeee0005", "2026-09-01T23:59:58Z", recv="2026-09-02T00:00:01Z"),
     ]
     return extra_day, boundary
 
@@ -126,15 +130,15 @@ def test_package_day(packaged):
     weather = rows(catalog, "weather")
     vessels = rows(catalog, "vessels")
 
-    # expected positions, modeled independently of the SQL: unflagged position events in the day,
-    # crash-window pair collapsed
+    # expected positions, modeled independently of the SQL: unflagged position events received in
+    # the day, crash-window pair collapsed
     fix_pos = sum(
         1 for e in envs
         if e["k"] == "event" and not e.get("implausible") and not e.get("stale")
         and e["r"]["msg_type"] in ("PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "LongRangeAisBroadcastMessage")
-        and e["r"]["time"].startswith("2026-09-01")
+        and e["t"].startswith("2026-09-01")
     )
-    want = fix_pos + 1 + 1 + 2 + 1  # dup-copy tx, collapsed pair, repeat pair, boundary tx
+    want = fix_pos + 1 + 1 + 2 + 1  # dup-copy tx, collapsed pair, repeat pair, late satellite tx
     assert len(positions) == want
 
     keys = {(p["id"], p["ts"]) for p in positions}
@@ -142,7 +146,10 @@ def test_package_day(packaged):
     assert sum(1 for p in positions if p["id"] == "bbbb0002") == 1, "crash pair must collapse"
     assert sum(1 for p in positions if p["id"] == "cccc0003") == 2, "re-transmission must not collapse"
     assert not any(p["id"] == "dddd0004" for p in positions), "implausible stays out"
-    assert any(p["id"] == "eeee0005" for p in positions), "midnight boundary transmission belongs to the day"
+    assert not any(p["id"] == "eeee0005" for p in positions), "a transmission received after midnight belongs to the next day"
+    late = [p for p in positions if p["id"] == "ffff0006"]
+    assert len(late) == 1, "a report received hours late must not be lost"
+    assert late[0]["ts"].isoformat().startswith("2026-08-31T20:00"), "it keeps its own timestamp"
     assert all(p["day"].isoformat() == DAY for p in positions)
 
     by_id = {}
@@ -152,8 +159,8 @@ def test_package_day(packaged):
     assert {r["license"] for r in by_id["aaaa0001"]} == {"NLOD-2.0", "aishub-terms"}
     assert len(receptions) >= len(positions)
 
-    assert len(weather) == 1, "only the in-day observation; the fixture's out-of-day record stays out"
-    wx = weather[0]
+    assert len(weather) == 2, "every observation received in the day, whatever its own clock says"
+    wx = next(w for w in weather if w["avg_wind_speed"] is not None)
     assert wx["avg_wind_speed"] is not None and isinstance(wx["sea_state"], str)
     assert wx["day"].isoformat() == DAY
 
@@ -198,3 +205,31 @@ def test_positions_without_copies_fails(tmp_path):
     files = sorted(glob.glob(f"{root}/**/*.gz", recursive=True))
     with pytest.raises(SystemExit, match="join lost data"):
         packager.process_day(DAY, files, duckdb.connect(), packager.get_catalog())
+
+
+def test_copy_after_midnight_joins_the_previous_days_transmission(tmp_path):
+    """A copy that arrives after midnight for a transmission received before it still lands in
+    receptions, joined to the previous day's position."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    envs = fixture_envelopes()
+    ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+    root = tmp_path / "normalized"
+    days = {
+        "2026-08-31": [event_at(ev, "abab0007", "2026-08-31T23:59:59Z"),
+                       copy_at(cp, "abab0007", "2026-08-31T23:59:59Z", source="kystverket", license="NLOD-2.0")],
+        "2026-09-01": [copy_at(cp, "abab0007", "2026-08-31T23:59:59Z", recv="2026-09-01T00:00:40Z")],
+    }
+    catalog = packager.get_catalog()
+    con = duckdb.connect()
+    for day, envelopes in days.items():
+        d = root / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True)
+        hour = "23" if day == "2026-08-31" else "00"
+        with gzip.open(d / f"{hour}.gz", "wt") as f:
+            f.writelines(json.dumps(e) + "\n" for e in envelopes)
+        packager.process_day(day, sorted(glob.glob(f"{d}/*.gz")), con, catalog)
+
+    rx = [r for r in rows(catalog, "receptions") if r["id"] == "abab0007"]
+    assert {r["day"].isoformat() for r in rx} == {"2026-08-31", "2026-09-01"}, "the late copy must not drop"
+    assert len({r["ts"] for r in rx}) == 1, "both copies join the one transmission"
