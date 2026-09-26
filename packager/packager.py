@@ -501,10 +501,23 @@ def main():
     days = [args.date] if args.date else [(now - timedelta(days=n)).strftime("%Y-%m-%d") for n in range(7, 0, -1)]
     packaged = retry(lambda: catalog.load_table("ais.positions")).properties
 
+    # A day's staging database is several times the day's compressed input (about 7 GB for six hours
+    # of production traffic), so it lives only for the run and is deleted however the run ends.
     stage = HERE / "stage"
-    stage.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(stage, ignore_errors=True)  # a run the OS killed leaves it behind
+    stage.mkdir(parents=True)
     con = duckdb.connect(str(stage / "packager.duckdb"))
     con.execute(f"SET memory_limit='4GB'; SET temp_directory='{stage}/tmp'")
+    try:
+        failed = package_days(days, args, all_files, today, packaged, con, catalog)
+    finally:
+        con.close()
+        shutil.rmtree(stage, ignore_errors=True)
+    if failed:
+        sys.exit(f"failed: {', '.join(failed)}")
+
+
+def package_days(days, args, all_files, today, packaged, con, catalog):
     failed = []
     for day in days:
         fetched = None
@@ -535,8 +548,7 @@ def main():
         finally:
             if fetched:
                 shutil.rmtree(fetched, ignore_errors=True)  # re-fetchable; the bucket is the source of truth
-    if failed:
-        sys.exit(f"failed: {', '.join(failed)}")
+    return failed
 
 
 if __name__ == "__main__":

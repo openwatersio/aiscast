@@ -384,6 +384,7 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
     bad["v"] = 99
     hour(d3, "01", [bad])
     assert run() == f"failed: {d3}", "the bad day fails the run"
+    assert not (packager.HERE / "stage").exists(), "a run leaves no staging database behind"
     days = {p["day"].isoformat() for p in rows(packager.get_catalog(), "positions")}
     assert days == {d1, d2}, "the days after the bad one still package"
 
