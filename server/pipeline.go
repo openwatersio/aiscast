@@ -85,6 +85,9 @@ type Pipeline struct {
 	lastBySource sync.Map // source → time.Time of last event; /metrics reads it
 	delays       delayStats
 	mcp          *mcpService // /mcp: the cache as tools for AI assistants
+	streams      streamGauge // open streams by protocol and tier; /metrics
+	requests     requestMetrics
+	fanout       struct{ v0, v1, sse, nmea fanoutCounter }
 	stats        struct {
 		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts atomic.Int64
 		bySource                                                                                                                         sync.Map // source → *counterT

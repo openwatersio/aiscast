@@ -1,0 +1,37 @@
+// Grafana Alloy on the aiscast box: scrapes aiscast, Caddy, and the host every 60 s and pushes the samples
+// to Grafana Cloud. The endpoint and token come from /etc/alloy.env through the systemd drop-in next to
+// this unit. The 60 s interval keeps every series at one sample a minute, which is how the free tier counts.
+
+prometheus.exporter.unix "host" { }
+
+prometheus.scrape "host" {
+	targets    = prometheus.exporter.unix.host.targets
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+// /metrics is box-local: Caddy answers it with 404 from outside.
+prometheus.scrape "aiscast" {
+	targets    = [{"__address__" = "127.0.0.1:8080"}]
+	job_name   = "aiscast"
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+// Caddy's admin endpoint, loopback only. The Caddyfile's `servers { metrics }` adds the per-request series.
+prometheus.scrape "caddy" {
+	targets    = [{"__address__" = "127.0.0.1:2019"}]
+	job_name   = "caddy"
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+	external_labels = {"host" = constants.hostname}
+
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_PROM_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_PROM_USER")
+			password = sys.env("GRAFANA_CLOUD_TOKEN")
+		}
+	}
+}

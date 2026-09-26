@@ -53,6 +53,7 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	defer p.streams.open("nmea", cl)()
 
 	c, err := websocket.Accept(w, r, wsOpts)
 	if err != nil {
@@ -102,12 +103,11 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 				p.stats.thinned.Add(1)
 				continue
 			}
-			wctx, wc := context.WithTimeout(ctx, 10*time.Second)
-			err := c.Write(wctx, websocket.MessageText, []byte(ev.nmeaText()))
-			wc()
-			if err != nil {
+			b := []byte(ev.nmeaText())
+			if wsWrite(ctx, c, b) != nil {
 				return
 			}
+			p.fanout.nmea.add(len(b))
 		}
 	}
 }

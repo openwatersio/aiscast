@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,48 +41,6 @@ func (p *Pipeline) serveHealth(w http.ResponseWriter, r *http.Request) {
 func serveRobots(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, "User-agent: *\nDisallow: /\n")
-}
-
-// serveMetrics writes Prometheus text format by hand; no client library needed for a dozen series.
-func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	counter := func(name, help string, v int64) {
-		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", name, help, name, name, v)
-	}
-	counter("aiscast_events_total", "decoded, deduplicated AIS messages", p.stats.events.Load())
-	counter("aiscast_duplicates_total", "messages dropped as duplicates", p.stats.dup.Load())
-	counter("aiscast_parse_errors_total", "unparseable input lines", p.stats.parseErr.Load())
-	counter("aiscast_replayed_total", "buffered sentences archived without live emit (TAG time older than 60 s)", p.stats.replayed.Load())
-	counter("aiscast_decode_failures_total", "sentences that did not decode to an AIS message", p.stats.decodeFail.Load())
-	counter("aiscast_client_drops_total", "events dropped because a client queue was full", p.stats.clientDrops.Load())
-	counter("aiscast_ping_timeouts_total", "stream connections closed because the client stopped answering pings", p.stats.pingTimeouts.Load())
-	counter("aiscast_archive_drops_total", "receptions dropped because the archive queue was full", p.arch.drops.Load())
-	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
-	counter("aiscast_thinned_total", "events withheld from connections over their per-second rate", p.stats.thinned.Load())
-	counter("aiscast_implausible_total", "positions dropped for implying an impossible speed", p.stats.implausible.Load())
-	counter("aiscast_stale_total", "events withheld from the stream for being older than the vessel's newest", p.stats.stale.Load())
-	counter("aiscast_uncorroborated_total", "low-trust events kept local because no trusted source has heard the vessel", p.stats.uncorroborated.Load())
-
-	p.vmu.RLock()
-	nv := len(p.vessels)
-	p.vmu.RUnlock()
-	p.smu.RLock()
-	ns := len(p.subs)
-	p.smu.RUnlock()
-	fmt.Fprintf(w, "# TYPE aiscast_vessels gauge\naiscast_vessels %d\n# TYPE aiscast_clients gauge\naiscast_clients %d\n", nv, ns)
-
-	fmt.Fprintf(w, "# HELP aiscast_source_last_age_seconds seconds since the last event from each source\n# TYPE aiscast_source_last_age_seconds gauge\n")
-	var sources []string
-	p.lastBySource.Range(func(k, _ any) bool { sources = append(sources, k.(string)); return true })
-	sort.Strings(sources)
-	for _, s := range sources {
-		fmt.Fprintf(w, "aiscast_source_last_age_seconds{source=%q} %.0f\n", s, p.sourceAge(s).Seconds())
-	}
-	fmt.Fprintf(w, "# HELP aiscast_source_events_total events per source\n# TYPE aiscast_source_events_total counter\n")
-	p.stats.bySource.Range(func(k, v any) bool {
-		fmt.Fprintf(w, "aiscast_source_events_total{source=%q} %d\n", k.(string), v.(*counterT).Load())
-		return true
-	})
 }
 
 // ---- rate limiting: fixed one-minute window per key. ponytail: token bucket if burst shape ever matters. ----

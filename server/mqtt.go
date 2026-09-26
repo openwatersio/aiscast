@@ -250,6 +250,7 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 			code = mqttUnavailable
 		} else {
 			defer release()
+			defer p.streams.open("mqtt", cl)()
 		}
 	}
 	if err := write(mqttEncode(mqttConnack, 0, []byte{0, code})); err != nil || code != mqttAccepted {
