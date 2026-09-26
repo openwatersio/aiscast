@@ -5,11 +5,14 @@ import copy
 import glob
 import gzip
 import json
+import math
 import os
 import sys
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -56,7 +59,7 @@ def make_tree(tmp_path, extra_day=(), extra_boundary=()):
 
 def event_at(tpl, id, ts, recv=None, nofix=False, **flags):
     e = copy.deepcopy(tpl)
-    e["r"]["id"], e["r"]["time"], e["t"] = id, ts, recv or ts
+    e["r"]["id"], e["r"]["time"], e["t"] = hexid(id), ts, recv or ts
     if nofix:  # the server leaves lat/lon off when the report has no usable position
         del e["r"]["lat"], e["r"]["lon"]
     e.update(flags)
@@ -65,7 +68,7 @@ def event_at(tpl, id, ts, recv=None, nofix=False, **flags):
 
 def copy_at(tpl, id, ts, source="aishub", license="aishub-terms", recv=None, tx=None):
     c = copy.deepcopy(tpl)
-    c["r"].update(id=id, time=ts, tx=tx or ts, source=source, station=source, license=license)
+    c["r"].update(id=hexid(id), time=ts, tx=tx or ts, source=source, station=source, license=license)
     c["t"] = recv or ts
     return c
 
@@ -141,8 +144,20 @@ def packaged(tmp_path):
     return envs, catalog, con, files
 
 
+def hexid(short):
+    """A crafted id as the 32 hex characters the stream carries: short names pad with zeros."""
+    return short if len(short) == 32 else short.ljust(32, "0")
+
+
 def rows(catalog, name):
-    return catalog.load_table(f"ais.{name}").scan().to_arrow().to_pylist()
+    """Rows with ids read back as the short names the tests use (real fixture ids stay 32 hex)."""
+    out = catalog.load_table(f"ais.{name}").scan().to_arrow().to_pylist()
+    for r in out:
+        if isinstance(r.get("id"), bytes):
+            assert len(r["id"]) == 16, "ids are stored as 16 raw bytes"
+            h = r["id"].hex()
+            r["id"] = h[:8] if h[8:] == "0" * 24 else h
+    return out
 
 
 def test_package_day(packaged):
@@ -196,9 +211,35 @@ def test_package_day(packaged):
 
     assert any(v["name"] for v in vessels), "statics fold into vessels"
 
-    for name in ("positions", "receptions", "weather"):
+    for name, want in (("positions", ["day", "mmsi_bucket"]), ("receptions", ["day", "mmsi_bucket"]), ("weather", ["day"])):
         spec = catalog.load_table(f"ais.{name}").spec()
-        assert [f.name for f in spec.fields] == ["day"], f"{name} must be day-partitioned"
+        assert [f.name for f in spec.fields] == want, f"{name} partitions"
+    assert "bucket[32]" in str(catalog.load_table("ais.positions").spec().fields[1].transform)
+    assert catalog.load_table("ais.positions").properties[packager.ROW_GROUP_KEY] == packager.ROW_GROUP_ROWS
+
+    # ids are the stream's hex, stored as its 16 raw bytes
+    stream_ids = {e["r"]["id"] for e in envs if e["k"] == "event"}
+    raw = catalog.load_table("ais.positions").scan().to_arrow().column("id").to_pylist()
+    assert all(len(b) == 16 for b in raw) and {b.hex() for b in raw} & stream_ids, "ids unhex from the stream"
+
+    # every reception carries its position's mmsi
+    pos_mmsi = {(p["id"], p["ts"]): p["mmsi"] for p in positions}
+    for r in rows(catalog, "receptions"):
+        if (r["id"], r["ts"]) in pos_mmsi:
+            assert r["mmsi"] == pos_mmsi[(r["id"], r["ts"])]
+
+    # cell is the one-degree cell of the position, null without one
+    for p in positions:
+        if p["lat6"] is None:
+            assert p["cell"] is None
+        else:
+            lat, lon = p["lat6"] / 600000, p["lon6"] / 600000
+            assert p["cell"] == min(math.floor(lat) + 90, 179) * 360 + min(math.floor(lon) + 180, 359)
+
+    # within each written file, positions run in cell order, so a bbox query prunes on cell statistics
+    for f in catalog.load_table("ais.positions").inspect.files().to_pylist():
+        cells = [c for c in pq.read_table(f["file_path"].removeprefix("file://"), columns=["cell"]).column("cell").to_pylist() if c is not None]
+        assert cells == sorted(cells), f"{f['file_path']} is not in cell order"
 
 
 def test_rerun_replaces_day(packaged):
@@ -380,9 +421,9 @@ def test_vessel_fields_merge_on_their_own_times_in_any_day_order(tmp_path):
 
     root = tmp_path / "normalized"
     days = {  # packaged in this order
-        "2026-09-02": static("st000001", "2026-09-01T05:00:00Z", "2026-09-02T01:00:00Z", callsign="C5")
-                      + static("st000002", "2026-09-01T10:00:00Z", "2026-09-02T01:00:00Z", name="N10"),
-        "2026-09-01": static("st000003", "2026-09-01T08:00:00Z", "2026-09-01T08:00:00Z", callsign="C8"),
+        "2026-09-02": static("5a000001", "2026-09-01T05:00:00Z", "2026-09-02T01:00:00Z", callsign="C5")
+                      + static("5a000002", "2026-09-01T10:00:00Z", "2026-09-02T01:00:00Z", name="N10"),
+        "2026-09-01": static("5a000003", "2026-09-01T08:00:00Z", "2026-09-01T08:00:00Z", callsign="C8"),
     }
     catalog = packager.get_catalog()
     con = duckdb.connect()
@@ -395,3 +436,28 @@ def test_vessel_fields_merge_on_their_own_times_in_any_day_order(tmp_path):
 
     [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == mmsi]
     assert (v["name"], v["callsign"]) == ("N10", "C8"), "the callsign seen at 08:00 beats the one seen at 05:00"
+
+
+def test_cell_covers_the_poles_and_the_antimeridian():
+    """Every position has a cell in 0..64799 (latitude 90 and longitude 180 fold into the last row and
+    column), and no position means no cell."""
+    con = duckdb.connect()
+    for lat, lon, want in ((-90, -180, 0), (0, 0, 90 * 360 + 180), (90, 180, 179 * 360 + 359), (59.9, 10.7, 149 * 360 + 190),
+                           ("NULL", 10.7, None), (59.9, "NULL", None)):
+        got = con.execute(f"SELECT {packager.cell_sql(lat, lon)}").fetchone()[0]
+        assert got == want, (lat, lon, got, want)
+
+
+def test_an_older_table_layout_is_refused(tmp_path):
+    """A table created by an earlier packager (string ids, day-only partitions) is never written into."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    old = pa.schema([("id", pa.string()), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("day", pa.date32())])
+    from pyiceberg.catalog import load_catalog
+    wh = packager.HERE / "warehouse"
+    wh.mkdir()
+    cat = load_catalog("local", uri=f"sqlite:///{wh}/catalog.db", warehouse=f"file://{wh}")
+    cat.create_namespace("ais")
+    cat.create_table("ais.positions", schema=old)
+    with pytest.raises(SystemExit, match="older layout"):
+        packager.get_catalog()

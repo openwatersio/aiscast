@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
       # keep the --with list in sync with the script header in packager/packager.py
-      - run: uv run --with pytest --with duckdb --with pyarrow --with "pyiceberg[sql-sqlite]" pytest -q packager/
+      - run: uv run --with pytest --with duckdb --with pyarrow --with "pyiceberg[sql-sqlite,pyiceberg-core]" pytest -q packager/
 
   deploy:
     needs: [test, packager] # deploy ships the packager script and enables its timer

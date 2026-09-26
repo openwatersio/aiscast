@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["duckdb", "pyarrow", "pyiceberg[sql-sqlite]"]
+# dependencies = ["duckdb", "pyarrow", "pyiceberg[sql-sqlite,pyiceberg-core]"]
 # ///
 """Packager: the normalized archive -> day-partitioned Iceberg tables.
 
@@ -31,13 +31,15 @@ POS_TYPES = "('PositionReport', 'StandardClassBPositionReport', 'ExtendedClassBP
 PREFIX = "normalized/v1"  # the stream's place in the archive bucket, beside the license-prefixed raw layout
 WINDOW_S = 10  # the server's dedupe window; joins and the restart collapse use it, never re-derive it
 
+# id is the server's 16-byte content hash, stored raw: the stream carries it as 32 hex characters,
+# and hex would double the widest column in every row.
 POSITIONS_SCHEMA = pa.schema([
-    ("id", pa.string()), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("msg_type", pa.int8()),
-    ("lat6", pa.int32()), ("lon6", pa.int32()), ("sog10", pa.int16()), ("cog10", pa.int16()),
+    ("id", pa.binary(16)), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("msg_type", pa.int8()),
+    ("lat6", pa.int32()), ("lon6", pa.int32()), ("cell", pa.int32()), ("sog10", pa.int16()), ("cog10", pa.int16()),
     ("heading", pa.int16()), ("navstat", pa.int8()), ("corroborated", pa.bool_()), ("day", pa.date32()),
 ])
 RECEPTIONS_SCHEMA = pa.schema([
-    ("id", pa.string()), ("ts", pa.timestamp("us")), ("source", pa.string()), ("station", pa.string()),
+    ("id", pa.binary(16)), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("source", pa.string()), ("station", pa.string()),
     ("recv_ts", pa.timestamp("us")), ("license", pa.string()), ("day", pa.date32()),
 ])
 VESSELS_SCHEMA = pa.schema([
@@ -151,10 +153,12 @@ def process_day(day, files, con, catalog, fingerprint=None):
     con.execute(
         f"""
         CREATE OR REPLACE TABLE positions AS
-        SELECT id, mmsi, ts, msg_type, lat6, lon6, sog10, cog10, heading, navstat, NOT uncorroborated AS corroborated,
-               CAST(recv AS DATE) AS day
+        SELECT unhex(id) AS id, mmsi, ts, msg_type, lat6, lon6,
+               {cell_sql("lat", "lon")} AS cell,
+               sog10, cog10, heading, navstat, NOT uncorroborated AS corroborated, CAST(recv AS DATE) AS day
         FROM (
             SELECT id, mmsi, ct AS ts, recv, uncorroborated,
+                   CAST(r->>'lat' AS DOUBLE) AS lat, CAST(r->>'lon' AS DOUBLE) AS lon,
                    CAST(message->>'MessageID' AS TINYINT) AS msg_type,
                    -- the event's lat/lon, not the message's: the server leaves them off for the
                    -- not-available values and (0,0), and its rule is the only one
@@ -173,7 +177,6 @@ def process_day(day, files, con, catalog, fingerprint=None):
               AND mt IN {POS_TYPES}
               AND recv >= ? AND recv < ?
         )
-        ORDER BY mmsi, ts
         """,
         [day_start, day_end],
     )
@@ -188,10 +191,10 @@ def process_day(day, files, con, catalog, fingerprint=None):
     con.execute(
         f"""
         CREATE OR REPLACE TABLE receptions AS
-        SELECT p.id, p.ts, c.source, c.station, c.recv AS recv_ts, c.license, CAST(c.recv AS DATE) AS day
-        FROM (SELECT id, tx, source, station, recv, license FROM env WHERE k = 'copy' AND recv >= ? AND recv < ?) c
+        SELECT p.id, p.mmsi, p.ts, c.source, c.station, c.recv AS recv_ts, c.license, CAST(c.recv AS DATE) AS day
+        FROM (SELECT unhex(id) AS id, tx, source, station, recv, license FROM env WHERE k = 'copy' AND recv >= ? AND recv < ?) c
         LEFT JOIN folded f ON f.id = c.id AND f.ts = c.tx
-        JOIN (SELECT id, ts FROM positions UNION ALL SELECT id, ts FROM prior_positions) p
+        JOIN (SELECT id, mmsi, ts FROM positions UNION ALL SELECT id, mmsi, ts FROM prior_positions) p
           ON p.id = c.id AND p.ts = coalesce(f.to_ts, c.tx)
         ORDER BY source, station, recv
         """,
@@ -256,23 +259,37 @@ def collapse_reaccepts(con):
     # ponytail: a fold is known only on the day it happened, so a copy arriving after midnight for a
     # re-accept folded the previous day drops; persist folds if that ever shows up in the counts
     con.register("folded", pa.table({"id": [f[0] for f in folded], "ts": [f[1] for f in folded], "to_ts": [f[2] for f in folded]},
-                                    schema=pa.schema([("id", pa.string()), ("ts", pa.timestamp("us")), ("to_ts", pa.timestamp("us"))])))
+                                    schema=pa.schema([("id", pa.binary()), ("ts", pa.timestamp("us")), ("to_ts", pa.timestamp("us"))])))
     if drop:
         con.register("dropped", pa.table({"row": drop}))
         con.execute("DELETE FROM positions WHERE rowid IN (SELECT row FROM dropped)")
 
 
 def prior_positions(catalog, day):
-    """The previous day's transmissions (id, ts), for copies that arrive after midnight."""
+    """The previous day's transmissions (id, mmsi, ts), for copies that arrive after midnight."""
     prev = (datetime.fromisoformat(day) - timedelta(days=1)).date().isoformat()
     tbl = retry(lambda: catalog.load_table("ais.positions"))
-    return retry(lambda: tbl.scan(row_filter=f"day = '{prev}'", selected_fields=("id", "ts")).to_arrow())
+    return retry(lambda: tbl.scan(row_filter=f"day = '{prev}'", selected_fields=("id", "mmsi", "ts")).to_arrow())
+
+
+def cell_sql(lat, lon):
+    """The one-degree cell of a position, row-major from (-90, -180), null without a position. The poles
+    and the antimeridian fold into the last row and column, so every position has a cell in 0..64799.
+    least() skips nulls in DuckDB, so the null case is explicit."""
+    return (f"CASE WHEN {lat} IS NULL OR {lon} IS NULL THEN NULL "
+            f"ELSE CAST(least(floor({lat}) + 90, 179) * 360 + least(floor({lon}) + 180, 359) AS INTEGER) END")
+
+
+# Row order within each written file. Positions sort by cell first so a bbox query prunes on the cell
+# column's statistics; per-vessel queries lose nothing, since the mmsi bucket already confines them
+# to one file in 32 per day.
+ORDER = {"positions": "cell NULLS LAST, mmsi, ts", "receptions": "source, station, recv_ts", "weather": "mmsi, ts"}
 
 
 def replace_day(con, catalog, day, name, properties=None):
     def go():
         tbl = catalog.load_table(f"ais.{name}")
-        data = con.execute(f"SELECT * FROM {name}").to_arrow_table().cast(tbl.schema().as_arrow())
+        data = con.execute(f"SELECT * FROM {name} ORDER BY {ORDER[name]}").to_arrow_table().cast(tbl.schema().as_arrow())
         with tbl.transaction() as tx:
             tx.delete(f"day = '{day}'")  # rerunning a day replaces it
             tx.append(data)
@@ -411,6 +428,22 @@ def _fetch(fs, local, info, path):
         raise OSError(f"{info.path}: copied {got} of {info.size} bytes")
 
 
+# Positions sort by cell inside each file, but a reader skips data by row-group statistics, and at the
+# default of about a million rows a day's file is one or two row groups spanning nearly every cell.
+# Smaller groups give each a narrow cell range for a bbox query to skip on.
+ROW_GROUP_KEY, ROW_GROUP_ROWS = "write.parquet.row-group-limit", "32768"
+
+
+def _specs():
+    from pyiceberg.transforms import BucketTransform, IdentityTransform
+
+    # Identity on day, so replacing a day rewrites that partition, not the table. Positions and
+    # receptions also bucket by mmsi, so one vessel's history reads one file in 32 per day.
+    by_day = [("day", IdentityTransform(), "day")]
+    by_vessel = by_day + [("mmsi", BucketTransform(32), "mmsi_bucket")]
+    return {"positions": by_vessel, "receptions": by_vessel, "weather": by_day}
+
+
 def get_catalog():
     from pyiceberg.catalog import load_catalog
 
@@ -425,12 +458,33 @@ def get_catalog():
     for name, schema in [("positions", POSITIONS_SCHEMA), ("receptions", RECEPTIONS_SCHEMA), ("vessels", VESSELS_SCHEMA), ("weather", WEATHER_SCHEMA)]:
         if ("ais", name) not in retry(lambda: list(catalog.list_tables("ais"))):
             retry(lambda: catalog.create_table(f"ais.{name}", schema=schema))
-        if "day" in schema.names:
-            # identity partition on day, so replacing a day rewrites that partition, not the table
+        tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
+        if name == "positions" and tbl.properties.get(ROW_GROUP_KEY) != ROW_GROUP_ROWS:
+            with tbl.transaction() as tx:
+                tx.set_properties({ROW_GROUP_KEY: ROW_GROUP_ROWS})
             tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
-            if not tbl.spec().fields:
-                retry(lambda: tbl.update_spec().add_identity("day").commit())
+        spec = _specs().get(name, [])
+        if spec and not tbl.spec().fields:
+            with tbl.update_spec() as u:
+                for field, transform, as_name in spec:
+                    u.add_field(field, transform, as_name)
+            tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
+        check_layout(tbl, name, schema, spec)
     return catalog
+
+
+def check_layout(tbl, name, schema, spec):
+    """Refuse a table laid out differently from what this packager writes. A table created by an
+    earlier version cannot take these rows (a string id cannot become fixed bytes) or keeps the old
+    partitioning for every day written into it, so it is dropped and repackaged, never written into."""
+    def shape(s):  # as Iceberg stores it: no 8- or 16-bit integers, no large_ variants
+        return [(f.name, {"int8": "int32", "int16": "int32"}.get(str(f.type), str(f.type).replace("large_", ""))) for f in s]
+
+    have_spec = [(f.name, str(f.transform)) for f in tbl.spec().fields]
+    want_spec = [(n, str(t)) for _, t, n in spec]
+    if shape(tbl.schema().as_arrow()) != shape(schema) or have_spec != want_spec:
+        sys.exit(f"ais.{name} has an older layout (columns {shape(tbl.schema().as_arrow())}, partitions {have_spec}); "
+                 f"drop it and repackage: this packager writes columns {shape(schema)}, partitions {want_spec}")
 
 
 def main():
