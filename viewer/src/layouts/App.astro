@@ -1,0 +1,138 @@
+---
+import { ClientRouter } from "astro:transitions";
+import Sidebar from "../components/Sidebar.astro";
+import { API_PUBLIC } from "../lib/api";
+import "../styles/global.css";
+import "maplibre-gl/dist/maplibre-gl.css";
+
+interface Props {
+  title: string;
+  description: string;
+  /** Absolute canonical path. A request that arrives on any other path redirects here. */
+  canonical: string;
+  noindex?: boolean;
+  jsonLd?: Record<string, unknown>;
+  /** Where the sidebar's back arrow goes. Set by anything pushed onto the stack. */
+  back?: string;
+  /**
+   * Identity of the sidebar's contents. Two routes sharing a key keep the same sidebar DOM
+   * across a navigation, which is how opening a vessel from a list leaves the list in place.
+   * Defaults to the path, so every other route renders its own.
+   */
+  sidebarKey?: string;
+  /** Where the detail pane's close button goes: back to the list it was opened from. */
+  closeTo?: string;
+  /** Route intent handed to the persistent map, read again after every navigation. */
+  focusMmsi?: number;
+  /** `lon,lat` the server already knows, so the camera moves without waiting on the stream. */
+  focusAt?: [number, number];
+  fitBBox?: [number, number, number, number];
+}
+
+const {
+  title,
+  description,
+  canonical,
+  noindex = false,
+  jsonLd,
+  back,
+  sidebarKey = Astro.url.pathname,
+  closeTo = "/",
+  focusMmsi,
+  focusAt,
+  fitBBox,
+} = Astro.props;
+
+const canonicalURL = new URL(canonical, Astro.site);
+
+// The sidebar is a navigation stack. Its root is search and the destinations; stations,
+// network and token push onto it. The second pane is only ever a vessel opened from a list,
+// which is the one place two panes say something one cannot.
+const stacked = Astro.slots.has("stack");
+const detail = Astro.slots.has("detail");
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonicalURL.href} />
+    {noindex && <meta name="robots" content="noindex, follow" />}
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonicalURL.href} />
+    <meta property="og:site_name" content="Open Waters AIS" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+
+    <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
+    <meta name="aiscast:api" content={API_PUBLIC} />
+    {jsonLd && <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+    <ClientRouter />
+  </head>
+  <body
+    class="h-full"
+    data-focus-mmsi={focusMmsi ?? ""}
+    data-focus-at={focusAt ? focusAt.join(",") : ""}
+    data-fit-bbox={fitBBox ? fitBBox.join(",") : ""}
+  >
+    <!-- The map is the page. Panes float over it, so it is never unmounted, never resized
+         by a route change, and never display:none (a zero-size map never fires `load`, and
+         then nothing subscribes at all). -->
+    <div id="map" transition:persist="aiscast-map"></div>
+
+    <div
+      class="pointer-events-none fixed inset-0 flex flex-col justify-end gap-2 p-2 md:flex-row md:justify-start md:gap-3 md:p-3"
+    >
+      <aside
+        data-map-inset
+        class="pane pointer-events-auto order-2 flex max-h-[50vh] w-full flex-col overflow-hidden md:order-1 md:max-h-full md:w-[340px] lg:w-[380px]"
+        transition:persist={sidebarKey}
+      >
+        <Sidebar back={back} showRoot={!stacked}>
+          <slot name="stack" />
+        </Sidebar>
+      </aside>
+
+      {
+        detail && (
+          <section
+            data-map-inset
+            class="pane sidebar-scroll pointer-events-auto relative order-1 max-h-[45vh] w-full md:order-2 md:max-h-full md:w-[380px] lg:w-[420px]"
+          >
+            <a
+              href={closeTo}
+              class="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full border no-underline backdrop-blur"
+              style="background-color: var(--surface-subtle); color: var(--text-secondary)"
+              aria-label="Close"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                class="size-4"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </a>
+            <div class="p-4 pr-12">
+              <slot name="detail" />
+            </div>
+          </section>
+        )
+      }
+    </div>
+
+    <script>
+      import "../lib/app";
+    </script>
+  </body>
+</html>

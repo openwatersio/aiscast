@@ -1,0 +1,19 @@
+---
+import App from "../layouts/App.astro";
+---
+
+<App
+  back="/"
+  title="Not found | Open Waters AIS"
+  description="No page at this address."
+  canonical="/404"
+  noindex
+>
+  <Fragment slot="stack">
+  <h1 class="text-xl font-semibold" style="color: var(--text)">Not found</h1>
+  <p class="mt-2 text-sm" style="color: var(--text-secondary)">
+    There is nothing at this address. Try the <a href="/">map</a>, or look up a vessel by
+    <a href="/vessels">MMSI</a>.
+  </p>
+  </Fragment>
+</App>
