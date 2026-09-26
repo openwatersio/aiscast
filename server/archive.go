@@ -158,7 +158,8 @@ func (a *archive) run() {
 
 func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 	hour := rx.RecvTime.UTC().Truncate(time.Hour)
-	hf := files[rx.Source]
+	stream := a.key(rx.Source, time.Time{}) // the key with the hour zeroed: one per source raw, one in total merged
+	hf := files[stream]
 	if hf != nil && !hf.hour.Equal(hour) {
 		a.close(hf)
 		hf = nil
@@ -168,7 +169,7 @@ func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 		if hf == nil {
 			return
 		}
-		files[rx.Source] = hf
+		files[stream] = hf
 	}
 	// one record per line: recv time, station, body as received (JSON envelopes are single-line)
 	if a.bare {

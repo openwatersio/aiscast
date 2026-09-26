@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -181,4 +183,27 @@ func hasLine(lines []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// The merged stream is one file per hour whatever source a record carries: two open handles on one
+// file would each append their own gzip stream and interleave them into a corrupt hour.
+func TestMergedStreamKeepsOneWriterPerHour(t *testing.T) {
+	dir := t.TempDir()
+	a := newNormArchive(dir, nil)
+	a.blocking = true
+	hour := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	const n = 20000
+	for i := 0; i < n; i++ {
+		src := []string{"norm", "kystverket", "aishub"}[i%3] // callers that disagree on the source
+		a.write(Reception{Source: src, RecvTime: hour.Add(time.Duration(i) * time.Millisecond), Body: fmt.Sprintf(`{"n":%d}`, i)})
+	}
+	a.shutdown()
+
+	b, err := os.ReadFile(filepath.Join(dir, a.key("", hour)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := gunzipLines(t, b); len(lines) != n {
+		t.Fatalf("hour holds %d of %d records", len(lines), n)
+	}
 }
