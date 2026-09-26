@@ -47,7 +47,7 @@ func feedable(ev *Event) bool {
 	if ev.Synthesized || ev.Packet == nil {
 		return false
 	}
-	for _, pfx := range []string{"udp:", "mmsi:", "http:", "v1:"} { // mmsi: is a UDP station re-keyed by its !AIVDO
+	for _, pfx := range []string{"station:", "udp:", "mmsi:"} { // mmsi: is a UDP station re-keyed by its !AIVDO
 		if strings.HasPrefix(ev.Source, pfx) {
 			return true
 		}

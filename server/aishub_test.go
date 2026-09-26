@@ -59,7 +59,7 @@ func TestReencodeKeepsChannel(t *testing.T) {
 
 func TestFeedableExcludesPublicSources(t *testing.T) {
 	pkt := ais.PositionReport{}
-	for src, want := range map[string]bool{"udp:abc": true, "mmsi:368168720": true, "http:station-1": true, "v1:ed25519:k": true, "kystverket": false, "digitraffic": false, "aisstream": false, "aishub": false} {
+	for src, want := range map[string]bool{"udp:abc": true, "mmsi:368168720": true, "station:station-1": true, "station:ed25519:k": true, "kystverket": false, "digitraffic": false, "aisstream": false, "aishub": false} {
 		if got := feedable(&Event{Source: src, Packet: pkt}); got != want {
 			t.Errorf("feedable(%s) = %v, want %v", src, got, want)
 		}
@@ -72,16 +72,16 @@ func TestFeedableExcludesPublicSources(t *testing.T) {
 func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	p.Ingest(Reception{Source: "v1:ed25519:k", Station: "v1:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDO,1,1,,A,B1mg=5@3wh<?d@8TIb3Q3wv00000,0*39`})
+	p.Ingest(Reception{Source: "station:ed25519:k", Station: "station:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDO,1,1,,A,B1mg=5@3wh<?d@8TIb3Q3wv00000,0*39`})
 	ev := <-sub.ch
-	if !ev.Synthesized || ev.Station != "v1:ed25519:k/self" {
+	if !ev.Synthesized || ev.Station != "station:ed25519:k/self" {
 		t.Errorf("synthesized=%v station=%q", ev.Synthesized, ev.Station)
 	}
 	if feedable(ev) {
 		t.Error("self-reported own ship fed to AISHub")
 	}
 	// The tag only marks own-ship sentences: a received !AIVDM carrying s:self stays a real reception.
-	p.Ingest(Reception{Source: "v1:ed25519:k", Station: "v1:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`})
+	p.Ingest(Reception{Source: "station:ed25519:k", Station: "station:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`})
 	ev = <-sub.ch
 	if ev.Synthesized {
 		t.Error("received VDM misclassified as synthesized")

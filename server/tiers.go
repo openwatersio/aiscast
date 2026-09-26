@@ -45,10 +45,10 @@ func (p *Pipeline) effective(c *Claims) *Claims {
 	return &e
 }
 
-// contributed24h sums the last 24 h of events over the stations a token can own: its /v1 and HTTP stations,
-// and the UDP stations of any single addresses bound in its cidr claim.
+// contributed24h sums the last 24 h of events over the stations a token can own: its own station, and the
+// UDP stations of any single addresses bound in its cidr claim.
 func (p *Pipeline) contributed24h(c *Claims) int64 {
-	ids := []string{"v1:" + c.Sub, "http:" + c.Sub}
+	ids := []string{stationSource(c.Sub)}
 	for _, s := range c.CIDR {
 		if ip := net.ParseIP(strings.TrimSuffix(strings.TrimSuffix(s, "/32"), "/128")); ip != nil {
 			ids = append(ids, udpStation(ip.String()))

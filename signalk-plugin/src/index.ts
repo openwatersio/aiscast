@@ -8,6 +8,7 @@ import {
   loadIdentity,
   loadToken,
   type Token,
+  tokenSub,
 } from "./identity.js";
 import { Link } from "./link.js";
 import { n2kToSentence } from "./n2k.js";
@@ -199,7 +200,9 @@ export default function (app: ServerAPI): Plugin {
       errorShown = false;
       app.setPluginStatus(""); // an empty status deletes the entry, lastError included
     };
-    const selfSource = `v1:ed25519:${identity.pubkey}`;
+    // The station aiscast files our publishes under: the active token's sub, so an operator-issued token
+    // is recognized as well as a minted personal one.
+    let selfSub: string | null = null;
     const refreshToken = async (): Promise<void> => {
       if (configuredToken) {
         token = {
@@ -208,17 +211,18 @@ export default function (app: ServerAPI): Plugin {
           pubkey: identity.pubkey,
           server,
         };
-        return;
+      } else {
+        try {
+          token = await loadToken(dir, server, identity.pubkey);
+          clearError();
+        } catch (err) {
+          token = null;
+          reportError(
+            `No token: ${describe(err)}. Receiving only; nothing is shared. Retrying.`,
+          );
+        }
       }
-      try {
-        token = await loadToken(dir, server, identity.pubkey);
-        clearError();
-      } catch (err) {
-        token = null;
-        reportError(
-          `No token: ${describe(err)}. Receiving only; nothing is shared. Retrying.`,
-        );
-      }
+      selfSub = token ? (tokenSub(token.token) ?? `ed25519:${identity.pubkey}`) : null;
     };
     await refreshToken();
     if (!live()) return;
@@ -239,7 +243,7 @@ export default function (app: ServerAPI): Plugin {
         mode,
         radiusNm,
         source: `${PLUGIN_ID}.net`,
-        selfSource,
+        selfSub: () => selfSub,
         onReceived: (s) => up.noteReceived(s),
         // The plugin listens on `nmea0183`, never on `nmea0183out`, so this cannot feed back into the uplink.
         onInjected: relay0183 ? (s) => events.emit("nmea0183out", s) : undefined,

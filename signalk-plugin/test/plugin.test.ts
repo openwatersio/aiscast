@@ -269,7 +269,7 @@ describe("downlink", () => {
     server.send({ type: "event", time, source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
     server.send({ type: "event", time, source: "kystverket", nmea: [VDM2], mmsi: 123456789, msg_type: "PositionReport", lat: 1, lon: 1 }); // self MMSI
     const pub = server.keyRequests[0].pubkey;
-    server.send({ type: "event", time, source: `v1:ed25519:${pub}`, nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // our echo
+    server.send({ type: "event", time, source: `station:ed25519:${pub}`, nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // our echo
     await until(() => app.deltas.length >= 1);
     await sleep(50);
     expect(app.deltas).toHaveLength(1);
@@ -280,6 +280,18 @@ describe("downlink", () => {
     expect((d.updates[0] as { source?: unknown }).source).toBeUndefined();
     const paths = d.updates.flatMap((u) => ("values" in u ? u.values.map((v) => v.path) : []));
     expect(paths).toContain("navigation.position");
+  });
+
+  it("drops echoes under an operator-issued token's own station", async () => {
+    const claims = Buffer.from(JSON.stringify({ sub: "st-1", role: "feeder" })).toString("base64url");
+    await start({ advanced: { server: server.url, token: `ak1.${claims}.sig` }, receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const time = new Date().toISOString();
+    server.send({ type: "event", time, source: "station:st-1", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // our echo
+    server.send({ type: "event", time, source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length >= 1);
+    await sleep(50);
+    expect(app.deltas.map((d) => d.context)).toEqual(["vessels.urn:mrn:imo:mmsi:227006760"]);
   });
 
   it("in always mode leaves a target alone that the local receiver updated recently", async () => {

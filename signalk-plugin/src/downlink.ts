@@ -10,7 +10,7 @@ export interface DownlinkOptions {
   mode: ReceiveMode;
   radiusNm: number;
   source: string; // $source on injected deltas
-  selfSource: string | null; // aiscast `source` of our own publishes, dropped on the way back
+  selfSub: () => string | null; // our token's sub: aiscast files our own publishes under it, and they are dropped on the way back
   onReceived?: (sentence: string) => void; // loop guard hook
   onInjected?: (sentence: string) => void; // relay to NMEA 0183 output, for chartplotters and tablets
 }
@@ -193,7 +193,8 @@ export class Downlink {
     // Own-vessel echoes (our publishes, or another station hearing our transmission) skip the loop guard:
     // marking them seen would swallow our own future uplink of an identical payload (re-synthesized s:self
     // position, type 24 rebroadcast unchanged every few minutes). Self is never injected, so there is no loop.
-    if (this.opts.selfSource && ev.source === this.opts.selfSource) return;
+    const self = this.opts.selfSub();
+    if (self && sourceSub(ev.source) === self) return;
     if (!ev.mmsi || String(ev.mmsi) === this.selfMmsi) return;
     for (const s of ev.nmea) this.opts.onReceived?.(s);
     const isPosition = POSITION_TYPES.has(ev.msg_type ?? "");
@@ -293,6 +294,11 @@ const LIVE_POSITION_FOR = 120_000;
 const STATIC_EVERY = 6 * 60_000; // a class A's own static interval
 
 // Cache key for a static event: type 5, or type 24 part A/B, which arrive as separate events.
+// sourceSub is the station behind a `source`: what follows the kind before the first colon.
+function sourceSub(source: string | undefined): string {
+  return source ? source.slice(source.indexOf(":") + 1) : "";
+}
+
 function staticKind(ev: AisEvent): string | null {
   if (ev.msg_type === "ShipStaticData") return "5";
   if (ev.msg_type !== "StaticDataReport") return null;

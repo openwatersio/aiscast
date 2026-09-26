@@ -654,8 +654,7 @@ var sourceDescriptions = map[string]string{
 	"aishub":       "AISHub: worldwide aggregate snapshot and the network's largest source; about a minute behind, see delay",
 	"udp":          "volunteer receivers sending raw NMEA over UDP, unauthenticated",
 	"mmsi":         "volunteer receivers identified by their own vessel's MMSI, unauthenticated",
-	"http":         "volunteer receivers posting AIS-catcher output with a token",
-	"v1":           "volunteer receivers and peers publishing on /v1/stream with a token",
+	"station":      "volunteer receivers and peers feeding with a token, over MQTT, HTTP, or /v1/stream",
 }
 
 func mcpStationRow(r stationRow) mcpStation {

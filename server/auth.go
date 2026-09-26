@@ -233,7 +233,17 @@ func requestToken(r *http.Request) string {
 // authorize: token from the request, verified, role allows action, IP allowed. With ALLOW_ANON a missing or
 // bad token yields an anonymous admin identity (local development only).
 func (p *Pipeline) authorize(r *http.Request, action string) (*Claims, error) {
-	tok := requestToken(r)
+	return p.authorizeToken(requestToken(r), clientIP(r), action)
+}
+
+// forbiddenError marks a token that verified but may not do this, here or from this address, as distinct
+// from one that did not verify at all; MQTT CONNECT answers the two with different return codes.
+type forbiddenError struct{ msg string }
+
+func (e forbiddenError) Error() string { return e.msg }
+
+// authorizeToken is authorize for a token that did not arrive in an HTTP request (MQTT CONNECT).
+func (p *Pipeline) authorizeToken(tok, ip, action string) (*Claims, error) {
 	c, err := p.auth.verify(tok, time.Now())
 	if err != nil {
 		if allowAnon {
@@ -243,10 +253,10 @@ func (p *Pipeline) authorize(r *http.Request, action string) (*Claims, error) {
 	}
 	c = p.effective(c)
 	if !c.may(action) {
-		return nil, fmt.Errorf("role %s may not %s", c.Role, action)
+		return nil, forbiddenError{fmt.Sprintf("role %s may not %s", c.Role, action)}
 	}
-	if !c.allowsIP(clientIP(r)) {
-		return nil, errors.New("token not valid from this address")
+	if !c.allowsIP(ip) {
+		return nil, forbiddenError{"token not valid from this address"}
 	}
 	return c, nil
 }

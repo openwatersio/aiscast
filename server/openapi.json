@@ -3,7 +3,7 @@
   "info": {
     "title": "aiscast API",
     "version": "1.0.0",
-    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, no sign-in, the same tiers as `/v1/vessels`. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
+    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket JSON frames, MQTT over WebSocket for feeders, or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, no sign-in, the same tiers as `/v1/vessels`. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
     "contact": {
       "name": "aiscast",
       "url": "https://github.com/openwatersio/aiscast"
@@ -171,7 +171,7 @@
                 "schema": { "$ref": "#/components/schemas/Stats" },
                 "example": {
                   "time": "2026-08-21T13:40:12Z",
-                  "stations": { "total": 14, "active": 11, "by_source": { "kystverket": 1, "digitraffic": 1, "udp": 7, "http": 3, "v1": 2 } },
+                  "stations": { "total": 14, "active": 11, "by_source": { "kystverket": 1, "digitraffic": 1, "station": 5, "udp": 7 } },
                   "vessels": { "total": 4812, "with_position": 4790, "by_kind": { "vessel": 4701, "aton": 88, "base": 19, "sar": 4 } },
                   "events": { "per_second": 212.4, "last_24h": 18230411, "last_7d": 121004312, "duplicates": { "last_24h": 2210560, "last_7d": 15320011 } },
                   "clients": { "streams": 9, "streams_opened": { "last_24h": 410, "last_7d": 2822 }, "requests": { "last_24h": 28310, "last_7d": 190412 } },
@@ -456,7 +456,7 @@
               "length": { "type": "integer", "description": "Overall length, metres, from the dimension fields. Present only when sent." },
               "beam": { "type": "integer", "description": "Beam, metres. Present only when sent." },
               "seen": { "type": "string", "format": "date-time", "description": "Time of the last message that updated the vessel." },
-              "source": { "type": "string", "description": "Source of that message: an upstream name, `http:<station>`, `udp:<hash>`, `mmsi:<n>`, or `v1:<sub>`." },
+              "source": { "type": "string", "description": "Source of that message: an upstream name, `station:<sub>` for an authenticated contributor (whatever transport it fed over), `udp:<hash>`, or `mmsi:<n>`." },
               "station": { "type": "string", "description": "Station that delivered that message." },
               "msg_type": { "type": "string", "description": "aisstream-style type name of that message." }
             }
@@ -506,7 +506,7 @@
               "active": { "type": "integer", "description": "Stations heard in the last 5 minutes." },
               "by_source": {
                 "type": "object",
-                "description": "Station counts grouped by source kind: `udp`, `http`, `v1`, `mmsi`, or the upstream name.",
+                "description": "Station counts grouped by source kind: `station` (authenticated contributors), `udp`, `mmsi`, or the upstream name.",
                 "additionalProperties": { "type": "integer" }
               }
             }
@@ -539,7 +539,7 @@
           },
           "sources": {
             "type": "object",
-            "description": "Keyed by source kind: each upstream by name, all API publishers as `v1`, all UDP senders as `udp`, all HTTP feeders as `http`.",
+            "description": "Keyed by source kind: each upstream by name, every authenticated contributor as `station`, all UDP senders as `udp`.",
             "additionalProperties": {
               "type": "object",
               "properties": {

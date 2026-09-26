@@ -18,10 +18,12 @@
 <div id="out" hidden>
   <h2>Your token</h2>
   <pre id="token"></pre>
-  <p class="muted">Station id: <code id="sub"></code>, expires <span id="exp"></span>. Your data appears as <code>source: http:&lt;station id&gt;</code>; check it at <a id="stlink" href="#">the live map</a> or <code>/v1/stations</code>.</p>
+  <p class="muted">Station id: <code id="sub"></code>, expires <span id="exp"></span>. Your data appears as <code>source: station:&lt;station id&gt;</code>; check it at <a id="stlink" href="#">the live map</a> or <code>/v1/stations</code>.</p>
   <h2>Send your receiver's data</h2>
-  <p><strong>AIS-catcher</strong> (HTTP, works behind any NAT):</p>
+  <p><strong>AIS-catcher</strong> (realtime over MQTT, works behind any NAT):</p>
   <pre id="cmd-aiscatcher"></pre>
+  <p>Or its HTTP output, one batch every five seconds:</p>
+  <pre id="cmd-aiscatcher-http"></pre>
   <p><strong>docker-shipfeeder</strong> / any UDP forwarder: host <code>ais.openwaters.io</code>, port <code>10110</code> (no token; appears as an anonymous <code>udp:…</code> station).</p>
   <p><strong>Signal K</strong>: install <code>signalk-aiscast</code> from the app store; it makes its own token.</p>
   <h2>Read the stream</h2>
@@ -46,8 +48,9 @@
     $("token").textContent = token;
     $("sub").textContent = claims.sub;
     $("exp").textContent = claims.exp ? new Date(claims.exp * 1000).toISOString().slice(0, 10) : "never";
-    $("stlink").href = `./?station=${encodeURIComponent("http:" + claims.sub)}`;
-    $("cmd-aiscatcher").textContent = `AIS-catcher -d:0 -H ${server}/v1/receive USERPWD x:${token} GZIP on INTERVAL 15`;
+    $("stlink").href = `./?station=${encodeURIComponent("station:" + claims.sub)}`;
+    $("cmd-aiscatcher").textContent = `AIS-catcher -d:0 -Q wssmqtt://x:${token}@${server.replace(/^https?:\/\//, "")}:443/v1/stream MSGFORMAT NMEA`;
+    $("cmd-aiscatcher-http").textContent = `AIS-catcher -d:0 -H ${server}/v1/receive USERPWD x:${token} GZIP on INTERVAL 5`;
     $("cmd-ws").textContent = `websocat wss://ais.openwaters.io/v0/stream\n{"APIKey":"${token}","BoundingBoxes":[[[41,-71.5],[42.5,-69.5]]]}`;
     $("out").hidden = false;
   }

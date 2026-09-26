@@ -145,7 +145,7 @@ func TestReceiveHTTP(t *testing.T) {
 	}
 	select {
 	case ev := <-sub.ch:
-		if ev.Source != "http:anon" || ev.MMSI != 227006760 { // ALLOW_ANON identity
+		if ev.Source != "station:anon" || ev.MMSI != 227006760 { // ALLOW_ANON identity
 			t.Errorf("unexpected event %+v", ev)
 		}
 	case <-time.After(time.Second):
@@ -476,7 +476,7 @@ func TestNMEAFeed(t *testing.T) {
 	defer c.CloseNow()
 	time.Sleep(50 * time.Millisecond)
 	p.Ingest(Reception{Source: "kystverket", Station: "kystverket/2573010", RecvTime: time.Unix(1787234980, 0), Body: `\s:2573010,c:1787234980*03\!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43`}) // outside bbox
-	p.Ingest(Reception{Source: "v1:t", Station: "t", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})                                                   // inside
+	p.Ingest(Reception{Source: "station:t", Station: "t", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})                                              // inside
 	_, msg, err := c.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
