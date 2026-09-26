@@ -39,14 +39,14 @@ def template(envs, kind, msg_type=None):
 def make_tree(tmp_path, extra_day=(), extra_boundary=()):
     """Fixture file verbatim, plus crafted envelopes in the day's hour 13 and in D+1 hour 00."""
     root = tmp_path / "normalized"
-    day_dir = root / "v1/2026/09/01"
+    day_dir = root / "normalized/v1/2026/09/01"
     day_dir.mkdir(parents=True)
-    (day_dir / "12.gz").write_bytes((FIXTURE / "v1/2026/09/01/12.gz").read_bytes())
+    (day_dir / "12.gz").write_bytes((FIXTURE / "normalized/v1/2026/09/01/12.gz").read_bytes())
     if extra_day:
         with gzip.open(day_dir / "13.gz", "wt") as f:
             f.writelines(json.dumps(e) + "\n" for e in extra_day)
     if extra_boundary:
-        nxt = root / "v1/2026/09/02"
+        nxt = root / "normalized/v1/2026/09/02"
         nxt.mkdir(parents=True)
         with gzip.open(nxt / "00.gz", "wt") as f:
             f.writelines(json.dumps(e) + "\n" for e in extra_boundary)
@@ -191,7 +191,7 @@ def test_positions_without_copies_fails(tmp_path):
     ev = template(envs, "event", "PositionReport")
     only_events = [event_at(ev, "ffff0006", "2026-09-01T13:00:00Z")]
     root = tmp_path / "normalized"
-    d = root / "v1/2026/09/01"
+    d = root / "normalized/v1/2026/09/01"
     d.mkdir(parents=True)
     with gzip.open(d / "12.gz", "wt") as f:
         f.writelines(json.dumps(e) + "\n" for e in only_events)

@@ -289,3 +289,27 @@ func hashTree(t *testing.T, dir string) string {
 	})
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+// The normalized stream shares the raw archive's bucket, so a synced copy of the bucket holds both.
+// Replay must walk past the stream deliberately rather than read it as a source.
+func TestReplaySkipsTheNormalizedStream(t *testing.T) {
+	raw := writeRawTree(t)
+	stream := filepath.Join(raw, normPrefix, "v1", "2026", "09", "01", "12.gz")
+	os.MkdirAll(filepath.Dir(stream), 0o755)
+	f, err := os.Create(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	gz.Write([]byte("2026-09-01T12:00:00Z\tv1\t!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23\n")) // parseable, so only the skip keeps it out
+	gz.Close()
+	f.Close()
+
+	for _, r := range collectReaders(raw, time.Time{}, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		for _, path := range r.paths {
+			if strings.Contains(filepath.ToSlash(path), "/"+normPrefix+"/") {
+				t.Fatalf("replay would read the normalized stream as source %q: %s", r.source, path)
+			}
+		}
+	}
+}

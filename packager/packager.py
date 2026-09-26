@@ -28,6 +28,7 @@ HERE = Path(os.environ.get("PACKAGER_HOME", Path(__file__).parent))  # stage/ an
 NORM_VERSION = 1
 KINDS = ("event", "copy", "methyd")
 POS_TYPES = "('PositionReport', 'StandardClassBPositionReport', 'ExtendedClassBPositionReport', 'LongRangeAisBroadcastMessage')"
+PREFIX = "normalized/v1"  # the stream's place in the archive bucket, beside the license-prefixed raw layout
 WINDOW_S = 10  # the server's dedupe window; joins and the restart collapse use it, never re-derive it
 
 POSITIONS_SCHEMA = pa.schema([
@@ -274,7 +275,7 @@ def normalized_bucket():
 def fetch_day(day, dest):
     """Copy a day's normalized hours, and the two boundary hours, out of the bucket into dest.
 
-    The layout is flat (v1/YYYY/MM/DD/HH.gz), so this lists three day prefixes rather than walking
+    The layout is flat (normalized/v1/YYYY/MM/DD/HH.gz), so this lists three day prefixes rather than walking
     the bucket: listing cost stays flat as the archive grows. Copying before reading keeps a
     mid-transfer reset a retryable per-file failure instead of a short day, and each file's size is
     checked against the object it came from.
@@ -288,7 +289,7 @@ def fetch_day(day, dest):
     want = day_key(day)
     infos = []
     for pd in (d - timedelta(days=1), d, d + timedelta(days=1)):
-        sel = pafs.FileSelector(f"{bucket}/v1/{pd:%Y/%m/%d}", allow_not_found=True)
+        sel = pafs.FileSelector(f"{bucket}/{PREFIX}/{pd:%Y/%m/%d}", allow_not_found=True)
         infos += [i for i in retry(lambda sel=sel: fs.get_file_info(sel)) if want.search(i.path)]
 
     def fetch(info):
@@ -345,7 +346,7 @@ def get_catalog():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--normalized", help="local normalized tree (v1/YYYY/MM/DD/HH.gz); omit to fetch the day from the bucket")
+    ap.add_argument("--normalized", help="local normalized tree (normalized/v1/YYYY/MM/DD/HH.gz); omit to fetch the day from the bucket")
     ap.add_argument("--date", help="UTC day YYYY-MM-DD; default: every closed day of the past week missing from the catalog")
     ap.add_argument("--min-hours", type=int, default=20, help="refuse a day with fewer distinct hours")
     args = ap.parse_args()

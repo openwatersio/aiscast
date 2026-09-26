@@ -18,7 +18,7 @@ Environment=HOME=/var/lib/aiscast
 # A box with no catalog configured yet would otherwise spend the night packaging into a local
 # throwaway warehouse. Reading the file keeps the check clear of systemd's variable expansion.
 ExecCondition=/usr/bin/grep -q ^LAKE_CATALOG_URI=. /etc/aiscast.env
-# No --normalized: the day is fetched from the normalized bucket and deleted after, so the job
+# No --normalized: the day is fetched from the archive bucket and deleted after, so the job
 # does not depend on what the box still has on disk.
 ExecStart=/usr/local/bin/uv run --script /opt/aiscast/packager.py
 TimeoutStartSec=2h

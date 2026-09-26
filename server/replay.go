@@ -98,11 +98,20 @@ func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) {
 func collectReaders(dir string, start, end time.Time) []*rawReader {
 	files := map[string][]string{} // source -> files, appended in walk order (lexical = chronological)
 	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
+		if err != nil {
 			return nil
 		}
 		rel, err := filepath.Rel(dir, path)
 		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if filepath.ToSlash(rel) == normPrefix {
+				return filepath.SkipDir // the normalized stream shares the bucket; it is replay's output, not its input
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".gz") {
 			return nil
 		}
 		parts := strings.Split(filepath.ToSlash(rel), "/")

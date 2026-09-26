@@ -13,7 +13,7 @@ import (
 func normTree(t *testing.T, lines []string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "v1", "2026", "09", "01", "12.gz")
+	path := filepath.Join(dir, normPrefix, "v1", "2026", "09", "01", "12.gz")
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	f, err := os.Create(path)
 	if err != nil {

@@ -8,7 +8,7 @@ The packager turns the server's normalized archive into day-partitioned Iceberg 
 ./packager.py --normalized ../server/normalized --date 2026-09-01   # package from a local normalized tree
 ```
 
-Without `--normalized` the job fetches the day's hours from `NORMALIZED_BUCKET` into `raw/`, packages them, and deletes them, so it does not depend on what any box still holds on disk. That needs `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`, the same S3 keys the server uploads with. The layout is flat, so a day costs three prefix listings rather than a walk of the bucket, and listing stays flat as the archive grows.
+Without `--normalized` the job fetches the day's hours from `NORMALIZED_BUCKET` (normally `ais-archive`, under `normalized/v1/`) into `raw/`, packages them, and deletes them, so it does not depend on what any box still holds on disk. That needs `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`, the same S3 keys the server uploads with. The layout is flat, so a day costs three prefix listings rather than a walk of the bucket, and listing stays flat as the archive grows.
 
 The local catalog is SQLite under `warehouse/`. Set `LAKE_CATALOG_URI`, `LAKE_WAREHOUSE`, and `LAKE_CATALOG_TOKEN` to write to R2 Data Catalog instead. `PACKAGER_HOME` moves `stage/` and `warehouse/`.
 

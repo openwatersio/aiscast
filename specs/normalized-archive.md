@@ -25,7 +25,7 @@ Every line is a versioned envelope: `{"k": <event|copy|methyd>, "v": <schema ver
 
 Events the pipeline archives but does not emit (`Implausible`, `Stale`) are written with their envelope flags set, as the raw layer already retains them; whether the derived tables include them is a packager decision, not an ingest one.
 
-The stream lands in its own bucket, private: R2 access control is per-bucket, the raw and derived layers may become public, and this layer is a candidate for APIs or paid access later. Publishing is a one-way door, so it starts closed.
+The stream lands in the raw archive's bucket under `normalized/v1/`. It is a pure function of the raw archive and code that is public, since `aiscast replay` regenerates it, so it can never be more private than the raw layer in any way that matters, and the two share an access class. Every raw key starts with a license tag, so the prefix keeps the stream from ever reading as a source, and replay walks past it on purpose. The derived tables live in their own bucket because they are the layer most likely to open up, and R2 access control is per-bucket.
 
 ## Identity and idempotency
 

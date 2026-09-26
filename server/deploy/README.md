@@ -9,7 +9,7 @@ Everything the box needs lives in this directory, and changing any of it is a pu
 - [`deploy.sh`](deploy.sh) is the whole deploy: build (or take a prebuilt binary), send the bundle over ssh, run `apply.sh`. The same command sets up a fresh box and updates the live one: `server/deploy/deploy.sh root@<ip>`.
 - [`aiscast.env.example`](aiscast.env.example) lists every variable `/etc/aiscast.env` holds. The real file stays on the box; secrets never enter the repo.
 
-The nightly [packager](../../packager/README.md) rides along: `packager.timer` fires at 01:30 UTC, once the closed day's last hours have rotated into the normalized bucket, and `packager.service` runs `/opt/aiscast/packager.py` under uv, turning them into Iceberg tables in R2 Data Catalog. Each run packages every closed day of the past week still missing from the catalog, so a failed night heals on the next. It reads the `LAKE_*` and `R2_*` variables from the same `/etc/aiscast.env` and skips itself while `LAKE_CATALOG_URI` is empty, so a box whose template is still unfilled does no nightly work. `apply.sh` installs a pinned uv for it.
+The nightly [packager](../../packager/README.md) rides along: `packager.timer` fires at 01:30 UTC, once the closed day's last hours have rotated into the archive bucket, and `packager.service` runs `/opt/aiscast/packager.py` under uv, turning them into Iceberg tables in R2 Data Catalog. Each run packages every closed day of the past week still missing from the catalog, so a failed night heals on the next. It reads the `LAKE_*` and `R2_*` variables from the same `/etc/aiscast.env` and skips itself while `LAKE_CATALOG_URI` is empty, so a box whose template is still unfilled does no nightly work. `apply.sh` installs a pinned uv for it.
 
 ## What exists
 

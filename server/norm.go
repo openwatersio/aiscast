@@ -39,15 +39,21 @@ type normCopy struct {
 	License string `json:"license"`
 }
 
+// normPrefix is the normalized stream's top-level directory in the archive bucket. Every raw key
+// starts with a license tag, so the stream sits beside them without ever reading as one.
+const normPrefix = "normalized"
+
 // newNormArchive is the archive writer configured for the merged normalized stream.
 func newNormArchive(dir string, s3 *s3Client) *archive {
 	a := newArchive(dir, s3)
 	a.bare = true
-	a.keyFn = func(_ string, hour time.Time) string { return filepath.Join("v1", hour.Format("2006/01/02/15")+".gz") }
+	a.keyFn = func(_ string, hour time.Time) string {
+		return filepath.Join(normPrefix, "v1", hour.Format("2006/01/02/15")+".gz")
+	}
 	return a
 }
 
-// s3NormFromEnv: NORMALIZED_BUCKET with the same account and keys as the raw archive; empty = local only.
+// s3NormFromEnv: NORMALIZED_BUCKET, normally the raw archive's own bucket, with the same account and keys; empty = local only.
 func s3NormFromEnv() *s3Client {
 	bucket := os.Getenv("NORMALIZED_BUCKET")
 	if bucket == "" {
