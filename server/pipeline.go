@@ -79,8 +79,9 @@ type Pipeline struct {
 	normGate time.Time // replay warm-up: records received before this are state-building only, not written
 	nSeen    int
 
-	vmu     sync.RWMutex
-	vessels map[uint32]*vessel
+	vmu       sync.RWMutex
+	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu
+	vessels   map[uint32]*vessel
 
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
@@ -464,7 +465,7 @@ func (p *Pipeline) broadcast(ev *Event) {
 
 func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
-		nv := p.sweepVessels(time.Now().Add(-vesselTTL))
+		nv := p.vesselCount() // updateVessel sweeps, on the reception clock
 		p.stations.sweep(time.Now().Add(-vesselTTL))
 		p.sampleRate(time.Now())
 		p.smu.RLock()

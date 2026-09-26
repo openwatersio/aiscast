@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -400,6 +401,38 @@ func TestMultipartRecordsOnlyItsOwnSentences(t *testing.T) {
 		}
 		if len(got) != 1 || strings.Join(got[0], "|") != strings.Join(c.want, "|") {
 			t.Fatalf("%s: events recorded sentences %q, want one with %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The vessel cache sweeps on the reception clock, so replay, which runs far faster than real time
+// and has no ticker, drops a vessel at the same point live did. The cache gives a static its
+// position and decides staleness, and both are archived.
+func TestVesselCacheSweepsOnTheReceptionClock(t *testing.T) {
+	p := testPipeline(t)
+	cached := func() map[uint32]bool {
+		p.vmu.RLock()
+		defer p.vmu.RUnlock()
+		out := map[uint32]bool{}
+		for m := range p.vessels {
+			out[m] = true
+		}
+		return out
+	}
+	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	p.ingestLine(Reception{Source: "kystverket", Station: "kystverket", RecvTime: recv, Body: testSentence})
+	first := cached()
+	if len(first) != 1 {
+		t.Fatalf("vessels = %v, want 1", first)
+	}
+	// another vessel, heard past the TTL on the reception clock; no wall-clock time has passed
+	later := recv.Add(vesselTTL + time.Minute)
+	other := tagBlock(map[byte]string{'c': fmt.Sprint(later.Unix())}) + "!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43"
+	p.ingestLine(Reception{Source: "kystverket", Station: "kystverket", RecvTime: later, Body: other})
+	now := cached()
+	for m := range first {
+		if now[m] || len(now) != 1 {
+			t.Fatalf("after vessel %d went unheard past the TTL: cached %v, want only the second vessel", m, now)
 		}
 	}
 }

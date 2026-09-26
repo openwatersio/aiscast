@@ -233,7 +233,10 @@ func TestVesselsSnapshot(t *testing.T) {
 	if len(fc.Attribution) != 1 || fc.Attribution["t"] != ownCredit {
 		t.Errorf("attribution = %v", fc.Attribution)
 	}
-	if n := p.sweepVessels(time.Now().Add(time.Minute)); n != 0 {
+	p.vmu.Lock()
+	p.sweepLocked(time.Now().Add(time.Minute))
+	p.vmu.Unlock()
+	if n := p.vesselCount(); n != 0 {
 		t.Errorf("sweep left %d", n)
 	}
 }
