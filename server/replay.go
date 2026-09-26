@@ -32,6 +32,11 @@ func runReplay(args []string) {
 		log.Fatalf("replay: -from and -to must be YYYY-MM-DD with from < to")
 	}
 
+	// Hour files open for append, so a second run into the same tree would double every record.
+	if ents, err := os.ReadDir(*out); err == nil && len(ents) > 0 {
+		log.Fatalf("replay: %s is not empty; replay writes a fresh tree", *out)
+	}
+
 	p := newPipeline(newArchive("", nil)) // no raw writes: the raw archive is the input here
 	p.norm = newNormArchive(*out, nil)
 	p.normGate = from // the warm-up builds dedupe and per-source state, silently

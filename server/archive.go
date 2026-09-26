@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -85,13 +84,14 @@ type archive struct {
 	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
 	uploads sync.WaitGroup
 
-	// held is every path run() still owns, including one being uploaded. The sweep skips these: a
-	// quiet source keeps its hour open indefinitely, and deleting it out from under the writer would
-	// strand the gzip footer. Zero value is usable, so tests can build an archive as a literal.
-	held sync.Map
-	// holds counts the open writer and every in-flight upload per path: rotation can close one hour
-	// twice, and the first upload to finish must not unprotect a file the second is still reading.
-	holds sync.Map // path -> *atomic.Int64
+	// holds counts the open writer and every in-flight upload per path; the sweep skips any path with
+	// a count. A quiet source keeps its hour open indefinitely, and deleting it out from under the
+	// writer would strand the gzip footer; rotation can close one hour twice, and the first upload to
+	// finish must not unprotect a file the second is still reading. One mutex covers every count, so
+	// a release reaching zero and a reopen cannot interleave. Zero value is usable, so tests can build
+	// an archive as a literal.
+	holdMu sync.Mutex
+	holds  map[string]int
 	// putLocks serializes uploads per object key. A reception queued across the hour boundary
 	// reopens that hour, so the same key is closed and uploaded more than once; unordered PUTs let
 	// the earlier, shorter file land last and leave the bucket holding a truncated hour. Bounded by
@@ -130,7 +130,7 @@ func (a *archive) run() {
 			a.handle(rx, files)
 		case <-flush.C:
 			for _, hf := range files {
-				hf.gz.Flush()
+				ioFatal(hf.gz.Flush())
 			}
 		case reply := <-a.done:
 			// drain: the select races queued records against shutdown, and the tail must not lose
@@ -173,13 +173,25 @@ func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 	}
 	// one record per line: recv time, station, body as received (JSON envelopes are single-line)
 	if a.bare {
-		hf.gz.Write([]byte(strings.TrimRight(rx.Body, "\r\n") + "\n"))
+		_, err := hf.gz.Write([]byte(strings.TrimRight(rx.Body, "\r\n") + "\n"))
+		ioFatal(err)
 	} else {
 		station := rx.Station
 		if rx.Buffered {
 			station += bufferedMark // replay needs it to suppress the same stale backlog live did
 		}
-		hf.gz.Write([]byte(rx.RecvTime.UTC().Format(time.RFC3339Nano) + "\t" + station + "\t" + strings.TrimRight(rx.Body, "\r\n") + "\n"))
+		_, err := hf.gz.Write([]byte(rx.RecvTime.UTC().Format(time.RFC3339Nano) + "\t" + station + "\t" + strings.TrimRight(rx.Body, "\r\n") + "\n"))
+		ioFatal(err)
+	}
+}
+
+// ioFatal stops the process on an archive write it cannot make. Raw and normalized must hold the same
+// receptions for replay to regenerate the stream, and a full or failing disk would let ingest carry on
+// with one of them short. Stopping takes the stream down, which /health reports, and systemd restarts
+// the process once the disk recovers; files left open are uploaded by the next sweep.
+var ioFatal = func(err error) {
+	if err != nil {
+		log.Fatalf("archive: %v", err)
 	}
 }
 
@@ -215,10 +227,7 @@ func (a *archive) open(source string, hour time.Time) *hourFile {
 	}
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Printf("archive: %v", err)
-		return nil
-	}
+	ioFatal(err)
 	a.hold(path)
 	return &hourFile{hour: hour, path: path, f: f, gz: gzip.NewWriter(f)} // appending gzip members is valid gzip
 }
@@ -265,16 +274,26 @@ func (a *archive) withKey(key string, fn func()) {
 
 // hold marks a path as owned by the writer or an upload; release drops it when the last owner is done.
 func (a *archive) hold(path string) {
-	c, _ := a.holds.LoadOrStore(path, new(atomic.Int64))
-	c.(*atomic.Int64).Add(1)
-	a.held.Store(path, struct{}{})
+	a.holdMu.Lock()
+	defer a.holdMu.Unlock()
+	if a.holds == nil {
+		a.holds = map[string]int{}
+	}
+	a.holds[path]++
 }
 
 func (a *archive) release(path string) {
-	if c, ok := a.holds.Load(path); ok && c.(*atomic.Int64).Add(-1) > 0 {
-		return
+	a.holdMu.Lock()
+	defer a.holdMu.Unlock()
+	if a.holds[path]--; a.holds[path] <= 0 {
+		delete(a.holds, path)
 	}
-	a.held.Delete(path)
+}
+
+func (a *archive) isHeld(path string) bool {
+	a.holdMu.Lock()
+	defer a.holdMu.Unlock()
+	return a.holds[path] > 0
 }
 
 // archiveGrace is how long an hour file must sit untouched before a sweep may delete it. Rotation
@@ -282,7 +301,7 @@ func (a *archive) release(path string) {
 // to the file and uploading it again, so a file deleted at rotation would come back as a stub and
 // overwrite the complete object in the bucket. Receive time is our own clock, so nothing reopens an
 // hour this old. The grace period covers files a previous process left behind, which are on disk but
-// not in held; files this process still owns are excluded by held, not by their age.
+// not held; files this process still owns are excluded by their hold count, not by their age.
 const archiveGrace = 2 * time.Hour
 
 // sweep reconciles the local tree with the bucket, which is where the archive actually lives; disk is
@@ -299,7 +318,7 @@ func (a *archive) sweep() {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
 			return nil
 		}
-		if _, open := a.held.Load(path); open {
+		if a.isHeld(path) {
 			return nil
 		}
 		fi, err := d.Info()

@@ -41,7 +41,7 @@ jobs:
       - run: uv run --with pytest --with duckdb --with pyarrow --with "pyiceberg[sql-sqlite]" pytest -q packager/
 
   deploy:
-    needs: test
+    needs: [test, packager] # deploy ships the packager script and enables its timer
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production

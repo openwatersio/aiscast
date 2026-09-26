@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -97,7 +98,7 @@ func TestReopenedHourUploadsCompleteDespiteReordering(t *testing.T) {
 	if len(lines) != 2 || !hasLine(lines, "early") || !hasLine(lines, "straggler") {
 		t.Fatalf("bucket holds a truncated hour: %v", lines)
 	}
-	if _, stillHeld := a.held.Load(a.dirPath(key)); stillHeld {
+	if a.isHeld(a.dirPath(key)) {
 		t.Fatal("path still held after shutdown") // the refcount must survive two uploads of one file
 	}
 }
@@ -204,5 +205,30 @@ func TestMergedStreamKeepsOneWriterPerHour(t *testing.T) {
 	}
 	if lines := gunzipLines(t, b); len(lines) != n {
 		t.Fatalf("hour holds %d of %d records", len(lines), n)
+	}
+}
+
+// A write the disk refuses must stop the process, never leave one archive short of the other.
+func TestArchiveStopsOnAWriteItCannotMake(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	failed := make(chan error, 1)
+	orig := ioFatal
+	t.Cleanup(func() { ioFatal = orig })
+	ioFatal = func(err error) {
+		if err != nil {
+			failed <- err
+			runtime.Goexit() // the real one exits the process; stop the writer goroutine here
+		}
+	}
+	a := newArchive(dir, nil)
+	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: time.Now(), Body: testSentence})
+	select {
+	case <-failed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an unwritable archive directory went unreported")
 	}
 }
