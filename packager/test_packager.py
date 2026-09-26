@@ -81,6 +81,19 @@ def crafted(envs):
         copy_at(cp, "bbbb0002", "2026-09-01T13:10:00Z"),
         event_at(ev, "bbbb0002", "2026-09-01T13:10:03Z"),
         copy_at(cp, "bbbb0002", "2026-09-01T13:10:03Z"),
+        # re-accepts at 0 s, 9 s, 18 s: the server compares with the last kept time, so 18 s is a
+        # second transmission even though it is 9 s after the one before it
+        event_at(ev, "abab0008", "2026-09-01T13:15:00Z"),
+        copy_at(cp, "abab0008", "2026-09-01T13:15:00Z"),
+        event_at(ev, "abab0008", "2026-09-01T13:15:09Z"),
+        copy_at(cp, "abab0008", "2026-09-01T13:15:09Z"),
+        event_at(ev, "abab0008", "2026-09-01T13:15:18Z"),
+        copy_at(cp, "abab0008", "2026-09-01T13:15:18Z"),
+        # an identical re-accept at the same instant still folds to one row
+        event_at(ev, "abab0009", "2026-09-01T13:16:00Z"),
+        copy_at(cp, "abab0009", "2026-09-01T13:16:00Z"),
+        event_at(ev, "abab0009", "2026-09-01T13:16:00Z"),
+        copy_at(cp, "abab0009", "2026-09-01T13:16:00Z"),
         # the same bits on the air three minutes apart: legitimately two transmissions
         event_at(ev, "cccc0003", "2026-09-01T13:20:00Z"),
         copy_at(cp, "cccc0003", "2026-09-01T13:20:00Z"),
@@ -138,12 +151,14 @@ def test_package_day(packaged):
         and e["r"]["msg_type"] in ("PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "LongRangeAisBroadcastMessage")
         and e["t"].startswith("2026-09-01")
     )
-    want = fix_pos + 1 + 1 + 2 + 1  # dup-copy tx, collapsed pair, repeat pair, late satellite tx
+    want = fix_pos + 1 + 1 + 2 + 1 + 2 + 1  # dup-copy tx, collapsed pair, anchored triple, same-instant pair, repeat pair, late satellite tx
     assert len(positions) == want
 
     keys = {(p["id"], p["ts"]) for p in positions}
     assert len(keys) == len(positions), "id+ts must be unique"
     assert sum(1 for p in positions if p["id"] == "bbbb0002") == 1, "crash pair must collapse"
+    assert sorted(p["ts"].second for p in positions if p["id"] == "abab0008") == [0, 18], "collapse anchors on the kept row"
+    assert sum(1 for p in positions if p["id"] == "abab0009") == 1, "a same-instant re-accept folds to one row"
     assert sum(1 for p in positions if p["id"] == "cccc0003") == 2, "re-transmission must not collapse"
     assert not any(p["id"] == "dddd0004" for p in positions), "implausible stays out"
     assert not any(p["id"] == "eeee0005" for p in positions), "a transmission received after midnight belongs to the next day"
@@ -233,6 +248,33 @@ def test_copy_after_midnight_joins_the_previous_days_transmission(tmp_path):
     rx = [r for r in rows(catalog, "receptions") if r["id"] == "abab0007"]
     assert {r["day"].isoformat() for r in rx} == {"2026-08-31", "2026-09-01"}, "the late copy must not drop"
     assert len({r["ts"] for r in rx}) == 1, "both copies join the one transmission"
+
+
+def test_reaccept_after_midnight_folds_into_the_previous_day(tmp_path):
+    """A crash-window re-accept a few seconds after midnight duplicates a transmission the previous
+    day already packaged, and must not become a second position."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    envs = fixture_envelopes()
+    ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+    root = tmp_path / "normalized"
+    days = {
+        "2026-08-31": [event_at(ev, "acac0010", "2026-08-31T23:59:59Z"), copy_at(cp, "acac0010", "2026-08-31T23:59:59Z")],
+        "2026-09-01": [event_at(ev, "acac0010", "2026-09-01T00:00:02Z"), copy_at(cp, "acac0010", "2026-09-01T00:00:02Z")],
+    }
+    catalog = packager.get_catalog()
+    con = duckdb.connect()
+    for day, envelopes in days.items():
+        d = root / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True)
+        hour = "23" if day == "2026-08-31" else "00"
+        with gzip.open(d / f"{hour}.gz", "wt") as f:
+            f.writelines(json.dumps(e) + "\n" for e in envelopes)
+        packager.process_day(day, sorted(glob.glob(f"{d}/*.gz")), con, catalog)
+
+    assert [p["day"].isoformat() for p in rows(catalog, "positions") if p["id"] == "acac0010"] == ["2026-08-31"]
+    rx = [r for r in rows(catalog, "receptions") if r["id"] == "acac0010"]
+    assert len(rx) == 2 and len({r["ts"] for r in rx}) == 1, "the re-accept's copy joins the earlier transmission"
 
 
 def test_weather_columns_cover_every_methyd_field():

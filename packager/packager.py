@@ -147,14 +147,12 @@ def process_day(day, files, con, catalog):
 
     # positions: accepted position events received in the day. Implausible and stale events are
     # archived in the normalized stream but withheld here, exactly as the live stream withheld them.
-    # The LAG collapse folds a crash-window re-accept (same id inside the server's window) into one row.
+    # A crash-window re-accept (same id inside the server's window) folds into one row afterwards.
     con.execute(
         f"""
         CREATE OR REPLACE TABLE positions AS
-        SELECT * EXCLUDE (prev) FROM (
-          SELECT id, mmsi, ts, msg_type, lat6, lon6, sog10, cog10, heading, navstat, CAST(recv AS DATE) AS day,
-                 LAG(ts) OVER (PARTITION BY id ORDER BY ts) AS prev
-          FROM (
+        SELECT id, mmsi, ts, msg_type, lat6, lon6, sog10, cog10, heading, navstat, CAST(recv AS DATE) AS day
+        FROM (
             SELECT id, mmsi, ct AS ts, recv,
                    CAST(message->>'MessageID' AS TINYINT) AS msg_type,
                    CAST(round(CAST(message->>'Latitude' AS DOUBLE) * 600000) AS INTEGER) AS lat6,
@@ -171,18 +169,18 @@ def process_day(day, files, con, catalog):
             WHERE k = 'event' AND NOT implausible AND NOT stale
               AND mt IN {POS_TYPES}
               AND recv >= ? AND recv < ?
-          )
-        ) WHERE prev IS NULL OR ts - prev >= INTERVAL {WINDOW_S} SECONDS
+        )
         ORDER BY mmsi, ts
         """,
         [day_start, day_end],
     )
+    con.register("prior_positions", prior_positions(catalog, day))
+    collapse_reaccepts(con)
 
     # receptions: every copy of a position received in the day, joined to its transmission by id and
     # canonical proximity, the same rule the server used to call it a copy in the first place. A copy
     # can arrive after midnight for a transmission the server received before it, so the previous
     # day's positions join too; a copy more than a day behind its transmission drops.
-    con.register("prior_positions", prior_positions(catalog, day))
     con.execute(
         f"""
         CREATE OR REPLACE TABLE receptions AS
@@ -221,6 +219,34 @@ def process_day(day, files, con, catalog):
         replace_day(con, catalog, day, name)
     replace_day(con, catalog, day, "positions")
     print(f"{day}: {n_pos} positions, {n_rx} receptions, {n_wx} weather", file=sys.stderr)
+
+
+def collapse_reaccepts(con):
+    """Drop the day's positions the server would have called copies had it not lost its dedupe state
+    in a crash. Like the server, each id compares against its last kept transmission, not merely the
+    one before: 0 s, 9 s, 18 s is two transmissions. The previous day's positions seed that anchor,
+    so a re-accept just after midnight folds into the transmission already packaged before it."""
+    near = con.execute(
+        f"""
+        WITH ids AS (SELECT id, ts, rowid AS row FROM positions
+                     UNION ALL SELECT id, ts, NULL FROM prior_positions),
+             gaps AS (SELECT id, ts - LAG(ts) OVER (PARTITION BY id ORDER BY ts) AS gap FROM ids)
+        SELECT id, ts, row FROM ids
+        WHERE id IN (SELECT id FROM gaps WHERE gap < INTERVAL {WINDOW_S} SECONDS)
+        ORDER BY id, ts, row NULLS FIRST
+        """
+    ).fetchall()
+    drop, last_id, anchor = [], None, None
+    for id, ts, row in near:  # only ids with a pair inside the window: a handful a day
+        if id != last_id:
+            last_id, anchor = id, None
+        if row is None or anchor is None or (ts - anchor).total_seconds() >= WINDOW_S:
+            anchor = ts
+        else:
+            drop.append(row)
+    if drop:
+        con.register("dropped", pa.table({"row": drop}))
+        con.execute("DELETE FROM positions WHERE rowid IN (SELECT row FROM dropped)")
 
 
 def prior_positions(catalog, day):
