@@ -3,7 +3,7 @@
   "info": {
     "title": "aiscast API",
     "version": "1.0.0",
-    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, no sign-in, the same tiers as `/v1/vessels`. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
+    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket JSON frames, MQTT over WebSocket for feeders, or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, no sign-in, the same tiers as `/v1/vessels`. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
     "contact": {
       "name": "aiscast",
       "url": "https://github.com/openwatersio/aiscast"
@@ -295,20 +295,6 @@
             "description": "Body larger than 1 MB (before or after gzip decompression).",
             "content": { "text/plain": { "schema": { "type": "string" } } }
           },
-          "429": { "$ref": "#/components/responses/RateLimited" }
-        }
-      }
-    },
-    "/v1/mqtt": {
-      "get": {
-        "operationId": "mqtt",
-        "tags": ["Contributing"],
-        "summary": "Contributing over MQTT",
-        "description": "The realtime path for a receiver: a receive-only MQTT 3.1.1 endpoint over WebSocket, documented at [openwaters.io/api/ais](https://openwaters.io/api/ais/). AIS-catcher publishes each message as it is decoded:\n\n```\nAIS-catcher -Q wssmqtt://x:<token>@ais.openwaters.io:443/v1/mqtt MSGFORMAT NMEA\n```\n\nThe token is the CONNECT password (the username is ignored) and its `sub` is the station, so events carry `source: station:<sub>`. Each PUBLISH payload is newline-separated NMEA on any topic; QoS 0, 1, and 2 are accepted, and SUBSCRIBE is refused. 6,000 sentences per minute per token. Feeding data is acceptance of the contributor agreement, linked from the upgrade response's `Link: rel=\"terms-of-service\"` header. The responses below are what a request receives when it is refused before the WebSocket upgrade.",
-        "security": [{ "token": [] }],
-        "responses": {
-          "101": { "description": "Switching to the WebSocket protocol; MQTT CONNECT follows." },
-          "426": { "description": "Not a WebSocket upgrade.", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }

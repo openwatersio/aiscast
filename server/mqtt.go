@@ -13,14 +13,16 @@ import (
 	"github.com/coder/websocket"
 )
 
-// /v1/mqtt: a receive-only MQTT 3.1.1 endpoint over WebSocket, for feeders that publish each message as it
-// is decoded (AIS-catcher `-Q wssmqtt://x:<token>@ais.openwaters.io/v1/mqtt MSGFORMAT NMEA`). AIS-catcher's
-// HTTP output batches on an interval with a one-second floor, and UDP is unauthenticated, so this is the
-// realtime path that carries station credit. The token travels as the CONNECT password (username ignored),
-// the token's `sub` is the station, and events carry `source: station:<sub>`. Each PUBLISH payload is
+// MQTT on /v1/stream: a client that negotiates the `mqtt` WebSocket subprotocol gets a receive-only MQTT
+// 3.1.1 session on the same URL the JSON frames use, so one address streams in either direction whatever
+// the client speaks. It exists for feeders that publish each message as it is decoded (AIS-catcher
+// `-Q wssmqtt://x:<token>@ais.openwaters.io:443/v1/stream MSGFORMAT NMEA`): AIS-catcher's HTTP output
+// batches on an interval with a one-second floor, and UDP is unauthenticated, so this is the realtime path
+// that carries station credit. The token travels as the CONNECT password (username ignored), or in the
+// request as on any /v1/stream socket; the token's `sub` is the station. Each PUBLISH payload is
 // newline-separated NMEA; topics are ignored. SUBSCRIBE is refused: a subscription would be a data-out path
-// around every tier limit, and the streams exist for reading. Hand-rolled rather than an embedded broker,
-// because the receive-only subset is a fixed header, a varint length, and five packet types.
+// around every tier limit, and the JSON frames on this URL exist for reading. Hand-rolled rather than an
+// embedded broker, because the receive-only subset is a fixed header, a varint length, and five packet types.
 
 // MQTT 3.1.1 control packet types (high nibble of the first byte).
 const (
@@ -51,7 +53,17 @@ const (
 
 const maxMQTTPacket = maxBody // one PUBLISH is one AIS-catcher batch at most; same bound as a /v1/receive post
 
-var mqttWSOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, Subprotocols: []string{"mqtt"}}
+// offersMQTT reports whether the upgrade request lists mqtt among its subprotocols.
+func offersMQTT(r *http.Request) bool {
+	for _, v := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, tok := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(tok), "mqtt") {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 type mqttPacket struct {
 	typ   byte
@@ -148,9 +160,11 @@ func (f *mqttFields) bytes() []byte {
 func (f *mqttFields) string() string { return string(f.bytes()) }
 
 // mqttConnect validates a CONNECT body: protocol, then the token in the password (or the username, for a
-// client that puts it there as AIS-catcher's USERPWD may). The client id is ignored: the token names the
-// station. A malformed packet is an error, answered by closing without a CONNACK as the spec requires.
-func (p *Pipeline) mqttConnect(body []byte, ip string) (cl *Claims, code byte, keepAlive time.Duration, err error) {
+// client that puts it there as AIS-catcher's USERPWD may). A CONNECT without credentials falls back to
+// the request's own token (`?key=` or a header), already verified as reqClaims or refused as reqErr. The
+// client id is ignored: the token names the station. A malformed packet is an error, answered by closing
+// without a CONNACK as the spec requires.
+func (p *Pipeline) mqttConnect(body []byte, ip string, reqClaims *Claims, reqErr error) (cl *Claims, code byte, keepAlive time.Duration, err error) {
 	f := mqttFields{b: body}
 	name, level, flags := f.string(), f.byte(), f.byte()
 	keepAlive = time.Duration(f.uint16()) * time.Second
@@ -182,7 +196,16 @@ func (p *Pipeline) mqttConnect(body []byte, ip string) (cl *Claims, code byte, k
 	if !strings.HasPrefix(tok, tokenPrefix) && strings.HasPrefix(user, tokenPrefix) {
 		tok = user
 	}
-	cl, err = p.authorizeToken(tok, ip, "publish")
+	switch {
+	case tok != "" || (reqClaims == nil && reqErr == nil):
+		cl, err = p.authorizeToken(tok, ip, "publish")
+	case reqErr != nil:
+		err = reqErr
+	case !reqClaims.may("publish"):
+		err = forbiddenError{"role " + reqClaims.Role + " may not publish"}
+	default:
+		cl = reqClaims
+	}
 	if errors.As(err, new(forbiddenError)) {
 		return nil, mqttNotAuthorized, 0, nil
 	}
@@ -192,25 +215,11 @@ func (p *Pipeline) mqttConnect(body []byte, ip string) (cl *Claims, code byte, k
 	return cl, mqttAccepted, keepAlive, nil
 }
 
-func (p *Pipeline) serveMQTT(w http.ResponseWriter, r *http.Request) {
-	// Terms on the upgrade response, as on every /v1/receive response: MQTT has no frame to carry them in.
-	w.Header().Set("Link", "<"+termsURL+`>; rel="terms-of-service"`)
-	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		http.Error(w, "MQTT over WebSocket only: connect with an MQTT client, subprotocol mqtt", http.StatusUpgradeRequired)
-		return
-	}
+// serveMQTT runs the MQTT session on an accepted /v1/stream socket whose subprotocol is mqtt. The caller has
+// started the ping loop; the connect limit (unless the caller applied it to a request token) and the
+// stream slots are taken here, once CONNECT says whose they are.
+func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Request, reqClaims *Claims, reqErr error, connectChecked bool) {
 	ip := clientIP(r)
-	if p.limited(w, wsConnectLimit, ip) {
-		return
-	}
-	c, err := websocket.Accept(w, r, mqttWSOpts)
-	if err != nil {
-		return
-	}
-	defer c.CloseNow()
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	go p.pingLoop(ctx, c, cancel) // AIS-catcher connects with keep-alive off, so liveness is the WebSocket ping's
 	nc := websocket.NetConn(ctx, c, websocket.MessageBinary)
 	c.SetReadLimit(maxMQTTPacket + 16) // after NetConn, which lifts the limit; a frame is at most one packet's worth
 	br := bufio.NewReader(nc)
@@ -225,9 +234,13 @@ func (p *Pipeline) serveMQTT(w http.ResponseWriter, r *http.Request) {
 	if err != nil || pk.typ != mqttConnect {
 		return
 	}
-	cl, code, keepAlive, err := p.mqttConnect(pk.body, ip)
+	cl, code, keepAlive, err := p.mqttConnect(pk.body, ip, reqClaims, reqErr)
 	if err != nil {
 		return
+	}
+	if code == mqttAccepted && !connectChecked && !wsConnectLimit.allow(cl.Sub) {
+		p.stats.rateLimited.Add(1)
+		code = mqttUnavailable
 	}
 	if code == mqttAccepted {
 		release, err := acquireStream(cl, ip)

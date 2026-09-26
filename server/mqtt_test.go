@@ -23,11 +23,11 @@ type mqttClient struct {
 	resp *http.Response
 }
 
-func dialMQTT(t *testing.T, srv *httptest.Server) *mqttClient {
+func dialMQTT(t *testing.T, srv *httptest.Server, query string) *mqttClient {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	c, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/mqtt", &websocket.DialOptions{Subprotocols: []string{"mqtt"}})
+	c, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/stream"+query, &websocket.DialOptions{Subprotocols: []string{"mqtt"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestMQTTPublish(t *testing.T) {
 	sub := p.subscribe()
 	srv := httptest.NewServer(httpHandler(p))
 	defer srv.Close()
-	m := dialMQTT(t, srv)
+	m := dialMQTT(t, srv, "")
 	if m.ws.Subprotocol() != "mqtt" {
 		t.Errorf("subprotocol %q, want mqtt", m.ws.Subprotocol())
 	}
@@ -183,18 +183,21 @@ func TestMQTTConnectAuth(t *testing.T) {
 	defer srv.Close()
 
 	cases := []struct {
-		name, user, pass string
-		code             byte
+		name, query, user, pass string
+		code                    byte
 	}{
-		{"feeder token as password", "x", feeder, mqttAccepted},
-		{"feeder token as username", feeder, "", mqttAccepted},
-		{"partner may not publish", "x", partner, mqttNotAuthorized},
-		{"token bound elsewhere", "x", elsewhere, mqttNotAuthorized},
-		{"garbage", "x", "ak1.nope", mqttBadCredentials},
-		{"no credentials", "", "", mqttBadCredentials},
+		{"feeder token as password", "", "x", feeder, mqttAccepted},
+		{"feeder token as username", "", feeder, "", mqttAccepted},
+		{"feeder token on the URL, no CONNECT credentials", "?key=" + feeder, "", "", mqttAccepted},
+		{"partner may not publish", "", "x", partner, mqttNotAuthorized},
+		{"partner token on the URL", "?key=" + partner, "", "", mqttNotAuthorized},
+		{"token bound elsewhere", "", "x", elsewhere, mqttNotAuthorized},
+		{"garbage", "", "x", "ak1.nope", mqttBadCredentials},
+		{"garbage on the URL", "?key=ak1.nope", "", "", mqttBadCredentials},
+		{"no credentials", "", "", "", mqttBadCredentials},
 	}
 	for _, c := range cases {
-		m := dialMQTT(t, srv)
+		m := dialMQTT(t, srv, c.query)
 		m.send(mqttConnect, 0, connectPacket(c.user, c.pass))
 		pk := m.expect(mqttConnack)
 		if pk.body[1] != c.code {
@@ -231,22 +234,55 @@ func TestMQTTConnectAuth(t *testing.T) {
 	}
 }
 
-// Anything but CONNECT first, or a plain HTTP request, is refused without leaking a CONNACK.
+// The connect limit for an MQTT socket is keyed by the token in CONNECT, not by address: a second connect
+// on the same token is refused as server unavailable, another token from the same address is not.
+func TestMQTTConnectLimitPerToken(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	wsConnectLimit = newLimiter(1)
+	defer func() { wsConnectLimit = newLimiter(20) }()
+	kid, priv := testIssuer(t, p)
+	exp := time.Now().Add(time.Hour).Unix()
+	a, _ := signToken(priv, Claims{Kid: kid, Sub: "a", Role: "feeder", Exp: exp})
+	b, _ := signToken(priv, Claims{Kid: kid, Sub: "b", Role: "feeder", Exp: exp})
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	for i, want := range []struct {
+		pass string
+		code byte
+	}{{a, mqttAccepted}, {a, mqttUnavailable}, {b, mqttAccepted}} {
+		m := dialMQTT(t, srv, "")
+		m.send(mqttConnect, 0, connectPacket("x", want.pass))
+		if pk := m.expect(mqttConnack); pk.body[1] != want.code {
+			t.Errorf("connect %d: connack %d, want %d", i, pk.body[1], want.code)
+		}
+	}
+}
+
+// Anything but CONNECT first is refused without leaking a CONNACK, and a JSON client on the same URL that
+// does not ask for mqtt still gets its welcome frame.
 func TestMQTTRefusals(t *testing.T) {
 	p := testPipeline(t)
 	srv := httptest.NewServer(httpHandler(p))
 	defer srv.Close()
-	m := dialMQTT(t, srv)
+	m := dialMQTT(t, srv, "")
 	m.send(mqttPublish, 0, publishPacket("t", 0, sentence))
 	if pk, err := m.read(); err == nil {
 		t.Errorf("publish before connect answered with %+v", pk)
 	}
-	res, err := http.Get(srv.URL + "/v1/mqtt")
-	if err != nil || res.StatusCode != http.StatusUpgradeRequired {
-		t.Errorf("plain GET: %v %v", res.StatusCode, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/stream", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if l := res.Header.Get("Link"); !strings.Contains(l, termsURL) {
-		t.Errorf("terms link missing: %q", l)
+	defer c.CloseNow()
+	if c.Subprotocol() != "" {
+		t.Errorf("JSON socket negotiated %q", c.Subprotocol())
+	}
+	if _, msg, err := c.Read(ctx); err != nil || !strings.Contains(string(msg), `"welcome"`) {
+		t.Errorf("JSON socket: %s %v", msg, err)
 	}
 }
 

@@ -22,6 +22,9 @@ const maxPublishFrame = 1000 // sentences per publish frame; the rest are droppe
 
 var wsOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover}
 
+// v1Opts also offers the mqtt subprotocol: /v1/stream carries MQTT for a client that asks for it (mqtt.go).
+var v1Opts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover, Subprotocols: []string{"mqtt"}}
+
 // Vars so tests can shrink them; atomic because a handler's pingLoop can outlive its test and read while
 // the next test writes.
 var pingEvery, pingTimeout atomic.Int64
@@ -337,6 +340,8 @@ type v1Event struct {
 }
 
 func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
+	// Terms with every response, as on /v1/receive: the welcome frame repeats them, MQTT has no frame to.
+	w.Header().Set("Link", "<"+termsURL+`>; rel="terms-of-service"`)
 	// Not an upgrade: same URL, same claims and caps, one-way over SSE. This test only routes; the real
 	// handshake validation is websocket.Accept's, which answers a malformed one with 400. Requiring GET is
 	// what stops a POST from opening an unbounded stream.
@@ -351,10 +356,13 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	// Anonymous sockets may subscribe (the viewer), never publish. A supplied token must verify, and its
 	// claims (cidr, conns, bbox) bind the socket whatever its role; publishing needs a publish role.
 	cl, claimsErr := p.socketClaims(r)
-	if p.limited(w, wsConnectLimit, connectKey(cl, r)) {
+	// An MQTT socket without a request token identifies itself in CONNECT, after the upgrade, so its
+	// connect limit is applied there, keyed by token like everyone else's, rather than by address here.
+	connectChecked := cl != nil || !offersMQTT(r)
+	if connectChecked && p.limited(w, wsConnectLimit, connectKey(cl, r)) {
 		return
 	}
-	c, err := websocket.Accept(w, r, wsOpts)
+	c, err := websocket.Accept(w, r, v1Opts)
 	if err != nil {
 		return
 	}
@@ -363,6 +371,10 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	go p.pingLoop(ctx, c, cancel)
+	if c.Subprotocol() == "mqtt" {
+		p.serveMQTT(ctx, c, r, cl, claimsErr, connectChecked)
+		return
+	}
 
 	if err := claimsErr; err != nil {
 		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
