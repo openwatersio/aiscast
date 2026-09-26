@@ -313,3 +313,13 @@ func TestReplaySkipsTheNormalizedStream(t *testing.T) {
 		}
 	}
 }
+
+// Raw hours recorded before station ids name contributors by transport. Backfill replays them, and
+// their copies must carry the contributor license, not "unspecified".
+func TestHistoricalContributorSourcesStayCC0(t *testing.T) {
+	for _, src := range []string{"http:abc", "v1:ed25519:xyz", "v1:mmsi:368168720", "station:abc"} {
+		if got := licenseOf(src); got != "CC0-1.0" {
+			t.Errorf("licenseOf(%q) = %q, want CC0-1.0", src, got)
+		}
+	}
+}

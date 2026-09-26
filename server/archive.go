@@ -18,6 +18,9 @@ import (
 var licenses = map[string]string{
 	"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
 	"station": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
+	// contributors were named by transport before station ids; raw hours from then still carry these
+	// sources, and replaying them must license their copies the same way
+	"http": "CC0-1.0", "v1": "CC0-1.0",
 }
 
 // ownCredit opens every event's attribution: the only credit for volunteer stations, and the prefix to
