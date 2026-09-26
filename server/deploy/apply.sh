@@ -9,6 +9,10 @@ UV_VERSION=0.12.12
 export DEBIAN_FRONTEND=noninteractive
 # Grafana's apt repository, for Alloy. The key is fetched once; apt checks every package against it.
 if [ ! -f /etc/apt/keyrings/grafana.asc ]; then
+	if ! command -v curl >/dev/null; then # a minimal image may lack it, and the install below comes after the key
+		apt-get update -q
+		apt-get install -yq curl
+	fi
 	mkdir -p /etc/apt/keyrings
 	curl -fsSL https://apt.grafana.com/gpg.key -o /etc/apt/keyrings/grafana.asc
 fi
