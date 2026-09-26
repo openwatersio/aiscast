@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -85,6 +86,9 @@ type archive struct {
 	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
 	uploads sync.WaitGroup
 	stopped sync.Once // shutdown runs once; the writer is gone after the first
+
+	uploadFailures atomic.Int64
+	staged         atomic.Int64 // bytes on disk after the last sweep; grows when uploads fail
 
 	// holds counts the open writer and every in-flight upload per path; the sweep skips any path with
 	// a count. A quiet source keeps its hour open indefinitely, and deleting it out from under the
@@ -258,6 +262,7 @@ func (a *archive) close(hf *hourFile) {
 		// carries the newest bytes and a reopened hour cannot be overwritten by its earlier self.
 		a.withKey(key, func() {
 			if err := a.s3.put(key, hf.path); err != nil {
+				a.uploadFailures.Add(1)
 				log.Printf("archive: upload %s: %v", rel, err) // the next sweep retries it
 				return
 			}
@@ -318,16 +323,17 @@ func (a *archive) sweep() {
 		return
 	}
 	cutoff := time.Now().Add(-archiveGrace)
-	var freed, kept int64
+	var freed, kept, total int64
 	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
 			return nil
 		}
-		if a.isHeld(path) {
+		fi, err := d.Info()
+		if err != nil {
 			return nil
 		}
-		fi, err := d.Info()
-		if err != nil || fi.ModTime().After(cutoff) {
+		total += fi.Size()
+		if a.isHeld(path) || fi.ModTime().After(cutoff) {
 			return nil
 		}
 		rel, err := filepath.Rel(a.dir, path)
@@ -350,6 +356,7 @@ func (a *archive) sweep() {
 			var err error
 			a.withKey(key, func() { err = a.s3.put(key, path) }) // never race a rotation upload of the same key
 			if err != nil {
+				a.uploadFailures.Add(1)
 				log.Printf("archive: sweep upload %s: %v", key, err)
 				kept += fi.Size()
 				return nil
@@ -370,6 +377,7 @@ func (a *archive) sweep() {
 		freed += fi.Size()
 		return nil
 	})
+	a.staged.Store(total - freed)
 	log.Printf("archive: sweep freed %d MiB, kept %d MiB not yet reclaimed", freed>>20, kept>>20)
 }
 

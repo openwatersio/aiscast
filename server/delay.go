@@ -34,18 +34,27 @@ func (r *delayRing) add(d float64) {
 	r.mu.Unlock()
 }
 
-// percentiles returns p50 and p99 in seconds, rounded to 0.1, or nil with no samples.
-func (r *delayRing) percentiles() map[string]any {
+// quantiles returns the sample count, p50, and p99 in seconds; ok is false with no samples.
+func (r *delayRing) quantiles() (n int, p50, p99 float64, ok bool) {
 	r.mu.Lock()
 	s := make([]float32, r.n)
 	copy(s, r.buf[:r.n])
 	r.mu.Unlock()
 	if len(s) == 0 {
-		return nil
+		return 0, 0, 0, false
 	}
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
-	round := func(v float32) float64 { return math.Round(float64(v)*10) / 10 }
-	return map[string]any{"n": len(s), "p50": round(s[len(s)/2]), "p99": round(s[len(s)*99/100])}
+	return len(s), float64(s[len(s)/2]), float64(s[len(s)*99/100]), true
+}
+
+// percentiles is quantiles for /v1/stats, rounded to 0.1, or nil with no samples.
+func (r *delayRing) percentiles() map[string]any {
+	n, p50, p99, ok := r.quantiles()
+	if !ok {
+		return nil
+	}
+	round := func(v float64) float64 { return math.Round(v*10) / 10 }
+	return map[string]any{"n": n, "p50": round(p50), "p99": round(p99)}
 }
 
 type delayStats struct {

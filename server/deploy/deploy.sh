@@ -21,5 +21,5 @@ cp "$bin" "$stage/aiscast-linux"
 cp ../../packager/packager.py "$stage/packager.py"  # the nightly packager runs from the same source the tests do
 # The box is silent for most of the converge and GitHub-hosted runners drop idle TCP after
 # about four minutes, so keep the session alive from this side.
-tar czf - apply.sh aiscast.env.example rootfs -C "$stage" aiscast-linux packager.py |
+tar czf - apply.sh aiscast.env.example alloy.env.example rootfs -C "$stage" aiscast-linux packager.py |
 	ssh -o ServerAliveInterval=30 "$host" 'rm -rf aiscast-deploy && mkdir aiscast-deploy && tar xzf - -C aiscast-deploy && sh aiscast-deploy/apply.sh'

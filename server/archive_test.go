@@ -88,6 +88,12 @@ func TestArchiveSweep(t *testing.T) {
 	for k := range want {
 		t.Errorf("%s was never uploaded", k)
 	}
+	if got := a.staged.Load(); got != 15 { // broken, stub, and open stay on disk
+		t.Errorf("staged = %d bytes, want 15", got)
+	}
+	if got := a.uploadFailures.Load(); got != 1 {
+		t.Errorf("upload failures = %d, want 1", got)
+	}
 }
 
 // Rotation uploads but must not delete: a Reception queued across the hour boundary reopens the same
