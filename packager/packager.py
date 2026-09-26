@@ -53,6 +53,14 @@ WEATHER_NUM = [
     "swell_direction", "water_temperature", "salinity",
 ]
 WEATHER_STR = ["air_pressure_tendency", "water_level_trend", "sea_state", "precipitation_type", "ice"]
+# MetHyd fields the weather table reads outside the measurement columns, and those it drops on
+# purpose; server/coverage.go declares the same contract for the live capture check.
+WEATHER_READ = ["mmsi", "msgtime", "functionalId", "latitude", "longitude"]
+WEATHER_IGNORED = [
+    "type", "messageType", "stream",  # envelope markers
+    "designatedAreaCode",  # 1 for every IMO message
+    "day", "hour", "minute",  # embedded observation time, broken on real stations; msgtime is the clock
+]
 WEATHER_SCHEMA = pa.schema(
     [("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("functional_id", pa.int8()),
      ("lat", pa.float64()), ("lon", pa.float64())]

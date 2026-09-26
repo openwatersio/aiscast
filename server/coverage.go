@@ -23,6 +23,11 @@ var waivers = map[string][]string{
 		"shipLength", "shipWidth", // redundant: dimensions A+B and C+D carry them
 		"reportClass", // duplicative of aisClass for the message types we map
 	},
+	"barentswatch/methyd": {
+		"type", "messageType", "stream", // envelope markers
+		"designatedAreaCode",    // 1 for every IMO message
+		"day", "hour", "minute", // embedded observation time, broken on real stations; msgtime is the clock
+	},
 	"catcher": {
 		"protocol",                   // constant envelope marker
 		"msgs.class", "msgs.channel", // class is constant "AIS"; channel is in the sentence itself
@@ -118,11 +123,15 @@ var timeType = reflect.TypeOf(time.Time{})
 // encoding/json), descending into named struct fields and elements of slices of structs, plus the
 // site's waivers.
 func fieldsOf(site string, t reflect.Type) fieldSet {
-	out := walkStruct(t)
+	return withWaivers(site, walkStruct(t))
+}
+
+// withWaivers adds a site's waivers to a capture set.
+func withWaivers(site string, fs fieldSet) fieldSet {
 	for _, w := range waivers[site] {
-		insertPath(out, strings.Split(w, "."))
+		insertPath(fs, strings.Split(w, "."))
 	}
-	return out
+	return fs
 }
 
 func walkStruct(t reflect.Type) fieldSet {
@@ -177,6 +186,20 @@ var (
 	dtMetaKnown  = fieldsOf("digitraffic/metadata", reflect.TypeOf(dtMetadata{}))
 	aishubKnown  = fieldsOf("aishub", reflect.TypeOf(aishubRow{}))
 	catcherKnown = fieldsOf("catcher", reflect.TypeOf(jsonaiscatcher{}))
+
+	// MetHyd is archived verbatim, so nothing is lost at ingest; the loss point is the packager's
+	// fixed weather columns. This set is that contract: the fields it reads, plus the waivers above.
+	// packager/test_packager.py checks the same record against the columns themselves.
+	metHydKnown = withWaivers("barentswatch/methyd", flat(
+		"mmsi", "msgtime", "functionalId", "latitude", "longitude",
+		"avgWindSpeed", "windGust", "windDirection", "windGustDirection", "airTemperature",
+		"relativeHumidity", "dewPoint", "airPressure", "horizontalVisibility", "waterLevel",
+		"surfaceCurrentSpeed", "surfaceCurrentDirection", "currentSpeed2", "currentDirection2",
+		"currentMeasuringLevel2", "currentSpeed3", "currentDirection3", "currentMeasuringLevel3",
+		"significantWaveHeight", "wavePeriod", "waveDirection", "swellHeight", "swellPeriod",
+		"swellDirection", "waterTemperature", "salinity",
+		"airPressureTendency", "waterLevelTrend", "seaState", "precipitationType", "ice",
+	))
 
 	// Message is a map keyed by type name and checked per type below; MetaData has its own site.
 	v0EnvKnown  = flat("MessageType", "MetaData", "Message")

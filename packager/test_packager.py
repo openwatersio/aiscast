@@ -233,3 +233,16 @@ def test_copy_after_midnight_joins_the_previous_days_transmission(tmp_path):
     rx = [r for r in rows(catalog, "receptions") if r["id"] == "abab0007"]
     assert {r["day"].isoformat() for r in rx} == {"2026-08-31", "2026-09-01"}, "the late copy must not drop"
     assert len({r["ts"] for r in rx}) == 1, "both copies join the one transmission"
+
+
+def test_weather_columns_cover_every_methyd_field():
+    """Every field of a real MetHyd record is a weather column, read directly, or ignored on
+    purpose: a field outside all three would reach the stream and vanish from the table."""
+    def camel(snake):
+        head, *rest = snake.split("_")
+        return head + "".join(w.capitalize() for w in rest)
+
+    known = {camel(c) for c in packager.WEATHER_NUM + packager.WEATHER_STR}
+    known |= set(packager.WEATHER_READ) | set(packager.WEATHER_IGNORED)
+    record = template(fixture_envelopes(), "methyd")["r"]
+    assert set(record) - known == set(), f"unhandled MetHyd fields: {sorted(set(record) - known)}"
