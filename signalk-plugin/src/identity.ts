@@ -33,6 +33,17 @@ export interface Token {
 
 const RENEW_BEFORE = 3 * 24 * 3600; // seconds before expiry at which a new token is requested
 
+// tokenSub reads the station a token names (`ak1.<base64url claims>.<signature>`), which is what aiscast
+// files its publishes under; unverified here, since only the server's opinion of it matters.
+export function tokenSub(token: string): string | null {
+  try {
+    const claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString()) as { sub?: unknown };
+    return typeof claims.sub === "string" ? claims.sub : null;
+  } catch {
+    return null;
+  }
+}
+
 // A personal token from POST /v1/keys, cached in the data dir and renewed a few days before it expires.
 export async function loadToken(dir: string, server: string, pubkey: string, now = Date.now()): Promise<Token> {
   const file = join(dir, "token.json");

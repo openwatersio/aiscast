@@ -221,8 +221,9 @@ func (p *Pipeline) mqttConnect(body []byte, ip string, reqClaims *Claims, reqErr
 // a different one.
 func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Request, reqClaims *Claims, reqErr error) {
 	ip := clientIP(r)
+	// NetConn lifts the WebSocket message limit; memory is bounded per packet by readMQTTPacket instead,
+	// since packets may share a frame or span several.
 	nc := websocket.NetConn(ctx, c, websocket.MessageBinary)
-	c.SetReadLimit(maxMQTTPacket + 16) // after NetConn, which lifts the limit; a frame is at most one packet's worth
 	br := bufio.NewReader(nc)
 	write := func(b []byte) error {
 		nc.SetWriteDeadline(time.Now().Add(10 * time.Second))
