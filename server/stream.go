@@ -340,7 +340,8 @@ type v1Event struct {
 }
 
 func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
-	// Terms with every response, as on /v1/receive: the welcome frame repeats them, MQTT has no frame to.
+	// Terms with every response, as on /v1/receive. The JSON welcome frame repeats them; an MQTT session
+	// has no equivalent frame, so the header is the only place it can receive them.
 	w.Header().Set("Link", "<"+termsURL+`>; rel="terms-of-service"`)
 	// Not an upgrade: same URL, same claims and caps, one-way over SSE. This test only routes; the real
 	// handshake validation is websocket.Accept's, which answers a malformed one with 400. Requiring GET is
