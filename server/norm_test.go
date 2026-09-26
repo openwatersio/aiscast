@@ -342,3 +342,29 @@ func TestNormalizedWriterIsOptIn(t *testing.T) {
 		}
 	}
 }
+
+// Corroboration is runtime state the archive cannot re-derive, so the envelope records it: set for
+// an event only an unauthenticated sender heard, clear for one from a trusted source.
+func TestNormalizedStreamRecordsCorroboration(t *testing.T) {
+	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		source string
+		want   bool
+	}{{"udp:aaaa", true}, {"kystverket", false}} {
+		p, dir := normPipeline(t)
+		p.ingestLine(Reception{Source: c.source, Station: c.source, RecvTime: recv, Body: testSentence})
+		p.norm.shutdown()
+		events := 0
+		for _, e := range readNorm(t, dir) {
+			if e.K == "event" {
+				events++
+				if e.Uncorroborated != c.want {
+					t.Fatalf("%s: uncorroborated = %v, want %v", c.source, e.Uncorroborated, c.want)
+				}
+			}
+		}
+		if events != 1 {
+			t.Fatalf("%s: %d events, want 1", c.source, events)
+		}
+	}
+}

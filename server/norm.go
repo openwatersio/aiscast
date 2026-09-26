@@ -19,12 +19,16 @@ const normVersion = 1
 // normEnvelope wraps every record, so the archive's schema is independent of the public stream's:
 // a v1 API change is a new envelope version here, never a silent format drift.
 type normEnvelope struct {
-	K           string          `json:"k"` // event | copy | methyd
-	V           int             `json:"v"`
-	T           string          `json:"t"` // receive time, RFC3339Nano UTC
-	Implausible bool            `json:"implausible,omitempty"`
-	Stale       bool            `json:"stale,omitempty"`
-	R           json.RawMessage `json:"r"`
+	K           string `json:"k"` // event | copy | methyd
+	V           int    `json:"v"`
+	T           string `json:"t"` // receive time, RFC3339Nano UTC
+	Implausible bool   `json:"implausible,omitempty"`
+	Stale       bool   `json:"stale,omitempty"`
+	// Uncorroborated marks a low-trust event (an unauthenticated UDP sender) for a vessel no trusted
+	// source heard within the corroboration window. It is not withheld from the /v1 stream; /v1/nmea
+	// and the AISHub feed leave it out. The window is runtime state, so it is recorded, not re-derived.
+	Uncorroborated bool            `json:"uncorroborated,omitempty"`
+	R              json.RawMessage `json:"r"`
 }
 
 // normCopy is one delivery of a message: the license belongs here, on the delivery, not on the
@@ -89,6 +93,7 @@ func normLine(kind string, recv time.Time, flags *Event, rec any) []byte {
 	e := normEnvelope{K: kind, V: normVersion, T: recv.UTC().Format(time.RFC3339Nano), R: raw}
 	if flags != nil {
 		e.Implausible, e.Stale = flags.Implausible, flags.Stale
+		e.Uncorroborated = flags.LowTrust && !flags.Corroborated
 	}
 	line, err := json.Marshal(e)
 	if err != nil {

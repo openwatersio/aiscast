@@ -34,7 +34,7 @@ WINDOW_S = 10  # the server's dedupe window; joins and the restart collapse use 
 POSITIONS_SCHEMA = pa.schema([
     ("id", pa.string()), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("msg_type", pa.int8()),
     ("lat6", pa.int32()), ("lon6", pa.int32()), ("sog10", pa.int16()), ("cog10", pa.int16()),
-    ("heading", pa.int16()), ("navstat", pa.int8()), ("day", pa.date32()),
+    ("heading", pa.int16()), ("navstat", pa.int8()), ("corroborated", pa.bool_()), ("day", pa.date32()),
 ])
 RECEPTIONS_SCHEMA = pa.schema([
     ("id", pa.string()), ("ts", pa.timestamp("us")), ("source", pa.string()), ("station", pa.string()),
@@ -113,6 +113,7 @@ def load_envelopes(con, files):
         CREATE OR REPLACE TABLE env AS
         SELECT k, v, t AS recv,
                coalesce(implausible, false) AS implausible, coalesce(stale, false) AS stale,
+               coalesce(uncorroborated, false) AS uncorroborated,
                r->>'id' AS id,
                CAST(r->>'time' AS TIMESTAMP) AS ct,
                CAST(r->>'tx' AS TIMESTAMP) AS tx,
@@ -121,7 +122,7 @@ def load_envelopes(con, files):
                r->>'source' AS source, r->>'station' AS station, r->>'license' AS license,
                CAST(r->>'msgtime' AS TIMESTAMP) AS wxts,
                r->'message' AS message, r
-        FROM read_json(?, columns={k:'VARCHAR', v:'BIGINT', t:'TIMESTAMP', implausible:'BOOLEAN', stale:'BOOLEAN', r:'JSON'},
+        FROM read_json(?, columns={k:'VARCHAR', v:'BIGINT', t:'TIMESTAMP', implausible:'BOOLEAN', stale:'BOOLEAN', uncorroborated:'BOOLEAN', r:'JSON'},
                        format='newline_delimited')
         """,
         [files],
@@ -147,12 +148,15 @@ def process_day(day, files, con, catalog, fingerprint=None):
     con.execute(
         f"""
         CREATE OR REPLACE TABLE positions AS
-        SELECT id, mmsi, ts, msg_type, lat6, lon6, sog10, cog10, heading, navstat, CAST(recv AS DATE) AS day
+        SELECT id, mmsi, ts, msg_type, lat6, lon6, sog10, cog10, heading, navstat, NOT uncorroborated AS corroborated,
+               CAST(recv AS DATE) AS day
         FROM (
-            SELECT id, mmsi, ct AS ts, recv,
+            SELECT id, mmsi, ct AS ts, recv, uncorroborated,
                    CAST(message->>'MessageID' AS TINYINT) AS msg_type,
-                   CAST(round(CAST(message->>'Latitude' AS DOUBLE) * 600000) AS INTEGER) AS lat6,
-                   CAST(round(CAST(message->>'Longitude' AS DOUBLE) * 600000) AS INTEGER) AS lon6,
+                   -- the event's lat/lon, not the message's: the server leaves them off for the
+                   -- not-available values and (0,0), and its rule is the only one
+                   CAST(round(CAST(r->>'lat' AS DOUBLE) * 600000) AS INTEGER) AS lat6,
+                   CAST(round(CAST(r->>'lon' AS DOUBLE) * 600000) AS INTEGER) AS lon6,
                    CAST(CASE WHEN mt = 'LongRangeAisBroadcastMessage'
                         THEN CASE WHEN CAST(message->>'Sog' AS DOUBLE) >= 63 THEN 1023 ELSE round(CAST(message->>'Sog' AS DOUBLE) * 10) END
                         ELSE round(CAST(message->>'Sog' AS DOUBLE) * 10) END AS SMALLINT) AS sog10,

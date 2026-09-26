@@ -173,7 +173,8 @@ func (s *normSide) add(e normEnvelope) error {
 			Synthesized bool            `json:"syn,omitempty"`
 			Implausible bool            `json:"i,omitempty"`
 			Stale       bool            `json:"s,omitempty"`
-		}{ev.Message, canonNMEA(ev.NMEA), ev.MsgType, ev.MMSI, ev.Channel, ev.Lat, ev.Lon, ev.Synthesized, e.Implausible, e.Stale})
+			Uncorr      bool            `json:"u,omitempty"`
+		}{ev.Message, canonNMEA(ev.NMEA), ev.MsgType, ev.MMSI, ev.Channel, ev.Lat, ev.Lon, ev.Synthesized, e.Implausible, e.Stale, e.Uncorroborated})
 		count(s.events, k, string(body))
 		s.eventN[k]++
 		s.sources[k] = ev.Source

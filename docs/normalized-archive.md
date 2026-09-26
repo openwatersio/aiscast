@@ -33,6 +33,7 @@ Every line is a versioned envelope:
 - `v` is the schema version. A reader that meets a version it does not know must fail, never skip.
 - `t` is the server's receive time.
 - `implausible` and `stale` flag events the server archived but withheld from the stream. They live on the envelope so they never leak into the public event type.
+- `uncorroborated` flags an event from an unauthenticated sender (`udp:` or `mmsi:`) for a vessel no trusted source heard in the past hour. The `/v1` stream carries it; `/v1/nmea` and the AISHub feed leave it out. Whether a trusted source had heard the vessel is runtime state, so it is recorded here rather than re-derived.
 - `r` is the record.
 
 The envelope keeps the archive's schema independent of the public stream's. A change to the stream API is a new envelope version here, not silent drift.

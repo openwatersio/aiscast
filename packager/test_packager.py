@@ -54,9 +54,11 @@ def make_tree(tmp_path, extra_day=(), extra_boundary=()):
     return root
 
 
-def event_at(tpl, id, ts, recv=None, **flags):
+def event_at(tpl, id, ts, recv=None, nofix=False, **flags):
     e = copy.deepcopy(tpl)
     e["r"]["id"], e["r"]["time"], e["t"] = id, ts, recv or ts
+    if nofix:  # the server leaves lat/lon off when the report has no usable position
+        del e["r"]["lat"], e["r"]["lon"]
     e.update(flags)
     return e
 
@@ -103,6 +105,12 @@ def crafted(envs):
         # implausible: archived in the stream, withheld from the table like the live stream withheld it
         event_at(ev, "dddd0004", "2026-09-01T13:30:00Z", implausible=True),
         copy_at(cp, "dddd0004", "2026-09-01T13:30:00Z"),
+        # the server left lat/lon off (a (0,0) or not-available report): the row stays, without coordinates
+        event_at(ev, "adad0011", "2026-09-01T13:40:00Z", nofix=True),
+        copy_at(cp, "adad0011", "2026-09-01T13:40:00Z"),
+        # only an unauthenticated sender heard it
+        event_at(ev, "aeae0012", "2026-09-01T13:41:00Z", uncorroborated=True),
+        copy_at(cp, "aeae0012", "2026-09-01T13:41:00Z"),
         # a satellite pass relayed nearly eighteen hours late: transmitted the previous evening,
         # received today, so it belongs to today with its own timestamp
         event_at(ev, "ffff0006", "2026-08-31T20:00:00Z", recv="2026-09-01T13:50:00Z"),
@@ -152,7 +160,7 @@ def test_package_day(packaged):
         and e["r"]["msg_type"] in ("PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "LongRangeAisBroadcastMessage")
         and e["t"].startswith("2026-09-01")
     )
-    want = fix_pos + 1 + 1 + 2 + 1 + 2 + 1  # dup-copy tx, collapsed pair, anchored triple, same-instant pair, repeat pair, late satellite tx
+    want = fix_pos + 1 + 1 + 2 + 1 + 2 + 2 + 1  # dup-copy tx, collapsed pair, anchored triple, same-instant pair, repeat pair, no-fix and uncorroborated, late satellite tx
     assert len(positions) == want
 
     keys = {(p["id"], p["ts"]) for p in positions}
@@ -160,6 +168,10 @@ def test_package_day(packaged):
     assert sum(1 for p in positions if p["id"] == "bbbb0002") == 1, "crash pair must collapse"
     assert sorted(p["ts"].second for p in positions if p["id"] == "abab0008") == [0, 18], "collapse anchors on the kept row"
     assert sum(1 for p in positions if p["id"] == "abab0009") == 1, "a same-instant re-accept folds to one row"
+    by_id = {p["id"]: p for p in positions}
+    assert by_id["adad0011"]["lat6"] is None and by_id["adad0011"]["lon6"] is None, "coordinates follow the server's decision"
+    assert by_id["aeae0012"]["corroborated"] is False and by_id["aaaa0001"]["corroborated"] is True
+    assert all(p["lat6"] is not None for p in positions if p["id"] != "adad0011"), "real fixes keep their coordinates"
     joined = sorted(r["ts"].second for r in rows(catalog, "receptions") if r["id"] == "abab0008")
     assert joined == [0, 0, 18], "each copy joins the one transmission it names; the folded 9 s copy follows its row"
     assert sum(1 for p in positions if p["id"] == "cccc0003") == 2, "re-transmission must not collapse"
