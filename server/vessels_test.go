@@ -148,9 +148,9 @@ func TestNullIslandIsNotAPosition(t *testing.T) {
 func TestStaticParticulars(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Now()
-	p.ingestPacket("kystverket", "kystverket", now, ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 257000009}, Valid: true,
+	p.ingestPacket("kystverket", "kystverket", now, now, ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 257000009}, Valid: true,
 		NavigationalStatus: 0, Latitude: 60, Longitude: 5, Sog: 10, Cog: 90, TrueHeading: 511})
-	p.ingestPacket("kystverket", "kystverket", now, ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+	p.ingestPacket("kystverket", "kystverket", now, now, ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
 		Name: "STATIC STAR", Type: 70, ImoNumber: 9319466, CallSign: "LAJB7", Destination: "NOOSL",
 		Eta: ais.FieldETA{Month: 9, Day: 19, Hour: 6, Minute: 0}, MaximumStaticDraught: 5.2,
 		Dimension: ais.FieldDimension{A: 100, B: 50, C: 10, D: 12}})
@@ -163,28 +163,28 @@ func TestStaticParticulars(t *testing.T) {
 		t.Errorf("feature: %v", props)
 	}
 	// an ETA without a time keeps the date; an ETA with no month is not folded over a known one
-	p.ingestPacket("kystverket", "kystverket", now.Add(time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+	p.ingestPacket("kystverket", "kystverket", now.Add(time.Second), now.Add(time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
 		Name: "STATIC STAR", Type: 70, Eta: ais.FieldETA{Month: 9, Day: 20, Hour: 24, Minute: 60}})
 	if got := etaString(p.vessels[257000009].ETA); got != "09-20" {
 		t.Errorf("date-only eta: %q", got)
 	}
-	p.ingestPacket("kystverket", "kystverket", now.Add(2*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true, Name: "STATIC STAR", Type: 70})
+	p.ingestPacket("kystverket", "kystverket", now.Add(2*time.Second), now.Add(2*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true, Name: "STATIC STAR", Type: 70})
 	if v := p.vessels[257000009]; v.ETA.Day != 20 || v.IMO != 9319466 || v.Destination != "NOOSL" {
 		t.Errorf("empty static wiped particulars: %+v", v)
 	}
 	// a later message with a length but no beam keeps the beam, and the reverse keeps the length
-	p.ingestPacket("kystverket", "kystverket", now.Add(3*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+	p.ingestPacket("kystverket", "kystverket", now.Add(3*time.Second), now.Add(3*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
 		Name: "STATIC STAR", Type: 70, Dimension: ais.FieldDimension{A: 120, B: 40}})
 	if v := p.vessels[257000009]; v.Length != 160 || v.Beam != 22 {
 		t.Errorf("partial dimensions wiped a value: length %d beam %d", v.Length, v.Beam)
 	}
-	p.ingestPacket("kystverket", "kystverket", now.Add(4*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+	p.ingestPacket("kystverket", "kystverket", now.Add(4*time.Second), now.Add(4*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
 		Name: "STATIC STAR", Type: 70, Dimension: ais.FieldDimension{C: 11, D: 12}})
 	if v := p.vessels[257000009]; v.Length != 160 || v.Beam != 23 {
 		t.Errorf("partial dimensions wiped a value: length %d beam %d", v.Length, v.Beam)
 	}
 	// type 24 part B carries the call sign and dimensions of a class B vessel
-	p.ingestPacket("kystverket", "kystverket", now, ais.StaticDataReport{Header: ais.Header{MessageID: 24, UserID: 257000010}, Valid: true, PartNumber: true,
+	p.ingestPacket("kystverket", "kystverket", now, now, ais.StaticDataReport{Header: ais.Header{MessageID: 24, UserID: 257000010}, Valid: true, PartNumber: true,
 		ReportB: ais.StaticDataReportB{Valid: true, ShipType: 36, CallSign: "LG1234", Dimension: ais.FieldDimension{A: 6, B: 6, C: 2, D: 2}}})
 	if v := p.vessels[257000010]; v.CallSign != "LG1234" || v.Length != 12 || v.Beam != 4 || v.ShipType != 36 {
 		t.Errorf("type 24 B: %+v", v)
