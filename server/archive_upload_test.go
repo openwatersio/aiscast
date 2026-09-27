@@ -86,9 +86,9 @@ func TestReopenedHourUploadsCompleteDespiteReordering(t *testing.T) {
 	go a.run()
 
 	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: hour.Add(30 * time.Minute), Body: "early"})
-	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: hour.Add(time.Hour), Body: "next-hour"})        // rotates: uploads hour 12
-	<-store.readDone                                                                                                         // that upload now holds the short hour
-	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: hour.Add(59 * time.Minute), Body: "straggler"}) // reopens hour 12
+	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: hour.Add(time.Hour + hourGrace), Body: "next-hour"}) // rotates: uploads hour 12
+	<-store.readDone                                                                                                              // that upload now holds the short hour
+	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: hour.Add(59 * time.Minute), Body: "straggler"})      // reopens hour 12
 	a.shutdown()
 
 	body := store.object(key)
@@ -110,7 +110,8 @@ func TestUploadsOfOneKeyAreSerialized(t *testing.T) {
 	store := &concurrentStore{objects: map[string][]byte{}}
 	a := newArchive(dir, store)
 	hour := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	for i, rx := range []time.Time{hour, hour.Add(time.Hour), hour.Add(30 * time.Minute), hour.Add(time.Hour)} {
+	later := hour.Add(time.Hour + hourGrace) // past hour 12's grace, so each of these closes it
+	for i, rx := range []time.Time{hour, later, hour.Add(30 * time.Minute), later.Add(time.Minute)} {
 		a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: rx, Body: string(rune('a' + i))})
 	}
 	a.shutdown()
@@ -255,4 +256,88 @@ func TestArchiveStopsOnACloseItCannotMake(t *testing.T) {
 	if got == nil {
 		t.Fatal("a failed gzip close went unreported")
 	}
+}
+
+// countStore counts puts per key and keeps the last body.
+type countStore struct {
+	mu      sync.Mutex
+	puts    map[string]int
+	objects map[string][]byte
+}
+
+func (c *countStore) put(key, path string) error {
+	b, err := os.ReadFile(path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.puts[key]++
+	c.objects[key] = b
+	return err
+}
+
+func (c *countStore) size(key string) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return int64(len(c.objects[key])), nil
+}
+
+func (c *countStore) count(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.puts[key]
+}
+
+// The production incident: AISHub stamps a snapshot's rows with its fetch time and paces them into the
+// next hour, so the merged stream receives two hours interleaved. Each switch closed and uploaded the
+// open hour, over a thousand times, while the file was still being written. Adjacent hours now stay
+// open side by side, and an hour uploads once, after its grace.
+func TestInterleavedHoursDoNotThrashUploads(t *testing.T) {
+	store := &countStore{puts: map[string]int{}, objects: map[string][]byte{}}
+	a := newNormArchive(t.TempDir(), nil)
+	a.s3 = store
+	fetch := time.Date(2026, 9, 27, 14, 59, 59, 0, time.UTC)
+	h14, h15 := a.key("", fetch), a.key("", fetch.Add(time.Minute))
+	want := map[string]int{}
+	for i := 0; i < 500; i++ { // a paced snapshot's rows between other sources' receptions
+		other := fetch.Add(time.Duration(i+1) * 100 * time.Millisecond)
+		a.write(Reception{Source: "norm", RecvTime: fetch, Body: fmt.Sprintf(`{"row":%d}`, i)})
+		a.write(Reception{Source: "norm", RecvTime: other, Body: fmt.Sprintf(`{"other":%d}`, i)})
+		want[h14]++
+		want[a.key("", other)]++
+	}
+	want[h15] += 2                                                                                        // the two later receptions
+	a.write(Reception{Source: "norm", RecvTime: fetch.Add(hourGrace + time.Second), Body: `{"later":1}`}) // past hour 14's grace
+	a.write(Reception{Source: "norm", RecvTime: fetch.Add(hourGrace + time.Minute), Body: `{"later":2}`})
+	a.shutdown()
+	if n := store.count(h14); n != 1 {
+		t.Fatalf("hour 14 uploaded %d times, want once", n)
+	}
+	if n := store.count(h15); n != 1 {
+		t.Fatalf("hour 15 uploaded %d times, want once, at shutdown", n)
+	}
+	for _, k := range []string{h14, h15} {
+		if n := len(gunzipLines(t, store.objects[k])); n != want[k] {
+			t.Fatalf("%s holds %d records, want %d", k, n, want[k])
+		}
+	}
+}
+
+// The reception that crosses an hour's close time closes it, even when nothing arrives after it: the
+// hour must not wait for a later reception, or for shutdown, to upload.
+func TestCrossingReceptionClosesTheHour(t *testing.T) {
+	store := &countStore{puts: map[string]int{}, objects: map[string][]byte{}}
+	a := newNormArchive(t.TempDir(), nil)
+	a.s3 = store
+	h14 := time.Date(2026, 9, 27, 14, 30, 0, 0, time.UTC)
+	a.write(Reception{Source: "norm", RecvTime: h14, Body: `{"a":1}`})
+	a.write(Reception{Source: "norm", RecvTime: h14.Add(34*time.Minute + 59*time.Second), Body: `{"b":1}`}) // 15:04:59, just short
+	a.write(Reception{Source: "norm", RecvTime: h14.Add(35 * time.Minute), Body: `{"c":1}`})                // 15:05:00, crosses
+	key := a.key("", h14)
+	deadline := time.Now().Add(5 * time.Second)
+	for store.count(key) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if store.count(key) != 1 {
+		t.Fatalf("hour 14 uploaded %d times before shutdown, want once, on the crossing reception", store.count(key))
+	}
+	a.shutdown()
 }

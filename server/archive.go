@@ -87,11 +87,15 @@ type archive struct {
 	uploads sync.WaitGroup
 	stopped sync.Once // shutdown runs once; the writer is gone after the first
 
+	// latest is the newest receive time the writer has seen and nextClose the earliest time any open
+	// hour may close; only run() touches them.
+	latest, nextClose time.Time
+
 	uploadFailures atomic.Int64
 	staged         atomic.Int64 // bytes on disk after the last sweep; grows when uploads fail
 
 	// holds counts the open writer and every in-flight upload per path; the sweep skips any path with
-	// a count. A quiet source keeps its hour open indefinitely, and deleting it out from under the
+	// a count. An hour stays open until receptions pass its grace, and deleting it out from under the
 	// writer would strand the gzip footer; rotation can close one hour twice, and the first upload to
 	// finish must not unprotect a file the second is still reading. One mutex covers every count, so
 	// a release reaching zero and a reopen cannot interleave. Zero value is usable, so tests can build
@@ -161,21 +165,30 @@ func (a *archive) run() {
 // ids never contain a space, so the mark cannot collide with one.
 const bufferedMark = " buffered"
 
+// hourGrace is how long past its end an hour stays open. Receptions from two hours interleave near
+// a boundary: AISHub stamps every row of a snapshot with its fetch time and paces them over most of a
+// minute, so a snapshot fetched just before the hour writes into the previous hour while every other
+// source writes into the new one. Closing on each switch would upload a file still being written,
+// over and over.
+const hourGrace = 5 * time.Minute
+
 func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 	hour := rx.RecvTime.UTC().Truncate(time.Hour)
-	stream := a.key(rx.Source, time.Time{}) // the key with the hour zeroed: one per source raw, one in total merged
-	hf := files[stream]
-	if hf != nil && !hf.hour.Equal(hour) {
-		a.close(hf)
-		hf = nil
-	}
+	// one open file per stream and hour: the key with the hour zeroed is one stream per source raw,
+	// and one in total merged
+	fk := a.key(rx.Source, time.Time{}) + "\x00" + hour.Format(time.RFC3339)
+	hf := files[fk]
 	if hf == nil {
 		hf = a.open(rx.Source, hour)
 		if hf == nil {
 			return
 		}
-		files[stream] = hf
+		files[fk] = hf
+		if c := hour.Add(time.Hour + hourGrace); a.nextClose.IsZero() || c.Before(a.nextClose) {
+			a.nextClose = c
+		}
 	}
+	defer a.rotate(rx.RecvTime, files)
 	// one record per line: recv time, station, body as received (JSON envelopes are single-line)
 	if a.bare {
 		_, err := hf.gz.Write([]byte(strings.TrimRight(rx.Body, "\r\n") + "\n"))
@@ -197,6 +210,29 @@ func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 var ioFatal = func(err error) {
 	if err != nil {
 		log.Fatalf("archive: %v", err)
+	}
+}
+
+// rotate closes, and so uploads, every hour that ended more than hourGrace before the newest
+// receive time. It runs on the reception clock, so replay rotates where live did, and on the
+// reception that crosses an hour's close time, not some later one. A reception for an hour already
+// closed reopens it, appending, and that same reception closes it again.
+func (a *archive) rotate(recv time.Time, files map[string]*hourFile) {
+	if recv.After(a.latest) {
+		a.latest = recv
+	}
+	if a.nextClose.IsZero() || a.latest.Before(a.nextClose) {
+		return
+	}
+	a.nextClose = time.Time{}
+	for k, hf := range files {
+		c := hf.hour.Add(time.Hour + hourGrace)
+		if !c.After(a.latest) {
+			a.close(hf)
+			delete(files, k)
+		} else if a.nextClose.IsZero() || c.Before(a.nextClose) {
+			a.nextClose = c
+		}
 	}
 }
 

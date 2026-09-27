@@ -125,8 +125,8 @@ func TestArchiveCloseKeepsFileForTheSweep(t *testing.T) {
 	}
 }
 
-// A quiet source keeps its hour file open indefinitely, so an open file can be older than the grace
-// period. The sweep must leave it alone: deleting it would strand the gzip footer the writer still
+// An hour file stays open until receptions pass its end by hourGrace, so when every source goes
+// quiet an open file can be older than the sweep's grace period. The sweep must leave it alone: deleting it would strand the gzip footer the writer still
 // owes, and the mtime check alone only happens to cover this because an idle gzip flush writes bytes.
 func TestArchiveSweepSkipsOpenFiles(t *testing.T) {
 	dir := t.TempDir()
