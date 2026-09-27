@@ -225,6 +225,19 @@ func (p *Pipeline) mcpCollect(now time.Time, keep func(uint32, *vessel) bool) []
 	return rows
 }
 
+// mcpCollectIn is mcpCollect over the vessels positioned inside boxes, found through the spatial index.
+func (p *Pipeline) mcpCollectIn(now time.Time, boxes []bbox, keep func(uint32, *vessel) bool) []mcpVessel {
+	var rows []mcpVessel
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	p.vesselsIn(boxes, func(mmsi uint32, v *vessel) {
+		if keep(mmsi, v) {
+			rows = append(rows, mcpRow(mmsi, v, now))
+		}
+	})
+	return rows
+}
+
 // mcpPage sorts, cuts to limit, and credits the sources left on the page.
 func mcpPage(rows []mcpVessel, less func(a, b *mcpVessel) bool, limit int) mcpVessels {
 	sort.SliceStable(rows, func(i, j int) bool { return less(&rows[i], &rows[j]) })
@@ -424,8 +437,8 @@ func (p *Pipeline) mcpFindInArea(ctx context.Context, _ *mcp.CallToolRequest, in
 	if err := mcpCheckBox(cl, b); err != nil {
 		return nil, mcpVessels{}, err
 	}
-	rows := p.mcpCollect(time.Now(), func(m uint32, v *vessel) bool {
-		return v.HasPos && b.contains(v.Lat, v.Lon) && mcpMatch(in.Kind, in.Types, flag, m, v)
+	rows := p.mcpCollectIn(time.Now(), []bbox{b}, func(m uint32, v *vessel) bool {
+		return mcpMatch(in.Kind, in.Types, flag, m, v)
 	})
 	return nil, mcpPage(rows, newestFirst, limit), nil
 }
@@ -493,8 +506,8 @@ func (p *Pipeline) mcpFindNear(ctx context.Context, _ *mcp.CallToolRequest, in m
 	if err := mcpCheckBoxes(cl, boxes); err != nil {
 		return nil, mcpVessels{}, err
 	}
-	rows := p.mcpCollect(time.Now(), func(m uint32, v *vessel) bool {
-		return m != in.MMSI && v.HasPos && inAny(boxes, v.Lat, v.Lon) && mcpMatch(in.Kind, in.Types, flag, m, v) && nm(lat, lon, v.Lat, v.Lon) <= radius
+	rows := p.mcpCollectIn(time.Now(), boxes, func(m uint32, v *vessel) bool {
+		return m != in.MMSI && mcpMatch(in.Kind, in.Types, flag, m, v) && nm(lat, lon, v.Lat, v.Lon) <= radius
 	})
 	for i := range rows {
 		r := &rows[i]

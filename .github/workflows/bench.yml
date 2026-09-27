@@ -1,0 +1,62 @@
+name: bench
+
+# Compares the server's benchmarks on a pull request against its base and posts the benchstat table as the
+# job summary. GitHub-hosted runners are noisy, so this fails only on a clear regression: a benchmark more
+# than 25% slower with p under 0.05. Allocation counts are deterministic and belong in tests instead.
+
+on:
+  pull_request:
+    paths: ["server/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      # Pinned: the check below parses benchstat's CSV, and a new release could change its layout.
+      - run: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260908200009-22c9c6c9d4da
+      - name: build both sides
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --depth=1 origin "$BASE_SHA"
+          git worktree add "$RUNNER_TEMP/base" "$BASE_SHA"
+          (cd server && go test -c -o "$RUNNER_TEMP/new.test" .)
+          # a base without benchmarks still builds; its side of the table is just empty
+          (cd "$RUNNER_TEMP/base/server" && go test -c -o "$RUNNER_TEMP/old.test" .)
+      - name: run, alternating sides
+        # Interleaved so drift on the runner lands on both sides alike. Each binary runs in its own package
+        # directory, where its testdata lives.
+        run: |
+          for _ in 1 2 3 4 5 6; do
+            (cd "$RUNNER_TEMP/base/server" && "$RUNNER_TEMP/old.test" -test.run '^$' -test.bench . -test.benchmem) >>"$RUNNER_TEMP/old.txt"
+            (cd server && "$RUNNER_TEMP/new.test" -test.run '^$' -test.bench . -test.benchmem) >>"$RUNNER_TEMP/new.txt"
+          done
+      - name: compare
+        run: |
+          cd "$RUNNER_TEMP"
+          { echo '```'; benchstat old.txt new.txt; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+          # Fails closed: benchmarks without a sec/op table mean the CSV layout changed, not that all is well.
+          benchstat -format csv old.txt new.txt 2>/dev/null | awk -F, -v benchmarks="$(grep -c '^Benchmark' new.txt)" '
+            /^,.*sec\/op/ { timing = 1; seen = 1; next }
+            /^$/ { timing = 0 }
+            timing && $1 != "geomean" && $6 ~ /^\+/ {
+              pct = $6; gsub(/[+%]/, "", pct)
+              p = $7; sub(/^p=/, "", p); sub(/ .*/, "", p)
+              if (pct + 0 > 25 && p + 0 < 0.05) { print "::error::" $1 " is " $6 " slower (" $7 ")"; bad = 1 }
+            }
+            END {
+              if (benchmarks > 0 && !seen) { print "::error::no sec/op table in the benchstat output"; exit 1 }
+              exit bad
+            }'
