@@ -61,6 +61,20 @@ jobs:
       - run: server/deploy/deploy.sh root@"$DEPLOY_HOST" aiscast-linux
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      # apply.sh's /health check passes as soon as one event reaches the loopback subscriber; this one
+      # fails a deploy that leaves ingest stalled or thin. The rate is sampled every 30 s, so the first
+      # reading lands about a minute after the restart. Without AISHub the other feeds run near 100/s,
+      # so an AISHub outage during a deploy fails this too.
+      - name: check events are flowing
+        run: |
+          for _ in $(seq 12); do
+            rate=$(curl -fsS https://ais.openwaters.io/v1/stats | jq -r '.events.per_second // 0') || rate=0
+            echo "events per second: $rate"
+            if awk -v r="$rate" 'BEGIN { exit !(r > 100) }'; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::events per second stayed at or below 100 for two minutes after the deploy"
+          exit 1
 
   # The registry listing follows the deploy so it never advertises a version the server is not
   # serving yet. It is a no-op unless server.json carries a version the registry lacks.
