@@ -201,9 +201,11 @@ type recordQuery struct {
 	boxes    []bbox
 	prefix   string // name prefix, or MMSI prefix when all digits
 	contains string // name substring
+	flag     string // flag state, ISO 3166-1 alpha-2
 	since    time.Time
 	before   time.Time
 	hasPos   bool
+	byName   bool // order by name then MMSI, as the MCP tools page, instead of most recently heard first
 	limit    int
 }
 
@@ -211,9 +213,10 @@ type recordQuery struct {
 // alone, which scans the table: a few hundred thousand rows, tens of milliseconds.
 const maxCellRows = 60
 
-func (s *store) find(q recordQuery) ([]record, error) {
+// where is the WHERE clause for q and its arguments. none reports a filter that matches nothing, an
+// empty MMSI or IMO list.
+func (q recordQuery) where() (clause string, args []any, none bool) {
 	var where []string
-	var args []any
 	in := func(col string, ids []uint32) {
 		ph := make([]string, len(ids))
 		for i, id := range ids {
@@ -223,13 +226,13 @@ func (s *store) find(q recordQuery) ([]record, error) {
 	}
 	if q.mmsis != nil {
 		if len(q.mmsis) == 0 {
-			return nil, nil
+			return "", nil, true
 		}
 		in("mmsi", q.mmsis)
 	}
 	if q.imos != nil {
 		if len(q.imos) == 0 {
-			return nil, nil
+			return "", nil, true
 		}
 		in("imo", q.imos)
 	}
@@ -253,17 +256,21 @@ func (s *store) find(q recordQuery) ([]record, error) {
 		where = append(where, "("+strings.Join(ors, " OR ")+")")
 	}
 	if q.prefix != "" {
-		c := "search GLOB ?"
-		args = append(args, globPrefix(strings.ToUpper(q.prefix)))
 		if lo, hi, ok := mmsiRange(q.prefix); ok {
-			c += " OR mmsi BETWEEN ? AND ?"
+			where = append(where, "mmsi BETWEEN ? AND ?")
 			args = append(args, lo, hi)
+		} else {
+			where = append(where, "search GLOB ?")
+			args = append(args, globPrefix(strings.ToUpper(q.prefix)))
 		}
-		where = append(where, "("+c+")")
 	}
 	if q.contains != "" {
 		where = append(where, "instr(search, ?) > 0")
 		args = append(args, strings.ToUpper(q.contains))
+	}
+	if q.flag != "" {
+		where = append(where, "flag = ?")
+		args = append(args, q.flag)
 	}
 	if !q.since.IsZero() {
 		where = append(where, "seen >= ?")
@@ -276,11 +283,34 @@ func (s *store) find(q recordQuery) ([]record, error) {
 	if q.hasPos {
 		where = append(where, "has_pos")
 	}
-	sqlText := "SELECT " + recordCols + " FROM vessels"
 	if len(where) > 0 {
-		sqlText += " WHERE " + strings.Join(where, " AND ")
+		clause = " WHERE " + strings.Join(where, " AND ")
 	}
-	sqlText += " ORDER BY seen DESC"
+	return clause, args, false
+}
+
+// count is the number of rows q matches, ignoring its limit.
+func (s *store) count(q recordQuery) (int, error) {
+	clause, args, none := q.where()
+	if none {
+		return 0, nil
+	}
+	var n int
+	err := s.db.QueryRow("SELECT count(*) FROM vessels"+clause, args...).Scan(&n)
+	return n, err
+}
+
+func (s *store) find(q recordQuery) ([]record, error) {
+	clause, args, none := q.where()
+	if none {
+		return nil, nil
+	}
+	sqlText := "SELECT " + recordCols + " FROM vessels" + clause
+	if q.byName {
+		sqlText += " ORDER BY search, mmsi"
+	} else {
+		sqlText += " ORDER BY seen DESC"
+	}
 	if q.limit > 0 {
 		sqlText += " LIMIT " + strconv.Itoa(q.limit)
 	}
@@ -389,9 +419,14 @@ func (p *Pipeline) flushStore() error {
 	p.store.flushNanos.Add(int64(time.Since(start)))
 	p.store.flushes.Add(1)
 	if err != nil {
-		// The rows are not marked dirty again: each vessel's next fold rewrites it, and a vessel that never
-		// folds again keeps its previous row.
+		// Marked again, so the next flush retries: a vessel that never reports again would otherwise keep
+		// a stale row. The retry writes whatever the cache holds by then.
 		p.store.flushFailures.Add(1)
+		p.vmu.Lock()
+		for _, r := range rows {
+			p.dirty[r.mmsi] = struct{}{}
+		}
+		p.vmu.Unlock()
 		return err
 	}
 	p.store.rowsWritten.Add(int64(len(rows)))
@@ -416,9 +451,11 @@ func (v *vessel) state() *vessel {
 	}
 }
 
-// fillFrom completes a cache state from the record with the rules upsertSQL applies: blank fields take
-// the stored value, and a vessel with no position yet takes the stored one.
-func (v *vessel) fillFrom(o *vessel) {
+// merge combines a cache state with the vessel's row by the rules upsertSQL applies. The two can each be
+// ahead of the other: the record is written every second and the snapshot every minute, so after a
+// restart the cache can hold an older state until the vessel next reports. The newer position wins, the
+// newer seen wins along with its source, and a blank field takes the stored value.
+func (v *vessel) merge(o *vessel) {
 	if v.Name == "" {
 		v.Name = o.Name
 	}
@@ -452,11 +489,14 @@ func (v *vessel) fillFrom(o *vessel) {
 	if v.Beam == 0 {
 		v.Beam = o.Beam
 	}
-	if v.NavStatus == 15 {
+	if o.HasPos && (!v.HasPos || o.PosAt.After(v.PosAt)) {
+		v.Lat, v.Lon, v.HasPos, v.PosAt, v.Cog, v.Sog, v.Heading = o.Lat, o.Lon, true, o.PosAt, o.Cog, o.Sog, o.Heading
+	}
+	if v.NavStatus == 15 || o.Seen.After(v.Seen) && o.NavStatus != 15 {
 		v.NavStatus = o.NavStatus
 	}
-	if !v.HasPos && o.HasPos {
-		v.Lat, v.Lon, v.HasPos, v.PosAt, v.Cog, v.Sog, v.Heading = o.Lat, o.Lon, true, o.PosAt, o.Cog, o.Sog, o.Heading
+	if o.Seen.After(v.Seen) {
+		v.Seen, v.Source, v.Station, v.MsgType = o.Seen, o.Source, o.Station, o.MsgType
 	}
 }
 

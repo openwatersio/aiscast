@@ -578,7 +578,7 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 			if cur == nil {
 				cur = rec.v
 			} else {
-				cur.fillFrom(rec.v)
+				cur.merge(rec.v)
 			}
 		}
 	}

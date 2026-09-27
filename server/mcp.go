@@ -226,15 +226,12 @@ func (p *Pipeline) mcpCollect(now time.Time, keep func(uint32, *vessel) bool) []
 	return rows
 }
 
-// mcpRecordSearchLimit bounds the rows a name search reads from the record before sorting and paging.
-const mcpRecordSearchLimit = 1000
-
-// mcpWithRecord completes a get_vessels answer from the record: requested vessels the cache no longer
-// holds, and the last known position of a cached vessel whose position has not been heard since it came
-// back.
-func (p *Pipeline) mcpWithRecord(now time.Time, rows []mcpVessel, want, wantIMO map[uint32]int) []mcpVessel {
+// mcpWithRecord completes a get_vessels answer from the record. Every requested MMSI is looked up, because
+// the cache can hold an older state than the record after a restart, and requested IMOs the cache does
+// not know are too. A lookup that fails is an error, never a vessel reported as unknown.
+func (p *Pipeline) mcpWithRecord(now time.Time, rows []mcpVessel, want, wantIMO map[uint32]int) ([]mcpVessel, error) {
 	if p.store == nil {
-		return rows
+		return rows, nil
 	}
 	at := make(map[uint32]int, len(rows))
 	gotIMO := map[uint32]bool{}
@@ -246,9 +243,7 @@ func (p *Pipeline) mcpWithRecord(now time.Time, rows []mcpVessel, want, wantIMO 
 	}
 	var mmsis, imos []uint32
 	for m := range want {
-		if i, ok := at[m]; !ok || rows[i].Lat == nil {
-			mmsis = append(mmsis, m)
-		}
+		mmsis = append(mmsis, m)
 	}
 	for n := range wantIMO {
 		if !gotIMO[n] {
@@ -262,8 +257,7 @@ func (p *Pipeline) mcpWithRecord(now time.Time, rows []mcpVessel, want, wantIMO 
 		}
 		rs, err := p.store.find(q)
 		if err != nil {
-			log.Printf("store: %v", err) // the cache's answer still stands
-			return rows
+			return nil, err
 		}
 		recs = append(recs, rs...)
 	}
@@ -272,7 +266,7 @@ func (p *Pipeline) mcpWithRecord(now time.Time, rows []mcpVessel, want, wantIMO 
 		p.vmu.RLock()
 		if c := p.vessels[rec.mmsi]; c != nil {
 			v = c.state()
-			v.fillFrom(rec.v)
+			v.merge(rec.v)
 		}
 		p.vmu.RUnlock()
 		if i, ok := at[rec.mmsi]; ok {
@@ -282,7 +276,7 @@ func (p *Pipeline) mcpWithRecord(now time.Time, rows []mcpVessel, want, wantIMO 
 			rows = append(rows, mcpRow(rec.mmsi, v, now))
 		}
 	}
-	return rows
+	return rows, nil
 }
 
 // mcpCollectIn is mcpCollect over the vessels positioned inside boxes, found through the spatial index.
@@ -450,7 +444,11 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 		_, ok := wantIMO[v.IMO]
 		return ok && v.IMO != 0
 	})
-	rows = p.mcpWithRecord(now, rows, want, wantIMO)
+	rows, err := p.mcpWithRecord(now, rows, want, wantIMO)
+	if err != nil {
+		log.Printf("store: %v", err)
+		return nil, mcpVessels{}, errMCPRecord
+	}
 	known, knownIMO := map[uint32]bool{}, map[uint32]bool{} // from every match, not the page: a vessel cut by the row cap is still known
 	for _, r := range rows {
 		known[r.MMSI] = true
@@ -657,30 +655,46 @@ func (p *Pipeline) mcpSearchByName(ctx context.Context, _ *mcp.CallToolRequest, 
 		}
 		return box == nil || (v.HasPos && box.contains(v.Lat, v.Lon))
 	})
-	if p.store != nil {
-		rq := recordQuery{contains: q, limit: mcpRecordSearchLimit}
-		if box != nil {
-			rq.boxes, rq.hasPos = []bbox{*box}, true
-		}
-		recs, err := p.store.find(rq)
-		if err != nil {
-			log.Printf("store: %v", err)
-			return nil, mcpVessels{}, errors.New("the vessel record is unavailable; try again shortly")
-		}
-		have := make(map[uint32]bool, len(rows))
-		for _, r := range rows {
-			have[r.MMSI] = true
-		}
-		for _, rec := range recs {
-			if !have[rec.mmsi] && (flag == "" || flagOf(rec.mmsi) == flag) {
-				rows = append(rows, mcpRow(rec.mmsi, rec.v, now))
-			}
+	// Sorted as the record's search column is, so the first limit rows by name from the record, with the
+	// cache's rows, hold the first limit rows of both together.
+	byName := func(a, b *mcpVessel) bool {
+		an, bn := strings.ToUpper(strings.TrimSpace(a.Name)), strings.ToUpper(strings.TrimSpace(b.Name))
+		return an < bn || (an == bn && a.MMSI < b.MMSI)
+	}
+	if p.store == nil {
+		return nil, mcpPage(rows, byName, limit), nil
+	}
+	rq := recordQuery{contains: q, flag: flag, byName: true, limit: limit}
+	if box != nil {
+		rq.boxes, rq.hasPos = []bbox{*box}, true
+	}
+	recs, err := p.store.find(rq)
+	var total int
+	if err == nil {
+		total, err = p.store.count(rq)
+	}
+	if err != nil {
+		log.Printf("store: %v", err)
+		return nil, mcpVessels{}, errMCPRecord
+	}
+	have := make(map[uint32]bool, len(rows))
+	for _, r := range rows {
+		have[r.MMSI] = true
+	}
+	for _, rec := range recs {
+		if !have[rec.mmsi] {
+			rows = append(rows, mcpRow(rec.mmsi, rec.v, now))
 		}
 	}
-	return nil, mcpPage(rows, func(a, b *mcpVessel) bool {
-		return a.Name < b.Name || (a.Name == b.Name && a.MMSI < b.MMSI)
-	}, limit), nil
+	out := mcpPage(rows, byName, limit)
+	// The record holds every vessel the cache does, give or take the last second's folds.
+	if total > out.Total {
+		out.Total, out.Truncated = total, total > len(out.Vessels)
+	}
+	return nil, out, nil
 }
+
+var errMCPRecord = errors.New("the vessel record is unavailable; try again shortly")
 
 type mcpCoverageIn struct {
 	BBox    *mcpBox `json:"bbox,omitempty" jsonschema:"report the stations covering this box and the vessels currently in it"`

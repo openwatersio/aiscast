@@ -50,7 +50,7 @@ Manual deploy: `server/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0
 3. Deploy: rerun the CI deploy job, or `server/deploy/deploy.sh root@<ip>`.
 4. Copy the vessel record: `systemctl stop aiscast` on the old box, then copy `/var/lib/aiscast/aiscast.db` to the new one, owned by `aiscast`.
 5. Fill `/etc/aiscast.env` and `/etc/alloy.env`: copy them from the old box, or refill the seeded templates from `aiscast.env.example` and `alloy.env.example`, then `systemctl restart aiscast` and `systemctl enable --now alloy`.
-5. Move the `ais.openwaters.io` A record to the new IP. UDP feeders and stream clients follow the name; keep its TTL low. Retire the old box once traffic drains.
+6. Move the `ais.openwaters.io` A record to the new IP. UDP feeders and stream clients follow the name; keep its TTL low. Retire the old box once traffic drains.
 
 ## Monitoring
 

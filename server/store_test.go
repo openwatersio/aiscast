@@ -297,6 +297,12 @@ func TestVesselSearch(t *testing.T) {
 	if got := ids(getFC(t, p, "/v1/vessels?q=oslo")); len(got) != 1 || got[0] != 257000002 {
 		t.Errorf("a vessel in the cache: %v", got)
 	}
+	named := newVessel()
+	named.Name, named.HasPos, named.Lat, named.Lon, named.Seen = "2570 STAR", true, 50, 5, time.Now()
+	p.store.upsert([]record{{mmsi: 311000001, v: named}})
+	if got := ids(getFC(t, p, "/v1/vessels?q=2570")); len(got) != 3 {
+		t.Errorf("digits match MMSIs only, not a name starting with them: %v", got)
+	}
 	if got := ids(getFC(t, p, "/v1/vessels?q=star")); len(got) != 0 {
 		t.Errorf("prefix, not substring: %v", got)
 	}
@@ -363,5 +369,78 @@ func TestStoreMetrics(t *testing.T) {
 		if !strings.Contains(w.Body.String(), want) {
 			t.Errorf("missing %q", want)
 		}
+	}
+}
+
+func TestFlushRetriesAFailedWrite(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 59.9, 10.7))
+	p.store.db.Close()
+	if err := p.flushStore(); err == nil {
+		t.Fatal("write to a closed database succeeded")
+	}
+	if _, ok := p.dirty[257000001]; !ok || p.store.flushFailures.Load() != 1 {
+		t.Errorf("failed vessel not queued for the next flush: %v", p.dirty)
+	}
+}
+
+// After a restart the cache comes from a snapshot up to a minute old, while the record was written every
+// second, so the record can be ahead of the cache.
+func TestLookupPrefersTheNewerState(t *testing.T) {
+	p := storePipeline(t)
+	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 10*time.Second)
+	p.vmu.Lock()
+	v := p.vessels[257000001]
+	v.Lat, v.PosAt, v.Seen = 59.0, v.PosAt.Add(-time.Minute), v.Seen.Add(-time.Minute)
+	v.feat.Store(nil)
+	p.vmu.Unlock()
+
+	var f struct {
+		Geometry   *pointGeometry `json:"geometry"`
+		Properties map[string]any `json:"properties"`
+	}
+	json.Unmarshal(get(t, p, "/v1/vessels/257000001").Body.Bytes(), &f)
+	if f.Geometry == nil || f.Geometry.Coordinates[1] < 59.89 {
+		t.Errorf("lookup returned the older cached position: %+v", f.Geometry)
+	}
+	var out mcpVessels
+	if msg := mcpCall(t, mcpClient(t, p), "get_vessels", map[string]any{"mmsi": []uint32{257000001}}, &out); msg != "" ||
+		len(out.Vessels) != 1 || *out.Vessels[0].Lat < 59.89 || out.Vessels[0].AgeS > 30 {
+		t.Errorf("get_vessels returned the older cached state: %q %+v", msg, out.Vessels)
+	}
+}
+
+func TestMCPRecordFailureIsAnError(t *testing.T) {
+	p := storePipeline(t)
+	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 10*time.Second)
+	p.store.db.Close()
+	cs := mcpClient(t, p)
+	var out mcpVessels
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{999999999}}, &out); !strings.Contains(msg, "unavailable") {
+		t.Errorf("get_vessels called a vessel unknown when the record failed: %q %+v", msg, out)
+	}
+	if msg := mcpCall(t, cs, "search_vessels_by_name", map[string]any{"name": "nordic"}, &out); !strings.Contains(msg, "unavailable") {
+		t.Errorf("search: %q", msg)
+	}
+}
+
+func TestMCPSearchPagesTheRecord(t *testing.T) {
+	p := storePipeline(t)
+	var bulk []record
+	for i := range 6 {
+		for _, mid := range []uint32{230000000, 257000000} { // Finland, Norway
+			v := newVessel()
+			v.Name, v.Seen = fmt.Sprintf("BULK %d", i), time.Now()
+			bulk = append(bulk, record{mmsi: mid + uint32(i), v: v})
+		}
+	}
+	if err := p.store.upsert(bulk); err != nil {
+		t.Fatal(err)
+	}
+	var out mcpVessels
+	if msg := mcpCall(t, mcpClient(t, p), "search_vessels_by_name", map[string]any{"name": "bulk", "flag": "FI", "limit": 2}, &out); msg != "" ||
+		len(out.Vessels) != 2 || out.Total != 6 || !out.Truncated || out.Vessels[0].Name != "BULK 0" || out.Vessels[1].Flag != "FI" {
+		t.Errorf("flag and total from the whole record: %q %+v", msg, out)
 	}
 }
