@@ -49,8 +49,10 @@ type Event struct {
 	Implausible  bool // position implying an impossible speed from the vessel's last; archived, not emitted
 	Stale        bool // older than the newest event already folded for the vessel; archived, not emitted
 
-	v0Once sync.Once
-	v0     []byte
+	// Each wire format is rendered on first use and shared by every subscriber after that; an event does
+	// not change once it is broadcast.
+	v0Once, v1Once, nmeaOnce sync.Once
+	v0, v1, nmea             []byte
 }
 
 type subscriber struct {
