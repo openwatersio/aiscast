@@ -306,7 +306,7 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 					p.stats.rateLimited.Add(1)
 					break
 				}
-				p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: string(line)})
+				p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: string(line), Published: true})
 			}
 			var ack []byte
 			switch qos {
