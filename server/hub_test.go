@@ -738,7 +738,7 @@ func TestV1SSESnapshotUnderLoad(t *testing.T) {
 		v := newVessel()
 		v.HasPos, v.Lat, v.Lon, v.Seen, v.PosAt = true, 49.5, 0.5, now, now
 		v.Name, v.Source, v.Station = "TESTVESSEL", "t", "t"
-		p.vessels[200000000+i] = v
+		p.putVesselLocked(200000000+i, v)
 	}
 	p.vmu.Unlock()
 

@@ -82,6 +82,7 @@ type Pipeline struct {
 	vmu       sync.RWMutex
 	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu
 	vessels   map[uint32]*vessel
+	cells     map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
 
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
@@ -116,6 +117,7 @@ func newPipeline(arch *archive) *Pipeline {
 		ownOf:   map[string]string{},
 		seen:    map[string]time.Time{},
 		vessels: map[uint32]*vessel{},
+		cells:   map[cellKey]map[uint32]*vessel{},
 		subs:    map[*subscriber]struct{}{},
 	}
 	p.mcp = newMCPService(p)

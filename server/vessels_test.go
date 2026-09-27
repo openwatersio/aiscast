@@ -158,9 +158,9 @@ func TestStaticParticulars(t *testing.T) {
 	if v.IMO != 9319466 || v.CallSign != "LAJB7" || v.Destination != "NOOSL" || v.Draught != 5.2 || v.Length != 150 || v.Beam != 22 || v.ETA.Month != 9 {
 		t.Fatalf("particulars not folded: %+v", v)
 	}
-	props := v.feature(257000009)["properties"].(map[string]any)
-	if props["flag"] != "NO" || props["imo"] != uint32(9319466) || props["eta"] != "09-19 06:00" || props["length"] != uint16(150) || props["draught"] != 5.2 {
-		t.Errorf("feature: %v", props)
+	props := v.feature(257000009).Properties
+	if props.Flag != "NO" || props.IMO != 9319466 || props.ETA != "09-19 06:00" || props.Length != 150 || props.Draught != 5.2 {
+		t.Errorf("feature: %+v", props)
 	}
 	// an ETA without a time keeps the date; an ETA with no month is not folded over a known one
 	p.ingestPacket("kystverket", "kystverket", now.Add(time.Second), now.Add(time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
