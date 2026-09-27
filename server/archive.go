@@ -87,9 +87,9 @@ type archive struct {
 	uploads sync.WaitGroup
 	stopped sync.Once // shutdown runs once; the writer is gone after the first
 
-	// latest is the newest receive time the writer has seen and nextRotate when it next looks for
-	// hours to close; only run() touches them.
-	latest, nextRotate time.Time
+	// latest is the newest receive time the writer has seen and nextClose the earliest time any open
+	// hour may close; only run() touches them.
+	latest, nextClose time.Time
 
 	uploadFailures atomic.Int64
 	staged         atomic.Int64 // bytes on disk after the last sweep; grows when uploads fail
@@ -184,6 +184,9 @@ func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 			return
 		}
 		files[fk] = hf
+		if c := hour.Add(time.Hour + hourGrace); a.nextClose.IsZero() || c.Before(a.nextClose) {
+			a.nextClose = c
+		}
 	}
 	defer a.rotate(rx.RecvTime, files)
 	// one record per line: recv time, station, body as received (JSON envelopes are single-line)
@@ -211,20 +214,24 @@ var ioFatal = func(err error) {
 }
 
 // rotate closes, and so uploads, every hour that ended more than hourGrace before the newest
-// receive time. It runs on the reception clock, so replay rotates where live did. A reception for an
-// hour already closed reopens it, appending, and the next check closes it again.
+// receive time. It runs on the reception clock, so replay rotates where live did, and on the
+// reception that crosses an hour's close time, not some later one. A reception for an hour already
+// closed reopens it, appending, and that same reception closes it again.
 func (a *archive) rotate(recv time.Time, files map[string]*hourFile) {
 	if recv.After(a.latest) {
 		a.latest = recv
 	}
-	if a.latest.Before(a.nextRotate) {
+	if a.nextClose.IsZero() || a.latest.Before(a.nextClose) {
 		return
 	}
-	a.nextRotate = a.latest.Add(10 * time.Second)
+	a.nextClose = time.Time{}
 	for k, hf := range files {
-		if !hf.hour.Add(time.Hour + hourGrace).After(a.latest) {
+		c := hf.hour.Add(time.Hour + hourGrace)
+		if !c.After(a.latest) {
 			a.close(hf)
 			delete(files, k)
+		} else if a.nextClose.IsZero() || c.Before(a.nextClose) {
+			a.nextClose = c
 		}
 	}
 }

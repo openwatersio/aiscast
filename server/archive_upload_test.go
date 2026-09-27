@@ -320,3 +320,24 @@ func TestInterleavedHoursDoNotThrashUploads(t *testing.T) {
 		}
 	}
 }
+
+// The reception that crosses an hour's close time closes it, even when nothing arrives after it: the
+// hour must not wait for a later reception, or for shutdown, to upload.
+func TestCrossingReceptionClosesTheHour(t *testing.T) {
+	store := &countStore{puts: map[string]int{}, objects: map[string][]byte{}}
+	a := newNormArchive(t.TempDir(), nil)
+	a.s3 = store
+	h14 := time.Date(2026, 9, 27, 14, 30, 0, 0, time.UTC)
+	a.write(Reception{Source: "norm", RecvTime: h14, Body: `{"a":1}`})
+	a.write(Reception{Source: "norm", RecvTime: h14.Add(34*time.Minute + 59*time.Second), Body: `{"b":1}`}) // 15:04:59, just short
+	a.write(Reception{Source: "norm", RecvTime: h14.Add(35 * time.Minute), Body: `{"c":1}`})                // 15:05:00, crosses
+	key := a.key("", h14)
+	deadline := time.Now().Add(5 * time.Second)
+	for store.count(key) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if store.count(key) != 1 {
+		t.Fatalf("hour 14 uploaded %d times before shutdown, want once, on the crossing reception", store.count(key))
+	}
+	a.shutdown()
+}
