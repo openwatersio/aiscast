@@ -135,8 +135,30 @@ func TestReplayRefusesWhatItCannotPlace(t *testing.T) {
 	if err := dispatch(p, "digitraffic", Reception{Source: "digitraffic", Body: "no-topic-separator"}, nil); err == nil {
 		t.Fatal("a digitraffic record without a topic was skipped")
 	}
-	if err := dispatch(p, "station:x", Reception{Source: "station:x", Body: `{"msgs": [`}, nil); err == nil {
-		t.Fatal("a catcher envelope that does not parse was skipped")
+}
+
+// Replay routes a record the way live did, by the transport it arrived on. A UDP datagram of garbage
+// that opens with '{' was a parse error live (UDP only takes lines) and stopped a production backfill
+// when replay tried it as an AIS-catcher envelope.
+func TestReplayRoutesByTransport(t *testing.T) {
+	envelope := `{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260901120000","nmea":["` + testSentence + `"]}]}`
+	for _, c := range []struct {
+		name, source, body string
+		events             int
+	}{
+		{"udp garbage opening with {", "udp:7f2c05cb43eb", "{jR\"\x05%Qa\t!AIVDM,1,1,,B,D028jK1EhN?", 0},
+		{"station envelope", "station:x", envelope, 1},
+		{"station line that only looks like json", "station:x", "{not an envelope", 0},
+		{"udp never parses json", "udp:aaaa", envelope, 0},
+	} {
+		p := testPipeline(t)
+		sub := p.subscribe()
+		if err := dispatch(p, c.source, Reception{Source: c.source, Station: c.source, RecvTime: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), Body: c.body}, nil); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if len(sub.ch) != c.events {
+			t.Fatalf("%s: %d events, want %d", c.name, len(sub.ch), c.events)
+		}
 	}
 }
 
