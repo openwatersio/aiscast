@@ -48,7 +48,7 @@
           "uid": "${datasource}"
         },
         "step": "60s",
-        "expr": "aiscast_build_info unless aiscast_build_info offset 2m",
+        "expr": "aiscast_build_info unless last_over_time(aiscast_build_info[1d] offset 2m)",
         "titleFormat": "deploy {{revision}}"
       },
       {
