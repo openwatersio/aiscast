@@ -55,7 +55,9 @@ func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
 	rt, ok := v0Types[env.MessageType]
 	raw, ok2 := env.Message[env.MessageType]
 	if !ok {
-		countUnmappedType("aisstream", env.MessageType)
+		if !controlTypes["aisstream/"+env.MessageType] {
+			countUnmappedType("aisstream", env.MessageType)
+		}
 		return
 	}
 	if !ok2 {

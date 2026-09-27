@@ -91,6 +91,7 @@ type aishubRow struct {
 	Heading   uint16 `json:"HEADING"`
 	Rot       int16  `json:"ROT"`
 	NavStat   uint8  `json:"NAVSTAT"`
+	PAC       uint8  `json:"PAC"` // position accuracy: 1 = high, better than 10 m
 	IMO       uint32 `json:"IMO"`
 	Name      string `json:"NAME"`
 	CallSign  string `json:"CALLSIGN"`
@@ -108,7 +109,7 @@ func (r aishubRow) position(t time.Time) ais.Packet {
 	}
 	return ais.PositionReport{
 		Header: ais.Header{MessageID: 1, UserID: r.MMSI}, Valid: true,
-		NavigationalStatus: r.NavStat, RateOfTurn: r.Rot, Sog: ais.Field10(float64(r.Sog) / 10),
+		NavigationalStatus: r.NavStat, RateOfTurn: r.Rot, Sog: ais.Field10(float64(r.Sog) / 10), PositionAccuracy: r.PAC == 1,
 		Longitude: ais.FieldLatLonFine(float64(r.Longitude) / 600000), Latitude: ais.FieldLatLonFine(float64(r.Latitude) / 600000),
 		Cog: ais.Field10(float64(r.Cog) / 10), TrueHeading: r.Heading, Timestamp: uint8(t.Second()),
 	}
@@ -131,6 +132,22 @@ func (r aishubRow) staticKey() string {
 type aishubState struct {
 	lastTime   map[uint32]string // MMSI → TIME of the last position emitted
 	lastStatic map[uint32]string // MMSI → staticKey of the last static emitted
+	// staticAt: MMSI → the staticKeys already emitted at the vessel's current canonical time.
+	// AISHub's aggregate flips a vessel's static fields between stations' versions (X → Y → X)
+	// while TIME, the canonical time, stands still; re-emitting X then repeats an (id, time) the
+	// archive and stream already carry, long after the pipeline's dedupe window has been pruned
+	// past it. Keyed by the canonical time so a flip-back after the vessel's clock moves on is
+	// emitted again under its new time.
+	staticAt map[uint32]staticWindow
+}
+
+type staticWindow struct {
+	time time.Time       // the canonical time the keys below were emitted with
+	keys map[string]bool // staticKeys emitted at that time
+}
+
+func newAishubState() *aishubState {
+	return &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}, staticAt: map[uint32]staticWindow{}}
 }
 
 // ingestAishub maps one snapshot into events: a position when TIME advanced, a static when static fields changed.
@@ -178,6 +195,9 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 		t := now
 		if secs, err := strconv.ParseInt(r.Time, 10, 64); err == nil && secs > 0 {
 			t = time.Unix(secs, 0)
+			if t.After(now) { // ingestPacket caps a future stamp to the receive time; match it here
+				t = now // so the staticAt window and the packet carry the time the event actually gets
+			}
 		}
 		if st.lastTime[r.MMSI] != r.Time && r.Latitude != 0 && r.Longitude != 0 {
 			st.lastTime[r.MMSI] = r.Time
@@ -185,9 +205,18 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 			n++
 		}
 		if k := r.staticKey(); (r.Name != "" || r.IMO != 0) && st.lastStatic[r.MMSI] != k {
-			st.lastStatic[r.MMSI] = k
-			p.ingestPacketAt("aishub", "aishub", t, now, r.static())
-			n++
+			w := st.staticAt[r.MMSI]
+			if !w.time.Equal(t) { // t is never the zero value, so the zero window always resets
+				w = staticWindow{time: t, keys: map[string]bool{}}
+				st.staticAt[r.MMSI] = w
+			}
+			// A suppressed flip-back leaves lastStatic alone, so it is emitted again once TIME moves on.
+			if !w.keys[k] {
+				w.keys[k] = true
+				st.lastStatic[r.MMSI] = k
+				p.ingestPacketAt("aishub", "aishub", t, now, r.static())
+				n++
+			}
 		}
 	}
 	return n, nil
@@ -201,7 +230,7 @@ func (p *Pipeline) ingestPacketAt(source, station string, t, recv time.Time, pkt
 
 func runAishub(p *Pipeline, username string, interval time.Duration) {
 	url := "https://data.aishub.net/ws.php?username=" + username + "&format=0&output=json&compress=2"
-	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
+	st := newAishubState()
 	client := &http.Client{Timeout: 50 * time.Second}
 	var lastHash [32]byte
 	for {

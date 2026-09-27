@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func TestFixtureCorpusFullyCaptured(t *testing.T) {
 	before := unmappedKeys()
 
 	p := testPipeline(t)
-	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
+	st := newAishubState()
 	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	sources := map[string]string{
 		"kystverket.lines":   "kystverket",
@@ -114,5 +115,39 @@ func TestUnmappedFieldsAreBounded(t *testing.T) {
 	}
 	if _, ok := unmappedFld.Load("rotating-test\t(other)"); !ok {
 		t.Fatal("names past the cap were not counted under (other)")
+	}
+}
+
+// AIS-catcher's full JSON: each message's decoded fields and the receiver's details beside the
+// sentence. A real envelope (station position and id replaced) passes the capture check, and a field
+// new at the envelope level, outside the waived message fields, is still flagged.
+func TestCatcherFullJSONIsCapturedOrWaived(t *testing.T) {
+	env := `{"protocol":"jsonaiscatcher","encodetime":"20260927000012","stationid":"test-station","station_lat":0.0,"station_lon":0.0,"receiver":{"description":"AIS-catcher v0.70","version":70,"engine":null,"setting":null},"device":{"product":null,"vendor":null,"serial":null,"setting":null},"msgs":[{"class":"AIS","device":"AIS-catcher","version":70,"driver":1,"hardware":"RTL2838UHIDIR","rxtime":"20260926235957","rxuxtime":1790467197.359632,"scaled":true,"channel":"B","nmea":["!AIVDM,1,1,,B,14eG;u@000o<Ev:L2bEbEQah08QS,0*4A"],"signalpower":-37.397194,"ppm":-0.289352,"type":1,"repeat":0,"mmsi":316001269,"country":"Canada","country_code":"CA","status":0,"status_text":"Under way using engine","turn_unscaled":0,"turn":0,"speed":0,"accuracy":true,"lon":-123.132683,"lat":49.006222,"course":264.600006,"heading":52,"second":56,"maneuver":0,"power":false,"raim":false,"radio":34915,"sync_state":0,"slot_timeout":2,"slot_number":2147},{"class":"AIS","device":"AIS-catcher","version":70,"driver":1,"hardware":"RTL2838UHIDIR","rxtime":"20260927000000","rxuxtime":1790467200.51887,"scaled":true,"channel":"B","nmea":["!AIVDM,1,1,,B,14eGkT002lo<6sfL22EC<2Qn080A,0*11"],"signalpower":-36.3507,"ppm":1.736111,"type":1,"repeat":0,"mmsi":316011408,"country":"Canada","country_code":"CA","status":0,"status_text":"Under way using engine","turn_unscaled":0,"turn":0,"speed":18,"accuracy":true,"lon":-123.184013,"lat":48.989155,"course":81.599998,"heading":80,"second":59,"maneuver":0,"power":false,"raim":false,"radio":32785,"sync_state":0,"slot_timeout":2,"slot_number":17}]}`
+	site := "catcher-full-test"
+	known := withWaivers("catcher", walkStruct(reflect.TypeOf(jsonaiscatcher{})))
+	shadowCheck(site, []byte(env), known)
+	var leaked []string
+	unmappedFld.Range(func(k, _ any) bool {
+		if strings.HasPrefix(k.(string), site+"\t") {
+			leaked = append(leaked, k.(string))
+		}
+		return true
+	})
+	if len(leaked) > 0 {
+		t.Fatalf("real full-JSON envelope flagged %v", leaked)
+	}
+	shadowCheck(site, []byte(`{"protocol":"jsonaiscatcher","brandNewTopLevel":1,"msgs":[]}`), known)
+	if _, ok := unmappedFld.Load(site + "\tbrandNewTopLevel"); !ok {
+		t.Fatal("a new envelope field went unflagged: the message wildcard must not waive the envelope")
+	}
+}
+
+// aisstream answers our subscription with a confirmation that carries no data; it is not an
+// unhandled record type.
+func TestAisstreamSubscriptionConfirmationIsNotUnmapped(t *testing.T) {
+	p := testPipeline(t)
+	p.aisstreamMessage([]byte(`{"MessageType":"SubscriptionConfirmation","Message":{}}`), time.Now())
+	if _, ok := unmappedType.Load("aisstream\tSubscriptionConfirmation"); ok {
+		t.Fatal("the subscription confirmation counted as an unhandled record type")
 	}
 }
