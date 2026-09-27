@@ -31,7 +31,20 @@ var waivers = map[string][]string{
 	"catcher": {
 		"protocol",                   // constant envelope marker
 		"msgs.class", "msgs.channel", // class is constant "AIS"; channel is in the sentence itself
+		// AIS-catcher's full JSON decodes each message beside its sentence (lat, speed, shipname, and
+		// dozens more per message type). All of it is derivable from the nmea the adapter captures,
+		// and the set varies by message type, so the rest of each message is waived as a whole. That
+		// includes receiver metadata no sentence carries (signalpower, ppm, hardware, driver, version,
+		// rxuxtime): the normalized copy record has no fields for it yet, and raw keeps it verbatim.
+		"msgs.*",
+		// envelope-level receiver details, likewise kept only in raw
+		"encodetime", "stationid", "station_lat", "station_lon", "receiver", "device",
 	},
+}
+
+// controlTypes are record types a source sends that carry no data: acknowledgements and the like.
+var controlTypes = map[string]bool{
+	"aisstream/SubscriptionConfirmation": true, // the reply to our subscription
 }
 
 var shadowEvery = int64(1024) // sample rate; tests set 1 to check every record
@@ -70,10 +83,13 @@ func shadowWalk(site, prefix string, raw []byte, known fieldSet) {
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
+	_, wild := known["*"] // a waiver ending in * waives every field at this level not otherwise known
 	for k, v := range m {
 		sub, ok := known[k]
 		if !ok {
-			flagUnmapped(site, prefix+k)
+			if !wild {
+				flagUnmapped(site, prefix+k)
+			}
 			continue
 		}
 		if sub == nil {

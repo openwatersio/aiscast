@@ -91,6 +91,7 @@ type aishubRow struct {
 	Heading   uint16 `json:"HEADING"`
 	Rot       int16  `json:"ROT"`
 	NavStat   uint8  `json:"NAVSTAT"`
+	PAC       uint8  `json:"PAC"` // position accuracy: 1 = high, better than 10 m
 	IMO       uint32 `json:"IMO"`
 	Name      string `json:"NAME"`
 	CallSign  string `json:"CALLSIGN"`
@@ -108,7 +109,7 @@ func (r aishubRow) position(t time.Time) ais.Packet {
 	}
 	return ais.PositionReport{
 		Header: ais.Header{MessageID: 1, UserID: r.MMSI}, Valid: true,
-		NavigationalStatus: r.NavStat, RateOfTurn: r.Rot, Sog: ais.Field10(float64(r.Sog) / 10),
+		NavigationalStatus: r.NavStat, RateOfTurn: r.Rot, Sog: ais.Field10(float64(r.Sog) / 10), PositionAccuracy: r.PAC == 1,
 		Longitude: ais.FieldLatLonFine(float64(r.Longitude) / 600000), Latitude: ais.FieldLatLonFine(float64(r.Latitude) / 600000),
 		Cog: ais.Field10(float64(r.Cog) / 10), TrueHeading: r.Heading, Timestamp: uint8(t.Second()),
 	}
