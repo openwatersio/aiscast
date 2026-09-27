@@ -26,7 +26,7 @@ func TestFixtureCorpusFullyCaptured(t *testing.T) {
 	before := unmappedKeys()
 
 	p := testPipeline(t)
-	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
+	st := newAishubState()
 	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	sources := map[string]string{
 		"kystverket.lines":   "kystverket",
