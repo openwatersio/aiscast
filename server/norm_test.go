@@ -436,3 +436,29 @@ func TestVesselCacheSweepsOnTheReceptionClock(t *testing.T) {
 		}
 	}
 }
+
+// Two multipart messages from one station on one channel, fragments interleaved: pending fragments
+// are keyed by the sentence's sequence id (go-nmea's VDMVDO.MessageID is that field, not the AIS
+// message type), so each message records exactly its own sentences.
+func TestInterleavedMultipartMessagesStaySeparate(t *testing.T) {
+	a := []string{"!AIVDM,2,1,9,B,55RGLH82G=qO<DuSB20d4d58TdV2222222222216?hP7B6LB0C3VUk1p,0*17", "!AIVDM,2,2,9,B,888888888888880,2*2E"}
+	b := []string{"!AIVDM,2,1,0,B,53GQrVH2HFaLD4Hv221@4h5HE86222222222220l1P;4840Ht0000000,0*1E", "!AIVDM,2,2,0,B,000000000000000,2*27"}
+	p, dir := normPipeline(t)
+	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for i, l := range []string{a[0], b[0], a[1], b[1]} {
+		p.ingestLine(Reception{Source: "station:s", Station: "station:s", RecvTime: recv.Add(time.Duration(i) * time.Second), Body: l})
+	}
+	p.norm.shutdown()
+	var got []string
+	for _, e := range readNorm(t, dir) {
+		if e.K == "event" {
+			var ev struct{ NMEA []string }
+			json.Unmarshal(e.R, &ev)
+			got = append(got, strings.Join(ev.NMEA, "|"))
+		}
+	}
+	want := []string{strings.Join(a, "|"), strings.Join(b, "|")}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("interleaved messages recorded\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
