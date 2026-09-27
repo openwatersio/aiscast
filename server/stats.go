@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -189,7 +190,8 @@ func (p *Pipeline) loadUsage(path string) error {
 	return nil
 }
 
-// countRequests wraps the mux so API requests are counted once, whatever handler serves them.
+// countRequests wraps the mux so every request is counted once, whatever handler serves it: API requests in
+// the /v1/stats usage rings, and all of them by route and status in /metrics.
 func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -197,7 +199,13 @@ func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 		default:
 			p.usage.requests.add(time.Now())
 		}
-		h.ServeHTTP(w, r)
+		start, sw := time.Now(), &statusWriter{ResponseWriter: w}
+		h.ServeHTTP(sw, r)
+		route := r.Pattern // set by the mux as it routes; empty for a path no route matched
+		if route == "" {
+			route = "other"
+		}
+		p.requests.observe(route, cmp.Or(sw.status, http.StatusOK), time.Since(start))
 	})
 }
 

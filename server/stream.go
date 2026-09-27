@@ -186,6 +186,10 @@ func (ev *Event) renderV0() []byte {
 
 func wsWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	b, _ := json.Marshal(v)
+	return wsWrite(ctx, c, b)
+}
+
+func wsWrite(ctx context.Context, c *websocket.Conn, b []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return c.Write(ctx, websocket.MessageText, b)
@@ -230,6 +234,9 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 			var err error
 			if release, err = acquireStream(cl, ip); err != nil {
 				msg = "concurrent connections per user exceeded" // aisstream's wording
+			} else {
+				untrack, rel := p.streams.open("v0", cl), release
+				release = func() { rel(); untrack() }
 			}
 			pace.n = cl.Rate
 		}
@@ -269,12 +276,11 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 				p.stats.thinned.Add(1)
 				continue
 			}
-			wctx, wc := context.WithTimeout(ctx, 10*time.Second)
-			err := c.Write(wctx, websocket.MessageText, ev.renderV0())
-			wc()
-			if err != nil {
+			b := ev.renderV0()
+			if wsWrite(ctx, c, b) != nil {
 				return
 			}
+			p.fanout.v0.add(len(b))
 		}
 	}
 }
@@ -396,9 +402,17 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	}
 	// The exit release runs before cancel()/CloseNow() (defer LIFO), so the reader can be mid-register;
 	// the mutex + closed flag make release-old and release-at-exit exactly-once.
+	untrack := p.streams.open("v1", cl)
 	var slotMu sync.Mutex
 	closed := false
-	defer func() { slotMu.Lock(); closed = true; relSub(); relAddr(); slotMu.Unlock() }()
+	defer func() {
+		slotMu.Lock()
+		closed = true
+		relSub()
+		relAddr()
+		untrack()
+		slotMu.Unlock()
+	}()
 	canPublish := cl.may("publish")
 	sendWelcome := func() error { return wsWriteJSON(ctx, c, welcomeFor(cl, canPublish)) }
 	if sendWelcome() != nil {
@@ -508,6 +522,8 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				}
 				relSub()
 				relSub = rel
+				untrack()
+				untrack = p.streams.open("v1", ncl)
 				slotMu.Unlock()
 				cl, canPublish = ncl, ncl.may("publish")
 				pace.Store(&pacer{n: cl.Rate})
@@ -539,9 +555,11 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				p.stats.thinned.Add(1)
 				continue
 			}
-			if err := wsWriteJSON(ctx, c, renderV1(ev)); err != nil {
+			b, _ := json.Marshal(renderV1(ev))
+			if wsWrite(ctx, c, b) != nil {
 				return
 			}
+			p.fanout.v1.add(len(b))
 		}
 	}
 }
@@ -667,6 +685,7 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { relSub(); relAddr() }()
+	defer p.streams.open("sse", cl)()
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -737,7 +756,12 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 			p.stats.thinned.Add(1)
 			return true
 		}
-		return send(renderV1(ev)) == nil
+		b, _ := json.Marshal(renderV1(ev))
+		if write("data: ", b) != nil {
+			return false
+		}
+		p.fanout.sse.add(len(b))
+		return true
 	}
 	for {
 		if len(snap) > 0 {
