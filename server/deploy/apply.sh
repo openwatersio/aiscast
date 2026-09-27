@@ -7,12 +7,21 @@ cd "$(dirname "$0")"
 UV_VERSION=0.12.12
 
 export DEBIAN_FRONTEND=noninteractive
+if ! command -v curl >/dev/null; then # a minimal image may lack it, and the repositories below need it first
+	apt-get update -q
+	apt-get install -yq curl
+fi
+# Caddy's own apt repository: Ubuntu's caddy package is too old for the Caddyfile. The paths are the
+# ones Caddy's install instructions use, so a box set up by hand keeps its files and apt sees one
+# source with one key. Each apt-get install below takes the newest release.
+if [ ! -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]; then
+	curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+fi
+if [ ! -f /etc/apt/sources.list.d/caddy-stable.list ]; then
+	curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt -o /etc/apt/sources.list.d/caddy-stable.list
+fi
 # Grafana's apt repository, for Alloy. The key is fetched once; apt checks every package against it.
 if [ ! -f /etc/apt/keyrings/grafana.asc ]; then
-	if ! command -v curl >/dev/null; then # a minimal image may lack it, and the install below comes after the key
-		apt-get update -q
-		apt-get install -yq curl
-	fi
 	mkdir -p /etc/apt/keyrings
 	curl -fsSL https://apt.grafana.com/gpg.key -o /etc/apt/keyrings/grafana.asc
 fi

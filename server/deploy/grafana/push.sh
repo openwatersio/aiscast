@@ -8,7 +8,12 @@ cd "$(dirname "$0")"
 : "${GRAFANA_URL:?}" "${GRAFANA_TOKEN:?}" "${ALERT_EMAIL:?}"
 url=${GRAFANA_URL%/}
 prom=${GRAFANA_PROM_UID:-grafanacloud-prom}
-api() { curl -fsS -H "Authorization: Bearer $GRAFANA_TOKEN" -H 'Content-Type: application/json' "$@"; }
+# Grafana explains a rejected request in the response body, so a failure prints it.
+api() {
+	out=$(curl -sS --fail-with-body -H "Authorization: Bearer $GRAFANA_TOKEN" -H 'Content-Type: application/json' "$@") ||
+		{ printf '%s\n' "$out" >&2; return 1; }
+	printf '%s\n' "$out"
+}
 
 contact=$(jq -n --arg to "$ALERT_EMAIL" '{uid: "aiscast-email", name: "aiscast email", type: "email", settings: {addresses: $to}}')
 if api "$url/api/v1/provisioning/contact-points?name=aiscast%20email" | jq -e 'length > 0' >/dev/null; then

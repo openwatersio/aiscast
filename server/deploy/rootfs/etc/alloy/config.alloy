@@ -16,7 +16,7 @@ prometheus.scrape "aiscast" {
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
 }
 
-// Caddy's admin endpoint, loopback only. The Caddyfile's `servers { metrics }` adds the per-request series.
+// Caddy's admin endpoint, loopback only. The Caddyfile's global `metrics` option adds the per-request series.
 prometheus.scrape "caddy" {
 	targets    = [{"__address__" = "127.0.0.1:2019"}]
 	job_name   = "caddy"
