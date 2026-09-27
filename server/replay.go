@@ -24,7 +24,9 @@ func runReplay(args []string) {
 	out := fset.String("out", "normalized-replay", "normalized output tree to write")
 	fromS := fset.String("from", "", "first day to write, YYYY-MM-DD UTC (required)")
 	toS := fset.String("to", "", "day to stop before, YYYY-MM-DD UTC (required)")
-	warmup := fset.Duration("warmup", 30*time.Minute, "state-building lead-in replayed before -from but not written")
+	// The lead-in must cover the longest window live state looks back over: corroboration checks a
+	// trusted report up to an hour back, on a vessel the cache keeps until it goes unheard for vesselTTL.
+	warmup := fset.Duration("warmup", corroborationWindow+vesselTTL, "state-building lead-in replayed before -from but not written")
 	fset.Parse(args)
 	from, err1 := time.ParseInLocation("2006-01-02", *fromS, time.UTC)
 	to, err2 := time.ParseInLocation("2006-01-02", *toS, time.UTC)
