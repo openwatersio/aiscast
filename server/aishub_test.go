@@ -91,6 +91,33 @@ func TestAishubStaticFlipBack(t *testing.T) {
 	}
 }
 
+// A future-stamped row's canonical time is capped to the receive time by ingestPacket, so the
+// flip-back window must track the capped time: keyed on the raw future TIME it would suppress a
+// flip-back whose actual (id, time) is unique, because each snapshot's receive time differs.
+func TestAishubFutureStampFlipBack(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	st := newAishubState()
+	now := time.Unix(1625826600, 0)
+	row := func(dest string) string { // TIME five minutes ahead of every snapshot's receive time
+		return fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"1625826900","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"%s","ETA":1596}]]`, dest)
+	}
+	if n, err := p.ingestAishub([]byte(row("NLRTM")), now, st, 0); err != nil || n != 2 {
+		t.Fatalf("first snapshot: n=%d err=%v", n, err)
+	}
+	if ev := <-sub.ch; !ev.Time.Equal(now) {
+		t.Errorf("future stamp not capped to receive time: %v", ev.Time)
+	}
+	if n, _ := p.ingestAishub([]byte(row("NLAMS")), now.Add(time.Minute), st, 0); n != 1 {
+		t.Fatalf("changed static: n=%d, want 1", n)
+	}
+	// the flip back: TIME is still the same future stamp, but the canonical time is this
+	// snapshot's receive time, so the key is fresh and the static must be emitted
+	if n, _ := p.ingestAishub([]byte(row("NLRTM")), now.Add(2*time.Minute), st, 0); n != 1 {
+		t.Errorf("flip-back with a future stamp: n=%d, want 1", n)
+	}
+}
+
 func TestReencodeKeepsChannel(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()

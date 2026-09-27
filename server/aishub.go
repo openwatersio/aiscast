@@ -194,6 +194,9 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 		t := now
 		if secs, err := strconv.ParseInt(r.Time, 10, 64); err == nil && secs > 0 {
 			t = time.Unix(secs, 0)
+			if t.After(now) { // ingestPacket caps a future stamp to the receive time; match it here
+				t = now // so the staticAt window and the packet carry the time the event actually gets
+			}
 		}
 		if st.lastTime[r.MMSI] != r.Time && r.Latitude != 0 && r.Longitude != 0 {
 			st.lastTime[r.MMSI] = r.Time
