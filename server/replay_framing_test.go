@@ -139,3 +139,44 @@ func TestReplayRefusesWhatItCannotPlace(t *testing.T) {
 		t.Fatal("a catcher envelope that does not parse was skipped")
 	}
 }
+
+// A trusted report 45 minutes before -from corroborates a low-trust report just after it, live, while
+// the vessel stays cached. The
+// default lead-in has to replay far enough back to see it, or replay writes the same event
+// uncorroborated.
+func TestReplayLeadInCoversCorroboration(t *testing.T) {
+	dir := t.TempDir()
+	from := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	write := func(rel string, recv time.Time, station string) {
+		path := filepath.Join(dir, rel, recv.Format("2006/01/02/15")+".gz")
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gz := gzip.NewWriter(f)
+		gz.Write([]byte(recv.Format(time.RFC3339Nano) + "\t" + station + "\t" + testSentence + "\n"))
+		gz.Close()
+		f.Close()
+	}
+	write("NLOD-2.0/kystverket", from.Add(-45*time.Minute), "kystverket")
+	// the same sender 20 minutes before -from keeps the vessel cached, so live still holds the trusted
+	// report when the one after -from arrives; a 30-minute lead-in sees this and not the trusted one
+	write("CC0-1.0/udp/aaaa", from.Add(-20*time.Minute), "udp:aaaa")
+	write("CC0-1.0/udp/aaaa", from.Add(5*time.Minute), "udp:aaaa")
+
+	out := t.TempDir()
+	runReplay([]string{"-archive", dir, "-out", out, "-from", "2026-09-02", "-to", "2026-09-03"})
+	events := 0
+	for _, e := range readNorm(t, out) {
+		if e.K == "event" {
+			events++
+			if e.Uncorroborated {
+				t.Fatal("the lead-in missed the trusted report 45 minutes before -from; replay wrote the event uncorroborated")
+			}
+		}
+	}
+	if events != 1 {
+		t.Fatalf("events = %d, want the one low-trust report after -from", events)
+	}
+}

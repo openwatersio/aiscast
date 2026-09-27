@@ -141,6 +141,15 @@ func normFiles(dir string) ([]string, error) {
 	return out, err
 }
 
+// readIfPresent reads an hour file one side may lack. Only its absence is ignored: a file that exists
+// and cannot be read fails the comparison, which would otherwise come back clean without it.
+func (s *normSide) readIfPresent(path string) error {
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return s.read(path)
+}
+
 // read adds one hour file's records.
 func (s *normSide) read(path string) error {
 	s.files++
@@ -192,10 +201,8 @@ func diffTrees(liveDir, replayDir string) (*normReport, error) {
 		l, r := newNormSide(), newNormSide()
 		paths := [2]string{filepath.Join(liveDir, h), filepath.Join(replayDir, h)}
 		for j, side := range []*normSide{l, r} {
-			if _, err := os.Stat(paths[j]); err == nil {
-				if err := side.read(paths[j]); err != nil {
-					return nil, err
-				}
+			if err := side.readIfPresent(paths[j]); err != nil {
+				return nil, err
 			}
 		}
 		total.addStats(l, r)
@@ -235,10 +242,8 @@ func (t *normReport) resolve(paths []string, r *normReport) error {
 	}
 	s := &normSide{names: t.names, want: want, tally: true}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			if err := s.read(p); err != nil {
-				return err
-			}
+		if err := s.readIfPresent(p); err != nil {
+			return err
 		}
 	}
 	return nil

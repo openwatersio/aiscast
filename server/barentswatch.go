@@ -75,7 +75,7 @@ func (m bwMessage) position() ais.Packet {
 		}
 		return ais.StandardSearchAndRescueAircraftReport{
 			Header: ais.Header{MessageID: 9, UserID: m.MMSI}, Valid: true,
-			Altitude: alt, Sog: sog, Longitude: lon, Latitude: lat, Cog: ais.Field10(m.Cog),
+			Altitude: alt, Sog: sog, Longitude: lon, Latitude: lat, Cog: ais.Field10(wireCog(m.Cog)),
 			Timestamp: uint8(m.Msgtime.Second()),
 		}
 	}
@@ -83,7 +83,7 @@ func (m bwMessage) position() ais.Packet {
 	if m.AisClass == "B" {
 		return ais.StandardClassBPositionReport{
 			Header: ais.Header{MessageID: 18, UserID: m.MMSI}, Valid: true,
-			Sog: ais.Field10(sog), Longitude: lon, Latitude: lat, Cog: ais.Field10(m.Cog),
+			Sog: ais.Field10(sog), Longitude: lon, Latitude: lat, Cog: ais.Field10(wireCog(m.Cog)),
 			TrueHeading: m.Heading, Timestamp: uint8(m.Msgtime.Second()),
 		}
 	}
@@ -95,7 +95,7 @@ func (m bwMessage) position() ais.Packet {
 	return ais.PositionReport{
 		Header: ais.Header{MessageID: 1, UserID: m.MMSI}, Valid: true,
 		NavigationalStatus: m.NavStat, RateOfTurn: rot, Sog: ais.Field10(sog),
-		Longitude: lon, Latitude: lat, Cog: ais.Field10(m.Cog),
+		Longitude: lon, Latitude: lat, Cog: ais.Field10(wireCog(m.Cog)),
 		TrueHeading: m.Heading, Timestamp: uint8(m.Msgtime.Second()),
 	}
 }
