@@ -90,7 +90,10 @@ func failOn(r *rawReader) {
 	}
 }
 
-// dispatch feeds one archived reception to the adapter that consumed it live.
+// dispatch feeds one archived reception to the adapter that consumed it live. Only /v1/receive
+// parses AIS-catcher envelopes, archiving under http: (before station ids) or station:; UDP (udp:,
+// and mmsi: for a UDP sender named by its own ship) and /v1 publish (v1: before station ids) only
+// ever take lines.
 func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) error {
 	switch {
 	case source == "barentswatch":
@@ -107,24 +110,22 @@ func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) error {
 		if _, err := p.ingestAishub([]byte(rx.Body), rx.RecvTime, st, 0); err != nil {
 			p.stats.parseErr.Add(1)
 		}
-	case catcherTransport(source) && strings.HasPrefix(strings.TrimSpace(rx.Body), "{") &&
+	case strings.HasPrefix(source, "http:") && strings.HasPrefix(strings.TrimSpace(rx.Body), "{"):
+		// http: is /v1/receive alone, which archives an envelope only after it parses: one that does
+		// not is corrupt, not a line
+		if !p.ingestCatcher(source, []byte(rx.Body), rx.RecvTime) {
+			return fmt.Errorf("%s: catcher envelope that does not parse: %.60q", source, rx.Body)
+		}
+	case strings.HasPrefix(source, "station:") && strings.HasPrefix(strings.TrimSpace(rx.Body), "{") &&
 		p.ingestCatcher(source, []byte(rx.Body), rx.RecvTime):
-		// an AIS-catcher envelope posted to /v1/receive, which archives one only after it parses
+		// an envelope posted to /v1/receive; station: also covers /v1 publish, so a record that does
+		// not parse as one is a publisher's line
 	default:
 		// NMEA lines, as UDP and /v1 publish deliver them. A line that only looks like JSON (UDP
 		// garbage opening with '{') is a parse error here, as it was live.
 		p.ingestLine(rx)
 	}
 	return nil
-}
-
-// catcherTransport reports whether a source's receptions can be AIS-catcher envelopes: only
-// /v1/receive parses them, and it archives under http: (before station ids) or station:. UDP (udp:,
-// and mmsi: for a UDP sender named by its own ship) and /v1 publish (v1: before station ids) only
-// ever take lines. station: also covers publishers, so a station record that does not parse as an
-// envelope is a line.
-func catcherTransport(source string) bool {
-	return strings.HasPrefix(source, "http:") || strings.HasPrefix(source, "station:")
 }
 
 // collectReaders builds one sequential reader per source over its hour files in [start, end).

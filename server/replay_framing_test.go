@@ -144,21 +144,26 @@ func TestReplayRoutesByTransport(t *testing.T) {
 	envelope := `{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260901120000","nmea":["` + testSentence + `"]}]}`
 	for _, c := range []struct {
 		name, source, body string
-		events             int
+		events, parseErrs  int64
 	}{
-		{"udp garbage opening with {", "udp:7f2c05cb43eb", "{jR\"\x05%Qa\t!AIVDM,1,1,,B,D028jK1EhN?", 0},
-		{"station envelope", "station:x", envelope, 1},
-		{"station line that only looks like json", "station:x", "{not an envelope", 0},
-		{"udp never parses json", "udp:aaaa", envelope, 0},
+		{"udp garbage opening with {", "udp:7f2c05cb43eb", "{jR\"\x05%Qa\t!AIVDM,1,1,,B,D028jK1EhN?", 0, 1},
+		{"station envelope", "station:x", envelope, 1, 0},
+		{"station line that only looks like json", "station:x", "{not an envelope", 0, 1},
+		{"udp never parses json", "udp:aaaa", envelope, 0, 1},
 	} {
 		p := testPipeline(t)
 		sub := p.subscribe()
 		if err := dispatch(p, c.source, Reception{Source: c.source, Station: c.source, RecvTime: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), Body: c.body}, nil); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
-		if len(sub.ch) != c.events {
-			t.Fatalf("%s: %d events, want %d", c.name, len(sub.ch), c.events)
+		if int64(len(sub.ch)) != c.events || p.stats.parseErr.Load() != c.parseErrs {
+			t.Fatalf("%s: %d events and %d parse errors, want %d and %d (a line goes through the NMEA parser)",
+				c.name, len(sub.ch), p.stats.parseErr.Load(), c.events, c.parseErrs)
 		}
+	}
+	// http: is /v1/receive alone, so an envelope there that does not parse is corrupt
+	if err := dispatch(testPipeline(t), "http:x", Reception{Source: "http:x", Body: `{"msgs": [`}, nil); err == nil {
+		t.Fatal("a corrupt envelope under http: was replayed as a line")
 	}
 }
 
