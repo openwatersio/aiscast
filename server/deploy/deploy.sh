@@ -1,5 +1,6 @@
 #!/bin/sh
-# One-step deploy: ship the binary and the config bundle, converge the box, restart once.
+# One-step deploy: ship the binary, the packager script, and the config bundle, converge the box,
+# restart once.
 # Usage: server/deploy/deploy.sh root@ais.example.org [linux-amd64-binary]
 # Without a binary argument it cross-compiles first. Works the same on a fresh Ubuntu box
 # and the live one; CI runs it on every push to main with the tested build artifact.
@@ -17,7 +18,8 @@ fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp "$bin" "$stage/aiscast-linux"
+cp ../../packager/packager.py "$stage/packager.py"  # the nightly packager runs from the same source the tests do
 # The box is silent for most of the converge and GitHub-hosted runners drop idle TCP after
 # about four minutes, so keep the session alive from this side.
-tar czf - apply.sh aiscast.env.example rootfs -C "$stage" aiscast-linux |
+tar czf - apply.sh aiscast.env.example rootfs -C "$stage" aiscast-linux packager.py |
 	ssh -o ServerAliveInterval=30 "$host" 'rm -rf aiscast-deploy && mkdir aiscast-deploy && tar xzf - -C aiscast-deploy && sh aiscast-deploy/apply.sh'

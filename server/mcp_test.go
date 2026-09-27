@@ -28,17 +28,17 @@ func mcpSeed(t *testing.T) *Pipeline {
 	static := func(mmsi uint32, name string, typ uint8) ais.Packet {
 		return ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: mmsi}, Valid: true, Name: name, Type: typ}
 	}
-	p.ingestPacket("kystverket", "kystverket", now.Add(-20*time.Second), pos(257000001, 59.9, 10.7, 12, 180, 0))
-	p.ingestPacket("kystverket", "kystverket", now.Add(-19*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000001}, Valid: true,
+	p.ingestPacket("kystverket", "kystverket", now.Add(-20*time.Second), now.Add(-20*time.Second), pos(257000001, 59.9, 10.7, 12, 180, 0))
+	p.ingestPacket("kystverket", "kystverket", now.Add(-19*time.Second), now.Add(-19*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000001}, Valid: true,
 		Name: "NORDIC STAR", Type: 70, ImoNumber: 9319466, CallSign: "LAJB7", Destination: "NOOSL",
 		Eta: ais.FieldETA{Month: 9, Day: 19, Hour: 6, Minute: 0}, MaximumStaticDraught: 5.2, Dimension: ais.FieldDimension{A: 100, B: 50, C: 10, D: 12}})
-	p.ingestPacket("kystverket", "kystverket", now.Add(-10*time.Second), pos(257000002, 59.5, 10.6, 18, 10, 0))
-	p.ingestPacket("kystverket", "kystverket", now.Add(-9*time.Second), static(257000002, "OSLO FERRY", 60))
-	p.ingestPacket("kystverket", "kystverket", now.Add(-5*time.Second), ais.AidsToNavigationReport{Header: ais.Header{MessageID: 21, UserID: 992571234}, Valid: true,
+	p.ingestPacket("kystverket", "kystverket", now.Add(-10*time.Second), now.Add(-10*time.Second), pos(257000002, 59.5, 10.6, 18, 10, 0))
+	p.ingestPacket("kystverket", "kystverket", now.Add(-9*time.Second), now.Add(-9*time.Second), static(257000002, "OSLO FERRY", 60))
+	p.ingestPacket("kystverket", "kystverket", now.Add(-5*time.Second), now.Add(-5*time.Second), ais.AidsToNavigationReport{Header: ais.Header{MessageID: 21, UserID: 992571234}, Valid: true,
 		Type: 25, Name: "DYNA GRUNNE", Latitude: ais.FieldLatLonFine(59.95), Longitude: ais.FieldLatLonFine(10.75)})
-	p.ingestPacket("digitraffic", "digitraffic", now.Add(-30*time.Second), pos(230000001, 60.1, 25.0, 4, 90, 0))
-	p.ingestPacket("digitraffic", "digitraffic", now.Add(-29*time.Second), static(230000001, "HELSINKI TUG", 52))
-	p.ingestPacket("kystverket", "kystverket", now.Add(-3*time.Second), static(257000003, "GHOST", 37))
+	p.ingestPacket("digitraffic", "digitraffic", now.Add(-30*time.Second), now.Add(-30*time.Second), pos(230000001, 60.1, 25.0, 4, 90, 0))
+	p.ingestPacket("digitraffic", "digitraffic", now.Add(-29*time.Second), now.Add(-29*time.Second), static(230000001, "HELSINKI TUG", 52))
+	p.ingestPacket("kystverket", "kystverket", now.Add(-3*time.Second), now.Add(-3*time.Second), static(257000003, "GHOST", 37))
 	return p
 }
 
@@ -192,7 +192,7 @@ func TestMCPGetVesselsBeyondPage(t *testing.T) {
 	for i := range 250 {
 		m := uint32(258000000 + i)
 		fleet = append(fleet, m)
-		p.ingestPacket("kystverket", "kystverket", now.Add(-time.Duration(i)*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: m}, Valid: true,
+		p.ingestPacket("kystverket", "kystverket", now.Add(-time.Duration(i)*time.Second), now.Add(-time.Duration(i)*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: m}, Valid: true,
 			NavigationalStatus: 15, Latitude: ais.FieldLatLonFine(62 + float64(i)/1000), Longitude: 5, Sog: 102.3, Cog: 360, TrueHeading: 511})
 	}
 	fleet = append(fleet, 1)
@@ -251,7 +251,7 @@ func TestMCPFindNear(t *testing.T) {
 	p := mcpSeed(t)
 	// two vessels 6 NM apart across the antimeridian
 	for i, lon := range []float64{179.95, -179.95} {
-		p.ingestPacket("aishub", "aishub", time.Now(), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: uint32(500000001 + i)}, Valid: true,
+		p.ingestPacket("aishub", "aishub", time.Now(), time.Now(), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: uint32(500000001 + i)}, Valid: true,
 			NavigationalStatus: 15, Latitude: 0, Longitude: ais.FieldLatLonFine(lon), Sog: 102.3, Cog: 360, TrueHeading: 511})
 	}
 	cs := mcpClient(t, p)

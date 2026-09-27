@@ -536,7 +536,7 @@ func TestTiersAndTrust(t *testing.T) {
 	// emitted (three, not two: rebuilt events must advance the vessel's clock by more than a second first).
 	// Not (0,0) any more: that is discarded as a GPS default before the implausibility check sees it.
 	before := p.stats.implausible.Load()
-	p.ingestPacket(udp, udp, now.Add(3*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: -0.52, Longitude: 0.13, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	p.ingestPacket(udp, udp, now.Add(3*time.Second), now.Add(3*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: -0.52, Longitude: 0.13, Cog: 360, Sog: 102.3, TrueHeading: 511})
 	if p.stats.implausible.Load() != before+1 || len(sub.ch) != 0 {
 		t.Errorf("implausible jump: count %d→%d, events %d", before, p.stats.implausible.Load(), len(sub.ch))
 	}
@@ -549,7 +549,7 @@ func TestTiersAndTrust(t *testing.T) {
 	for len(sub.ch) > 0 {
 		<-sub.ch
 	}
-	p.ingestPacket(udp, udp, now.Add(10*time.Minute), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.5, Longitude: 0.2, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	p.ingestPacket(udp, udp, now.Add(10*time.Minute), now.Add(10*time.Minute), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.5, Longitude: 0.2, Cog: 360, Sog: 102.3, TrueHeading: 511})
 	if len(sub.ch) != 1 {
 		t.Fatalf("plausible UDP report not emitted (events=%d)", len(sub.ch))
 	}
@@ -574,7 +574,7 @@ func TestDedupedTrustedCopyCorroborates(t *testing.T) {
 	if len(sub.ch) != 0 {
 		t.Fatal("duplicate was emitted")
 	}
-	p.ingestPacket(udp, udp, now.Add(30*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.476, Longitude: 0.132, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	p.ingestPacket(udp, udp, now.Add(30*time.Second), now.Add(30*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.476, Longitude: 0.132, Cog: 360, Sog: 102.3, TrueHeading: 511})
 	if ev := <-sub.ch; !ev.Corroborated {
 		t.Error("UDP report after a deduplicated trusted copy should be corroborated")
 	}

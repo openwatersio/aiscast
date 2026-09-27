@@ -107,6 +107,14 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		hasPos = false
 	}
 	p.vmu.Lock()
+	// The cache sweeps on the reception clock, not a wall-clock ticker. It decides which events are
+	// stale and gives a static its vessel's position, and both reach the archive, so replay has to
+	// sweep at the same points live did; recv is the clock replay reproduces. If ingest stops
+	// entirely, nothing sweeps until it resumes, and /health is already failing by then.
+	if !ev.RecvTime.IsZero() && !ev.RecvTime.Before(p.nextSweep) {
+		p.sweepLocked(ev.RecvTime.Add(-vesselTTL))
+		p.nextSweep = ev.RecvTime.Truncate(vesselSweep).Add(vesselSweep)
+	}
 	v := p.vessels[ev.MMSI]
 	if v == nil {
 		v = newVessel()
@@ -218,15 +226,21 @@ func (p *Pipeline) markTrusted(mmsi uint32, t time.Time) {
 	p.vmu.Unlock()
 }
 
-// sweepVessels drops vessels unseen since cutoff and returns the remaining count.
-func (p *Pipeline) sweepVessels(cutoff time.Time) int {
-	p.vmu.Lock()
-	defer p.vmu.Unlock()
+// vesselSweep is how much reception time passes between sweeps of the vessel cache.
+const vesselSweep = 30 * time.Second
+
+// sweepLocked drops vessels unseen since cutoff; the caller holds vmu.
+func (p *Pipeline) sweepLocked(cutoff time.Time) {
 	for mmsi, v := range p.vessels {
 		if v.Seen.Before(cutoff) {
 			delete(p.vessels, mmsi)
 		}
 	}
+}
+
+func (p *Pipeline) vesselCount() int {
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
 	return len(p.vessels)
 }
 

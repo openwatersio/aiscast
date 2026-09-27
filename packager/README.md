@@ -1,0 +1,36 @@
+# Packager
+
+The packager turns the server's normalized archive into day-partitioned Iceberg tables that anyone can query. It contains no parsers and no dedup rule: the server decided all of that at ingest, and the normalized stream records what it decided.
+
+```sh
+./packager.py                                                       # fetch from the bucket: every closed day of the past week not yet packaged from its current hours
+./packager.py --date 2026-09-01                                     # fetch that day from the bucket and package it
+./packager.py --normalized ../server/normalized --date 2026-09-01   # package from a local normalized tree
+```
+
+Without `--normalized` the job fetches the day's hours from `NORMALIZED_BUCKET` (normally `ais-archive`, under `normalized/v1/`) into `raw/`, packages them, and deletes them, so it does not depend on what any box still holds on disk. That needs `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`, the same S3 keys the server uploads with. The layout is flat, so a day costs three prefix listings rather than a walk of the bucket, and listing stays flat as the archive grows.
+
+The local catalog is SQLite under `warehouse/`. Set `LAKE_CATALOG_URI`, `LAKE_WAREHOUSE`, and `LAKE_CATALOG_TOKEN` to write to R2 Data Catalog instead. `PACKAGER_HOME` moves `stage/` and `warehouse/`.
+
+## Tables
+
+All wire-precision conventions match the stream: lat/lon as 1/600000 degree integers, SOG in 0.1 kn (1023 = n/a), COG in 0.1 degree (3600 = n/a), heading in degrees (511 = n/a).
+
+**ais.positions** — one row per accepted position transmission (types 1, 2, 3, 18, 19, 27). Key: (`id`, `ts`). `id` is the server's 16-byte content hash, stored as raw bytes (the stream and the API carry it as 32 lowercase hex characters; `lower(hex(id))` gives that form back), so identical payloads transmitted minutes apart share an `id` and are distinct rows; a consumer counting transmissions counts rows, one tracking content changes takes `DISTINCT id`. Events the stream flagged implausible or stale are archived upstream but withheld here, exactly as the live stream withheld them. A same-`id` repeat inside the server's 10 s window of the last kept row (a crash-window re-accept) collapses into that row, including one just after midnight whose kept row is in the previous day. `ts` is the transmission's own time; `day` is the UTC day the server received it, so a report relayed late sits in the day it arrived with its true `ts`. `lat6`/`lon6` come from the server's decoded event and are null when it found no usable position (the not-available values, or (0,0)); the row stays, since speed, course, and status still hold. `corroborated` is false for a report from an unauthenticated sender (`udp:` or `mmsi:`) for a vessel no trusted source heard in the hour before, the rule `/v1/nmea` and the AISHub feed use to leave it out. `cell` is the one-degree cell of the position, `(floor(lat) + 90) * 360 + (floor(lon) + 180)` with latitude 90 and longitude 180 folded into row 179 and column 359, so every position falls in 0..64799; null when `lat6` is.
+
+**ais.receptions** — one row per copy heard of each position: `id` (16 bytes, as in positions), `mmsi`, `ts`, `source`, `station`, `recv_ts`, `license`, joined to the transmission the server named on the copy when it called it one; a copy of a collapsed re-accept follows it into the kept row. `day` is the day the copy arrived, which can be the day after its transmission's for a copy received just past midnight. Licenses live here because a license governs a delivery, not the broadcast it carried.
+
+**ais.vessels** — latest-wins static data per MMSI, per field: `name`, `callsign`, `ship_type`, `draught10`, `cls` (from position message types, the truthful class signal; a static's own class claim only fills a gap), `updated_ts`. Each field carries its own observation time (`name_ts`, `callsign_ts`, `ship_type_ts`, `draught_ts`, `cls_ts`), so days merge correctly in any order, and a repackaged day's values replace the stored ones on a tie. Overwritten each run. A value that only a repackaged day's old inputs contained stays until a newer one replaces it.
+
+**ais.weather** — BarentsWatch MetHyd broadcasts (IMO SN.1/Circ.289 DAC 1 FI 31, and its FI 11 predecessor, both live): one row per broadcast from an instrumented aid to navigation, measurements as sent, enums as strings, nulls where the station has no such sensor. `functional_id` distinguishes the two message generations; the payload's embedded observation time is broken on real stations and is not carried.
+
+## Contract
+
+- Every table assigns rows to the UTC day the server received them. BarentsWatch satellite passes arrive hours after transmission, nearly ten at the worst observed, so a day keyed on transmission time could never be finished when it is written; keyed on arrival, a day is exactly its own hours of the stream. To select by transmission time, filter on `ts`, and expect a few late reports in the following day's partition.
+- Partitions: `day` on every day table, plus `bucket(mmsi, 32)` as `mmsi_bucket` on positions and receptions, so one vessel's history reads one file in 32 per day. Within each file positions run in (`cell`, `mmsi`, `ts`) order in row groups of 32,768 rows, so a bounding-box query skips row groups on `cell` statistics; receptions run in (`source`, `station`, `recv_ts`) order. The packager refuses to write into a table with any other layout: an older one is dropped and repackaged, not altered.
+- A day partition is written once, after the UTC day closes. Its presence in `ais.positions` means the day is done: Iceberg has no cross-table transaction, so weather, receptions, and vessels commit first and positions last. Reruns and backfills replace whole days.
+- Schema changes are additive; a breaking change means a new table name.
+- Envelope versions the packager does not know fail the run loudly rather than skipping records.
+- Consumers publishing derived work must credit the attribution-requiring sources (NLOD-2.0, CC-BY-4.0); the per-reception `license` column makes finer-grained terms questions filters, not judgment calls.
+
+In production the box runs this nightly: `packager.timer` fires at 01:30 UTC, after the closed day's last hours have rotated into the bucket, and `packager.service` runs `/opt/aiscast/packager.py` under uv for every closed day of the past week. Each packaged day records its input hours with their sizes and modification times on `ais.positions`, and a day whose hours have changed since (an upload that landed late, an hour re-uploaded or rewritten by a replay) is packaged again, so a failed night or a delayed upload heals on the next run. A day that fails is reported and the rest of the week still runs; the run then exits non-zero. It skips itself while `/etc/aiscast.env` has no `LAKE_CATALOG_URI`. Both units live in [server/deploy/rootfs](../server/deploy/rootfs/etc/systemd/system), and `packager.py` ships in the same bundle as the server binary, so a deploy updates the script and the units together. `PACKAGER_HOME` points the staging and fetch directories at `/var/lib/aiscast/packager`.
