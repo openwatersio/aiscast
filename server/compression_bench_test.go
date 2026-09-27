@@ -64,8 +64,10 @@ func (c countingConn) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// benchCompression times the server side of one compressed stream: frames are written through a real
-// accepted socket, and the client reads and discards raw bytes, so decompression never counts.
+// benchCompression measures one compressed stream: frames are written through a real accepted socket, and the
+// client reads and discards raw bytes, so decompression never counts. server-ns/frame times c.Write inside the
+// handler, the compression and the socket write, and is the figure to compare modes by. ns/op is end to end:
+// it adds the handoff to the handler and any TCP backpressure, which grows with the bytes each mode sends.
 func benchCompression(b *testing.B, mode websocket.CompressionMode, offer string) {
 	frames := v1Frames(b, 4000)
 	var raw int64
@@ -74,6 +76,7 @@ func benchCompression(b *testing.B, mode websocket.CompressionMode, offer string
 	}
 	next := make(chan []byte)
 	done := make(chan struct{})
+	var serverNS atomic.Int64
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: mode})
 		if err != nil {
@@ -82,10 +85,12 @@ func benchCompression(b *testing.B, mode websocket.CompressionMode, offer string
 		}
 		defer c.CloseNow()
 		for f := range next {
+			t := time.Now()
 			if err := c.Write(r.Context(), websocket.MessageText, f); err != nil {
 				b.Error(err)
 				return
 			}
+			serverNS.Add(int64(time.Since(t)))
 		}
 		close(done)
 	}))
@@ -118,6 +123,7 @@ func benchCompression(b *testing.B, mode websocket.CompressionMode, offer string
 	close(next)
 	<-done
 	wire := float64(ln.written.Load() - start)
+	b.ReportMetric(float64(serverNS.Load())/float64(b.N), "server-ns/frame")
 	b.ReportMetric(wire/float64(b.N), "wire-B/frame")
 	b.ReportMetric(float64(raw)/float64(len(frames))/(wire/float64(b.N)), "ratio")
 }
