@@ -49,8 +49,10 @@ type Event struct {
 	Implausible  bool // position implying an impossible speed from the vessel's last; archived, not emitted
 	Stale        bool // older than the newest event already folded for the vessel; archived, not emitted
 
-	v0Once sync.Once
-	v0     []byte
+	// Each wire format is rendered on first use and shared by every subscriber after that; an event does
+	// not change once it is broadcast.
+	v0Once, v1Once, nmeaOnce sync.Once
+	v0, v1, nmea             []byte
 }
 
 type subscriber struct {
@@ -82,6 +84,7 @@ type Pipeline struct {
 	vmu       sync.RWMutex
 	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu
 	vessels   map[uint32]*vessel
+	cells     map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
 
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
@@ -116,6 +119,7 @@ func newPipeline(arch *archive) *Pipeline {
 		ownOf:   map[string]string{},
 		seen:    map[string]time.Time{},
 		vessels: map[uint32]*vessel{},
+		cells:   map[cellKey]map[uint32]*vessel{},
 		subs:    map[*subscriber]struct{}{},
 	}
 	p.mcp = newMCPService(p)

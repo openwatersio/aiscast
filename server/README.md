@@ -26,7 +26,7 @@ Environment:
 - `PERSONAL_ISSUER_KEY` (`kid:base64url-seed`): lets `POST /v1/keys` mint personal-tier tokens.
 - `REVOKED_SUBS` (comma list).
 - `ALLOW_ANON=1`: no tokens needed, local development only.
-- `SNAPSHOT` (`vessels.json`): the server writes the vessel cache every 10 s and restores it on boot. The rolling 24 h/7 d counters behind `/v1/stats` live in `<name>-usage.json` beside it.
+- `SNAPSHOT` (`vessels.json`): the server writes the vessel cache every minute and on shutdown, and restores it on boot. The rolling 24 h/7 d counters behind `/v1/stats` live in `<name>-usage.json` beside it.
 - `WS_CONNECTS_PER_MIN` (`60` per IP).
 - `STATION_SALT`: keys the UDP station ids. Set it on a public host.
 - `TRUST_CF_HEADERS=1`: use it only when Cloudflare proxies the hostname. It makes rate limits key on `CF-Connecting-IP`.

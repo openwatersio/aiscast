@@ -103,7 +103,7 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 				p.stats.thinned.Add(1)
 				continue
 			}
-			b := []byte(ev.nmeaText())
+			b := ev.renderNMEA()
 			if wsWrite(ctx, c, b) != nil {
 				return
 			}
@@ -136,6 +136,13 @@ func ownShipToVDM(s string) string {
 		b[j+1], b[j+2] = hexDigits[cs>>4], hexDigits[cs&0xf]
 	}
 	return string(b)
+}
+
+// renderNMEA is the event's /v1/nmea frame, rendered once per event on first use; every subscriber then
+// sends the same bytes.
+func (ev *Event) renderNMEA() []byte {
+	ev.nmeaOnce.Do(func() { ev.nmea = []byte(ev.nmeaText()) })
+	return ev.nmea
 }
 
 // nmeaText renders the event's sentences with our TAG block; an incoming TAG block is replaced, the sentence kept.

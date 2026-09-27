@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
@@ -46,6 +47,10 @@ type vessel struct {
 	// them — nil after a restore, and then a reconstruction is synthesized instead.
 	lastPos    *Event
 	lastStatic *Event
+
+	cell    cellKey                // index cell of the position, valid while indexed (index.go)
+	indexed bool                   // filed in the spatial index; true exactly when HasPos
+	feat    atomic.Pointer[[]byte] // encoded GeoJSON Feature, built on first read and cleared on every fold
 }
 
 func newVessel() *vessel {
@@ -156,8 +161,10 @@ func (p *Pipeline) updateVessel(ev *Event) {
 			}
 		}
 	}
+	v.feat.Store(nil) // everything below may change what the Feature shows
 	if hasPos && !stale {
 		v.Lat, v.Lon, v.HasPos, v.PosAt = u.Lat, u.Lon, true, ev.Time
+		p.indexLocked(ev.MMSI, v)
 		v.Cog, v.Sog, v.Heading = u.Cog, u.Sog, u.Heading // sentinels from a position report are real "unknown"s
 		v.lastPos = ev
 		if !ev.LowTrust {
@@ -233,6 +240,7 @@ const vesselSweep = 30 * time.Second
 func (p *Pipeline) sweepLocked(cutoff time.Time) {
 	for mmsi, v := range p.vessels {
 		if v.Seen.Before(cutoff) {
+			p.unindexLocked(mmsi, v)
 			delete(p.vessels, mmsi)
 		}
 	}
@@ -244,59 +252,84 @@ func (p *Pipeline) vesselCount() int {
 	return len(p.vessels)
 }
 
-func (v *vessel) feature(mmsi uint32) map[string]any {
-	props := map[string]any{
-		"mmsi": mmsi, "kind": v.Kind, "seen": v.Seen.UTC().Format(time.RFC3339),
-		"source": v.Source, "station": v.Station, "msg_type": v.MsgType,
-	}
-	if v.Name != "" {
-		props["name"] = v.Name
-	}
-	if v.ShipType != 0 {
-		props["type"] = v.ShipType
+// vesselFeature is the GeoJSON Feature for one vessel. Fields are in alphabetical order so the keys come
+// out sorted, as they do from a map. Pointers carry values whose zero is real (a heading of 0, nav
+// status 0) and whose absence is the AIS "not available" sentinel.
+type vesselFeature struct {
+	Geometry   pointGeometry `json:"geometry"`
+	ID         uint32        `json:"id"`
+	Properties vesselProps   `json:"properties"`
+	Type       string        `json:"type"`
+}
+
+type pointGeometry struct {
+	Coordinates [2]float64 `json:"coordinates"`
+	Type        string     `json:"type"`
+}
+
+type vesselProps struct {
+	Beam        uint16   `json:"beam,omitempty"`
+	CallSign    string   `json:"callsign,omitempty"`
+	Cog         *float64 `json:"cog,omitempty"`
+	Destination string   `json:"destination,omitempty"`
+	Draught     float64  `json:"draught,omitempty"`
+	ETA         string   `json:"eta,omitempty"`
+	Flag        string   `json:"flag,omitempty"`
+	Heading     *uint16  `json:"heading,omitempty"`
+	IMO         uint32   `json:"imo,omitempty"`
+	Kind        string   `json:"kind"`
+	Length      uint16   `json:"length,omitempty"`
+	MMSI        uint32   `json:"mmsi"`
+	MsgType     string   `json:"msg_type"`
+	Name        string   `json:"name,omitempty"`
+	NavStatus   *uint8   `json:"nav_status,omitempty"`
+	Seen        string   `json:"seen"`
+	Sog         *float64 `json:"sog,omitempty"`
+	Source      string   `json:"source"`
+	Station     string   `json:"station"`
+	Type        uint8    `json:"type,omitempty"`
+}
+
+func (v *vessel) feature(mmsi uint32) vesselFeature {
+	props := vesselProps{
+		MMSI: mmsi, Kind: v.Kind, Seen: v.Seen.UTC().Format(time.RFC3339),
+		Source: v.Source, Station: v.Station, MsgType: v.MsgType,
+		Name: v.Name, Type: v.ShipType, Flag: flagOf(mmsi), IMO: v.IMO, CallSign: v.CallSign,
+		Destination: v.Destination, ETA: etaString(v.ETA), Draught: v.Draught, Length: v.Length, Beam: v.Beam,
 	}
 	if v.Cog < 360 {
-		props["cog"] = v.Cog
+		cog := v.Cog
+		props.Cog = &cog
 	}
 	if v.Sog < 102.3 {
-		props["sog"] = v.Sog
+		sog := v.Sog
+		props.Sog = &sog
 	}
 	if v.Heading < 511 {
-		props["heading"] = v.Heading
+		h := v.Heading
+		props.Heading = &h
 	}
 	if v.NavStatus != 15 {
-		props["nav_status"] = v.NavStatus
+		ns := v.NavStatus
+		props.NavStatus = &ns
 	}
-	if f := flagOf(mmsi); f != "" {
-		props["flag"] = f
+	return vesselFeature{
+		Type: "Feature", ID: mmsi,
+		Geometry:   pointGeometry{Type: "Point", Coordinates: [2]float64{v.Lon, v.Lat}},
+		Properties: props,
 	}
-	if v.IMO != 0 {
-		props["imo"] = v.IMO
+}
+
+// featureJSON is the vessel's encoded Feature, built once per fold and shared by every request until the
+// next one. Concurrent readers under the read lock may both build it; they store identical bytes. The
+// returned slice is never modified.
+func (v *vessel) featureJSON(mmsi uint32) []byte {
+	if b := v.feat.Load(); b != nil {
+		return *b
 	}
-	if v.CallSign != "" {
-		props["callsign"] = v.CallSign
-	}
-	if v.Destination != "" {
-		props["destination"] = v.Destination
-	}
-	if eta := etaString(v.ETA); eta != "" {
-		props["eta"] = eta
-	}
-	if v.Draught > 0 {
-		props["draught"] = v.Draught
-	}
-	if v.Length > 0 {
-		props["length"] = v.Length
-	}
-	if v.Beam > 0 {
-		props["beam"] = v.Beam
-	}
-	return map[string]any{
-		"type":       "Feature",
-		"id":         mmsi,
-		"geometry":   map[string]any{"type": "Point", "coordinates": [2]float64{v.Lon, v.Lat}},
-		"properties": props,
-	}
+	b, _ := json.Marshal(v.feature(mmsi))
+	v.feat.Store(&b)
+	return b
 }
 
 // serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b → GeoJSON of current positions.
@@ -313,18 +346,18 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
-	features := []map[string]any{}
+	var features [][]byte
 	attribution := map[string]string{}
 	p.vmu.RLock()
-	for mmsi, v := range p.vessels {
-		if v.HasPos && s.match(&Event{MMSI: mmsi, Lat: v.Lat, Lon: v.Lon, HasPos: true}) {
-			features = append(features, v.feature(mmsi))
+	p.eachMatch(s, func(mmsi uint32, v *vessel) {
+		if v.HasPos {
+			features = append(features, v.featureJSON(mmsi))
 			noteAttribution(attribution, v.Source)
 		}
-	}
+	})
 	p.vmu.RUnlock()
 	w.Header().Set("Content-Type", "application/geo+json")
-	json.NewEncoder(w).Encode(featureCollection(features, attribution))
+	w.Write(append(featureCollection(features, attribution), '\n'))
 }
 
 // noteAttribution records the credit line for the source's kind (its name up to the first `:`).
@@ -334,10 +367,26 @@ func noteAttribution(m map[string]string, source string) {
 	}
 }
 
-// featureCollection assembles a GeoJSON response. attribution is a foreign member (RFC 7946 §6.1): per
-// source kind present in the features, the credit line the consumer must display.
-func featureCollection(features []map[string]any, attribution map[string]string) map[string]any {
-	return map[string]any{"type": "FeatureCollection", "features": features, "attribution": attribution}
+// featureCollection assembles a GeoJSON FeatureCollection from encoded Features. attribution is a foreign
+// member (RFC 7946 §6.1): per source kind present in the features, the credit line the consumer must
+// display. Keys are in sorted order, as encoding/json writes a map's.
+func featureCollection(features [][]byte, attribution map[string]string) []byte {
+	a, _ := json.Marshal(attribution)
+	n := len(a) + 48
+	for _, f := range features {
+		n += len(f) + 1
+	}
+	b := make([]byte, 0, n)
+	b = append(b, `{"attribution":`...)
+	b = append(b, a...)
+	b = append(b, `,"features":[`...)
+	for i, f := range features {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, f...)
+	}
+	return append(b, `],"type":"FeatureCollection"}`...)
 }
 
 // ---- snapshot subscriptions: replay the cache so a new client starts with the vessels already tracked ----
@@ -348,10 +397,7 @@ func (p *Pipeline) snapshotEvents(s *v1Sub) []*Event {
 	var out []*Event
 	p.vmu.RLock()
 	defer p.vmu.RUnlock()
-	for mmsi, v := range p.vessels {
-		if !s.match(&Event{MMSI: mmsi, Lat: v.Lat, Lon: v.Lon, HasPos: v.HasPos}) {
-			continue
-		}
+	p.eachMatch(s, func(mmsi uint32, v *vessel) {
 		if v.lastPos != nil {
 			out = append(out, v.lastPos)
 		} else if v.HasPos {
@@ -362,7 +408,7 @@ func (p *Pipeline) snapshotEvents(s *v1Sub) []*Event {
 		} else if (v.Kind == "vessel" || v.Kind == "sar") && (v.Name != "" || v.ShipType != 0) {
 			out = append(out, v.synthStatic(mmsi))
 		}
-	}
+	})
 	return out
 }
 

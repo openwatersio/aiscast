@@ -177,7 +177,7 @@ func (p *Pipeline) loadSnapshot(path string) (int, error) {
 	p.vmu.Lock()
 	for mmsi, v := range m {
 		if v.Seen.After(cutoff) {
-			p.vessels[mmsi] = v
+			p.putVesselLocked(mmsi, v)
 		}
 	}
 	n := len(p.vessels)

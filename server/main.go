@@ -18,6 +18,11 @@ func env(k, def string) string {
 	return def
 }
 
+// snapshotEvery spaces the vessel cache and usage counter writes. Each vessel snapshot marshals the whole
+// cache, tens of megabytes of JSON. Shutdown writes both files, so a deploy loses nothing. A crash loses
+// at most this much folded state, and the live feeds refill it in about the same time.
+const snapshotEvery = time.Minute
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -83,7 +88,7 @@ func main() {
 	go runUDP(p, env("UDP_ADDR", ":10110"))
 	go p.logStats()
 	go func() {
-		for range time.Tick(10 * time.Second) {
+		for range time.Tick(snapshotEvery) {
 			if err := p.saveSnapshot(snapshot); err != nil {
 				log.Printf("snapshot: %v", err)
 			}
