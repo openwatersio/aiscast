@@ -123,11 +123,8 @@ func main() {
 		if err := p.saveDedupe(dedupe); err != nil {
 			log.Printf("dedupe: %v (the next process may re-accept copies inside the window)", err)
 		}
-		if p.store != nil {
-			if err := p.flushStore(); err != nil {
-				log.Printf("store: %v", err)
-			}
-			p.store.close()
+		if err := p.closeStore(); err != nil {
+			log.Printf("store: %v", err)
 		}
 		os.Exit(0)
 	}()

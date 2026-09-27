@@ -450,3 +450,52 @@ func TestMCPSearchPagesTheRecord(t *testing.T) {
 		t.Errorf("flag and total from the whole record: %q %+v", msg, out)
 	}
 }
+
+// Shutdown closes the record while the once-a-second writer may be mid-flush; run with -race.
+func TestCloseStoreWaitsForTheWriter(t *testing.T) {
+	p := testPipeline(t)
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.attachStore(st)
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() { // the writer, flushing as fast as it can until shutdown is over
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			now := time.Now()
+			p.ingestPacket("kystverket", "kystverket", now, now, posReport(uint32(257000000+i%500), 59.9, 10.7))
+			if err := p.flushStore(); err != nil {
+				t.Errorf("flush raced the close: %v", err)
+				return
+			}
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257999999, 60.1, 11.1))
+	if err := p.closeStore(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond) // the writer keeps flushing after the close, as runStore's ticker would
+	close(stop)
+	<-done
+	if err := p.flushStore(); err != nil {
+		t.Errorf("flush after close: %v", err)
+	}
+
+	again, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.close()
+	if _, ok, err := again.get(257999999); err != nil || !ok {
+		t.Errorf("the vessel folded before shutdown was not written: %v %v", ok, err)
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -114,6 +115,11 @@ type store struct {
 	// read by /metrics
 	flushes, flushFailures, rowsWritten atomic.Int64
 	flushNanos                          atomic.Int64
+
+	// flushMu runs one flush at a time, so the shutdown flush waits for the writer's and none starts
+	// after closed is set.
+	flushMu sync.Mutex
+	closed  bool
 }
 
 func openStore(path string) (*store, error) {
@@ -401,6 +407,35 @@ func (p *Pipeline) flushStore() error {
 	if p.store == nil {
 		return nil
 	}
+	p.store.flushMu.Lock()
+	defer p.store.flushMu.Unlock()
+	if p.store.closed {
+		return nil
+	}
+	return p.flushLocked()
+}
+
+// closeStore writes what is left and closes the record. It waits for a flush already running, and every
+// flush after it does nothing, so the database is never closed under a write.
+func (p *Pipeline) closeStore() error {
+	if p.store == nil {
+		return nil
+	}
+	p.store.flushMu.Lock()
+	defer p.store.flushMu.Unlock()
+	if p.store.closed {
+		return nil
+	}
+	err := p.flushLocked()
+	p.store.closed = true
+	if cerr := p.store.close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// flushLocked is flushStore's work; the caller holds flushMu.
+func (p *Pipeline) flushLocked() error {
 	p.vmu.Lock()
 	if len(p.dirty) == 0 {
 		p.vmu.Unlock()
