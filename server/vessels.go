@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -474,17 +475,27 @@ func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time
 // and the record every second. Then ahead is true and the Feature is the cache merged with the record.
 // The caller holds vmu for reading.
 func (p *Pipeline) newest(rec record) (feature []byte, source string, ahead bool) {
-	c := p.vessels[rec.mmsi]
-	if c != nil && !rec.v.Seen.After(c.Seen) && !rec.v.PosAt.After(c.PosAt) {
-		return c.featureJSON(rec.mmsi), c.Source, false
-	}
-	v := rec.v
-	if c != nil {
-		v = c.state()
-		v.merge(rec.v)
+	v, cached := p.newestState(rec)
+	if cached {
+		return v.featureJSON(rec.mmsi), v.Source, false
 	}
 	b, _ := json.Marshal(v.feature(rec.mmsi))
 	return b, v.Source, true
+}
+
+// newestState is newest's vessel state: the cached vessel itself when it is at least as new as the record,
+// with cached true, else a merged copy. The caller holds vmu for reading and must not modify a cached one.
+func (p *Pipeline) newestState(rec record) (v *vessel, cached bool) {
+	c := p.vessels[rec.mmsi]
+	if c != nil && !rec.v.Seen.After(c.Seen) && !rec.v.PosAt.After(c.PosAt) {
+		return c, true
+	}
+	if c == nil {
+		return rec.v, false
+	}
+	v = c.state()
+	v.merge(rec.v)
+	return v, false
 }
 
 // searchParams are the parameters a search accepts. Search refuses any other, so a filter added later
@@ -519,7 +530,9 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 		http.Error(w, errNoStore.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: searchLimit + 1}
+	// The record is ordered by the seen it stores, and the cache usually runs a second ahead of it, so read
+	// past the cap and order by each vessel's newest seen before cutting.
+	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1}
 	if len(s.mmsi) > 0 {
 		q.mmsis = make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
@@ -535,19 +548,35 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 		http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
 		return
 	}
-	truncated := len(recs) > searchLimit
+	type hit struct {
+		feature []byte
+		source  string
+		seen    time.Time
+	}
+	hits := make([]hit, 0, len(recs))
+	p.vmu.RLock()
+	for _, rec := range recs {
+		v, cached := p.newestState(rec)
+		var f []byte
+		if cached {
+			f = v.featureJSON(rec.mmsi)
+		} else {
+			f, _ = json.Marshal(v.feature(rec.mmsi))
+		}
+		hits = append(hits, hit{f, v.Source, v.Seen})
+	}
+	p.vmu.RUnlock()
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].seen.After(hits[j].seen) })
+	truncated := len(hits) > searchLimit
 	if truncated {
-		recs = recs[:searchLimit]
+		hits = hits[:searchLimit]
 	}
 	var features [][]byte
 	attribution := map[string]string{}
-	p.vmu.RLock()
-	for _, rec := range recs {
-		f, source, _ := p.newest(rec)
-		features = append(features, f)
-		noteAttribution(attribution, source)
+	for _, h := range hits {
+		features = append(features, h.feature)
+		noteAttribution(attribution, h.source)
 	}
-	p.vmu.RUnlock()
 	w.Header().Set("Content-Type", "application/geo+json")
 	w.Write(append(featureCollection(features, attribution, truncated), '\n'))
 }
@@ -599,9 +628,14 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 		notFound()
 		return
 	}
+	// In the second before a vessel's first write the record has no row yet. That write will store the
+	// vessel's seen as its first_seen, so answer with that now rather than leave the field out.
+	if first.IsZero() && p.store != nil {
+		first = cur.Seen
+	}
 	f := cur.feature(mmsi)
 	if !first.IsZero() {
-		f.Properties.FirstSeen = first.Format(time.RFC3339)
+		f.Properties.FirstSeen = first.UTC().Format(time.RFC3339)
 	}
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an

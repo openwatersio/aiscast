@@ -649,21 +649,22 @@ func (p *Pipeline) mcpSearchByName(ctx context.Context, _ *mcp.CallToolRequest, 
 		box = &b
 	}
 	now := time.Now()
-	rows := p.mcpCollect(now, func(m uint32, v *vessel) bool {
-		if !strings.Contains(strings.ToUpper(v.Name), q) || (flag != "" && flagOf(m) != flag) {
-			return false
-		}
-		return box == nil || (v.HasPos && box.contains(v.Lat, v.Lon))
-	})
-	// Sorted as the record's search column is, so the first limit rows by name from the record, with the
-	// cache's rows, hold the first limit rows of both together.
+	// Sorted as the record's search column is, so a page read from the record keeps its order.
 	byName := func(a, b *mcpVessel) bool {
 		an, bn := strings.ToUpper(strings.TrimSpace(a.Name)), strings.ToUpper(strings.TrimSpace(b.Name))
 		return an < bn || (an == bn && a.MMSI < b.MMSI)
 	}
 	if p.store == nil {
+		rows := p.mcpCollect(now, func(m uint32, v *vessel) bool {
+			if !strings.Contains(strings.ToUpper(v.Name), q) || (flag != "" && flagOf(m) != flag) {
+				return false
+			}
+			return box == nil || (v.HasPos && box.contains(v.Lat, v.Lon))
+		})
 		return nil, mcpPage(rows, byName, limit), nil
 	}
+	// With the record, it answers alone: it holds every vessel the cache does, give or take the last
+	// second's first reports, and each row is merged with the cache so the newer state wins.
 	rq := recordQuery{contains: q, flag: flag, byName: true, limit: limit}
 	if box != nil {
 		rq.boxes, rq.hasPos = []bbox{*box}, true
@@ -677,20 +678,20 @@ func (p *Pipeline) mcpSearchByName(ctx context.Context, _ *mcp.CallToolRequest, 
 		log.Printf("store: %v", err)
 		return nil, mcpVessels{}, errMCPRecord
 	}
-	have := make(map[uint32]bool, len(rows))
-	for _, r := range rows {
-		have[r.MMSI] = true
-	}
+	var rows []mcpVessel
+	p.vmu.RLock()
 	for _, rec := range recs {
-		if !have[rec.mmsi] {
-			rows = append(rows, mcpRow(rec.mmsi, rec.v, now))
+		v, _ := p.newestState(rec)
+		if box != nil && !box.contains(v.Lat, v.Lon) {
+			total-- // the vessel has moved out of the box since the record was written
+			continue
 		}
+		rows = append(rows, mcpRow(rec.mmsi, v, now))
 	}
+	p.vmu.RUnlock()
 	out := mcpPage(rows, byName, limit)
-	// The record holds every vessel the cache does, give or take the last second's folds.
-	if total > out.Total {
-		out.Total, out.Truncated = total, total > len(out.Vessels)
-	}
+	out.Total = max(total, out.Total)
+	out.Truncated = out.Total > len(out.Vessels)
 	return nil, out, nil
 }
 

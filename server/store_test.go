@@ -411,6 +411,10 @@ func TestLookupPrefersTheNewerState(t *testing.T) {
 		}
 	}
 	var out mcpVessels
+	if msg := mcpCall(t, mcpClient(t, p), "search_vessels_by_name", map[string]any{"name": "nordic"}, &out); msg != "" ||
+		len(out.Vessels) != 1 || *out.Vessels[0].Lat < 59.89 {
+		t.Errorf("search_vessels_by_name returned the older cached state: %q %+v", msg, out.Vessels)
+	}
 	if msg := mcpCall(t, mcpClient(t, p), "get_vessels", map[string]any{"mmsi": []uint32{257000001}}, &out); msg != "" ||
 		len(out.Vessels) != 1 || *out.Vessels[0].Lat < 59.89 || out.Vessels[0].AgeS > 30 {
 		t.Errorf("get_vessels returned the older cached state: %q %+v", msg, out.Vessels)
@@ -497,5 +501,35 @@ func TestCloseStoreWaitsForTheWriter(t *testing.T) {
 	defer again.close()
 	if _, ok, err := again.get(257999999); err != nil || !ok {
 		t.Errorf("the vessel folded before shutdown was not written: %v %v", ok, err)
+	}
+}
+
+// The record orders a search by the seen it stored, and the cache runs up to a second ahead of it.
+func TestSearchOrdersByTheNewestSeen(t *testing.T) {
+	p := storePipeline(t)
+	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 10*time.Minute)
+	heardAgo(p, 257000003, "NORDIC SEA", 59.8, 10.5, 5*time.Minute)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 59.91, 10.71)) // not yet flushed
+	if got := ids(getFC(t, p, "/v1/vessels?q=nordic")); len(got) != 2 || got[0] != 257000001 {
+		t.Errorf("newest first by the cache's seen: %v", got)
+	}
+}
+
+func TestFirstSeenBeforeTheFirstWrite(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 59.9, 10.7)) // not yet flushed
+	var f struct {
+		Properties map[string]any `json:"properties"`
+	}
+	json.Unmarshal(get(t, p, "/v1/vessels/257000001").Body.Bytes(), &f)
+	if f.Properties["first_seen"] == nil || f.Properties["first_seen"] != f.Properties["seen"] {
+		t.Errorf("first_seen before the first write: %v", f.Properties)
+	}
+	mustFlush(t, p)
+	json.Unmarshal(get(t, p, "/v1/vessels/257000001").Body.Bytes(), &f)
+	if f.Properties["first_seen"] != f.Properties["seen"] {
+		t.Errorf("first_seen after the write changed: %v", f.Properties)
 	}
 }
