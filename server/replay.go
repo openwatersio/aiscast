@@ -93,9 +93,14 @@ func failOn(r *rawReader) {
 // dispatch feeds one archived reception to the adapter that consumed it live. Only /v1/receive
 // parses AIS-catcher envelopes, archiving under http: (before station ids) or station:; UDP (udp:,
 // and mmsi: for a UDP sender named by its own ship) and /v1 publish (v1: before station ids) only
-// ever take lines.
+// ever take lines. A /v1 publish line under station: carries the published mark; an unmarked
+// station: record predates it and falls back to parsing.
 func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) error {
 	switch {
+	case rx.Published:
+		// a /v1 publish line, even one whose body would parse as a catcher envelope: live fed it to
+		// the NMEA parser, so replay must too
+		p.ingestLine(rx)
 	case source == "barentswatch":
 		p.barentswatchLine([]byte(rx.Body), rx.RecvTime)
 	case source == "digitraffic":
@@ -219,8 +224,9 @@ func (r *rawReader) next() bool {
 				return false
 			}
 			station, buffered := strings.CutSuffix(station, bufferedMark)
+			station, published := strings.CutSuffix(station, publishedMark)
 			done := r.pend
-			r.pend = &Reception{Source: r.source, Station: station, RecvTime: recv, Body: body, Buffered: buffered}
+			r.pend = &Reception{Source: r.source, Station: station, RecvTime: recv, Body: body, Buffered: buffered, Published: published}
 			if done != nil && r.emit(done) {
 				return true
 			}

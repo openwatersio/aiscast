@@ -165,6 +165,11 @@ func (a *archive) run() {
 // ids never contain a space, so the mark cannot collide with one.
 const bufferedMark = " buffered"
 
+// publishedMark follows the station of a line published over /v1/stream. Envelopes posted to
+// /v1/receive archive under the same station:<sub> source, and only the mark tells replay which
+// transport a record arrived on. When both marks apply, publishedMark comes first.
+const publishedMark = " published"
+
 // hourGrace is how long past its end an hour stays open. Receptions from two hours interleave near
 // a boundary: AISHub stamps every row of a snapshot with its fetch time and paces them over most of a
 // minute, so a snapshot fetched just before the hour writes into the previous hour while every other
@@ -195,6 +200,9 @@ func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 		ioFatal(err)
 	} else {
 		station := rx.Station
+		if rx.Published {
+			station += publishedMark // replay needs it to take the body as a line, as live did
+		}
 		if rx.Buffered {
 			station += bufferedMark // replay needs it to suppress the same stale backlog live did
 		}
