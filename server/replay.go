@@ -56,7 +56,7 @@ func runReplay(args []string) {
 			failOn(r)
 		}
 	}
-	st := &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}}
+	st := newAishubState()
 	var n int64
 	for h.Len() > 0 {
 		r := (*h)[0]
