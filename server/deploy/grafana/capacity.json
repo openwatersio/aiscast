@@ -38,6 +38,30 @@
         "expr": "changes(process_start_time_seconds{job=\"aiscast\"}[2m]) > 0",
         "step": "60s",
         "titleFormat": "aiscast restarted"
+      },
+      {
+        "name": "deploys",
+        "enable": true,
+        "iconColor": "green",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "step": "60s",
+        "expr": "aiscast_build_info unless aiscast_build_info offset 2m",
+        "titleFormat": "deploy {{revision}}"
+      },
+      {
+        "name": "crashes",
+        "enable": true,
+        "iconColor": "red",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "step": "60s",
+        "expr": "increase(node_systemd_service_restart_total{name=~\"(aiscast|caddy|alloy)\\\\.service\"}[2m]) > 0",
+        "titleFormat": "{{name}} crashed"
       }
     ]
   },

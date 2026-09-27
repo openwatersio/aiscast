@@ -198,13 +198,29 @@ groups:
           summary: '{{ $value | humanizePercentage }} of the root disk is free'
           description: An archive backlog, or the journal cap slipped.
 
-      # A deploy restarts aiscast once, so a second start inside the hour is a crash.
-      - alert: AiscastRestarting
-        expr: changes(process_start_time_seconds{job="aiscast"}[1h]) > 1
+      # systemd counts only the restarts it makes because a process exited on its own (Restart=always after
+      # a crash, panic, or OOM kill). Deploys and manual restarts go through systemctl and never count.
+      - alert: ServiceCrashed
+        expr: increase(node_systemd_service_restart_total{name=~"(aiscast|caddy|alloy)\\.service"}[10m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: '{{ $labels.name }} crashed and systemd restarted it'
+          description: Not a deploy or a manual restart. Check journalctl -u {{ $labels.name }} for the exit.
+      # A backstop that does not depend on the systemd collector: any kind of start, more often than deploys
+      # and manual restarts happen together.
+      - alert: AiscastRestartStorm
+        expr: changes(process_start_time_seconds{job="aiscast"}[1h]) > 3
         labels: {severity: warning}
         annotations:
-          summary: aiscast restarted {{ $value }} times in the last hour
-          description: A crash loop. Check journalctl -u aiscast.
+          summary: aiscast started {{ $value }} times in the last hour
+          description: More starts than deploys explain. Check journalctl -u aiscast and the deploy runs.
+      - alert: CrashDetectionMissing
+        expr: absent(node_systemd_service_restart_total{name="aiscast.service"})
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: The systemd restart counter for aiscast is missing
+          description: ServiceCrashed cannot fire without it. Check that Alloy's systemd collector can reach D-Bus.
 
       # Every rule above reads nothing when the samples stop, so their silence needs its own alert.
       - alert: MetricsMissing
