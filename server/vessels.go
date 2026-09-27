@@ -3,10 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BertoldVdb/go-ais"
 )
@@ -26,6 +31,7 @@ type vessel struct {
 	NavStatus uint8
 	ShipType  uint8  // ITU ship/cargo type code; AtoN type for aids
 	Kind      string // vessel | aton | base | sar
+	Class     string // A or B from the position report types, the truthful class signal; empty until one is heard
 	// Static particulars from type 5 and 24 messages, zero or empty until heard. Length and beam come
 	// from the dimension fields (reference point to bow plus to stern, port plus starboard).
 	IMO         uint32
@@ -64,13 +70,13 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	var hasPos, isStatic bool
 	switch m := ev.Packet.(type) {
 	case ais.PositionReport:
-		u.Lat, u.Lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
+		u.Lat, u.Lon, hasPos, u.Class = float64(m.Latitude), float64(m.Longitude), true, "A"
 		u.Cog, u.Sog, u.Heading, u.NavStatus = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.NavigationalStatus
 	case ais.StandardClassBPositionReport:
-		u.Lat, u.Lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
+		u.Lat, u.Lon, hasPos, u.Class = float64(m.Latitude), float64(m.Longitude), true, "B"
 		u.Cog, u.Sog, u.Heading = float64(m.Cog), float64(m.Sog), m.TrueHeading
 	case ais.ExtendedClassBPositionReport:
-		u.Lat, u.Lon, hasPos, u.Name = float64(m.Latitude), float64(m.Longitude), true, m.Name
+		u.Lat, u.Lon, hasPos, u.Name, u.Class = float64(m.Latitude), float64(m.Longitude), true, m.Name, "B"
 		u.Cog, u.Sog, u.Heading, u.ShipType = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.Type
 		u.Length, u.Beam = dimensions(m.Dimension)
 	case ais.LongRangeAisBroadcastMessage:
@@ -184,6 +190,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if u.Kind != "vessel" {
 		v.Kind = u.Kind
 	}
+	if u.Class != "" {
+		v.Class = u.Class
+	}
 	// Particulars are folded like the name: whenever present, stale or not, since they do not move.
 	if u.IMO != 0 {
 		v.IMO = u.IMO
@@ -220,6 +229,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	ev.Name, ev.Lat, ev.Lon, ev.HasPos = v.Name, v.Lat, v.Lon, v.HasPos
 	if stale && hasPos { // the event still carries its own position; only the cache ignores it
 		ev.Lat, ev.Lon = u.Lat, u.Lon
+	}
+	if p.dirty != nil {
+		p.dirty[ev.MMSI] = struct{}{}
 	}
 	p.vmu.Unlock()
 }
@@ -274,6 +286,7 @@ type vesselProps struct {
 	Destination string   `json:"destination,omitempty"`
 	Draught     float64  `json:"draught,omitempty"`
 	ETA         string   `json:"eta,omitempty"`
+	FirstSeen   string   `json:"first_seen,omitempty"` // from the record, on /v1/vessels/{mmsi} only
 	Flag        string   `json:"flag,omitempty"`
 	Heading     *uint16  `json:"heading,omitempty"`
 	IMO         uint32   `json:"imo,omitempty"`
@@ -332,8 +345,19 @@ func (v *vessel) featureJSON(mmsi uint32) []byte {
 	return b
 }
 
-// serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b → GeoJSON of current positions.
-// The filters, the token, and the area and MMSI caps are exactly those of /v1/stream.
+// recordLimit caps the vessels a /v1/vessels answer takes from the record for a box past the cache's 30
+// minutes. The area cap bounds an answer from the cache, since a box holds only so many vessels at once.
+// Over all time the same box holds far more.
+var recordLimit = 500
+
+// searchLimit caps a search answer. A person picks from a short list, and a short prefix matches thousands.
+const searchLimit = 50
+
+// serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b&max_age= → GeoJSON of vessel
+// positions. The filters, the token, and the area and MMSI caps are exactly those of /v1/stream. A box
+// answers from the cache: vessels heard in the last 30 minutes, or further back when max_age asks. A
+// followed MMSI answers with its last known position however old, unless max_age says otherwise. ?q=
+// searches instead (serveVesselSearch).
 func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	cl, err := p.requestClaims(r)
@@ -341,23 +365,282 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	s, msg := parseSSESub(r, cl)
+	vals := r.URL.Query()
+	if vals.Has("q") {
+		p.serveVesselSearch(w, vals, cl)
+		return
+	}
+	s, msg := parseSub(vals, cl, true)
+	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
+	if msg == "" {
+		msg = ageMsg
+	}
 	if msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
+	}
+	now := time.Now()
+	var cutoff time.Time // zero: no age limit beyond what the cache holds
+	if set {
+		cutoff = ageCutoff(now, age)
+	}
+	deep := set && age > vesselTTL && (len(s.boxes) > 0 || s.everything)
+	var emitted map[uint32]bool
+	if p.store != nil && (len(s.mmsi) > 0 || deep) {
+		emitted = map[uint32]bool{}
 	}
 	var features [][]byte
 	attribution := map[string]string{}
 	p.vmu.RLock()
 	p.eachMatch(s, func(mmsi uint32, v *vessel) {
-		if v.HasPos {
+		if v.HasPos && !v.Seen.Before(cutoff) {
 			features = append(features, v.featureJSON(mmsi))
 			noteAttribution(attribution, v.Source)
+			if emitted != nil {
+				emitted[mmsi] = true
+			}
 		}
 	})
 	p.vmu.RUnlock()
+	truncated := false
+	if emitted != nil {
+		recs, more, err := p.recordVessels(s, cutoff, deep, now, emitted)
+		if err != nil {
+			log.Printf("store: %v", err)
+			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
+			return
+		}
+		for _, rec := range recs {
+			features = append(features, rec.featureJSON())
+			noteAttribution(attribution, rec.v.Source)
+		}
+		truncated = more
+	}
 	w.Header().Set("Content-Type", "application/geo+json")
-	w.Write(append(featureCollection(features, attribution), '\n'))
+	w.Write(append(featureCollection(features, attribution, truncated), '\n'))
+}
+
+// recordVessels adds what the cache cannot answer: followed vessels it no longer holds with a position,
+// and, for a deep request, vessels last heard inside the boxes more than 30 minutes ago. more reports that
+// the box query stopped at recordLimit.
+func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time.Time, emitted map[uint32]bool) (_ []record, more bool, _ error) {
+	var recs []record
+	if len(s.mmsi) > 0 {
+		var missing []uint32
+		for m := range s.mmsi {
+			if !emitted[m] {
+				missing = append(missing, m)
+			}
+		}
+		if len(missing) > 0 {
+			rs, err := p.store.find(recordQuery{mmsis: missing, since: cutoff, hasPos: true})
+			if err != nil {
+				return nil, false, err
+			}
+			recs = append(recs, rs...)
+		}
+	}
+	if deep {
+		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: cutoff, before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1})
+		if err != nil {
+			return nil, false, err
+		}
+		if len(rs) > recordLimit {
+			rs, more = rs[:recordLimit], true
+		}
+		recs = append(recs, rs...)
+	}
+	// A vessel the cache holds with a position is the cache's to answer: it was either in this answer
+	// already or is somewhere the request did not ask about.
+	out, taken := recs[:0], map[uint32]bool{}
+	p.vmu.RLock()
+	for _, rec := range recs {
+		m := rec.mmsi
+		if emitted[m] || taken[m] {
+			continue
+		}
+		if v := p.vessels[m]; v != nil && v.HasPos {
+			continue
+		}
+		taken[m] = true
+		out = append(out, rec)
+	}
+	p.vmu.RUnlock()
+	return out, more, nil
+}
+
+// searchParams are the parameters a search accepts. Search refuses any other, so a filter added later
+// never changes an answer an older client already received. The rest of /v1/vessels ignores unknown
+// parameters, as it always has.
+var searchParams = map[string]bool{"q": true, "bbox": true, "mmsi": true, "max_age": true, "key": true}
+
+// serveVesselSearch: GET /v1/vessels?q= → vessels whose name starts with q, or whose MMSI does when q is
+// digits, most recently heard first, from the record. bbox, mmsi, and max_age narrow it.
+func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl *Claims) {
+	for k := range vals {
+		if !searchParams[k] {
+			http.Error(w, "unknown parameter "+k, http.StatusBadRequest)
+			return
+		}
+	}
+	text := strings.TrimSpace(vals.Get("q"))
+	if utf8.RuneCountInString(text) < 2 {
+		http.Error(w, "q needs at least 2 characters", http.StatusBadRequest)
+		return
+	}
+	s, msg := parseSub(vals, cl, false)
+	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
+	if msg == "" {
+		msg = ageMsg
+	}
+	if msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	if p.store == nil {
+		http.Error(w, errNoStore.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: searchLimit + 1}
+	if len(s.mmsi) > 0 {
+		q.mmsis = make([]uint32, 0, len(s.mmsi))
+		for m := range s.mmsi {
+			q.mmsis = append(q.mmsis, m)
+		}
+	}
+	if set {
+		q.since = ageCutoff(time.Now(), age)
+	}
+	recs, err := p.store.find(q)
+	if err != nil {
+		log.Printf("store: %v", err)
+		http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
+		return
+	}
+	truncated := len(recs) > searchLimit
+	if truncated {
+		recs = recs[:searchLimit]
+	}
+	var features [][]byte
+	attribution := map[string]string{}
+	p.vmu.RLock()
+	for _, rec := range recs {
+		// the cache is up to a second ahead of the record
+		if v := p.vessels[rec.mmsi]; v != nil && v.HasPos {
+			features = append(features, v.featureJSON(rec.mmsi))
+			noteAttribution(attribution, v.Source)
+			continue
+		}
+		features = append(features, rec.featureJSON())
+		noteAttribution(attribution, rec.v.Source)
+	}
+	p.vmu.RUnlock()
+	w.Header().Set("Content-Type", "application/geo+json")
+	w.Write(append(featureCollection(features, attribution, truncated), '\n'))
+}
+
+// serveVessel: GET /v1/vessels/{mmsi} → one vessel's last known state as a GeoJSON Feature, from the cache
+// completed by the record, or from the record alone for a vessel the cache no longer holds. geometry is
+// null for a vessel whose position was never heard. An unknown vessel is a 404.
+func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if _, err := p.requestClaims(r); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	n, err := strconv.ParseUint(r.PathValue("mmsi"), 10, 32)
+	if err != nil {
+		http.Error(w, "mmsi must be a number", http.StatusBadRequest)
+		return
+	}
+	mmsi := uint32(n)
+	notFound := func() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound) // not http.Error: that would override the JSON Content-Type
+		json.NewEncoder(w).Encode(map[string]string{"error": "unknown vessel"})
+	}
+	var cur *vessel
+	p.vmu.RLock()
+	if v := p.vessels[mmsi]; v != nil {
+		cur = v.state()
+	}
+	p.vmu.RUnlock()
+	var first time.Time
+	if p.store != nil {
+		rec, ok, err := p.store.get(mmsi)
+		if err != nil {
+			log.Printf("store: %v", err)
+			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
+			return
+		}
+		if ok {
+			first = rec.firstSeen
+			if cur == nil {
+				cur = rec.v
+			} else {
+				cur.fillFrom(rec.v)
+			}
+		}
+	}
+	if cur == nil {
+		notFound()
+		return
+	}
+	f := cur.feature(mmsi)
+	if !first.IsZero() {
+		f.Properties.FirstSeen = first.Format(time.RFC3339)
+	}
+	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
+	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
+	// allocation.
+	out := struct {
+		Attribution map[string]string `json:"attribution"`
+		Geometry    *pointGeometry    `json:"geometry"`
+		ID          uint32            `json:"id"`
+		Properties  vesselProps       `json:"properties"`
+		Type        string            `json:"type"`
+	}{Attribution: map[string]string{}, ID: f.ID, Properties: f.Properties, Type: f.Type}
+	if cur.HasPos {
+		out.Geometry = &f.Geometry
+	}
+	noteAttribution(out.Attribution, cur.Source)
+	w.Header().Set("Content-Type", "application/geo+json")
+	json.NewEncoder(w).Encode(out)
+}
+
+// featureJSON encodes a record as the same Feature the cache serves.
+func (r record) featureJSON() []byte {
+	b, _ := json.Marshal(r.v.feature(r.mmsi))
+	return b
+}
+
+// ageAll is max_age=all: no age limit at all.
+const ageAll = time.Duration(math.MaxInt64)
+
+// parseMaxAge reads max_age: whole seconds, a duration such as 90m or 24h, or all. set is false when the
+// parameter is absent.
+func parseMaxAge(s string) (age time.Duration, set bool, msg string) {
+	if s == "" {
+		return 0, false, ""
+	}
+	if s == "all" {
+		return ageAll, true, ""
+	}
+	if n, err := strconv.ParseUint(s, 10, 32); err == nil && n > 0 {
+		return time.Duration(n) * time.Second, true, ""
+	}
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d, true, ""
+	}
+	return 0, false, "max_age=<seconds>, a duration such as 24h, or all"
+}
+
+// ageCutoff is the oldest seen time an age admits; zero, which admits everything, for ageAll.
+func ageCutoff(now time.Time, age time.Duration) time.Time {
+	if age == ageAll {
+		return time.Time{}
+	}
+	return now.Add(-age)
 }
 
 // noteAttribution records the credit line for the source's kind (its name up to the first `:`).
@@ -369,8 +652,9 @@ func noteAttribution(m map[string]string, source string) {
 
 // featureCollection assembles a GeoJSON FeatureCollection from encoded Features. attribution is a foreign
 // member (RFC 7946 §6.1): per source kind present in the features, the credit line the consumer must
-// display. Keys are in sorted order, as encoding/json writes a map's.
-func featureCollection(features [][]byte, attribution map[string]string) []byte {
+// display. truncated, another, is present when a cap cut the list. Keys are in sorted order, as
+// encoding/json writes a map's.
+func featureCollection(features [][]byte, attribution map[string]string, truncated bool) []byte {
 	a, _ := json.Marshal(attribution)
 	n := len(a) + 48
 	for _, f := range features {
@@ -386,7 +670,11 @@ func featureCollection(features [][]byte, attribution map[string]string) []byte 
 		}
 		b = append(b, f...)
 	}
-	return append(b, `],"type":"FeatureCollection"}`...)
+	b = append(b, ']')
+	if truncated {
+		b = append(b, `,"truncated":true`...)
+	}
+	return append(b, `,"type":"FeatureCollection"}`...)
 }
 
 // ---- snapshot subscriptions: replay the cache so a new client starts with the vessels already tracked ----

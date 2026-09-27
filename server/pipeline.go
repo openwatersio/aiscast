@@ -86,6 +86,8 @@ type Pipeline struct {
 	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu
 	vessels   map[uint32]*vessel
 	cells     map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
+	dirty     map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
+	store     *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
 
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}

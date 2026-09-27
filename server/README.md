@@ -27,6 +27,7 @@ Environment:
 - `REVOKED_SUBS` (comma list).
 - `ALLOW_ANON=1`: no tokens needed, local development only.
 - `SNAPSHOT` (`vessels.json`): the server writes the vessel cache every minute and on shutdown, and restores it on boot. The rolling 24 h/7 d counters behind `/v1/stats` live in `<name>-usage.json` beside it.
+- `STORE` (`aiscast.db`): the vessel record, in SQLite. `off` runs without it. See [Vessel record](#vessel-record).
 - `WS_CONNECTS_PER_MIN` (`60` per IP).
 - `STATION_SALT`: keys the UDP station ids. Set it on a public host.
 - `TRUST_CF_HEADERS=1`: use it only when Cloudflare proxies the hostname. It makes rate limits key on `CF-Connecting-IP`.
@@ -64,3 +65,11 @@ Sources:
 Volunteer stations feed over `/v1/stream` as MQTT (a socket that negotiates the `mqtt` subprotocol gets a receive-only MQTT 3.1.1 session: the token is the CONNECT password or the request's, each PUBLISH payload is newline-separated NMEA on any topic, QoS 0 to 2 acknowledged, SUBSCRIBE refused), `/v1/receive` (AIS-catcher HTTP output), or `/v1/stream` publish frames. All three name the station by the token's `sub` alone, `station:<sub>`, so a feeder can switch transports without changing identity. UDP senders are `udp:<hash>`, or `mmsi:<n>` once their own `!AIVDO` names the vessel.
 
 Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received. A station followed by ` buffered` marks a sender's offline backlog, which live withheld from the stream when stale and replay withholds the same way. A station followed by ` published` marks a line published over `/v1/stream`, which replay feeds to the NMEA parser rather than trying as an AIS-catcher envelope. A record can carry both marks, ` published` first.
+
+## Vessel record
+
+The cache drops a vessel 30 minutes after its last report. The vessel record keeps one row per MMSI ever heard, with its particulars and last known position, in the SQLite file `STORE` names. It answers what the cache cannot: `GET /v1/vessels/{mmsi}` for any vessel ever heard, a followed MMSI's last position on `/v1/vessels?mmsi=`, `/v1/vessels?bbox=&max_age=` past 30 minutes, the `?q=` search, and the MCP `get_vessels` and `search_vessels_by_name` tools.
+
+The fold marks each vessel it updates, and a writer upserts the marked vessels once a second in one transaction, so the fold never waits on the disk. The upsert merges with the fold's rules: a vessel that returns after the cache dropped it arrives without its name or position, and a blank field keeps the stored value. On boot every vessel in the snapshot is written, which seeds an empty record. `aiscast replay` never attaches the record, so a replayed day cannot overwrite a live position. A record that will not open leaves the server running without it, and `aiscast_store_up` drops to 0.
+
+`/metrics` reports `aiscast_store_up`, flushes, flush failures and seconds, rows written, and the file size.

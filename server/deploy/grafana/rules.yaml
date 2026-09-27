@@ -183,6 +183,29 @@ groups:
           summary: '{{ $value | humanize1024 }}B of archive waiting on disk'
           description: R2 uploads are failing. Check the credentials and the archive sweep lines in journalctl -u aiscast.
 
+      # The vessel record answers lookups past the cache's 30 minutes.
+      - alert: StoreDown
+        expr: aiscast_store_up == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: aiscast is running without the vessel record
+          description: Lookups past 30 minutes and search fail. Check the store lines in journalctl -u aiscast and /var/lib/aiscast/aiscast.db.
+      - alert: StoreWritesFailing
+        expr: increase(aiscast_store_flush_failures_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | printf "%.0f" }} vessel record writes failed in 10 minutes'
+          description: The record is falling behind the cache. Check the store lines in journalctl -u aiscast and free disk.
+      # The writer runs once a second, so the rate of its seconds is the share of each second it spends writing.
+      - alert: StoreWritesSlow
+        expr: rate(aiscast_store_flush_seconds_total[15m]) > 0.5
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: Vessel record writes take {{ $value | humanizePercentage }} of each second
+          description: The writer is near its budget. Check disk latency and the record's size on the capacity dashboard.
+
       - alert: DiskFreeLow
         expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.2
         for: 10m

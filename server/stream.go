@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -632,8 +633,14 @@ func welcomeFor(cl *Claims, canPublish bool) v1Welcome {
 // /v1/vessels. Malformed input is refused rather than dropped: on a connection held open for hours a typo'd
 // mmsi is indistinguishable from a subscription that legitimately never matches.
 func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
+	return parseSub(r.URL.Query(), cl, true)
+}
+
+// parseSub reads bbox and mmsi from a query string and checks them against the claims. needFilter refuses
+// a request with neither from a key with an area limit; a search, capped by its own row limit, passes false.
+func parseSub(vals url.Values, cl *Claims, needFilter bool) (*v1Sub, string) {
 	s := &v1Sub{}
-	for _, q := range r.URL.Query()["bbox"] {
+	for _, q := range vals["bbox"] {
 		var v [4]float64
 		if n, _ := fmt.Sscanf(q, "%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3]); n != 4 {
 			return nil, "bbox=minLat,minLon,maxLat,maxLon"
@@ -649,7 +656,7 @@ func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
 		}
 		s.boxes = append(s.boxes, b)
 	}
-	if q := r.URL.Query().Get("mmsi"); q != "" {
+	if q := vals.Get("mmsi"); q != "" {
 		s.mmsi = map[uint32]bool{}
 		for _, f := range strings.Split(q, ",") {
 			n, err := strconv.ParseUint(strings.TrimSpace(f), 10, 32)
@@ -660,7 +667,7 @@ func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
 		}
 	}
 	s.everything = len(s.boxes) == 0 && len(s.mmsi) == 0
-	if s.everything && cl.Area != 0 {
+	if s.everything && cl.Area != 0 && needFilter {
 		return nil, "bbox or mmsi required for this key"
 	}
 	if !cl.allowsArea(s.boxes) {

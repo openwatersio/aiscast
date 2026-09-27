@@ -232,7 +232,7 @@ func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		p.vmu.RUnlock()
-		json.NewEncoder(w).Encode(map[string]any{"station": row, "vessels": json.RawMessage(featureCollection(features, attribution))})
+		json.NewEncoder(w).Encode(map[string]any{"station": row, "vessels": json.RawMessage(featureCollection(features, attribution, false))})
 		return
 	}
 	w.WriteHeader(http.StatusNotFound) // not http.Error: that would override the JSON Content-Type set above

@@ -26,16 +26,32 @@
       "get": {
         "operationId": "getVessels",
         "tags": ["Vessels and stations"],
-        "summary": "Current vessels",
-        "description": "Every vessel with a position heard in the last 30 minutes, as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.",
+        "summary": "Vessels",
+        "description": "Vessel positions as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.\n\nAn area answers with the vessels heard in it in the last 30 minutes. `max_age` reaches further back, to the vessels last heard in the area within that age; past 30 minutes the answer takes at most 500 of those, newest first, and sets `truncated` when there were more. A vessel named in `mmsi` answers with its last known position however long ago it was heard, unless `max_age` is given. Every feature carries `seen`, so an old position reads as where the vessel was.\n\n`q` searches instead: vessels whose name starts with it, or whose MMSI does when it is digits, most recently heard first, at most 50. `bbox`, `mmsi`, and `max_age` narrow a search, and it needs neither. A search refuses parameters it does not know, so a filter added later never changes an earlier answer.",
         "security": [{}, { "token": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/bbox" },
-          { "$ref": "#/components/parameters/mmsi" }
+          { "$ref": "#/components/parameters/mmsi" },
+          {
+            "name": "max_age",
+            "in": "query",
+            "required": false,
+            "description": "Oldest last report to include: whole seconds, a duration such as `90m` or `24h`, or `all`. Defaults to 30 minutes for an area and to `all` for vessels named in `mmsi`.",
+            "schema": { "type": "string" },
+            "example": "24h"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Search: a name prefix, case-insensitive, or an MMSI prefix when all digits. At least 2 characters.",
+            "schema": { "type": "string", "minLength": 2 },
+            "example": "CERUL"
+          }
         ],
         "responses": {
           "200": {
-            "description": "GeoJSON FeatureCollection of current positions.",
+            "description": "GeoJSON FeatureCollection of vessel positions.",
             "content": {
               "application/geo+json": {
                 "schema": { "$ref": "#/components/schemas/FeatureCollection" },
@@ -69,6 +85,61 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": {
+            "description": "A search on a server running without the vessel record.",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/v1/vessels/{mmsi}": {
+      "get": {
+        "operationId": "getVessel",
+        "tags": ["Vessels and stations"],
+        "summary": "One vessel",
+        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is when the vessel record first held it. `attribution` carries the credit line for the source of its last message.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          {
+            "name": "mmsi",
+            "in": "path",
+            "required": true,
+            "description": "The vessel's MMSI.",
+            "schema": { "type": "integer" },
+            "example": 368168720
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The vessel.",
+            "content": {
+              "application/geo+json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/VesselFeature" },
+                    {
+                      "type": "object",
+                      "required": ["attribution"],
+                      "properties": {
+                        "attribution": {
+                          "type": "object",
+                          "description": "Credit line for the source kind of the vessel's last message, keyed as in a FeatureCollection.",
+                          "additionalProperties": { "type": "string" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "No vessel with this MMSI has been heard.",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
+          },
           "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
@@ -411,18 +482,20 @@
             "type": "object",
             "description": "Credit lines to display, one per source kind present in the features. The key is a feature's `source` value up to the first `:`. Every credit opens with \"Open Waters AIS (https://openwaters.io/ais/)\"; sources with their own terms add their credit after it.",
             "additionalProperties": { "type": "string" }
-          }
+          },
+          "truncated": { "type": "boolean", "const": true, "description": "Present when a cap cut the list: a search past 50 matches, or an area past 500 vessels older than 30 minutes." }
         }
       },
       "VesselFeature": {
         "type": "object",
-        "description": "One vessel with a known position, seen within the last 30 minutes.",
+        "description": "One vessel and its last known position.",
         "required": ["type", "id", "geometry", "properties"],
         "properties": {
           "type": { "type": "string", "const": "Feature" },
           "id": { "type": "integer", "description": "MMSI." },
           "geometry": {
-            "type": "object",
+            "type": ["object", "null"],
+            "description": "The last known position. Always present in a FeatureCollection; `null` from `/v1/vessels/{mmsi}` for a vessel whose position was never heard.",
             "required": ["type", "coordinates"],
             "properties": {
               "type": { "type": "string", "const": "Point" },
@@ -455,6 +528,7 @@
               "draught": { "type": "number", "description": "Maximum static draught, metres. Present only when sent." },
               "length": { "type": "integer", "description": "Overall length, metres, from the dimension fields. Present only when sent." },
               "beam": { "type": "integer", "description": "Beam, metres. Present only when sent." },
+              "first_seen": { "type": "string", "format": "date-time", "description": "When the vessel record first held the vessel. On `/v1/vessels/{mmsi}` only." },
               "seen": { "type": "string", "format": "date-time", "description": "Time of the last message that updated the vessel." },
               "source": { "type": "string", "description": "Source of that message: an upstream name, `station:<sub>` for an authenticated contributor (whatever transport it fed over), `udp:<hash>`, or `mmsi:<n>`." },
               "station": { "type": "string", "description": "Station that delivered that message." },

@@ -31,22 +31,24 @@ func TestOpenAPIMatchesMux(t *testing.T) {
 		mux[pat] = true
 	}
 
-	for path := range spec.Paths {
-		pat := path
-		if i := strings.Index(pat, "{"); i >= 0 {
-			pat = pat[:i] // /v1/stations/{id} is served by the /v1/stations/ subtree
+	// A templated path is served either by a mux pattern with the same wildcard, such as
+	// /v1/vessels/{mmsi}, or by a subtree, as /v1/stations/ serves /v1/stations/{id}.
+	subtree := func(path string) string {
+		if i := strings.Index(path, "{"); i >= 0 {
+			return path[:i]
 		}
-		if !mux[pat] {
-			t.Errorf("openapi.json documents %s but the mux has no %s handler", path, pat)
+		return path
+	}
+	for path := range spec.Paths {
+		if !mux[path] && !mux[subtree(path)] {
+			t.Errorf("openapi.json documents %s but the mux has no %s or %s handler", path, path, subtree(path))
 		}
 	}
 
 	documented := map[string]bool{}
 	for path := range spec.Paths {
-		if i := strings.Index(path, "{"); i >= 0 {
-			path = path[:i]
-		}
 		documented[path] = true
+		documented[subtree(path)] = true
 	}
 	notAPI := map[string]bool{"/metrics": true, "/robots.txt": true}
 	for pat := range mux {
