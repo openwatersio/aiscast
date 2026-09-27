@@ -179,3 +179,19 @@ func TestAishubPacing(t *testing.T) {
 		t.Errorf("20 rows over 200ms took %s", el)
 	}
 }
+
+// AISHub's PAC is the position accuracy flag; it reaches the position report.
+func TestAishubPositionAccuracy(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"PAC":1,"NAVSTAT":8,"IMO":0,"NAME":"","CALLSIGN":"","TYPE":0,"A":0,"B":0,"C":0,"D":0,"DRAUGHT":0,"DEST":"","ETA":0}]]`
+	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0), newAishubState(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.ch) != 1 {
+		t.Fatalf("events = %d, want the position", len(sub.ch))
+	}
+	if pr, ok := (<-sub.ch).Packet.(ais.PositionReport); !ok || !pr.PositionAccuracy {
+		t.Fatalf("PAC 1 did not set position accuracy: %+v", pr)
+	}
+}
