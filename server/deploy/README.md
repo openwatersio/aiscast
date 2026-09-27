@@ -59,10 +59,10 @@ Grafana Alloy on the box ships metrics to Grafana Cloud, where they outlive the 
 
 The push URL and token live in `/etc/alloy.env` (0600, root), which a systemd drop-in hands to the alloy unit. `apply.sh` seeds the file from [`alloy.env.example`](alloy.env.example) and keeps Alloy stopped until `GRAFANA_CLOUD_PROM_URL` is set. To connect a Grafana Cloud stack:
 
-1. In the stack's Prometheus details, copy the remote write URL and the numeric user. Create an access policy token with the `metrics:write` scope.
+1. In the stack's Prometheus details, copy the remote write URL and the numeric user. The remote write URL ends in `/api/prom/push`; the query URL beside it ends in `/api/prom` and answers pushes with 404. Create an access policy token with the `metrics:write` scope.
 2. Fill in `/etc/alloy.env` on the box, then rerun the deploy or run `systemctl enable --now alloy`.
 
-The alert rules are [`grafana/rules.yaml`](grafana/rules.yaml), in Prometheus rule format, and the dashboard is [`grafana/capacity.json`](grafana/capacity.json). [`grafana/push.sh`](grafana/push.sh) applies both. It imports the rules as Grafana-managed rules in the `aiscast` folder, routes them to an `aiscast email` contact point, deletes rules that left the file, and uploads the dashboard. Rerun it after changing either file. It needs `curl`, `jq`, `mimirtool`, and a service account token with the Admin role:
+The alert rules are [`grafana/rules.yaml`](grafana/rules.yaml), in Prometheus rule format, and the dashboard is [`grafana/capacity.json`](grafana/capacity.json). [`grafana/push.sh`](grafana/push.sh) applies both. It imports the rules as Grafana-managed rules in the `aiscast` folder, routes them to an `aiscast email` contact point, deletes rules that left the file, and uploads the dashboard. Rerun it after changing either file. Grafana Cloud emails only members of its organization, so `ALERT_EMAIL` must belong to one. It needs `curl`, `jq`, `mimirtool`, and a service account token with the Admin role:
 
 ```sh
 GRAFANA_URL=https://<stack>.grafana.net GRAFANA_TOKEN=<token> ALERT_EMAIL=<address> server/deploy/grafana/push.sh
