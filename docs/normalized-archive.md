@@ -17,7 +17,7 @@ The raw archive is the input log and the normalized archive is derived from it. 
 
 One merged stream holds every source. Each hour is one gzip file of line-delimited JSON at `normalized/v1/YYYY/MM/DD/HH.gz` in the `ais-archive` bucket, beside the raw archive. The server stages it locally under `NORMALIZED_DIR`, which mirrors the bucket's layout, and uploads it through the same rotation, shutdown flush, and disk sweep as raw. `NORMALIZED_BUCKET` names the bucket. The writer is off unless `NORMALIZED_BUCKET` or `NORMALIZED_DIR` is set, so an env that predates the stream never stages hours nothing uploads.
 
-A merged stream is never idle, so every hour rotates and uploads on time. Per-source files would leave a quiet source's hour open indefinitely.
+An hour stays open until the newest receive time the writer has seen is five minutes past its end, then closes and uploads. Two hours interleave near a boundary: AISHub stamps every row of a snapshot with its fetch time and paces the rows over most of a minute, so a snapshot fetched just before the hour keeps writing into it while every other source writes into the next. Rotation runs on the receive clock, so replay closes hours where live did, and a reception for an hour already closed reopens it and appends.
 
 The stream shares raw's bucket and access class because it is a pure function of raw and public code. Every raw key starts with a license tag, so the `normalized/` prefix never reads as a source, and replay skips it. The derived tables live in their own bucket, `ais-lake`, because R2 access control is per bucket and they are the layer most likely to open up.
 
