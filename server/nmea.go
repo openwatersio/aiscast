@@ -138,7 +138,8 @@ func ownShipToVDM(s string) string {
 	return string(b)
 }
 
-// renderNMEA is the event's /v1/nmea frame, rendered once for every subscriber.
+// renderNMEA is the event's /v1/nmea frame, rendered once per event on first use; every subscriber then
+// sends the same bytes.
 func (ev *Event) renderNMEA() []byte {
 	ev.nmeaOnce.Do(func() { ev.nmea = []byte(ev.nmeaText()) })
 	return ev.nmea

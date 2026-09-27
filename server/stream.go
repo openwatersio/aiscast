@@ -587,7 +587,8 @@ func (s *v1Sub) match(ev *Event) bool {
 	return false
 }
 
-// renderV1JSON is the event's /v1 frame, marshaled once for every subscriber.
+// renderV1JSON is the event's /v1 frame, marshaled once per event on first use; every subscriber then
+// sends the same bytes.
 func (ev *Event) renderV1JSON() []byte {
 	ev.v1Once.Do(func() { ev.v1, _ = json.Marshal(renderV1(ev)) })
 	return ev.v1
