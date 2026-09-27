@@ -20,6 +20,10 @@ import (
 
 const maxPublishFrame = 1000 // sentences per publish frame; the rest are dropped and counted
 
+// Context takeover keeps each connection's 32 KB deflate window, about 1.2 MB of compressor state per
+// connection. It pays for itself: a /v1 frame is ~800 bytes and compresses about 1.5x on its own but
+// about 5.5x against the frames before it, and no takeover also costs more CPU per frame, since the
+// compressor resets for every message. BenchmarkCompression* measures the three modes.
 var wsOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover}
 
 // v1Opts also offers the mqtt subprotocol: /v1/stream carries MQTT for a client that asks for it (mqtt.go).
