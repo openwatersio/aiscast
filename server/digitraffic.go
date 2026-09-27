@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -47,13 +48,42 @@ type dtMetadata struct {
 }
 
 func (l dtLocation) packet(mmsi uint32) ais.Packet {
-	// Digitraffic doesn't say class A or B; everything becomes a type 1 report.
+	lon, lat, cog := ais.FieldLatLonFine(l.Lon), ais.FieldLatLonFine(l.Lat), ais.Field10(wireCog(l.Cog))
+	// Digitraffic doesn't say which message it received. A SAR aircraft (111MIDxxx) flies faster than
+	// a type 1 report can carry, so it becomes the type 9 it transmitted, with whole-knot SOG.
+	if mmsi >= 111_000_000 && mmsi < 112_000_000 {
+		sog := uint16(1023) // n/a
+		if l.Sog >= 0 && l.Sog < 1023 {
+			sog = uint16(math.Round(l.Sog))
+		}
+		return ais.StandardSearchAndRescueAircraftReport{
+			Header: ais.Header{MessageID: 9, UserID: mmsi}, Valid: true,
+			Altitude: 4095, Sog: sog, PositionAccuracy: l.PosAcc, Longitude: lon, Latitude: lat, Cog: cog,
+			Timestamp: uint8(l.Time % 60), Raim: l.Raim,
+		}
+	}
+	// Otherwise Digitraffic doesn't say class A or B; everything becomes a type 1 report. Its 10-bit SOG
+	// tops out at 102.2 ("102.2 or more"), with 102.3 meaning n/a, and the encoder rejects anything above.
+	sog := l.Sog
+	if sog > 102.3 {
+		sog = 102.2
+	}
 	return ais.PositionReport{
 		Header: ais.Header{MessageID: 1, UserID: mmsi}, Valid: true,
-		NavigationalStatus: l.NavStat, RateOfTurn: l.Rot, Sog: ais.Field10(l.Sog), PositionAccuracy: l.PosAcc,
-		Longitude: ais.FieldLatLonFine(l.Lon), Latitude: ais.FieldLatLonFine(l.Lat), Cog: ais.Field10(l.Cog),
+		NavigationalStatus: l.NavStat, RateOfTurn: l.Rot, Sog: ais.Field10(sog), PositionAccuracy: l.PosAcc,
+		Longitude: lon, Latitude: lat, Cog: cog,
 		TrueHeading: l.Heading, Timestamp: uint8(l.Time % 60), Raim: l.Raim,
 	}
+}
+
+// wireCog is a course the AIS encoders accept: 0 to 360, where 360 is "not available". Sources relay
+// impossible courses (438 and 471 from one BarentsWatch satellite stream), and the encoder rejects
+// the whole report for one, losing a good position over a field it could have marked unknown.
+func wireCog(c float64) float64 {
+	if c < 0 || c > 360 || math.IsNaN(c) {
+		return 360
+	}
+	return c
 }
 
 func (m dtMetadata) packet(mmsi uint32) ais.Packet {
