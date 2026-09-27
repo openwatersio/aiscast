@@ -24,7 +24,8 @@ jobs:
         with:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
-      - run: go install golang.org/x/perf/cmd/benchstat@latest
+      # Pinned: the check below parses benchstat's CSV, and a new release could change its layout.
+      - run: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260908200009-22c9c6c9d4da
       - name: build both sides
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -46,12 +47,16 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           { echo '```'; benchstat old.txt new.txt; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
-          benchstat -format csv old.txt new.txt 2>/dev/null | awk -F, '
-            /^,.*sec\/op/ { timing = 1; next }
+          # Fails closed: benchmarks without a sec/op table mean the CSV layout changed, not that all is well.
+          benchstat -format csv old.txt new.txt 2>/dev/null | awk -F, -v benchmarks="$(grep -c '^Benchmark' new.txt)" '
+            /^,.*sec\/op/ { timing = 1; seen = 1; next }
             /^$/ { timing = 0 }
             timing && $1 != "geomean" && $6 ~ /^\+/ {
               pct = $6; gsub(/[+%]/, "", pct)
               p = $7; sub(/^p=/, "", p); sub(/ .*/, "", p)
               if (pct + 0 > 25 && p + 0 < 0.05) { print "::error::" $1 " is " $6 " slower (" $7 ")"; bad = 1 }
             }
-            END { exit bad }'
+            END {
+              if (benchmarks > 0 && !seen) { print "::error::no sec/op table in the benchstat output"; exit 1 }
+              exit bad
+            }'
