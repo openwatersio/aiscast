@@ -404,6 +404,12 @@ func TestLookupPrefersTheNewerState(t *testing.T) {
 	if f.Geometry == nil || f.Geometry.Coordinates[1] < 59.89 {
 		t.Errorf("lookup returned the older cached position: %+v", f.Geometry)
 	}
+	for _, target := range []string{"/v1/vessels?mmsi=257000001", "/v1/vessels?q=nordic", "/v1/vessels?q=nordic&max_age=30s"} {
+		fc := getFC(t, p, target)
+		if len(fc.Features) != 1 || fc.Features[0].Geometry.Coordinates[1] < 59.89 {
+			t.Errorf("%s returned the older cached position: %+v", target, fc.Features)
+		}
+	}
 	var out mcpVessels
 	if msg := mcpCall(t, mcpClient(t, p), "get_vessels", map[string]any{"mmsi": []uint32{257000001}}, &out); msg != "" ||
 		len(out.Vessels) != 1 || *out.Vessels[0].Lat < 59.89 || out.Vessels[0].AgeS > 30 {

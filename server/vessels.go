@@ -385,9 +385,9 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		cutoff = ageCutoff(now, age)
 	}
 	deep := set && age > vesselTTL && (len(s.boxes) > 0 || s.everything)
-	var emitted map[uint32]bool
+	var emitted map[uint32]int // each vessel the cache answered, and its index in features
 	if p.store != nil && (len(s.mmsi) > 0 || deep) {
-		emitted = map[uint32]bool{}
+		emitted = map[uint32]int{}
 	}
 	var features [][]byte
 	attribution := map[string]string{}
@@ -397,48 +397,63 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 			features = append(features, v.featureJSON(mmsi))
 			noteAttribution(attribution, v.Source)
 			if emitted != nil {
-				emitted[mmsi] = true
+				emitted[mmsi] = len(features) - 1
 			}
 		}
 	})
 	p.vmu.RUnlock()
 	truncated := false
 	if emitted != nil {
-		recs, more, err := p.recordVessels(s, cutoff, deep, now, emitted)
+		recs, more, err := p.recordVessels(s, cutoff, deep, now)
 		if err != nil {
 			log.Printf("store: %v", err)
 			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
 			return
 		}
+		taken := map[uint32]bool{}
+		p.vmu.RLock()
 		for _, rec := range recs {
-			features = append(features, rec.featureJSON())
-			noteAttribution(attribution, rec.v.Source)
+			if taken[rec.mmsi] {
+				continue
+			}
+			taken[rec.mmsi] = true
+			f, source, ahead := p.newest(rec)
+			if i, ok := emitted[rec.mmsi]; ok {
+				if ahead {
+					features[i] = f
+					noteAttribution(attribution, source)
+				}
+				continue
+			}
+			// A vessel the cache holds with a position at least as new is the cache's to answer, and this
+			// request did not ask about where it is or how old that position is.
+			if ahead {
+				features = append(features, f)
+				noteAttribution(attribution, source)
+			}
 		}
+		p.vmu.RUnlock()
 		truncated = more
 	}
 	w.Header().Set("Content-Type", "application/geo+json")
 	w.Write(append(featureCollection(features, attribution, truncated), '\n'))
 }
 
-// recordVessels adds what the cache cannot answer: followed vessels it no longer holds with a position,
-// and, for a deep request, vessels last heard inside the boxes more than 30 minutes ago. more reports that
-// the box query stopped at recordLimit.
-func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time.Time, emitted map[uint32]bool) (_ []record, more bool, _ error) {
+// recordVessels reads what the record holds for a request: every followed vessel, and, for a deep request,
+// vessels last heard inside the boxes more than 30 minutes ago. more reports that the box query stopped at
+// recordLimit.
+func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time.Time) (_ []record, more bool, _ error) {
 	var recs []record
 	if len(s.mmsi) > 0 {
-		var missing []uint32
+		followed := make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
-			if !emitted[m] {
-				missing = append(missing, m)
-			}
+			followed = append(followed, m)
 		}
-		if len(missing) > 0 {
-			rs, err := p.store.find(recordQuery{mmsis: missing, since: cutoff, hasPos: true})
-			if err != nil {
-				return nil, false, err
-			}
-			recs = append(recs, rs...)
+		rs, err := p.store.find(recordQuery{mmsis: followed, since: cutoff, hasPos: true})
+		if err != nil {
+			return nil, false, err
 		}
+		recs = append(recs, rs...)
 	}
 	if deep {
 		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: cutoff, before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1})
@@ -450,23 +465,26 @@ func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time
 		}
 		recs = append(recs, rs...)
 	}
-	// A vessel the cache holds with a position is the cache's to answer: it was either in this answer
-	// already or is somewhere the request did not ask about.
-	out, taken := recs[:0], map[uint32]bool{}
-	p.vmu.RLock()
-	for _, rec := range recs {
-		m := rec.mmsi
-		if emitted[m] || taken[m] {
-			continue
-		}
-		if v := p.vessels[m]; v != nil && v.HasPos {
-			continue
-		}
-		taken[m] = true
-		out = append(out, rec)
+	return recs, more, nil
+}
+
+// newest is a vessel's newest state as a Feature, with the source it credits. The cache is usually ahead
+// of the record by up to a second, and then its own encoded Feature is the answer. After a restart the
+// record can be ahead instead, until the vessel next reports, because the snapshot is written every minute
+// and the record every second. Then ahead is true and the Feature is the cache merged with the record.
+// The caller holds vmu for reading.
+func (p *Pipeline) newest(rec record) (feature []byte, source string, ahead bool) {
+	c := p.vessels[rec.mmsi]
+	if c != nil && !rec.v.Seen.After(c.Seen) && !rec.v.PosAt.After(c.PosAt) {
+		return c.featureJSON(rec.mmsi), c.Source, false
 	}
-	p.vmu.RUnlock()
-	return out, more, nil
+	v := rec.v
+	if c != nil {
+		v = c.state()
+		v.merge(rec.v)
+	}
+	b, _ := json.Marshal(v.feature(rec.mmsi))
+	return b, v.Source, true
 }
 
 // searchParams are the parameters a search accepts. Search refuses any other, so a filter added later
@@ -525,14 +543,9 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	attribution := map[string]string{}
 	p.vmu.RLock()
 	for _, rec := range recs {
-		// the cache is up to a second ahead of the record
-		if v := p.vessels[rec.mmsi]; v != nil && v.HasPos {
-			features = append(features, v.featureJSON(rec.mmsi))
-			noteAttribution(attribution, v.Source)
-			continue
-		}
-		features = append(features, rec.featureJSON())
-		noteAttribution(attribution, rec.v.Source)
+		f, source, _ := p.newest(rec)
+		features = append(features, f)
+		noteAttribution(attribution, source)
 	}
 	p.vmu.RUnlock()
 	w.Header().Set("Content-Type", "application/geo+json")
@@ -606,12 +619,6 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	noteAttribution(out.Attribution, cur.Source)
 	w.Header().Set("Content-Type", "application/geo+json")
 	json.NewEncoder(w).Encode(out)
-}
-
-// featureJSON encodes a record as the same Feature the cache serves.
-func (r record) featureJSON() []byte {
-	b, _ := json.Marshal(r.v.feature(r.mmsi))
-	return b
 }
 
 // ageAll is max_age=all: no age limit at all.
