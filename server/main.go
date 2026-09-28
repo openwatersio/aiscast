@@ -96,7 +96,10 @@ func main() {
 		}
 		go runAishub(p, u, iv) // best effort, outside the health gate like aisstream
 	}
-	go runUDP(p, env("UDP_ADDR", ":10110"))
+	p.udp = parseUDPAddrs(env("UDP_ADDR", ":10110"))
+	for _, l := range p.udp {
+		go runUDP(p, l)
+	}
 	go p.logStats()
 	go func() {
 		for range time.Tick(snapshotEvery) {

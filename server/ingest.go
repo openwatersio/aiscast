@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -123,20 +124,58 @@ func udpStation(ip string) string {
 	return "udp:" + hex.EncodeToString(m.Sum(nil)[:6])
 }
 
+// udpListener is one UDP ingest socket. A forwarder resolves its target name once and sends to that address
+// until restarted, so a socket per address, counted apart, is the only way to see which name feeders use.
+type udpListener struct {
+	label, addr string
+	datagrams   atomic.Int64
+}
+
+// parseUDPAddrs reads UDP_ADDR: comma-separated `[label=]host:port`. The label defaults to the address.
+func parseUDPAddrs(s string) []*udpListener {
+	var ls []*udpListener
+	for _, e := range strings.Split(s, ",") {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		l := &udpListener{label: e, addr: e}
+		if i := strings.Index(e, "="); i >= 0 {
+			l.label, l.addr = e[:i], e[i+1:]
+		}
+		ls = append(ls, l)
+	}
+	return ls
+}
+
+// listenUDP binds one listener. An IPv6 literal binds v6 only, so a v4 listener can hold the same port.
+func listenUDP(l *udpListener) (net.PacketConn, error) {
+	network := "udp"
+	if strings.HasPrefix(l.addr, "[") {
+		network = "udp6"
+	}
+	return net.ListenPacket(network, l.addr)
+}
+
 // runUDP accepts raw NMEA datagrams. ponytail: station = keyed hash of sender IP; per-station ports/keys in Stage 1.
-func runUDP(p *Pipeline, addr string) {
-	pc, err := net.ListenPacket("udp", addr)
+func runUDP(p *Pipeline, l *udpListener) {
+	pc, err := listenUDP(l)
 	if err != nil {
-		log.Printf("udp: %v", err)
+		log.Printf("udp %s: %v", l.label, err)
 		return
 	}
+	serveUDP(p, l, pc)
+}
+
+func serveUDP(p *Pipeline, l *udpListener, pc net.PacketConn) {
 	buf := make([]byte, 4096)
 	for {
 		n, from, err := pc.ReadFrom(buf)
 		if err != nil {
-			log.Printf("udp: %v", err)
+			log.Printf("udp %s: %v", l.label, err)
 			return
 		}
+		l.datagrams.Add(1)
 		ip, _, _ := net.SplitHostPort(from.String())
 		src := udpStation(ip)
 		now := time.Now()
