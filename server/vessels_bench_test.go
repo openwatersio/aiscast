@@ -93,3 +93,43 @@ func benchTile(b *testing.B, z, x, y int) {
 func BenchmarkTileZ0(b *testing.B)          { benchTile(b, 0, 0, 0) }
 func BenchmarkTileZ4Skagerrak(b *testing.B) { benchTile(b, 4, 8, 4) }
 func BenchmarkTileZ8Oslofjord(b *testing.B) { benchTile(b, 8, 135, 74) }
+
+// benchTileRecord adds 300,000 record rows heard over the last two weeks, half of them last reported
+// stationary, to the 60,000-vessel cache: the low-zoom tiles read most of them.
+func benchTileRecord(b *testing.B, z, x, y int) {
+	p := testPipeline(nil)
+	benchFleet(p, 60000)
+	st, err := openStore(b.TempDir() + "/aiscast.db")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.close()
+	p.attachStore(st)
+	r := rand.New(rand.NewPCG(3, 4))
+	now := time.Now()
+	var rows []record
+	for i := range 300000 {
+		v := newVessel()
+		v.Lat, v.Lon, v.HasPos = r.Float64()*140-70, r.Float64()*360-180, true
+		v.Seen = now.Add(-time.Duration(r.Int64N(int64(14 * 24 * time.Hour))))
+		v.PosAt, v.Name, v.Source, v.ShipType = v.Seen, "BENCH RECORD", "aishub", 70
+		if i%2 == 0 {
+			v.Sog = 0
+		} else {
+			v.Sog = 11.2
+		}
+		rows = append(rows, record{mmsi: uint32(300000000 + i), v: v, firstSeen: v.Seen})
+	}
+	if err := st.upsert(rows); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	var n int
+	for b.Loop() {
+		n = len(gzipBytes(p.vesselTile(z, x, y, &tileFilter{vesselFilter: vesselFilter{movingAge: vesselTTL}, maxAge: tileWindow}, time.Now())))
+	}
+	b.ReportMetric(float64(n), "gz-bytes")
+}
+
+func BenchmarkTileRecordZ0(b *testing.B)          { benchTileRecord(b, 0, 0, 0) }
+func BenchmarkTileRecordZ8Oslofjord(b *testing.B) { benchTileRecord(b, 8, 135, 74) }

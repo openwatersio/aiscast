@@ -312,7 +312,7 @@ func TestVesselSearch(t *testing.T) {
 	if got := ids(getFC(t, p, "/v1/vessels?q=nordic&max_age=150m")); len(got) != 1 || got[0] != 257000003 {
 		t.Errorf("max_age narrows: %v", got)
 	}
-	for target, want := range map[string]int{"/v1/vessels?q=n": 400, "/v1/vessels?q=nordic&type=70": 400} {
+	for target, want := range map[string]int{"/v1/vessels?q=n": 400, "/v1/vessels?q=nordic&flag=NO": 400, "/v1/vessels?q=nordic&type=9-3": 400} {
 		if w := get(t, p, target); w.Code != want {
 			t.Errorf("%s: %d %s", target, w.Code, w.Body)
 		}

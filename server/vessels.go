@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -374,9 +375,8 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	}
 	s, msg := parseSub(vals, cl, true)
 	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
-	if msg == "" {
-		msg = ageMsg
-	}
+	vf, filterMsg := parseVesselFilter(vals, 0)
+	msg = cmp.Or(msg, ageMsg, filterMsg)
 	if msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
@@ -395,7 +395,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	attribution := map[string]string{}
 	p.vmu.RLock()
 	p.eachMatch(s, func(mmsi uint32, v *vessel) {
-		if v.HasPos && !v.Seen.Before(cutoff) {
+		if v.HasPos && !v.Seen.Before(cutoff) && vf.match(v, now) {
 			features = append(features, v.featureJSON(mmsi))
 			noteAttribution(attribution, v.Source)
 			if emitted != nil {
@@ -406,7 +406,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	p.vmu.RUnlock()
 	truncated := false
 	if emitted != nil {
-		recs, more, err := p.recordVessels(s, cutoff, deep, now)
+		recs, more, err := p.recordVessels(s, vf, cutoff, deep, now)
 		if err != nil {
 			log.Printf("store: %v", err)
 			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
@@ -444,21 +444,21 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 // recordVessels reads what the record holds for a request: every followed vessel, and, for a deep request,
 // vessels last heard inside the boxes more than 30 minutes ago. more reports that the box query stopped at
 // recordLimit.
-func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time.Time) (_ []record, more bool, _ error) {
+func (p *Pipeline) recordVessels(s *v1Sub, vf *vesselFilter, cutoff time.Time, deep bool, now time.Time) (_ []record, more bool, _ error) {
 	var recs []record
 	if len(s.mmsi) > 0 {
 		followed := make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
 			followed = append(followed, m)
 		}
-		rs, err := p.store.find(recordQuery{mmsis: followed, since: cutoff, hasPos: true})
+		rs, err := p.store.find(recordQuery{mmsis: followed, since: cutoff, hasPos: true, filter: vf, now: now})
 		if err != nil {
 			return nil, false, err
 		}
 		recs = append(recs, rs...)
 	}
 	if deep {
-		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: cutoff, before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1})
+		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: cutoff, before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now})
 		if err != nil {
 			return nil, false, err
 		}
@@ -504,6 +504,12 @@ func (p *Pipeline) newestState(rec record) (v *vessel, cached bool) {
 // parameters, as it always has.
 var searchParams = map[string]bool{"q": true, "bbox": true, "mmsi": true, "max_age": true, "key": true}
 
+func init() {
+	for k := range vesselFilterParams {
+		searchParams[k] = true
+	}
+}
+
 // serveVesselSearch: GET /v1/vessels?q= → vessels whose name starts with q, or whose MMSI does when q is
 // digits, most recently heard first, from the record. bbox, mmsi, and max_age narrow it.
 func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl *Claims) {
@@ -520,9 +526,8 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	}
 	s, msg := parseSub(vals, cl, false)
 	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
-	if msg == "" {
-		msg = ageMsg
-	}
+	vf, filterMsg := parseVesselFilter(vals, 0)
+	msg = cmp.Or(msg, ageMsg, filterMsg)
 	if msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
@@ -533,7 +538,8 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	}
 	// The record is ordered by the seen it stores, and the cache usually runs a second ahead of it, so read
 	// past the cap and order by each vessel's newest seen before cutting.
-	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1}
+	now := time.Now()
+	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1, filter: vf, now: now}
 	if len(s.mmsi) > 0 {
 		q.mmsis = make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
@@ -541,7 +547,7 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 		}
 	}
 	if set {
-		q.since = ageCutoff(time.Now(), age)
+		q.since = ageCutoff(now, age)
 	}
 	recs, err := p.store.find(q)
 	if err != nil {
@@ -558,6 +564,9 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	p.vmu.RLock()
 	for _, rec := range recs {
 		v, cached := p.newestState(rec)
+		if !vf.match(v, now) { // the cache can be a report ahead of the row the filter passed
+			continue
+		}
 		var f []byte
 		if cached {
 			f = v.featureJSON(rec.mmsi)
@@ -654,6 +663,124 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	noteAttribution(out.Attribution, cur.Source)
 	w.Header().Set("Content-Type", "application/geo+json")
 	json.NewEncoder(w).Encode(out)
+}
+
+// vesselFilterParams are the filters /v1/vessels, its search, and the tiles share.
+var vesselFilterParams = map[string]bool{"kind": true, "class": true, "type": true, "min_sog": true, "max_age_moving": true}
+
+var vesselKinds = map[string]bool{"vessel": true, "aton": true, "base": true, "sar": true}
+
+// vesselFilter narrows vessels by what they are and how they last reported. The zero value matches all.
+type vesselFilter struct {
+	kinds     map[string]bool
+	class     string
+	types     [][2]uint8
+	minSog    float64
+	movingAge time.Duration // a vessel last heard under way longer ago than this is left out; 0: no limit
+}
+
+// parseVesselFilter reads the shared filters. movingAge is max_age_moving's default.
+func parseVesselFilter(vals url.Values, movingAge time.Duration) (*vesselFilter, string) {
+	f := &vesselFilter{movingAge: movingAge}
+	if q := vals.Get("kind"); q != "" {
+		f.kinds = map[string]bool{}
+		for _, k := range strings.Split(q, ",") {
+			if !vesselKinds[k] {
+				return nil, "kind=vessel,aton,base,sar"
+			}
+			f.kinds[k] = true
+		}
+	}
+	if f.class = vals.Get("class"); f.class != "" && f.class != "A" && f.class != "B" {
+		return nil, "class=A or class=B"
+	}
+	if q := vals.Get("type"); q != "" {
+		for _, r := range strings.Split(q, ",") {
+			lo, hi, found := strings.Cut(r, "-")
+			if !found {
+				hi = lo
+			}
+			a, err1 := strconv.ParseUint(lo, 10, 8)
+			b, err2 := strconv.ParseUint(hi, 10, 8)
+			if err1 != nil || err2 != nil || a > b {
+				return nil, "type=<code> or <from>-<to>, comma-separated, 0-255"
+			}
+			f.types = append(f.types, [2]uint8{uint8(a), uint8(b)})
+		}
+	}
+	if q := vals.Get("min_sog"); q != "" {
+		v, err := strconv.ParseFloat(q, 64)
+		if err != nil || v < 0 {
+			return nil, "min_sog=<knots>"
+		}
+		f.minSog = v
+	}
+	if q := vals.Get("max_age_moving"); q != "" {
+		age, _, msg := parseMaxAge(q)
+		if msg != "" {
+			return nil, "max_age_moving=<seconds>, a duration such as 2h, or all"
+		}
+		f.movingAge = age
+		if age == ageAll {
+			f.movingAge = 0
+		}
+	}
+	return f, ""
+}
+
+// stationary: the vessel's last report says it was not going anywhere. Aids to navigation and base stations
+// never move; a vessel counts when it was under a knot or reported itself moored, at anchor, or aground.
+// A vessel with neither speed nor status known counts as moving.
+func stationary(v *vessel) bool {
+	return v.Kind == "aton" || v.Kind == "base" || v.Sog < 1 || v.NavStatus == 1 || v.NavStatus == 5 || v.NavStatus == 6
+}
+
+func (f *vesselFilter) match(v *vessel, now time.Time) bool {
+	switch {
+	case f.kinds != nil && !f.kinds[v.Kind],
+		f.class != "" && v.Class != f.class,
+		f.minSog > 0 && !(v.Sog < 102.3 && v.Sog >= f.minSog),
+		f.movingAge > 0 && now.Sub(v.Seen) > f.movingAge && !stationary(v):
+		return false
+	}
+	if f.types == nil {
+		return true
+	}
+	for _, t := range f.types {
+		if v.ShipType >= t[0] && v.ShipType <= t[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// where is match as SQL over the vessel record, so a limited query fills its limit with matching rows.
+func (f *vesselFilter) where(now time.Time) (where []string, args []any) {
+	if f.kinds != nil {
+		ph := make([]string, 0, len(f.kinds))
+		for k := range f.kinds {
+			ph, args = append(ph, "?"), append(args, k)
+		}
+		where = append(where, "kind IN ("+strings.Join(ph, ",")+")")
+	}
+	if f.class != "" {
+		where, args = append(where, "class = ?"), append(args, f.class)
+	}
+	if f.types != nil {
+		ors := make([]string, len(f.types))
+		for i, t := range f.types {
+			ors[i], args = "ship_type BETWEEN ? AND ?", append(args, t[0], t[1])
+		}
+		where = append(where, "("+strings.Join(ors, " OR ")+")")
+	}
+	if f.minSog > 0 {
+		where, args = append(where, "sog >= ? AND sog < 102.3"), append(args, f.minSog)
+	}
+	if f.movingAge > 0 {
+		where = append(where, "(seen >= ? OR kind IN ('aton', 'base') OR sog < 1 OR nav_status IN (1, 5, 6))")
+		args = append(args, unixMs(now.Add(-f.movingAge)))
+	}
+	return where, args
 }
 
 // ageAll is max_age=all: no age limit at all.

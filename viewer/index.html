@@ -38,7 +38,7 @@
     between(80, 89), "tanker",
     "other"];
   const color = ["match", shipClass, ...Object.entries(CLASS_COLORS).flat(), "#616161"];
-  const faded = ["step", ["get", "age_s"], 1, 180, 0.6, 600, 0.3];
+  const faded = ["step", ["get", "age_s"], 1, 600, 0.7, 3600, 0.45, 86400, 0.25]; // live, this hour, today, this week
   const opacity = station ? ["*", faded, ["case", ["==", ["get", "station"], station], 1, 0.15]] : faded;
 
   const map = new maplibregl.Map({

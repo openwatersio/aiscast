@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -226,5 +227,68 @@ func TestTileJSON(t *testing.T) {
 	}
 	if !strings.Contains(tj.Attribution, licensingURL) {
 		t.Errorf("attribution %q does not link the licensing page", tj.Attribution)
+	}
+}
+
+// Past the cache's 30 minutes a tile reaches into the record: a week back by default, and only for vessels
+// whose last report was stationary unless max_age_moving says otherwise. /v1/vessels takes the same filters.
+func TestVesselTileRecord(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	old := func(mmsi uint32, age time.Duration, sog float64) record {
+		v := newVessel()
+		v.Lat, v.Lon, v.HasPos, v.Seen, v.PosAt, v.Sog, v.Source = 59.5, 10.6, true, now.Add(-age), now.Add(-age), sog, "aishub"
+		return record{mmsi: mmsi, v: v, firstSeen: v.Seen}
+	}
+	if err := p.store.upsert([]record{
+		old(257000011, 48*time.Hour, 0),    // moored two days ago
+		old(257000012, 48*time.Hour, 12),   // under way two days ago
+		old(257000013, 10*24*time.Hour, 0), // moored ten days ago
+	}); err != nil {
+		t.Fatal(err)
+	}
+	live := newVessel()
+	live.Lat, live.Lon, live.HasPos, live.Seen, live.Sog, live.Kind = 59.5, 10.6, true, now, 8, "vessel"
+	p.vmu.Lock()
+	p.putVesselLocked(257000014, live)
+	p.vmu.Unlock()
+
+	h := httpHandler(p)
+	x, y := tileOf(59.5, 10.6, 10)
+	ids := func(query string) []uint64 {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", fmt.Sprintf("/v1/vessels/tiles/10/%d/%d%s", x, y, query), nil))
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", query, w.Code, w.Body)
+		}
+		var out []uint64
+		for id := range decodeTile(t, w.Body.Bytes()) {
+			out = append(out, id)
+		}
+		slices.Sort(out)
+		return out
+	}
+	for query, want := range map[string][]uint64{
+		"":                              {257000011, 257000014},
+		"?max_age_moving=all":           {257000011, 257000012, 257000014},
+		"?max_age=all":                  {257000011, 257000013, 257000014},
+		"?max_age=30m":                  {257000014},
+		"?min_sog=5&max_age_moving=all": {257000012, 257000014},
+	} {
+		if got := ids(query); !slices.Equal(got, want) {
+			t.Errorf("tile%s: %v, want %v", query, got, want)
+		}
+	}
+
+	for query, want := range map[string]int{
+		"bbox=59,10,60,11":                               1, // the cache's 30 minutes, as ever
+		"bbox=59,10,60,11&max_age=all":                   4,
+		"bbox=59,10,60,11&max_age=all&max_age_moving=1h": 3,
+		"bbox=59,10,60,11&max_age=all&min_sog=5":         2,
+		"bbox=59,10,60,11&max_age=all&kind=aton":         0,
+	} {
+		if got := len(getFC(t, p, "/v1/vessels?"+query).Features); got != want {
+			t.Errorf("/v1/vessels?%s: %d features, want %d", query, got, want)
+		}
 	}
 }

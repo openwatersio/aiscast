@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -18,9 +20,9 @@ import (
 	"time"
 )
 
-// Vector tiles of the vessel cache: GET /v1/vessels/tiles/{z}/{x}/{y} answers a Mapbox Vector Tile with one
+// Vector tiles of vessel positions: GET /v1/vessels/tiles/{z}/{x}/{y} answers a Mapbox Vector Tile with one
 // point layer, vessels, and /v1/vessels/tiles.json the TileJSON that points a map at it. A map shows vessels
-// with a style and a timer, and no stream code. A tile is a snapshot of the cache, so clients refresh it.
+// with a style and a timer, and no stream code. A tile is a snapshot, so clients refresh it.
 
 const (
 	tileExtent  = 4096
@@ -35,17 +37,22 @@ const (
 
 // tileParams are the parameters a tile accepts. Anything else is refused, so a typo in a filter fails loudly
 // rather than returning every vessel, and a filter added later never changes an older client's tiles.
-var tileParams = map[string]bool{"mmsi": true, "kind": true, "class": true, "type": true, "min_sog": true, "max_age": true, "key": true}
+var tileParams = map[string]bool{"mmsi": true, "max_age": true, "key": true}
 
-var tileKinds = map[string]bool{"vessel": true, "aton": true, "base": true, "sar": true}
+func init() {
+	for k := range vesselFilterParams {
+		tileParams[k] = true
+	}
+}
+
+// tileWindow is how far back a tile reaches by default. A vessel is still there when its receiver goes
+// offline or it switches AIS off at its mooring, so a map shows the last known position, with its age.
+const tileWindow = 7 * 24 * time.Hour
 
 type tileFilter struct {
+	vesselFilter
 	mmsi   map[uint32]bool
-	kinds  map[string]bool
-	class  string
-	types  [][2]uint8
-	minSog float64
-	maxAge time.Duration // 0: the whole cache
+	maxAge time.Duration // 0: no limit
 }
 
 func parseTileFilter(vals url.Values, cl *Claims) (*tileFilter, string) {
@@ -61,71 +68,29 @@ func parseTileFilter(vals url.Values, cl *Claims) (*tileFilter, string) {
 	if cl.Area < 0 && len(s.mmsi) == 0 {
 		return nil, "mmsi required for this key"
 	}
-	f := &tileFilter{mmsi: s.mmsi}
-	if q := vals.Get("kind"); q != "" {
-		f.kinds = map[string]bool{}
-		for _, k := range strings.Split(q, ",") {
-			if !tileKinds[k] {
-				return nil, "kind=vessel,aton,base,sar"
-			}
-			f.kinds[k] = true
-		}
+	vf, msg := parseVesselFilter(vals, vesselTTL)
+	if msg != "" {
+		return nil, msg
 	}
-	if f.class = vals.Get("class"); f.class != "" && f.class != "A" && f.class != "B" {
-		return nil, "class=A or class=B"
-	}
-	if q := vals.Get("type"); q != "" {
-		for _, r := range strings.Split(q, ",") {
-			lo, hi, found := strings.Cut(r, "-")
-			if !found {
-				hi = lo
-			}
-			a, err1 := strconv.ParseUint(lo, 10, 8)
-			b, err2 := strconv.ParseUint(hi, 10, 8)
-			if err1 != nil || err2 != nil || a > b {
-				return nil, "type=<code> or <from>-<to>, comma-separated, 0-255"
-			}
-			f.types = append(f.types, [2]uint8{uint8(a), uint8(b)})
-		}
-	}
-	if q := vals.Get("min_sog"); q != "" {
-		v, err := strconv.ParseFloat(q, 64)
-		if err != nil || v < 0 {
-			return nil, "min_sog=<knots>"
-		}
-		f.minSog = v
-	}
+	f := &tileFilter{vesselFilter: *vf, mmsi: s.mmsi, maxAge: tileWindow}
 	age, set, msg := parseMaxAge(vals.Get("max_age"))
 	if msg != "" {
 		return nil, msg
 	}
-	if set && age != ageAll {
+	if set {
 		f.maxAge = age
+		if age == ageAll {
+			f.maxAge = 0
+		}
 	}
 	return f, ""
 }
 
 func (f *tileFilter) match(mmsi uint32, v *vessel, now time.Time) bool {
-	switch {
-	case f.mmsi != nil && !f.mmsi[mmsi],
-		f.kinds != nil && !f.kinds[v.Kind],
-		f.class != "" && v.Class != f.class,
-		f.minSog > 0 && !(v.Sog < 102.3 && v.Sog >= f.minSog),
-		f.maxAge > 0 && now.Sub(v.Seen) > f.maxAge:
-		return false
-	}
-	if f.types == nil {
-		return true
-	}
-	for _, t := range f.types {
-		if v.ShipType >= t[0] && v.ShipType <= t[1] {
-			return true
-		}
-	}
-	return false
+	return (f.mmsi == nil || f.mmsi[mmsi]) && (f.maxAge == 0 || now.Sub(v.Seen) <= f.maxAge) && f.vesselFilter.match(v, now)
 }
 
-// serveVesselTile: GET /v1/vessels/tiles/{z}/{x}/{y} → the cached vessels in one tile, gzipped. The area
+// serveVesselTile: GET /v1/vessels/tiles/{z}/{x}/{y} → the vessels in one tile, gzipped. The area
 // cap does not apply: a tile bounds its own cost by thinning, and the tile rate limit bounds how many.
 func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -212,9 +177,27 @@ type tilePoint struct {
 // vesselTile encodes the vessels in a tile that match f.
 func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte {
 	n := float64(uint(1) << z)
+	box := tileBox(z, x, y)
+	// The cache answers for the last 30 minutes and the record for what it no longer holds. A record that
+	// fails leaves the tile to the cache rather than blanking the map. ponytail: a z0-z3 tile decodes every
+	// matching row in its area, ~400 ms for 75,000 (BenchmarkTileRecordZ0), at most once per tileTTL; pick
+	// the newest row per cell in SQL at low zooms if the route's latency histogram says so.
+	var recs []record
+	if p.store != nil && (f.maxAge == 0 || f.maxAge > vesselTTL) {
+		q := recordQuery{boxes: []bbox{box}, before: now.Add(-vesselTTL), hasPos: true, filter: &f.vesselFilter, now: now}
+		if f.maxAge > 0 {
+			q.since = now.Add(-f.maxAge)
+		}
+		if f.mmsi != nil {
+			q.mmsis = slices.Collect(maps.Keys(f.mmsi))
+		}
+		var err error
+		if recs, err = p.store.find(q); err != nil {
+			log.Printf("store: %v", err)
+		}
+	}
 	var pts []tilePoint
-	p.vmu.RLock()
-	p.vesselsIn([]bbox{tileBox(z, x, y)}, func(mmsi uint32, v *vessel) {
+	add := func(mmsi uint32, v *vessel) {
 		if math.Abs(v.Lat) > mercatorLat || !f.match(mmsi, v, now) {
 			return
 		}
@@ -227,7 +210,16 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		pts = append(pts, tilePoint{mmsi: mmsi, x: int32(math.Round(px)), y: int32(math.Round(py)), seen: v.Seen,
 			name: v.Name, kind: v.Kind, class: v.Class, source: sourceKind(v.Source), station: v.Station, shipType: v.ShipType,
 			navStatus: v.NavStatus, cog: v.Cog, sog: v.Sog, heading: v.Heading, length: v.Length, beam: v.Beam})
-	})
+	}
+	p.vmu.RLock()
+	p.vesselsIn([]bbox{box}, add)
+	for _, rec := range recs {
+		// ponytail: a vessel the cache holds is the cache's to answer, even in the minute after a restart
+		// when the record can be a report ahead.
+		if p.vessels[rec.mmsi] == nil {
+			add(rec.mmsi, rec.v)
+		}
+	}
 	p.vmu.RUnlock()
 	slices.SortFunc(pts, func(a, b tilePoint) int { return cmp.Compare(a.mmsi, b.mmsi) })
 	if len(pts) > tileCap {
