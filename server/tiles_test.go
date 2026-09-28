@@ -268,27 +268,40 @@ func TestVesselTileRecord(t *testing.T) {
 		slices.Sort(out)
 		return out
 	}
+	fcIDs := func(target string) []uint64 {
+		var out []uint64
+		for _, f := range getFC(t, p, target).Features {
+			out = append(out, uint64(f.ID))
+		}
+		slices.Sort(out)
+		return out
+	}
+	// An area: the tile, and the same query with the box as a bbox, answer with the same vessels.
 	for query, want := range map[string][]uint64{
-		"":                              {257000011, 257000014},
-		"?max_age_moving=all":           {257000011, 257000012, 257000014},
-		"?max_age=all":                  {257000011, 257000013, 257000014},
-		"?max_age=30m":                  {257000014},
-		"?min_sog=5&max_age_moving=all": {257000012, 257000014},
+		"":                             {257000011, 257000014},
+		"max_age_moving=all":           {257000011, 257000012, 257000014},
+		"max_age=all":                  {257000011, 257000013, 257000014},
+		"max_age=30m":                  {257000014},
+		"min_sog=5&max_age_moving=all": {257000012, 257000014},
+		"kind=aton&max_age=all":        nil,
 	} {
-		if got := ids(query); !slices.Equal(got, want) {
-			t.Errorf("tile%s: %v, want %v", query, got, want)
+		if got := ids("?" + query); !slices.Equal(got, want) {
+			t.Errorf("tile?%s: %v, want %v", query, got, want)
+		}
+		if got := fcIDs("/v1/vessels?bbox=59,10,60,11&" + query); !slices.Equal(got, want) {
+			t.Errorf("/v1/vessels?bbox=…&%s: %v, want %v", query, got, want)
 		}
 	}
-
-	for query, want := range map[string]int{
-		"bbox=59,10,60,11":                               1, // the cache's 30 minutes, as ever
-		"bbox=59,10,60,11&max_age=all":                   4,
-		"bbox=59,10,60,11&max_age=all&max_age_moving=1h": 3,
-		"bbox=59,10,60,11&max_age=all&min_sog=5":         2,
-		"bbox=59,10,60,11&max_age=all&kind=aton":         0,
+	// Named vessels answer however old, moving or not, unless the query limits them.
+	for query, want := range map[string][]uint64{
+		"mmsi=257000012,257000013":  {257000012, 257000013},
+		"mmsi=257000012&max_age=1h": nil,
 	} {
-		if got := len(getFC(t, p, "/v1/vessels?"+query).Features); got != want {
-			t.Errorf("/v1/vessels?%s: %d features, want %d", query, got, want)
+		if got := ids("?" + query); !slices.Equal(got, want) {
+			t.Errorf("tile?%s: %v, want %v", query, got, want)
+		}
+		if got := fcIDs("/v1/vessels?" + query); !slices.Equal(got, want) {
+			t.Errorf("/v1/vessels?%s: %v, want %v", query, got, want)
 		}
 	}
 }

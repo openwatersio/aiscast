@@ -3,6 +3,7 @@ package main
 import (
 	"math/rand/v2"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -123,10 +124,11 @@ func benchTileRecord(b *testing.B, z, x, y int) {
 	if err := st.upsert(rows); err != nil {
 		b.Fatal(err)
 	}
+	rules, _ := parseAgeRules(url.Values{})
 	b.ReportAllocs()
 	var n int
 	for b.Loop() {
-		n = len(gzipBytes(p.vesselTile(z, x, y, &tileFilter{vesselFilter: vesselFilter{movingAge: vesselTTL}, maxAge: tileWindow}, time.Now())))
+		n = len(gzipBytes(p.vesselTile(z, x, y, &tileFilter{ageRules: *rules}, time.Now())))
 	}
 	b.ReportMetric(float64(n), "gz-bytes")
 }

@@ -45,14 +45,9 @@ func init() {
 	}
 }
 
-// tileWindow is how far back a tile reaches by default. A vessel is still there when its receiver goes
-// offline or it switches AIS off at its mooring, so a map shows the last known position, with its age.
-const tileWindow = 7 * 24 * time.Hour
-
 type tileFilter struct {
-	vesselFilter
-	mmsi   map[uint32]bool
-	maxAge time.Duration // 0: no limit
+	ageRules
+	mmsi map[uint32]bool
 }
 
 func parseTileFilter(vals url.Values, cl *Claims) (*tileFilter, string) {
@@ -68,26 +63,16 @@ func parseTileFilter(vals url.Values, cl *Claims) (*tileFilter, string) {
 	if cl.Area < 0 && len(s.mmsi) == 0 {
 		return nil, "mmsi required for this key"
 	}
-	vf, msg := parseVesselFilter(vals, vesselTTL)
+	rules, msg := parseAgeRules(vals)
 	if msg != "" {
 		return nil, msg
 	}
-	f := &tileFilter{vesselFilter: *vf, mmsi: s.mmsi, maxAge: tileWindow}
-	age, set, msg := parseMaxAge(vals.Get("max_age"))
-	if msg != "" {
-		return nil, msg
-	}
-	if set {
-		f.maxAge = age
-		if age == ageAll {
-			f.maxAge = 0
-		}
-	}
-	return f, ""
+	return &tileFilter{ageRules: *rules, mmsi: s.mmsi}, ""
 }
 
+// match: a tile given mmsi shows only those vessels, and they are named ones.
 func (f *tileFilter) match(mmsi uint32, v *vessel, now time.Time) bool {
-	return (f.mmsi == nil || f.mmsi[mmsi]) && (f.maxAge == 0 || now.Sub(v.Seen) <= f.maxAge) && f.vesselFilter.match(v, now)
+	return (f.mmsi == nil || f.mmsi[mmsi]) && f.ageRules.match(f.mmsi != nil, v, now)
 }
 
 // serveVesselTile: GET /v1/vessels/tiles/{z}/{x}/{y} → the vessels in one tile, gzipped. The area
@@ -183,11 +168,8 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 	// matching row in its area, ~400 ms for 75,000 (BenchmarkTileRecordZ0), at most once per tileTTL; pick
 	// the newest row per cell in SQL at low zooms if the route's latency histogram says so.
 	var recs []record
-	if p.store != nil && (f.maxAge == 0 || f.maxAge > vesselTTL) {
-		q := recordQuery{boxes: []bbox{box}, before: now.Add(-vesselTTL), hasPos: true, filter: &f.vesselFilter, now: now}
-		if f.maxAge > 0 {
-			q.since = now.Add(-f.maxAge)
-		}
+	if age, vf := f.rule(f.mmsi != nil); p.store != nil && (age == 0 || age > vesselTTL) {
+		q := recordQuery{boxes: []bbox{box}, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, filter: vf, now: now}
 		if f.mmsi != nil {
 			q.mmsis = slices.Collect(maps.Keys(f.mmsi))
 		}

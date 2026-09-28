@@ -360,10 +360,9 @@ var recordLimit = 500
 const searchLimit = 50
 
 // serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b&max_age= → GeoJSON of vessel
-// positions. The filters, the token, and the area and MMSI caps are exactly those of /v1/stream. A box
-// answers from the cache: vessels heard in the last 30 minutes, or further back when max_age asks. A
-// followed MMSI answers with its last known position however old, unless max_age says otherwise. ?q=
-// searches instead (serveVesselSearch).
+// positions. The filters, the token, and the area and MMSI caps are exactly those of /v1/stream, and the
+// age rules those of the tiles (ageRules). The cache answers for the last 30 minutes and the record for
+// what it no longer holds. ?q= searches instead (serveVesselSearch).
 func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	cl, err := p.requestClaims(r)
@@ -377,19 +376,13 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s, msg := parseSub(vals, cl, true)
-	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
-	vf, filterMsg := parseVesselFilter(vals, 0)
-	msg = cmp.Or(msg, ageMsg, filterMsg)
-	if msg != "" {
+	rules, rulesMsg := parseAgeRules(vals)
+	if msg = cmp.Or(msg, rulesMsg); msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
 	now := time.Now()
-	var cutoff time.Time // zero: no age limit beyond what the cache holds
-	if set {
-		cutoff = ageCutoff(now, age)
-	}
-	deep := set && age > vesselTTL && (len(s.boxes) > 0 || s.everything)
+	deep := (rules.areaAge == 0 || rules.areaAge > vesselTTL) && (len(s.boxes) > 0 || s.everything)
 	var emitted map[uint32]int // each vessel the cache answered, and its index in features
 	if p.store != nil && (len(s.mmsi) > 0 || deep) {
 		emitted = map[uint32]int{}
@@ -398,7 +391,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	attribution := map[string]string{}
 	p.vmu.RLock()
 	p.eachMatch(s, func(mmsi uint32, v *vessel) {
-		if v.HasPos && !v.Seen.Before(cutoff) && vf.match(v, now) {
+		if v.HasPos && rules.match(s.mmsi[mmsi], v, now) {
 			features = append(features, v.featureJSON(mmsi))
 			noteAttribution(attribution, v.Source)
 			if emitted != nil {
@@ -409,7 +402,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	p.vmu.RUnlock()
 	truncated := false
 	if emitted != nil {
-		recs, more, err := p.recordVessels(s, vf, cutoff, deep, now)
+		recs, more, err := p.recordVessels(s, rules, deep, now)
 		if err != nil {
 			log.Printf("store: %v", err)
 			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
@@ -424,7 +417,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 			taken[rec.mmsi] = true
 			i, ok := emitted[rec.mmsi]
 			// A vessel the cache holds with a position the cache did not answer with is outside this request:
-			// its newest position has left the boxes or is older than max_age.
+			// its newest position has left the boxes or the age rules leave it out.
 			if c := p.vessels[rec.mmsi]; !ok && c != nil && c.HasPos {
 				continue
 			}
@@ -449,21 +442,23 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 // recordVessels reads what the record holds for a request: every followed vessel, and, for a deep request,
 // vessels last heard inside the boxes more than 30 minutes ago. more reports that the box query stopped at
 // recordLimit.
-func (p *Pipeline) recordVessels(s *v1Sub, vf *vesselFilter, cutoff time.Time, deep bool, now time.Time) (_ []record, more bool, _ error) {
+func (p *Pipeline) recordVessels(s *v1Sub, rules *ageRules, deep bool, now time.Time) (_ []record, more bool, _ error) {
 	var recs []record
 	if len(s.mmsi) > 0 {
 		followed := make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
 			followed = append(followed, m)
 		}
-		rs, err := p.store.find(recordQuery{mmsis: followed, since: cutoff, hasPos: true, filter: vf, now: now})
+		age, vf := rules.rule(true)
+		rs, err := p.store.find(recordQuery{mmsis: followed, since: since(now, age), hasPos: true, filter: vf, now: now})
 		if err != nil {
 			return nil, false, err
 		}
 		recs = append(recs, rs...)
 	}
 	if deep {
-		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: cutoff, before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now})
+		age, vf := rules.rule(false)
+		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now})
 		if err != nil {
 			return nil, false, err
 		}
@@ -784,6 +779,60 @@ func (f *vesselFilter) where(now time.Time) (where []string, args []any) {
 		args = append(args, unixMs(now.Add(-f.movingAge)))
 	}
 	return where, args
+}
+
+// areaWindow is how far back an area answers. A vessel is usually still there when its receiver goes
+// offline or it switches AIS off at its mooring, so an area shows its last known position, with its age.
+const areaWindow = 7 * 24 * time.Hour
+
+// ageRules are the age limits /v1/vessels and the tiles share. An area answers with a week of last known
+// positions, and leaves out a vessel last heard under way more than 30 minutes ago, since it has moved on.
+// A named vessel, one given in mmsi, answers with its last known position however old. max_age and
+// max_age_moving set both.
+type ageRules struct {
+	areaAge, namedAge time.Duration // 0: no limit
+	area, named       vesselFilter
+}
+
+func parseAgeRules(vals url.Values) (*ageRules, string) {
+	area, msg := parseVesselFilter(vals, vesselTTL)
+	if msg != "" {
+		return nil, msg
+	}
+	named, _ := parseVesselFilter(vals, 0)
+	r := &ageRules{areaAge: areaWindow, area: *area, named: *named}
+	age, set, msg := parseMaxAge(vals.Get("max_age"))
+	if msg != "" {
+		return nil, msg
+	}
+	if set {
+		if age == ageAll {
+			age = 0
+		}
+		r.areaAge, r.namedAge = age, age
+	}
+	return r, ""
+}
+
+// rule is the age limit and filter for a named vessel or one found by area.
+func (r *ageRules) rule(named bool) (time.Duration, *vesselFilter) {
+	if named {
+		return r.namedAge, &r.named
+	}
+	return r.areaAge, &r.area
+}
+
+func (r *ageRules) match(named bool, v *vessel, now time.Time) bool {
+	age, f := r.rule(named)
+	return (age == 0 || now.Sub(v.Seen) <= age) && f.match(v, now)
+}
+
+// since is the oldest seen an age admits; zero, admitting everything, for no limit.
+func since(now time.Time, age time.Duration) time.Time {
+	if age == 0 {
+		return time.Time{}
+	}
+	return now.Add(-age)
 }
 
 // ageAll is max_age=all: no age limit at all.
