@@ -229,16 +229,21 @@ groups:
         annotations:
           summary: '{{ $labels.name }} crashed and systemd restarted it'
           description: The process exited on its own (a panic, a fatal error, or an out-of-memory kill), so this is not a deploy or a systemctl restart. Run journalctl -u {{ $labels.name }} -n 100 on the box to see why it exited.
-      # A backstop that does not depend on the systemd collector: any kind of start, more often than deploys
-      # and manual restarts happen together. changes() sees only starts that lived to a scrape, so a fast
-      # crash loop counts low here; it also stops the scrapes, which MetricsMissing catches, and
-      # ServiceCrashed counts every automatic restart exactly.
+      # A backstop that does not depend on the systemd collector: starts that no deploy explains, per host.
+      # Each deploy brings a new aiscast_build_info revision, so the distinct revisions a host reported in
+      # the hour, less the one already running, are its deploys. Revisions are counted, not whole series, so
+      # a new go_version on the same revision is not a deploy. changes() sees only starts that lived to a scrape, so a fast crash loop
+      # counts low here; it also stops the scrapes, which MetricsMissing catches, and ServiceCrashed counts
+      # every automatic restart exactly.
       - alert: AiscastRestartStorm
-        expr: changes(process_start_time_seconds{job="aiscast"}[1h]) > 3
+        expr: |
+          sum by (host) (changes(process_start_time_seconds{job="aiscast"}[1h]))
+            - (count by (host) (count by (host, revision) (count_over_time(aiscast_build_info[1h]))) - 1)
+          > 2
         labels: {severity: warning}
         annotations:
-          summary: aiscast started {{ $value }} times in the last hour
-          description: Deploys and manual restarts account for one or two starts an hour at most, so this many points to repeated crashes or restarts. Check journalctl -u aiscast on the box and the recent deploy runs in GitHub Actions.
+          summary: aiscast on {{ $labels.host }} started {{ $value }} times in the last hour without a deploy
+          description: Deploys are already subtracted, so these are crashes or manual restarts. Check journalctl -u aiscast on the box, and whether someone ran systemctl restart.
       - alert: CrashDetectionMissing
         expr: absent(node_systemd_service_restart_total{name="aiscast.service"})
         for: 30m
