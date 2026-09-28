@@ -17,7 +17,6 @@ var openapiJSON []byte
 
 // serveOpenAPI serves the hand-written OpenAPI document; openapi_test.go keeps it in sync with the mux.
 func serveOpenAPI(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(openapiJSON)
 }
@@ -126,11 +125,25 @@ func connectKey(c *Claims, r *http.Request) string {
 	return clientIP(r)
 }
 
-// rateLimited wraps a public HTTP handler with the per-address request limit. CORS stays open on the 429
-// itself, so a cross-origin client sees the rate limit rather than an opaque CORS failure.
-func (p *Pipeline) rateLimited(h http.HandlerFunc) http.HandlerFunc {
+// corsHeaders are the request headers a browser may send to the JSON endpoints: the token in Authorization,
+// so a page never has to put it on the query string where it lands in logs and the address bar, and
+// Content-Type for the JSON body /mcp takes.
+const corsHeaders = "Authorization, Content-Type"
+
+// api wraps a public JSON handler with open CORS and the per-address request limit. allow names the request
+// headers the preflight permits. The preflight is answered here, before the limit, so a client at the limit
+// sees the 429 on its real request rather than an opaque CORS failure, and the 429 carries the origin header
+// for the same reason. No Allow-Methods: GET and POST are safelisted, and nothing here takes another method.
+func (p *Pipeline) api(allow string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		hd := w.Header()
+		hd.Set("Access-Control-Allow-Origin", "*")
+		hd.Set("Access-Control-Allow-Headers", allow)
+		hd.Set("Access-Control-Max-Age", "86400")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if p.limited(w, httpLimit, clientIP(r)) {
 			return
 		}

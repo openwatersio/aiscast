@@ -106,17 +106,12 @@ func newMCPService(p *Pipeline) *mcpService {
 	})}
 }
 
-// serveMCP: POST /mcp. CORS is open like the rest of the API, with the headers MCP clients send, so
-// browser-based agents and the MCP Inspector can call it. Claims resolve exactly as for /v1/vessels.
+// mcpHeaders are the request headers MCP clients send, allowed on the /mcp preflight so browser-based
+// agents and the MCP Inspector can call it cross-origin.
+const mcpHeaders = corsHeaders + ", Accept, Mcp-Protocol-Version, Mcp-Method, Mcp-Name"
+
+// serveMCP: POST /mcp. CORS is open like the rest of the API. Claims resolve exactly as for /v1/vessels.
 func (p *Pipeline) serveMCP(w http.ResponseWriter, r *http.Request) {
-	h := w.Header()
-	h.Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Mcp-Protocol-Version, Mcp-Method, Mcp-Name")
-	h.Set("Access-Control-Max-Age", "86400")
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
 	cl, err := p.requestClaims(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)

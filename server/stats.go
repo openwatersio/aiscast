@@ -190,7 +190,9 @@ func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v0/stream", "/v1/stream", "/v1/nmea", "/health", "/metrics":
 		default:
-			p.usage.requests.add(time.Now())
+			if r.Method != http.MethodOptions { // a browser's preflight, not a use of the API
+				p.usage.requests.add(time.Now())
+			}
 		}
 		start, sw := time.Now(), &statusWriter{ResponseWriter: w}
 		h.ServeHTTP(sw, r)
@@ -203,7 +205,6 @@ func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 }
 
 func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 	now := time.Now()
 
