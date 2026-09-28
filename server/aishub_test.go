@@ -198,3 +198,60 @@ func TestAishubPositionAccuracy(t *testing.T) {
 		t.Fatalf("PAC 1 did not set position accuracy: %+v", pr)
 	}
 }
+
+// Receptions are processed whole: another source's reception never lands between two rows of an AISHub
+// snapshot, since replay processes the snapshot as one record. Without the ordering lock the concurrent
+// Digitraffic reports below interleave with the rows.
+func TestAishubSnapshotIsNotInterleaved(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	const n = 20000
+	rows := make([]string, n)
+	for i := range rows {
+		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
+	}
+	body := []byte("[[" + strings.Join(rows, ",") + "]]")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() { // another adapter, running concurrently as it does live
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			p.digitrafficMessage(fmt.Sprintf("vessels-v2/%d/location", 230000000+i),
+				[]byte(fmt.Sprintf(`{"time":%d,"sog":1,"cog":1,"navStat":0,"rot":0,"posAcc":false,"raim":false,"heading":1,"lon":20.3,"lat":60.0}`, time.Now().Unix())), time.Now())
+		}
+	}()
+	time.Sleep(20 * time.Millisecond) // let the other adapter get going
+	if !p.admit() {
+		t.Fatal("not admitted")
+	}
+	_, err := p.ingestAishub(body, time.Now(), newAishubState())
+	p.release()
+	close(stop)
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, last, seen, others := -1, -1, 0, 0
+	for i := 0; len(sub.ch) > 0; i++ {
+		if ev := <-sub.ch; ev.Source == "aishub" {
+			if first < 0 {
+				first = i
+			}
+			last = i
+			seen++
+		} else {
+			others++
+		}
+	}
+	if others == 0 {
+		t.Fatal("the other adapter produced no events, so the test shows nothing")
+	}
+	if seen != n || last-first+1 != n {
+		t.Fatalf("snapshot's %d events spread over %d positions in the stream: another reception interleaved", seen, last-first+1)
+	}
+}

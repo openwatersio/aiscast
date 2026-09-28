@@ -149,7 +149,7 @@ func (p *Pipeline) barentswatchLine(line []byte, now time.Time) {
 	if !p.admit() {
 		return
 	}
-	defer p.intake.RUnlock()
+	defer p.release()
 	p.arch.write(Reception{Source: "barentswatch", Station: "barentswatch", RecvTime: now, Body: string(line)})
 	m := newBwMessage()
 	err := json.Unmarshal(line, &m)

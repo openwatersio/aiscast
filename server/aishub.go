@@ -255,7 +255,7 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			if !p.admit() {
 				return -1, nil
 			}
-			defer p.intake.RUnlock() // held across the rows: a snapshot is one reception
+			defer p.release() // held across the rows: a snapshot is one reception
 			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
 			return p.ingestAishub(body, start, st)
 		}()

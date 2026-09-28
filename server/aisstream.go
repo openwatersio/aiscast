@@ -45,7 +45,7 @@ func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
 	if !p.admit() {
 		return
 	}
-	defer p.intake.RUnlock()
+	defer p.release()
 	p.arch.write(Reception{Source: "aisstream", Station: "aisstream", RecvTime: now, Body: string(body)})
 	var env v0Envelope
 	if json.Unmarshal(body, &env) != nil {

@@ -75,6 +75,7 @@ type Pipeline struct {
 	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
 	// recorded (raw without its normalized events, or the reverse) and none can start.
 	intake  sync.RWMutex
+	order   sync.Mutex // one reception at a time, in arrival order, as replay processes them (admit)
 	closing atomic.Bool
 
 	seen     map[string]time.Time
@@ -157,19 +158,29 @@ func (p *Pipeline) Ingest(rx Reception) {
 	if !p.admit() {
 		return
 	}
-	defer p.intake.RUnlock()
+	defer p.release()
 	p.arch.write(rx)
 	p.ingestLine(rx)
 }
 
-// admit holds the intake read lock for one reception, or refuses it once shutdown has begun.
+// admit holds the intake read lock for one reception, or refuses it once shutdown has begun, and
+// takes order so the reception is processed whole: adapters run concurrently, and without it
+// another source's reception could land between two rows of an AISHub snapshot, which replay
+// processes as one record in receive-time order.
 func (p *Pipeline) admit() bool {
 	p.intake.RLock()
 	if p.closing.Load() {
 		p.intake.RUnlock()
 		return false
 	}
+	p.order.Lock()
 	return true
+}
+
+// release ends a reception admitted by admit.
+func (p *Pipeline) release() {
+	p.order.Unlock()
+	p.intake.RUnlock()
 }
 
 // closeArchives stops intake, then drains both archives. Setting closing turns away receptions not

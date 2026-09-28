@@ -101,7 +101,7 @@ func (p *Pipeline) digitrafficMessage(topic string, body []byte, now time.Time) 
 	if !p.admit() {
 		return
 	}
-	defer p.intake.RUnlock()
+	defer p.release()
 	p.arch.write(Reception{Source: "digitraffic", Station: "digitraffic", RecvTime: now, Body: topic + " " + string(body)})
 	parts := strings.Split(topic, "/") // vessels-v2/<mmsi>/location|metadata
 	if len(parts) != 3 {
