@@ -7,7 +7,7 @@ ALLOW_ANON=1 go run .          # Kystverket upstream on, HTTP :8080, UDP :10110,
 go test ./...
 ```
 
-[openwaters.io/api/ais](https://openwaters.io/api/ais/) documents the endpoints. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, stateless, five read-only tools over the vessel cache and station stats (`mcp.go`), the same claims and rate limit as `/v1/vessels`. `server.json` at the repo root is its registry listing; its version and `mcpVersion` move together. Operator-only: `GET /metrics` serves Prometheus text (events, duplicates, parse/decode failures, client drops, rate-limit rejections, unmapped source fields and record types, vessels, open streams by protocol and tier, fan-out sends and bytes, HTTP requests by route and status with latency histograms for `/v1/vessels` and `/mcp`, per-source event counts, last-event age, and delay percentiles, archive upload failures and staged bytes, `aiscast_build_info` with the git revision of the binary, and the standard `process_` series). The alert rules and dashboard in [deploy/grafana/](deploy/grafana/) query these names.
+[openwaters.io/api/ais](https://openwaters.io/api/ais/) documents the endpoints. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, stateless, six read-only tools over the vessel cache, the vessel record, recent tracks, and station stats (`mcp.go`, `track_api.go`), the same claims and rate limit as `/v1/vessels`. `server.json` at the repo root is its registry listing; its version and `mcpVersion` move together. Operator-only: `GET /metrics` serves Prometheus text (events, duplicates, parse/decode failures, client drops, rate-limit rejections, unmapped source fields and record types, vessels, open streams by protocol and tier, fan-out sends and bytes, HTTP requests by route and status with latency histograms for the vessel routes and `/mcp`, per-source event counts, last-event age, and delay percentiles, archive upload failures and staged bytes, `aiscast_build_info` with the git revision of the binary, and the standard `process_` series). The alert rules and dashboard in [deploy/grafana/](deploy/grafana/) query these names.
 
 Environment:
 
@@ -27,7 +27,8 @@ Environment:
 - `REVOKED_SUBS` (comma list).
 - `ALLOW_ANON=1`: no tokens needed, local development only.
 - `SNAPSHOT` (`vessels.json`): the server writes the vessel cache every minute and on shutdown, and restores it on boot. The rolling 24 h/7 d counters behind `/v1/stats` live in `<name>-usage.json` beside it.
-- `STORE` (`aiscast.db`): the vessel record, in SQLite. `off` runs without it. See [Vessel record](#vessel-record).
+- `STORE` (`aiscast.db`): the vessel record, in SQLite. `off` runs without it, and without tracks. See [Vessel record](#vessel-record).
+- `TRACKS` (`tracks.db`): every position of the last 48 hours, in SQLite, for tracks. `off` runs without it. See [Recent tracks](#recent-tracks).
 - `WS_CONNECTS_PER_MIN` (`60` per IP).
 - `STATION_SALT`: keys the UDP station ids. Set it on a public host.
 - `TRUST_CF_HEADERS=1`: use it only when Cloudflare proxies the hostname. It makes rate limits key on `CF-Connecting-IP`.
@@ -73,3 +74,11 @@ The cache drops a vessel 30 minutes after its last report. The vessel record kee
 The fold marks each vessel it updates, and a writer upserts the marked vessels once a second in one transaction, so the fold never waits on the disk. The upsert merges with the fold's rules: a vessel that returns after the cache dropped it arrives without its name or position, and a blank field keeps the stored value. On boot every vessel in the snapshot is written, which seeds an empty record. `aiscast replay` never attaches the record, so a replayed day cannot overwrite a live position. A record that will not open leaves the server running without it, and `aiscast_store_up` drops to 0.
 
 `/metrics` reports `aiscast_store_up`, flushes, flush failures and seconds, rows written, and the file size.
+
+## Recent tracks
+
+`GET /v1/vessels/{mmsi}/track` and the MCP `get_vessel_track` tool answer where a vessel has been over the last 48 hours. Every position report the pipeline accepts is kept in the SQLite file `TRACKS` names, which runs only beside the vessel record. A report the cache withholds as stale or implausible is withheld here too.
+
+Each UTC day is one table keyed by MMSI and time, so a track is a range read in each day it spans, and expiry drops a whole table once the window has left it. That keeps two to three days, several gigabytes. Positions use the lake's integer encodings, and each row names its source kind for attribution. The fold appends each accepted position to a queue under the cache lock it already holds, and the vessel record's writer drains the queue once a second. The queue holds about eight minutes of traffic; past that, a stalled disk costs new positions, counted in `aiscast_tracks_points_dropped_total`, rather than memory. `aiscast replay` never attaches the store.
+
+A request past 48 hours is clamped to the window, and the answer's `from` and `to` say what was covered. The newest `limit` positions are returned when more match, capped by tier: 200 anonymous, 1,000 with a personal token, 5,000 for feeder and above. `/metrics` reports positions written and dropped, write failures and seconds, and the file size.

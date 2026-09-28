@@ -533,3 +533,24 @@ func TestFirstSeenBeforeTheFirstWrite(t *testing.T) {
 		t.Errorf("first_seen after the write changed: %v", f.Properties)
 	}
 }
+
+// A merge from history carries an older first sighting; the record keeps the earliest and nothing else
+// moves backward.
+func TestStoreKeepsTheEarliestFirstSeen(t *testing.T) {
+	st, err := openStore(filepath.Join(t.TempDir(), "aiscast.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	live := newVessel()
+	live.Name, live.HasPos, live.Lat, live.Lon, live.PosAt, live.Seen = "NORDIC STAR", true, 59.9, 10.7, now, now
+	st.upsert([]record{{mmsi: 257000001, v: live}})
+	old := newVessel()
+	old.Name, old.HasPos, old.Lat, old.Lon, old.PosAt, old.Seen = "OLD NAME", true, 58, 9, now.AddDate(0, -1, 0), now.AddDate(0, -1, 0)
+	st.upsert([]record{{mmsi: 257000001, v: old}})
+	rec, _, _ := st.get(257000001)
+	if !rec.firstSeen.Equal(now.AddDate(0, -1, 0)) || rec.v.Lat != 59.9 || !rec.v.Seen.Equal(now) {
+		t.Errorf("first %v lat %v seen %v", rec.firstSeen, rec.v.Lat, rec.v.Seen)
+	}
+}

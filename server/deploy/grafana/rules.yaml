@@ -205,6 +205,20 @@ groups:
         annotations:
           summary: Vessel record writes take {{ $value | humanizePercentage }} of each second
           description: The writer is near its budget. Check disk latency and the record's size on the capacity dashboard.
+      # Recent positions ride on the same writer; a stalled disk shows as failures, then as drops once the queue is full.
+      - alert: TracksWritesFailing
+        expr: increase(aiscast_tracks_write_failures_total[10m]) > 0 or increase(aiscast_tracks_points_dropped_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: The track store is failing writes or dropping positions
+          description: Recent tracks have gaps. Check the tracks lines in journalctl -u aiscast and free disk.
+      - alert: TracksWritesSlow
+        expr: rate(aiscast_tracks_write_seconds_total[15m]) > 0.5
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: Track store writes take {{ $value | humanizePercentage }} of each second
+          description: The writer is near its budget. Check disk latency and the track store's size on the capacity dashboard.
 
       - alert: DiskFreeLow
         expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.2

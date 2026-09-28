@@ -53,6 +53,14 @@ func main() {
 			log.Printf("store: %v; running without the vessel record", err)
 		} else {
 			p.attachStore(st)
+			// Tracks ride on the record's writer, so they run only beside it.
+			if tp := env("TRACKS", "tracks.db"); tp != "off" {
+				if ts, err := openTracks(tp); err != nil {
+					log.Printf("tracks: %v; running without recent positions", err)
+				} else {
+					p.attachTracks(ts)
+				}
+			}
 			go p.runStore()
 		}
 	}
@@ -151,21 +159,22 @@ func main() {
 // build until the document mentions it.
 func routes(p *Pipeline) map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"/v0/stream":         p.serveV0,
-		"/v1/stream":         p.serveV1,
-		"/v1/receive":        p.serveReceive,
-		"/v1/keys":           p.serveKeys,
-		"/v1/nmea":           p.serveNMEA,
-		"/v1/stations":       p.rateLimited(p.serveStations),
-		"/v1/stations/":      p.rateLimited(p.serveStations),
-		"/v1/vessels":        p.rateLimited(p.serveVessels),
-		"/v1/vessels/{mmsi}": p.rateLimited(p.serveVessel),
-		"/v1/stats":          p.rateLimited(p.serveStats),
-		"/mcp":               p.rateLimited(p.serveMCP),
-		"/health":            p.serveHealth,
-		"/metrics":           p.serveMetrics,
-		"/robots.txt":        serveRobots,
-		"/openapi.json":      p.rateLimited(serveOpenAPI),
+		"/v0/stream":               p.serveV0,
+		"/v1/stream":               p.serveV1,
+		"/v1/receive":              p.serveReceive,
+		"/v1/keys":                 p.serveKeys,
+		"/v1/nmea":                 p.serveNMEA,
+		"/v1/stations":             p.rateLimited(p.serveStations),
+		"/v1/stations/":            p.rateLimited(p.serveStations),
+		"/v1/vessels":              p.rateLimited(p.serveVessels),
+		"/v1/vessels/{mmsi}":       p.rateLimited(p.serveVessel),
+		"/v1/vessels/{mmsi}/track": p.rateLimited(p.serveTrack),
+		"/v1/stats":                p.rateLimited(p.serveStats),
+		"/mcp":                     p.rateLimited(p.serveMCP),
+		"/health":                  p.serveHealth,
+		"/metrics":                 p.serveMetrics,
+		"/robots.txt":              serveRobots,
+		"/openapi.json":            p.rateLimited(serveOpenAPI),
 	}
 }
 

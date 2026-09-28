@@ -16,7 +16,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -50,7 +49,7 @@ CREATE TABLE IF NOT EXISTS vessels (
 	nav_status  INTEGER NOT NULL DEFAULT 15,
 	pos_at      INTEGER NOT NULL DEFAULT 0,    -- unix ms of the position
 	seen        INTEGER NOT NULL,              -- unix ms of the last message that updated the vessel
-	first_seen  INTEGER NOT NULL,              -- unix ms of the first write to this row
+	first_seen  INTEGER NOT NULL,              -- unix ms of the earliest report written to this row
 	source      TEXT    NOT NULL DEFAULT '',
 	station     TEXT    NOT NULL DEFAULT '',
 	msg_type    TEXT    NOT NULL DEFAULT ''
@@ -95,7 +94,8 @@ ON CONFLICT (mmsi) DO UPDATE SET
 	source      = iif(excluded.seen >= vessels.seen, excluded.source, vessels.source),
 	station     = iif(excluded.seen >= vessels.seen, excluded.station, vessels.station),
 	msg_type    = iif(excluded.seen >= vessels.seen, excluded.msg_type, vessels.msg_type),
-	seen        = max(excluded.seen, vessels.seen)
+	seen        = max(excluded.seen, vessels.seen),
+	first_seen  = min(excluded.first_seen, vessels.first_seen)
 `
 
 const recordCols = `mmsi, name, kind, class, ship_type, imo, callsign, destination, eta, draught, length, beam,
@@ -115,11 +115,6 @@ type store struct {
 	// read by /metrics
 	flushes, flushFailures, rowsWritten atomic.Int64
 	flushNanos                          atomic.Int64
-
-	// flushMu runs one flush at a time, so the shutdown flush waits for the writer's and none starts
-	// after closed is set.
-	flushMu sync.Mutex
-	closed  bool
 }
 
 func openStore(path string) (*store, error) {
@@ -401,41 +396,52 @@ func (p *Pipeline) attachStore(s *store) {
 	p.vmu.Unlock()
 }
 
-// flushStore writes the vessels folded since the last flush. Their states are copied under the cache lock
-// and written outside it, so a slow disk delays the record and never the fold.
+// flushStore writes the vessels folded since the last flush to the record, and the positions to the track
+// store. What it writes is copied under the cache lock and written outside it, so a slow disk delays the
+// stores and never the fold.
 func (p *Pipeline) flushStore() error {
-	if p.store == nil {
+	if p.store == nil && p.tracks == nil {
 		return nil
 	}
-	p.store.flushMu.Lock()
-	defer p.store.flushMu.Unlock()
-	if p.store.closed {
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
+	if p.storesClosed {
 		return nil
 	}
 	return p.flushLocked()
 }
 
-// closeStore writes what is left and closes the record. It waits for a flush already running, and every
-// flush after it does nothing, so the database is never closed under a write.
+// closeStore writes what is left and closes the record and the track store. It waits for a flush already
+// running, and every flush after it does nothing, so a database is never closed under a write.
 func (p *Pipeline) closeStore() error {
-	if p.store == nil {
+	if p.store == nil && p.tracks == nil {
 		return nil
 	}
-	p.store.flushMu.Lock()
-	defer p.store.flushMu.Unlock()
-	if p.store.closed {
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
+	if p.storesClosed {
 		return nil
 	}
 	err := p.flushLocked()
-	p.store.closed = true
-	if cerr := p.store.close(); err == nil {
-		err = cerr
+	p.storesClosed = true
+	if p.store != nil {
+		err = errors.Join(err, p.store.close())
+	}
+	if p.tracks != nil {
+		err = errors.Join(err, p.tracks.close())
 	}
 	return err
 }
 
 // flushLocked is flushStore's work; the caller holds flushMu.
 func (p *Pipeline) flushLocked() error {
+	return errors.Join(p.flushRecord(), p.flushTracks())
+}
+
+func (p *Pipeline) flushRecord() error {
+	if p.store == nil {
+		return nil
+	}
 	p.vmu.Lock()
 	if len(p.dirty) == 0 {
 		p.vmu.Unlock()
