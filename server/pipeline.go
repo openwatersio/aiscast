@@ -94,7 +94,8 @@ type Pipeline struct {
 
 	auth         *verifier // issuer public keys for access tokens
 	stations     *stationStats
-	feeder       *udpFeeder // optional: forward received (non-synthesized) events to an aggregator
+	feeder       *udpFeeder     // optional: forward received (non-synthesized) events to an aggregator
+	udp          []*udpListener // ingest sockets; /metrics counts datagrams per listener
 	last         atomic.Int64
 	probeLast    atomic.Int64 // unix time of the last event the loopback probe received; 0 = probe not running
 	rate         rateSample   // events/s over the last logStats interval; /v1/stats

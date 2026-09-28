@@ -9,12 +9,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -123,20 +125,69 @@ func udpStation(ip string) string {
 	return "udp:" + hex.EncodeToString(m.Sum(nil)[:6])
 }
 
+// udpListener is one UDP ingest socket. A forwarder resolves its target name once and sends to that address
+// until restarted, so a socket per address, counted apart, is the only way to see which name feeders use.
+type udpListener struct {
+	label, addr string
+	datagrams   atomic.Int64
+}
+
+// parseUDPAddrs reads UDP_ADDR: comma-separated `[label=]host:port`. The label defaults to the address and
+// is the metric series identity, so it must be unique. A malformed entry is an error rather than a skipped
+// listener, because an empty address would bind an ephemeral port and the server would look healthy while
+// nothing listens on 10110.
+func parseUDPAddrs(s string) ([]*udpListener, error) {
+	var ls []*udpListener
+	labels := map[string]bool{}
+	for _, e := range strings.Split(s, ",") {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		l := &udpListener{label: e, addr: e}
+		if i := strings.Index(e, "="); i >= 0 {
+			l.label, l.addr = e[:i], e[i+1:]
+		}
+		if _, _, err := net.SplitHostPort(l.addr); err != nil {
+			return nil, fmt.Errorf("UDP_ADDR entry %q: %w", e, err)
+		}
+		if l.label == "" || labels[l.label] {
+			return nil, fmt.Errorf("UDP_ADDR entry %q: label must be non-empty and unique", e)
+		}
+		labels[l.label] = true
+		ls = append(ls, l)
+	}
+	return ls, nil
+}
+
+// listenUDP binds one listener. An IPv6 literal binds v6 only, so a v4 listener can hold the same port.
+func listenUDP(l *udpListener) (net.PacketConn, error) {
+	network := "udp"
+	if strings.HasPrefix(l.addr, "[") {
+		network = "udp6"
+	}
+	return net.ListenPacket(network, l.addr)
+}
+
 // runUDP accepts raw NMEA datagrams. ponytail: station = keyed hash of sender IP; per-station ports/keys in Stage 1.
-func runUDP(p *Pipeline, addr string) {
-	pc, err := net.ListenPacket("udp", addr)
+func runUDP(p *Pipeline, l *udpListener) {
+	pc, err := listenUDP(l)
 	if err != nil {
-		log.Printf("udp: %v", err)
+		log.Printf("udp %s: %v", l.label, err)
 		return
 	}
+	serveUDP(p, l, pc)
+}
+
+func serveUDP(p *Pipeline, l *udpListener, pc net.PacketConn) {
 	buf := make([]byte, 4096)
 	for {
 		n, from, err := pc.ReadFrom(buf)
 		if err != nil {
-			log.Printf("udp: %v", err)
+			log.Printf("udp %s: %v", l.label, err)
 			return
 		}
+		l.datagrams.Add(1)
 		ip, _, _ := net.SplitHostPort(from.String())
 		src := udpStation(ip)
 		now := time.Now()

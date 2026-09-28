@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -902,4 +903,60 @@ func TestV1SSEIdentityWhenNotRequested(t *testing.T) {
 		}
 	}
 	t.Fatalf("no frame: %v", sc.Err())
+}
+
+func TestParseUDPAddrs(t *testing.T) {
+	got, err := parseUDPAddrs(" legacy=2.29.0.215:10110, udp=[::]:10110 ,:10111,,")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][2]string{{"legacy", "2.29.0.215:10110"}, {"udp", "[::]:10110"}, {":10111", ":10111"}}
+	if len(got) != len(want) {
+		t.Fatalf("got %d listeners, want %d", len(got), len(want))
+	}
+	for _, bad := range []string{"legacy=", "10110", "udp=2.29.0.215", ":10110,legacy", "=:10110", "x=:10110,x=:10111", ":10110,:10110"} {
+		if _, err := parseUDPAddrs(bad); err == nil {
+			t.Errorf("parseUDPAddrs(%q) accepted a malformed entry", bad)
+		}
+	}
+	for i, l := range got {
+		if l.label != want[i][0] || l.addr != want[i][1] {
+			t.Errorf("listener %d = %s=%s, want %s=%s", i, l.label, l.addr, want[i][0], want[i][1])
+		}
+	}
+}
+
+// Each listener counts its own datagrams, so the operator can see which name feeders still send to.
+func TestUDPListenersCountApart(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	var conns []net.PacketConn
+	for _, label := range []string{"legacy", "udp"} {
+		l := &udpListener{label: label, addr: "127.0.0.1:0"}
+		pc, err := listenUDP(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pc.Close()
+		conns = append(conns, pc)
+		p.udp = append(p.udp, l)
+		go serveUDP(p, l, pc)
+	}
+	c, err := net.Dial("udp", conns[1].LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte("!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E\n"))
+	select {
+	case ev := <-sub.ch:
+		if !strings.HasPrefix(ev.Source, "udp:") {
+			t.Errorf("source %q, want udp:<hash>", ev.Source)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event from the datagram")
+	}
+	if a, b := p.udp[0].datagrams.Load(), p.udp[1].datagrams.Load(); a != 0 || b != 1 {
+		t.Errorf("datagrams legacy=%d udp=%d, want 0 and 1", a, b)
+	}
 }

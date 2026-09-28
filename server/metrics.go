@@ -181,6 +181,11 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		name string
 		a    *archive
 	}{{"raw", p.arch}, {"normalized", p.norm}}
+	metricHead(w, "aiscast_udp_datagrams_total", "counter", "raw NMEA datagrams received, per UDP listener")
+	for _, l := range p.udp {
+		fmt.Fprintf(w, "aiscast_udp_datagrams_total{listener=%q} %d\n", l.label, l.datagrams.Load())
+	}
+
 	metricHead(w, "aiscast_archive_upload_failures_total", "counter", "archive hour uploads to the bucket that failed; the hourly sweep retries them")
 	for _, a := range archives {
 		fmt.Fprintf(w, "aiscast_archive_upload_failures_total{archive=%q} %d\n", a.name, a.a.uploadFailures.Load())

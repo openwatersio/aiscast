@@ -11,7 +11,7 @@ go test ./...
 
 Environment:
 
-- `ADDR` (`:8080`), `UDP_ADDR` (`:10110`).
+- `ADDR` (`:8080`), `UDP_ADDR` (`:10110`): comma-separated UDP listeners as `[label=]host:port`, labels unique. `/metrics` counts datagrams per label, so a listener per address shows which name feeders send to.
 - `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`.
 - `BARENTSWATCH_CLIENT_ID` + `BARENTSWATCH_CLIENT_SECRET` (set = BarentsWatch upstream on), `BARENTSWATCH_URL`.
 - `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`.
