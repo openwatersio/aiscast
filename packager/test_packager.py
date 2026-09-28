@@ -472,15 +472,18 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
     envs = fixture_envelopes()
     ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
 
-    def position(id, ts, lat, lon, source):
-        e = event_at(ev, id, ts)
+    def position(id, ts, lat, lon, source, **flags):
+        e = event_at(ev, id, ts, **flags)
         e["r"].update(mmsi=257999001, lat=lat, lon=lon, source=source)
         return [e, copy_at(cp, id, ts)]
 
     root = tmp_path / "normalized"
     days = {  # packaged in this order: the later day first
         "2026-09-02": position("f5000001", "2026-09-02T10:00:00Z", 60.5, 5.25, "barentswatch"),
-        "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5, "digitraffic"),
+        # a satellite report from 05:00, flagged stale when it arrived after the 08:00 one: the vessel
+        # was still heard at 05:00, so it sets first_ts, though it is never the last position
+        "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5, "digitraffic")
+                      + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", stale=True),
     }
     catalog = packager.get_catalog()
     con = duckdb.connect()
@@ -493,8 +496,8 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
         packager.process_day(day, sorted(glob.glob(f"{d}/*.gz")), con, catalog)
 
     [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == 257999001]
-    assert v["name"] is None, "a vessel with no statics still has a row"
-    assert v["first_ts"].isoformat() == "2026-09-01T08:00:00", "first_ts is the earliest report of any day"
+    assert v["name"] is None and v["ship_type"] == 0, "a vessel with no statics still has a row, its static fields unknown"
+    assert v["first_ts"].isoformat() == "2026-09-01T05:00:00", "first_ts is the earliest report of any day, flagged ones included"
     assert v["last_ts"].isoformat() == "2026-09-02T10:00:00" and (v["last_lat6"], v["last_lon6"]) == (60.5 * 600000, 5.25 * 600000), \
         "the latest position wins even when its day was packaged first"
     assert v["last_source"] == "barentswatch", "the last position carries the source that delivered it, for its credit line"

@@ -335,7 +335,11 @@ def refresh_vessels(con, catalog):
                  NULL, NULL, NULL, NULL, NULL FROM statics
           UNION ALL
           SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, ts, 1, NULL, NULL, NULL, NULL, NULL FROM evidence
-          UNION ALL  -- the day's positions: the earliest counts toward first_ts, the latest with coordinates is last_*
+          UNION ALL  -- every event counts toward first_ts, flagged or not: a stale or implausible report
+          -- still means the vessel was heard, and stale reports are the early ones (a satellite pass relayed late)
+          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
+                 min(ct), NULL, NULL, NULL, NULL FROM env WHERE k = 'event' GROUP BY mmsi
+          UNION ALL  -- the day's accepted positions: the latest with coordinates is last_*
           -- with the source whose copy the server accepted, the one its credit line names
           SELECT p.mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
                  p.ts, CASE WHEN p.lat6 IS NOT NULL THEN p.ts END, p.lat6, p.lon6, e.source
