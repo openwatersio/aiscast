@@ -1,0 +1,59 @@
+name: packager
+
+# Packages closed days of the normalized archive into the lake's Iceberg tables. Without a date it
+# packages every closed day of the past week that is missing or has changed. With catalog off it
+# writes a throwaway warehouse on the runner, which measures a day without touching the lake.
+on:
+  push:
+    branches: [packager-actions] # trial runs of this branch; removed before merge
+  workflow_dispatch:
+    inputs:
+      date:
+        description: UTC day (YYYY-MM-DD); empty for every closed day of the past week not yet packaged
+        required: false
+      catalog:
+        description: Write to R2 Data Catalog (off writes a throwaway warehouse on the runner)
+        type: boolean
+        default: false
+
+# ais.vessels is rewritten on every run, so two runs must never overlap.
+concurrency:
+  group: packager
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    environment: lake
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      NORMALIZED_BUCKET: ais-archive
+      # a day's staging database runs to tens of GB, more than the root disk has free
+      PACKAGER_HOME: /mnt/packager
+      PACKAGER_THREADS: 4
+      PACKAGER_MEMORY: 10GB
+      DATE: ${{ github.event_name == 'push' && '2026-09-27' || inputs.date }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
+      - run: command -v /usr/bin/time || sudo apt-get install -y time
+      - run: sudo mkdir -p "$PACKAGER_HOME" && sudo chown "$USER" "$PACKAGER_HOME" && df -h / /mnt && free -m && nproc
+      - name: Package
+        env:
+          LAKE_CATALOG_URI: ${{ inputs.catalog && secrets.LAKE_CATALOG_URI || '' }}
+          LAKE_WAREHOUSE: ${{ secrets.LAKE_WAREHOUSE }}
+          LAKE_CATALOG_TOKEN: ${{ secrets.LAKE_CATALOG_TOKEN }}
+        run: |
+          # sample disk and memory every 30 s so the run reports its peaks
+          (while sleep 30; do echo "$(date -u +%T) stage $(du -sm "$PACKAGER_HOME" | cut -f1)MB avail $(free -m | awk '/Mem:/{print $7}')MB"; done) > /tmp/usage.log &
+          /usr/bin/time -v uv run --script packager/packager.py ${DATE:+--date "$DATE"} 2> >(tee /tmp/time.log >&2)
+      - name: Usage
+        if: always()
+        run: |
+          grep -E "Elapsed|Maximum resident|Exit status" /tmp/time.log || true
+          sort -t' ' -k3 -n /tmp/usage.log | tail -1 | sed 's/^/peak stage: /' || true
+          awk '{print $5}' /tmp/usage.log | sort -n | head -1 | sed 's/^/lowest available memory: /' || true
+          df -h / /mnt

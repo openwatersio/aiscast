@@ -563,9 +563,11 @@ def main():
     stage.mkdir(parents=True)
     con = duckdb.connect(str(stage / "packager.duckdb"))
     # Two threads keep a full day under the memory limit and leave the box's cores to the live server:
-    # at the default of one thread per core, a 24-hour day runs out of memory. Every output is written
-    # with an explicit ORDER BY, so insertion order need not be kept.
-    con.execute(f"SET memory_limit='4GB'; SET threads=2; SET preserve_insertion_order=false; SET temp_directory='{stage}/tmp'")
+    # at the default of one thread per core, a 24-hour day runs out of memory. A machine that runs
+    # nothing else (a CI runner) raises both. Every output is written with an explicit ORDER BY, so
+    # insertion order need not be kept.
+    threads, memory = os.environ.get("PACKAGER_THREADS", "2"), os.environ.get("PACKAGER_MEMORY", "4GB")
+    con.execute(f"SET memory_limit='{memory}'; SET threads={int(threads)}; SET preserve_insertion_order=false; SET temp_directory='{stage}/tmp'")
     try:
         failed = package_days(days, args, all_files, today, packaged, con, catalog)
     finally:
