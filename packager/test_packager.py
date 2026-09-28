@@ -472,15 +472,15 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
     envs = fixture_envelopes()
     ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
 
-    def position(id, ts, lat, lon):
+    def position(id, ts, lat, lon, source):
         e = event_at(ev, id, ts)
-        e["r"].update(mmsi=257999001, lat=lat, lon=lon)
+        e["r"].update(mmsi=257999001, lat=lat, lon=lon, source=source)
         return [e, copy_at(cp, id, ts)]
 
     root = tmp_path / "normalized"
     days = {  # packaged in this order: the later day first
-        "2026-09-02": position("f5000001", "2026-09-02T10:00:00Z", 60.5, 5.25),
-        "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5),
+        "2026-09-02": position("f5000001", "2026-09-02T10:00:00Z", 60.5, 5.25, "barentswatch"),
+        "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5, "digitraffic"),
     }
     catalog = packager.get_catalog()
     con = duckdb.connect()
@@ -497,3 +497,4 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
     assert v["first_ts"].isoformat() == "2026-09-01T08:00:00", "first_ts is the earliest report of any day"
     assert v["last_ts"].isoformat() == "2026-09-02T10:00:00" and (v["last_lat6"], v["last_lon6"]) == (60.5 * 600000, 5.25 * 600000), \
         "the latest position wins even when its day was packaged first"
+    assert v["last_source"] == "barentswatch", "the last position carries the source that delivered it, for its credit line"
