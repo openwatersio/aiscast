@@ -219,7 +219,8 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState) (in
 // aishubSnapshot archives and ingests one snapshot as a single reception, then hands its events to
 // paced delivery once the locks are released, so other sources never wait on delivery.
 func (p *Pipeline) aishubSnapshot(body []byte, start time.Time, st *aishubState) (int, error) {
-	if !p.admit() {
+	start, ok := p.admit(start)
+	if !ok {
 		return -1, nil
 	}
 	p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
@@ -233,6 +234,13 @@ func (p *Pipeline) aishubSnapshot(body []byte, start time.Time, st *aishubState)
 	return n, err
 }
 
+// startAishubPacing sets up paced delivery of AISHub snapshots. main calls it before any source
+// starts, so every emit sees it set.
+func (p *Pipeline) startAishubPacing(budget time.Duration) {
+	p.aishubPace = make(chan []*Event, 4)
+	go p.deliverPaced(p.aishubPace, budget)
+}
+
 // deliverPaced broadcasts each snapshot's events spread evenly over budget. Emitted back to back, a
 // ~22k-event snapshot overruns every subscriber's queue (a far client drains ~3k events/s) and uses up
 // a rate-limited client's per-second allowance, so fresher reports from other sources in that second
@@ -243,7 +251,8 @@ func (p *Pipeline) deliverPaced(batches <-chan []*Event, budget time.Duration) {
 	for batch := range batches {
 		t0 := time.Now()
 		for i, ev := range batch {
-			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(batch)))); d > 0 {
+			// once shutdown starts, the rest goes out at once, while the archives drain
+			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(batch)))); d > 0 && !p.closing.Load() {
 				time.Sleep(d)
 			}
 			p.broadcast(ev)
@@ -262,9 +271,6 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 	st := newAishubState()
 	client := &http.Client{Timeout: 50 * time.Second}
 	var lastHash [32]byte
-	// Set here, before this goroutine emits anything: only AISHub events consult it (emit).
-	p.aishubPace = make(chan []*Event, 4)
-	go p.deliverPaced(p.aishubPace, 45*time.Second)
 	for {
 		start := time.Now()
 		n, err := func() (int, error) {

@@ -42,7 +42,8 @@ type v0Envelope struct {
 const goTimeLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
 
 func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
-	if !p.admit() {
+	now, ok := p.admit(now)
+	if !ok {
 		return
 	}
 	defer p.release()

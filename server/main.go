@@ -74,6 +74,12 @@ func main() {
 	} else if !os.IsNotExist(err) {
 		log.Printf("usage: %v (counters start empty)", err)
 	}
+	// Before any source starts, so every producer sees them: receive times taken at admission make
+	// live processing order the raw archive's order, and AISHub snapshots are delivered paced.
+	p.stampAtAdmission = true
+	if os.Getenv("AISHUB_USERNAME") != "" {
+		p.startAishubPacing(45 * time.Second)
+	}
 	if env("KYSTVERKET", "1") == "1" {
 		go runTCPSource(p, "kystverket", env("KYSTVERKET_ADDR", "153.44.253.27:5631"))
 	}

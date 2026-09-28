@@ -165,8 +165,7 @@ func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
 func TestAishubIngestsAtOnceAndDeliversPaced(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	p.aishubPace = make(chan []*Event, 4)
-	go p.deliverPaced(p.aishubPace, 200*time.Millisecond)
+	p.startAishubPacing(200 * time.Millisecond)
 	rows := make([]string, 20)
 	for i := range rows {
 		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
@@ -222,7 +221,7 @@ func TestAishubSnapshotIsNotInterleaved(t *testing.T) {
 		}
 	}()
 	time.Sleep(20 * time.Millisecond) // let the other adapter get going
-	if !p.admit() {
+	if _, ok := p.admit(time.Now()); !ok {
 		t.Fatal("not admitted")
 	}
 	_, err := p.ingestAishub(body, time.Now(), newAishubState())
@@ -249,5 +248,21 @@ func TestAishubSnapshotIsNotInterleaved(t *testing.T) {
 	}
 	if seen != n || last-first+1 != n {
 		t.Fatalf("snapshot's %d events spread over %d positions in the stream: another reception interleaved", seen, last-first+1)
+	}
+}
+
+// AISHub's PAC is the position accuracy flag; it reaches the position report.
+func TestAishubPositionAccuracy(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"PAC":1,"NAVSTAT":8,"IMO":0,"NAME":"","CALLSIGN":"","TYPE":0,"A":0,"B":0,"C":0,"D":0,"DRAUGHT":0,"DEST":"","ETA":0}]]`
+	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0), newAishubState()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.ch) != 1 {
+		t.Fatalf("events = %d, want the position", len(sub.ch))
+	}
+	if pr, ok := (<-sub.ch).Packet.(ais.PositionReport); !ok || !pr.PositionAccuracy {
+		t.Fatalf("PAC 1 did not set position accuracy: %+v", pr)
 	}
 }

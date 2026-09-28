@@ -98,7 +98,8 @@ func (m dtMetadata) packet(mmsi uint32) ais.Packet {
 }
 
 func (p *Pipeline) digitrafficMessage(topic string, body []byte, now time.Time) {
-	if !p.admit() {
+	now, ok := p.admit(now)
+	if !ok {
 		return
 	}
 	defer p.release()

@@ -74,11 +74,12 @@ type Pipeline struct {
 	// intake is the shutdown barrier. Every reception is archived raw and processed under the read
 	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
 	// recorded (raw without its normalized events, or the reverse) and none can start.
-	intake sync.RWMutex
-	order  sync.Mutex // one reception at a time, in arrival order, as replay processes them (admit)
-	// aishubPace hands each AISHub snapshot's events to deliverPaced, and aishubBatch collects them
-	// while the snapshot is ingested. Both belong to the AISHub goroutine; nil in replay and tests,
-	// where events broadcast directly.
+	intake           sync.RWMutex
+	order            sync.Mutex // one reception at a time, in arrival order, as replay processes them (admit)
+	stampAtAdmission bool       // live only, set before any producer starts: receive times are taken at admission
+	// aishubPace hands each AISHub snapshot's events to deliverPaced, set before any source starts;
+	// nil in replay and tests, where events broadcast directly. aishubBatch collects a snapshot's
+	// events while it is ingested, under the ordering lock.
 	aishubPace  chan []*Event
 	aishubBatch []*Event
 	closing     atomic.Bool
@@ -165,7 +166,8 @@ var bootTime = time.Now()
 
 // Ingest archives a reception and feeds it to the pipeline.
 func (p *Pipeline) Ingest(rx Reception) {
-	if !p.admit() {
+	var ok bool
+	if rx.RecvTime, ok = p.admit(rx.RecvTime); !ok {
 		return
 	}
 	defer p.release()
@@ -176,15 +178,21 @@ func (p *Pipeline) Ingest(rx Reception) {
 // admit holds the intake read lock for one reception, or refuses it once shutdown has begun, and
 // takes order so the reception is processed whole: adapters run concurrently, and without it
 // another source's reception could land between two rows of an AISHub snapshot, which replay
-// processes as one record in receive-time order.
-func (p *Pipeline) admit() bool {
+// processes as one record. It returns the reception's receive time. The live server stamps it here,
+// inside the lock, so live processing order is receive-time order, which is the order the raw
+// archive records and replay merges; a time taken before the lock (AISHub's before a fetch that
+// takes seconds) would not be. Replay and tests keep the time they pass.
+func (p *Pipeline) admit(recv time.Time) (time.Time, bool) {
 	p.intake.RLock()
 	if p.closing.Load() {
 		p.intake.RUnlock()
-		return false
+		return recv, false
 	}
 	p.order.Lock()
-	return true
+	if p.stampAtAdmission {
+		recv = time.Now()
+	}
+	return recv, true
 }
 
 // release ends a reception admitted by admit.
@@ -401,7 +409,7 @@ func (p *Pipeline) emit(ev *Event) {
 	p.usage.events.add(time.Now())
 	p.last.Store(time.Now().UnixNano())
 	p.touch(ev.Source)
-	if ev.Source == "aishub" && p.aishubPace != nil { // only the AISHub goroutine gets here, and it set aishubPace
+	if ev.Source == "aishub" && p.aishubPace != nil { // aishubPace is set before any source starts
 		p.aishubBatch = append(p.aishubBatch, ev) // delivered paced once the snapshot is ingested
 		return
 	}

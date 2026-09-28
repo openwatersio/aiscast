@@ -146,7 +146,8 @@ func (m bwMessage) aton() ais.Packet {
 }
 
 func (p *Pipeline) barentswatchLine(line []byte, now time.Time) {
-	if !p.admit() {
+	now, ok := p.admit(now)
+	if !ok {
 		return
 	}
 	defer p.release()
