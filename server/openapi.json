@@ -209,6 +209,61 @@
         }
       }
     },
+    "/v1/vessels/tiles.json": {
+      "get": {
+        "operationId": "getVesselTileJSON",
+        "tags": ["Vessels and stations"],
+        "summary": "Vessel tiles as TileJSON",
+        "description": "TileJSON 3.0 for the vessel vector tiles: the tile URL, zoom range, the `vessels` layer's fields, and `attribution`, one credit linking to the per-source licensing and credits. Its query string, filters and `key` alike, is carried into the tile URL, so a map needs only this URL, for example `{\"type\": \"vector\", \"url\": \"https://ais.openwaters.io/v1/vessels/tiles.json?kind=vessel\"}` in a MapLibre style. It accepts the tile parameters and refuses the same ones a tile refuses.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/tileMMSI" },
+          { "$ref": "#/components/parameters/tileKind" },
+          { "$ref": "#/components/parameters/tileClass" },
+          { "$ref": "#/components/parameters/tileType" },
+          { "$ref": "#/components/parameters/tileMinSog" },
+          { "$ref": "#/components/parameters/tileMaxAge" }
+        ],
+        "responses": {
+          "200": {
+            "description": "TileJSON.",
+            "content": { "application/json": { "schema": { "type": "object", "required": ["tilejson", "tiles", "attribution", "vector_layers"] } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/vessels/tiles/{z}/{x}/{y}": {
+      "get": {
+        "operationId": "getVesselTile",
+        "tags": ["Vessels and stations"],
+        "summary": "Vessel vector tile",
+        "description": "The vessels heard in the last 30 minutes inside one Web Mercator tile, as a Mapbox Vector Tile (version 2, extent 4096) with one point layer, `vessels`. Each feature's id is its MMSI. Properties: `mmsi`, `kind`, `source` (the source kind), `station` (the station that heard its last message), and `age_s`, the seconds since its last report when the tile was built; and, when known, `name`, `class` (`A` or `B`), `type`, `flag`, `nav_status`, `sog`, `cog`, `heading`, `length`, `beam`, and `hdg`, the heading or else the course over ground, which is the angle to rotate an icon by. Destination, ETA, call sign, IMO, and draught are left out to keep tiles small; `/v1/vessels/{mmsi}` has them. Tiles carry a 16-pixel buffer, so an icon on a tile edge is drawn whole. A tile holding more than 2,000 vessels keeps the most recently heard one in each 8-pixel cell. Positions above 85.05° north or south are outside Web Mercator and not shown.\n\nThe area cap does not apply to tiles: every tier may request any tile. They have their own rate limit of 600 requests per minute per address. A token restricted to an area may only request tiles inside it, and one restricted to its own vessels must give `mmsi`.\n\n**Refreshing.** A tile is a snapshot. The server builds each tile, for each set of filters, at most once every 10 seconds, and sends it with `Cache-Control: public, max-age=10`. To keep a map current, reload the tiles on a timer every 10 to 30 seconds. In MapLibre GL JS that is `setInterval(() => map.refreshTiles(\"vessels\"), 15000)`, where `vessels` is the source id; the old tiles stay on screen until the new ones arrive. Reloading more often than every 10 seconds returns the same tiles. `age_s` counts from when the tile was built, so it grows stale between reloads.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "name": "z", "in": "path", "required": true, "description": "Zoom, 0–22. TileJSON advertises 14 as the maximum, and clients overzoom past it.", "schema": { "type": "integer", "minimum": 0, "maximum": 22 } },
+          { "name": "x", "in": "path", "required": true, "description": "Column, 0 to 2^z−1.", "schema": { "type": "integer", "minimum": 0 } },
+          { "name": "y", "in": "path", "required": true, "description": "Row, 0 to 2^z−1, from the north.", "schema": { "type": "integer", "minimum": 0 } },
+          { "$ref": "#/components/parameters/tileMMSI" },
+          { "$ref": "#/components/parameters/tileKind" },
+          { "$ref": "#/components/parameters/tileClass" },
+          { "$ref": "#/components/parameters/tileType" },
+          { "$ref": "#/components/parameters/tileMinSog" },
+          { "$ref": "#/components/parameters/tileMaxAge" }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tile, gzipped when the request accepts gzip. An empty tile has an empty `vessels` layer.",
+            "content": { "application/vnd.mapbox-vector-tile": { "schema": { "type": "string", "format": "binary" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
     "/v1/stations": {
       "get": {
         "operationId": "listStations",
@@ -519,7 +574,13 @@
         "description": "Comma-separated MMSIs. ORed with `bbox` when both are given. An unparseable entry is a `400`.",
         "schema": { "type": "string" },
         "example": "368168720,257090090"
-      }
+      },
+      "tileMMSI": { "name": "mmsi", "in": "query", "required": false, "description": "Comma-separated MMSIs: only these vessels. The MMSI cap applies, as on `/v1/vessels`.", "schema": { "type": "string" }, "example": "368168720,257090090" },
+      "tileKind": { "name": "kind", "in": "query", "required": false, "description": "Comma-separated: `vessel`, `aton` (aids to navigation), `base` (base stations), `sar` (search and rescue aircraft).", "schema": { "type": "string" }, "example": "vessel,sar" },
+      "tileClass": { "name": "class", "in": "query", "required": false, "description": "`A` or `B`, the transponder class from the position reports. A vessel whose class is not yet known is left out.", "schema": { "type": "string", "enum": ["A", "B"] } },
+      "tileType": { "name": "type", "in": "query", "required": false, "description": "Comma-separated ITU ship and cargo type codes or ranges, such as `70-89` for cargo and tankers or `36,37` for sailing and pleasure craft. For an aid to navigation, the AtoN type. A vessel whose type is not yet known is type 0.", "schema": { "type": "string" }, "example": "70-89" },
+      "tileMinSog": { "name": "min_sog", "in": "query", "required": false, "description": "Only vessels at least this fast, in knots. A vessel with no known speed is left out.", "schema": { "type": "number", "minimum": 0 }, "example": 0.5 },
+      "tileMaxAge": { "name": "max_age", "in": "query", "required": false, "description": "Only vessels heard within this age: whole seconds or a duration such as `5m`. Tiles hold the last 30 minutes, so a longer age changes nothing.", "schema": { "type": "string" }, "example": "10m" }
     },
     "responses": {
       "BadRequest": {

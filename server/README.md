@@ -67,6 +67,10 @@ Volunteer stations feed over `/v1/stream` as MQTT (a socket that negotiates the 
 
 Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received. A station followed by ` buffered` marks a sender's offline backlog, which live withheld from the stream when stale and replay withholds the same way. A station followed by ` published` marks a line published over `/v1/stream`, which replay feeds to the NMEA parser rather than trying as an AIS-catcher envelope. A record can carry both marks, ` published` first.
 
+## Vector tiles
+
+`GET /v1/vessels/tiles/{z}/{x}/{y}` answers a Mapbox Vector Tile of the vessel cache with one point layer, `vessels` (`tiles.go`). `/v1/vessels/tiles.json` is its TileJSON and carries its query string, filters and token alike, into the tile URL. The encoder handles points only and uses the standard library. Tiles are built on demand under the cache's read lock and gzipped once. A build is shared by every request for the same tile and filters for 10 seconds. The response carries its own `Content-Encoding`, so Caddy passes it through. At 60,000 vessels a z0 tile takes about 20 ms to build and a busy z8 tile under 1 ms (`BenchmarkTile*`). [openapi.json](openapi.json) documents the properties, the filters, and how clients refresh.
+
 ## Vessel record
 
 The cache drops a vessel 30 minutes after its last report. The vessel record keeps one row per MMSI ever heard, with its particulars and last known position, in the SQLite file named by `STORE`. It answers what the cache cannot: `GET /v1/vessels/{mmsi}` for any vessel ever heard, a followed MMSI's last position on `/v1/vessels?mmsi=`, `/v1/vessels?bbox=&max_age=` past 30 minutes, the `?q=` search, and the MCP `get_vessels` and `search_vessels_by_name` tools.

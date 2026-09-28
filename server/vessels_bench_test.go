@@ -77,3 +77,19 @@ func benchFold(b *testing.B, recorded bool) {
 
 func BenchmarkFold(b *testing.B)         { benchFold(b, false) }
 func BenchmarkFoldRecorded(b *testing.B) { benchFold(b, true) }
+
+// benchTile times building and gzipping one tile, the work a cache miss does; hits cost a map lookup.
+func benchTile(b *testing.B, z, x, y int) {
+	p := testPipeline(nil)
+	benchFleet(p, 60000)
+	b.ReportAllocs()
+	var n int
+	for b.Loop() {
+		n = len(gzipBytes(p.vesselTile(z, x, y, &tileFilter{}, time.Now())))
+	}
+	b.ReportMetric(float64(n), "gz-bytes")
+}
+
+func BenchmarkTileZ0(b *testing.B)          { benchTile(b, 0, 0, 0) }
+func BenchmarkTileZ4Skagerrak(b *testing.B) { benchTile(b, 4, 8, 4) }
+func BenchmarkTileZ8Oslofjord(b *testing.B) { benchTile(b, 8, 135, 74) }
