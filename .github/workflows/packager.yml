@@ -2,7 +2,8 @@ name: packager
 
 # Packages closed days of the normalized archive into the lake's Iceberg tables (packager/README.md).
 # Nightly it packages every closed day of the past week that is missing or has changed. By hand it
-# packages a range of days, one job per day, oldest first.
+# packages a range of days, one job per day. Day order does not matter: ais.vessels merges each
+# field on its own time.
 on:
   schedule:
     # hour files upload when the next hour's traffic rotates them (~01:00), so earlier would run
@@ -42,19 +43,26 @@ jobs:
         run: |
           # an empty entry is the nightly past-week run
           if [ -z "$FROM" ]; then echo 'days=[""]' >> "$GITHUB_OUTPUT"; exit 0; fi
+          TO=${TO:-$FROM}
+          for x in "$FROM" "$TO"; do
+            [ "$(date -u -d "$x" +%F 2>/dev/null)" = "$x" ] || { echo "::error::$x is not a YYYY-MM-DD day"; exit 1; }
+          done
+          [ ! "$TO" \< "$FROM" ] || { echo "::error::to ($TO) is before from ($FROM)"; exit 1; }
           d=$FROM; days=
-          while [ "$d" \< "${TO:-$FROM}" ] || [ "$d" = "${TO:-$FROM}" ]; do
+          while [ ! "$TO" \< "$d" ]; do
             days="$days\"$d\","; d=$(date -u -d "$d + 1 day" +%F)
           done
           echo "days=[${days%,}]" >> "$GITHUB_OUTPUT"
 
   package:
     needs: days
+    # the lake environment only releases its secrets to main as well; this makes the reason plain
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     environment: lake
     strategy:
-      # one day at a time, and a failed day stops the rest, so a range never skips over a gap
+      # one day at a time, and a failed day cancels the days not yet run
       max-parallel: 1
       fail-fast: true
       matrix:
