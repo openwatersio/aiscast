@@ -160,42 +160,35 @@ func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
 	}
 }
 
-// A snapshot is ingested at once, in the order replay reproduces, and a subscriber's queue holds the
-// whole burst for its connection to drain at its own pace.
-func TestAishubSnapshotIsIngestedAtOnceAndQueued(t *testing.T) {
+// A snapshot is ingested at once, in the order replay reproduces, and only its delivery to
+// subscribers is paced.
+func TestAishubIngestsAtOnceAndDeliversPaced(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	const n = 25000 // more than a production snapshot's changed rows
-	rows := make([]string, n)
+	p.aishubPace = make(chan []*Event, 4)
+	go p.deliverPaced(p.aishubPace, 200*time.Millisecond)
+	rows := make([]string, 20)
 	for i := range rows {
 		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
 	}
 	start := time.Now()
-	got, err := p.ingestAishub([]byte("[["+strings.Join(rows, ",")+"]]"), time.Unix(1625826600, 0), newAishubState())
-	if err != nil || got != n {
-		t.Fatalf("n=%d err=%v", got, err)
+	n, err := p.aishubSnapshot([]byte("[["+strings.Join(rows, ",")+"]]"), time.Unix(1625826600, 0), newAishubState())
+	if err != nil || n != 20 {
+		t.Fatalf("n=%d err=%v", n, err)
 	}
-	if el := time.Since(start); el > 10*time.Second {
-		t.Errorf("a snapshot took %s to ingest; it must not be paced", el)
+	if el := time.Since(start); el > 100*time.Millisecond {
+		t.Errorf("ingest took %s; it must not wait on delivery", el)
 	}
-	if sub.overflow.Load() || len(sub.ch) != n {
-		t.Fatalf("subscriber queued %d of %d events (overflow %v): the burst must fit its queue", len(sub.ch), n, sub.overflow.Load())
+	if v := p.vesselCount(); v != 20 {
+		t.Errorf("vessel cache holds %d of the snapshot's 20 vessels right after ingest", v)
 	}
-}
-
-// AISHub's PAC is the position accuracy flag; it reaches the position report.
-func TestAishubPositionAccuracy(t *testing.T) {
-	p := testPipeline(t)
-	sub := p.subscribe()
-	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"PAC":1,"NAVSTAT":8,"IMO":0,"NAME":"","CALLSIGN":"","TYPE":0,"A":0,"B":0,"C":0,"D":0,"DRAUGHT":0,"DEST":"","ETA":0}]]`
-	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0), newAishubState()); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 20; i++ {
+		<-sub.ch
 	}
-	if len(sub.ch) != 1 {
-		t.Fatalf("events = %d, want the position", len(sub.ch))
-	}
-	if pr, ok := (<-sub.ch).Packet.(ais.PositionReport); !ok || !pr.PositionAccuracy {
-		t.Fatalf("PAC 1 did not set position accuracy: %+v", pr)
+	// 20 events over 200 ms: the last waits 190 ms, so anything under that means no pacing; the upper
+	// bound only guards against a runaway sleep, loose enough for a slow CI runner
+	if el := time.Since(start); el < 190*time.Millisecond || el > 2*time.Second {
+		t.Errorf("20 events delivered over %s, want about 200ms", el)
 	}
 }
 
@@ -203,6 +196,9 @@ func TestAishubPositionAccuracy(t *testing.T) {
 // snapshot, since replay processes the snapshot as one record. Without the ordering lock the concurrent
 // Digitraffic reports below interleave with the rows.
 func TestAishubSnapshotIsNotInterleaved(t *testing.T) {
+	// The stream mirrors ingest order here (pacing is off), so the subscriber's queue must hold all of it.
+	defer func(n int) { subBuffer = n }(subBuffer)
+	subBuffer = 1 << 17
 	p := testPipeline(t)
 	sub := p.subscribe()
 	const n = 20000

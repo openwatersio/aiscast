@@ -74,9 +74,14 @@ type Pipeline struct {
 	// intake is the shutdown barrier. Every reception is archived raw and processed under the read
 	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
 	// recorded (raw without its normalized events, or the reverse) and none can start.
-	intake  sync.RWMutex
-	order   sync.Mutex // one reception at a time, in arrival order, as replay processes them (admit)
-	closing atomic.Bool
+	intake sync.RWMutex
+	order  sync.Mutex // one reception at a time, in arrival order, as replay processes them (admit)
+	// aishubPace hands each AISHub snapshot's events to deliverPaced, and aishubBatch collects them
+	// while the snapshot is ingested. Both belong to the AISHub goroutine; nil in replay and tests,
+	// where events broadcast directly.
+	aishubPace  chan []*Event
+	aishubBatch []*Event
+	closing     atomic.Bool
 
 	seen     map[string]time.Time
 	seenHW   time.Time // newest event time folded into seen; prune cutoff, so replay needs no wall clock
@@ -391,6 +396,10 @@ func (p *Pipeline) emit(ev *Event) {
 	p.usage.events.add(time.Now())
 	p.last.Store(time.Now().UnixNano())
 	p.touch(ev.Source)
+	if ev.Source == "aishub" && p.aishubPace != nil { // only the AISHub goroutine gets here, and it set aishubPace
+		p.aishubBatch = append(p.aishubBatch, ev) // delivered paced once the snapshot is ingested
+		return
+	}
 	p.broadcast(ev)
 }
 
@@ -451,11 +460,8 @@ var typeNameOverride = map[string]string{"AddessedSafetyMessage": "AddressedSafe
 
 // subBuffer is the per-subscriber queue depth; a var so tests can shrink it. broadcast enqueues every
 // event before any per-subscription filtering, so this is depth measured in global events, not in the
-// ones a subscription actually matches. It holds a whole AISHub snapshot (about 22k changed rows a
-// minute) so a connection drains the burst at its own pace; a client that cannot drain it before the
-// next one still overflows and is disconnected. The queue holds pointers to events every subscriber
-// shares, so it costs 512 KB per connection.
-var subBuffer = 65536
+// ones a subscription actually matches.
+var subBuffer = 1024
 
 func (p *Pipeline) subscribe() *subscriber {
 	p.usage.streams.add(time.Now())

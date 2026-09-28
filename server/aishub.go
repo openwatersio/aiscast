@@ -152,8 +152,7 @@ func newAishubState() *aishubState {
 
 // ingestAishub maps one snapshot into events: a position when TIME advanced, a static when static fields changed.
 // Every row is ingested at once, as the raw archive records the snapshot, so the vessel cache, dedupe, and the
-// normalized stream see the order replay reproduces. Each subscriber's queue holds the burst and drains at its
-// own connection's pace (subBuffer).
+// normalized stream see the order replay reproduces. Live, only delivery to subscribers is paced (deliverPaced).
 func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState) (int, error) {
 	var parts []json.RawMessage
 	if err := json.Unmarshal(body, &parts); err != nil {
@@ -217,6 +216,41 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState) (in
 	return n, nil
 }
 
+// aishubSnapshot archives and ingests one snapshot as a single reception, then hands its events to
+// paced delivery once the locks are released, so other sources never wait on delivery.
+func (p *Pipeline) aishubSnapshot(body []byte, start time.Time, st *aishubState) (int, error) {
+	if !p.admit() {
+		return -1, nil
+	}
+	p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
+	n, err := p.ingestAishub(body, start, st)
+	batch := p.aishubBatch
+	p.aishubBatch = nil
+	p.release()
+	if p.aishubPace != nil && len(batch) > 0 {
+		p.aishubPace <- batch
+	}
+	return n, err
+}
+
+// deliverPaced broadcasts each snapshot's events spread evenly over budget. Emitted back to back, a
+// ~22k-event snapshot overruns every subscriber's queue (a far client drains ~3k events/s) and uses up
+// a rate-limited client's per-second allowance, so fresher reports from other sources in that second
+// would be thinned; spread out, they are not. The rows are about a minute old already. Events from
+// every other source broadcast as they are ingested, so they interleave with a snapshot being
+// delivered rather than wait behind it.
+func (p *Pipeline) deliverPaced(batches <-chan []*Event, budget time.Duration) {
+	for batch := range batches {
+		t0 := time.Now()
+		for i, ev := range batch {
+			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(batch)))); d > 0 {
+				time.Sleep(d)
+			}
+			p.broadcast(ev)
+		}
+	}
+}
+
 // ingestPacketAt is ingestPacket for sources whose timestamps are trusted minutes back (AISHub rows carry the
 // station's receive time, downsampled): the canonical time is the row's time even when it is older than the skew.
 func (p *Pipeline) ingestPacketAt(source, station string, t, recv time.Time, pkt ais.Packet) {
@@ -228,6 +262,9 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 	st := newAishubState()
 	client := &http.Client{Timeout: 50 * time.Second}
 	var lastHash [32]byte
+	// Set here, before this goroutine emits anything: only AISHub events consult it (emit).
+	p.aishubPace = make(chan []*Event, 4)
+	go p.deliverPaced(p.aishubPace, 45*time.Second)
 	for {
 		start := time.Now()
 		n, err := func() (int, error) {
@@ -252,12 +289,7 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			} else {
 				lastHash = h
 			}
-			if !p.admit() {
-				return -1, nil
-			}
-			defer p.release() // held across the rows: a snapshot is one reception
-			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
-			return p.ingestAishub(body, start, st)
+			return p.aishubSnapshot(body, start, st)
 		}()
 		switch {
 		case err != nil:
