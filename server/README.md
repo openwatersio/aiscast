@@ -26,8 +26,8 @@ Environment:
 - `PERSONAL_ISSUER_KEY` (`kid:base64url-seed`): lets `POST /v1/keys` mint personal-tier tokens.
 - `REVOKED_SUBS` (comma list).
 - `ALLOW_ANON=1`: no tokens needed, local development only.
-- `SNAPSHOT` (`vessels.json`): the server writes the vessel cache every minute and on shutdown, and restores it on boot. The rolling 24 h/7 d counters behind `/v1/stats` live in `<name>-usage.json` beside it.
-- `STORE` (`aiscast.db`): the vessel record, in SQLite. `off` runs without it, and without tracks. See [Vessel record](#vessel-record).
+- `USAGE` (`vessels-usage.json`): the rolling 24 h/7 d counters behind `/v1/stats`, written every minute and on shutdown, and restored on boot.
+- `STORE` (`aiscast.db`): the vessel record, in SQLite. The vessel cache is restored from it on boot. `off` runs without it, and without tracks, and a restart starts with an empty map. See [Vessel record](#vessel-record).
 - `TRACKS` (`tracks.db`): every position of the last 48 hours, in SQLite, for tracks. `off` runs without it. See [Recent tracks](#recent-tracks).
 - `WS_CONNECTS_PER_MIN` (`60` per IP).
 - `STATION_SALT`: keys the UDP station ids. Set it on a public host.
@@ -75,7 +75,7 @@ Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: rece
 
 The cache drops a vessel 30 minutes after its last report. The vessel record keeps one row per MMSI ever heard, with its particulars and last known position, in the SQLite file named by `STORE`. It answers what the cache cannot: `GET /v1/vessels/{mmsi}` for any vessel ever heard, a followed MMSI's last position on `/v1/vessels?mmsi=`, `/v1/vessels?bbox=&max_age=` past 30 minutes, the `?q=` search, the vector tiles, and the MCP `get_vessels` and `search_vessels_by_name` tools.
 
-The fold marks each vessel it updates, and a writer upserts the marked vessels once a second in one transaction, so the fold never waits on the disk. The upsert merges with the fold's rules: a vessel that returns after the cache dropped it arrives without its name or position, and a blank field keeps the stored value. On boot every vessel in the snapshot is written, which seeds an empty record. `aiscast replay` never attaches the record, so a replayed day cannot overwrite a live position. A record that will not open leaves the server running without it, and `aiscast_store_up` drops to 0.
+The fold marks each vessel it updates, and a writer upserts the marked vessels once a second in one transaction, so the fold never waits on the disk. The upsert merges with the fold's rules: a vessel that returns after the cache dropped it arrives without its name or position, and a blank field keeps the stored value. On boot the cache is filled with every vessel the record heard in the last 30 minutes, so the record is the one vessel state that survives a restart. `aiscast replay` never attaches the record, so a replayed day cannot overwrite a live position. A record that will not open leaves the server running without it, starting from an empty map that the feeds refill within minutes, and `aiscast_store_up` drops to 0.
 
 `/metrics` reports `aiscast_store_up`, flushes, flush failures and seconds, rows written, and the file size.
 

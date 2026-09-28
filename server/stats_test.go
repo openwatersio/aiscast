@@ -100,7 +100,7 @@ func TestUsageSurvivesRestart(t *testing.T) {
 	p.usage.events.add(now.Add(-8 * 24 * time.Hour)) // outside both
 	p.usage.source("kystverket").add(now)
 	p.usage.source("udp:gone").add(now.Add(-8 * 24 * time.Hour)) // silent for the whole window: pruned, not saved
-	path := usagePath(t.TempDir() + "/vessels.json")
+	path := t.TempDir() + "/vessels-usage.json"
 	if err := p.saveUsage(path); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestStationRingSurvivesRestart(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Now()
 	p.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
-	path := usagePath(t.TempDir() + "/vessels.json")
+	path := t.TempDir() + "/vessels-usage.json"
 	if err := p.saveUsage(path); err != nil {
 		t.Fatal(err)
 	}

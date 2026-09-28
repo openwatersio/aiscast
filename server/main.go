@@ -18,10 +18,9 @@ func env(k, def string) string {
 	return def
 }
 
-// snapshotEvery spaces the vessel cache and usage counter writes. Each vessel snapshot marshals the whole
-// cache, tens of megabytes of JSON. Shutdown writes both files, so a deploy loses nothing. A crash loses
-// at most this much folded state, and the live feeds refill it in about the same time.
-const snapshotEvery = time.Minute
+// usageEvery spaces the usage counter writes. Shutdown writes the file too, so a deploy loses nothing, and
+// a crash loses at most this much of the counters.
+const usageEvery = time.Minute
 
 func main() {
 	if len(os.Args) > 1 {
@@ -41,18 +40,20 @@ func main() {
 	p := newPipeline(arch)
 	p.norm = norm
 
-	snapshot := env("SNAPSHOT", "vessels.json")
-	if n, err := p.loadSnapshot(snapshot); err == nil {
-		log.Printf("restored %d vessels from %s", n, snapshot)
-	}
-	// The record opens after the snapshot, so attaching it marks every restored vessel for its first write.
-	// A record that will not open costs the lookups it serves, never live ingest or the stream: the server
-	// runs without it, and aiscast_store_up says so.
+	// The record restores the vessel cache, so a restart resumes the map the last process left. A record
+	// that will not open costs the restored map and the lookups it serves, never live ingest or the stream:
+	// the server runs without it, the feeds refill the map within minutes, and aiscast_store_up says so.
 	if path := env("STORE", "aiscast.db"); path != "off" {
-		if st, err := openStore(path); err != nil {
+		st, err := openStore(path)
+		if err == nil {
+			if err = p.attachStore(st); err != nil {
+				st.close()
+			}
+		}
+		if err != nil {
 			log.Printf("store: %v; running without the vessel record", err)
 		} else {
-			p.attachStore(st)
+			log.Printf("restored %d vessels from %s", p.vesselCount(), path)
 			// Tracks ride on the record's writer, so they run only beside it.
 			if tp := env("TRACKS", "tracks.db"); tp != "off" {
 				if ts, err := openTracks(tp); err != nil {
@@ -68,7 +69,7 @@ func main() {
 	if n, err := p.loadDedupe(dedupe); err == nil {
 		log.Printf("restored %d dedupe entries from %s", n, dedupe)
 	}
-	usage := usagePath(snapshot)
+	usage := env("USAGE", "vessels-usage.json")
 	if err := p.loadUsage(usage); err == nil {
 		log.Printf("restored usage counters from %s", usage)
 	} else if !os.IsNotExist(err) {
@@ -120,24 +121,18 @@ func main() {
 	}
 	go p.logStats()
 	go func() {
-		for range time.Tick(snapshotEvery) {
-			if err := p.saveSnapshot(snapshot); err != nil {
-				log.Printf("snapshot: %v", err)
-			}
+		for range time.Tick(usageEvery) {
 			if err := p.saveUsage(usage); err != nil {
 				log.Printf("usage: %v", err)
 			}
 		}
 	}()
-	go func() { // SIGTERM/SIGINT: snapshot, flush and upload the open archive hours, exit
+	go func() { // SIGTERM/SIGINT: flush and upload the open archive hours, save state, exit
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 		<-sig
 		log.Printf("shutting down")
 		p.closeArchives() // state saves follow, so they see everything the archives saw
-		if err := p.saveSnapshot(snapshot); err != nil {
-			log.Printf("snapshot: %v", err)
-		}
 		if err := p.saveUsage(usage); err != nil {
 			log.Printf("usage: %v", err)
 		}

@@ -99,7 +99,7 @@ A raw line is a serialized adapter input: receive time, station, and the body ex
 Replayed output is trustworthy for these reasons:
 
 - The normalized path takes every time from the reception, never the wall clock. The dedupe map prunes on an event-time high-water mark. A test replays one day at two wall times and requires identical output.
-- Replay runs with fan-out, the vessel snapshot, and stats disconnected.
+- Replay runs with fan-out, the vessel record, and stats disconnected.
 - A range starts with a warm-up lead-in that rebuilds dedupe, AISHub, trust, vessel, and multipart state and is not written. Its default, 90 minutes, is the longest window that state looks back over: corroboration checks a trusted report up to an hour back, on a vessel the cache keeps until it goes unheard for 30 minutes.
 - Replay stops on anything it cannot read or place: an unreadable directory, a file outside the raw layout, a truncated hour, a line with no record header, a header with no station, a Digitraffic record with no topic. History never comes out shorter than the archive.
 - Replay refuses a non-empty output tree, because hour files open for append.
