@@ -162,6 +162,34 @@ func TestAishubSkipsStaticsWithinASecondOfTheLast(t *testing.T) {
 	}
 }
 
+func TestAishubStaticFlipBehindTheLastPosition(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	p.ingestPacketAt("aisstream", "aisstream", now.Add(-10*time.Second), now, aishubRow{MMSI: 244750034, Latitude: 31476144, Longitude: 3022815}.position(now.Add(-10*time.Second)))
+	row := func(dest string) []byte {
+		return []byte(fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%d","NAME":"CHATEAUROUX","DEST":"%s"}]]`, now.Unix()-120, dest))
+	}
+	for i, dest := range []string{"NLRTM", "NLAMS", "NLRTM"} {
+		want := 0
+		if i == 0 {
+			want = 1
+		}
+		if n, _ := p.ingestAishub(row(dest), now.Add(time.Duration(i)*20*time.Second)); n != want {
+			t.Fatalf("snapshot %d (%s): n=%d, want %d", i, dest, n, want)
+		}
+	}
+}
+
+func TestAishubSkipsRowsWithoutAUsableTime(t *testing.T) {
+	p := testPipeline(t)
+	for _, tm := range []string{``, `,"TIME":"soon"`, `,"TIME":"0"`} {
+		body := []byte(`[[{"MMSI":244750034` + tm + `,"LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX"}]]`)
+		if n, err := p.ingestAishub(body, time.Unix(1625826600, 0)); err != nil || n != 0 {
+			t.Fatalf("TIME %q: n=%d err=%v", tm, n, err)
+		}
+	}
+}
+
 func TestAishubAfterRestartSendsOnlyNews(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now() // the snapshot restore keeps vessels heard within the cache's window of the wall clock

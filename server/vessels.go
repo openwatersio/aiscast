@@ -295,7 +295,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
 	if isStatic { // names don't move, so a stale static is still worth keeping
 		v.lastStatic = ev
-		if !stale {
+		// A stale static folds in too, so it advances the gate: otherwise an aggregate flipping between
+		// two versions under one old timestamp would pass the gate on every snapshot.
+		if ev.Time.After(v.StaticAt) {
 			v.StaticAt = ev.Time
 		}
 	}
