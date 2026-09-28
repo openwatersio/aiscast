@@ -124,12 +124,18 @@ func openStore(path string) (*store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Each connection holds its own page cache, and the pool is otherwise unlimited, so a burst of public
+	// lookups and searches could open as many as it liked.
+	db.SetMaxOpenConns(storeConns)
 	if _, err := db.Exec(storeSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &store{db: db, path: path}, nil
 }
+
+// storeConns bounds the vessel record's connections: the writer and the requests reading beside it.
+const storeConns = 8
 
 func (s *store) close() error { return s.db.Close() }
 

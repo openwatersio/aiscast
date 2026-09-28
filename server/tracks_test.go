@@ -317,3 +317,36 @@ func TestTrackRangeOutsideTheWindow(t *testing.T) {
 		t.Error("aiscast_tracks_up missing")
 	}
 }
+
+// Every connection holds its own page cache, so both pools are bounded, and many readers wait their turn
+// beside the writer rather than opening more.
+func TestTrackStorePoolsAreBounded(t *testing.T) {
+	p, _ := trackPipeline(t)
+	if w, r := p.tracks.db.Stats().MaxOpenConnections, p.tracks.rdb.Stats().MaxOpenConnections; w != 1 || r != trackReaders {
+		t.Fatalf("writer pool %d, reader pool %d", w, r)
+	}
+	if n := p.store.db.Stats().MaxOpenConnections; n != storeConns {
+		t.Fatalf("record pool %d", n)
+	}
+	now := time.Now()
+	v := newVessel()
+	v.Lat, v.Lon = 59.9, 10.7
+	done := make(chan error, 32)
+	for i := range 32 {
+		go func() {
+			_, _, err := p.tracks.track(257000001, now.Add(-time.Hour), now, 0, 100)
+			done <- err
+		}()
+		if err := p.tracks.write([]trackPoint{newTrackPoint(257000001, now.Add(-time.Duration(i)*time.Second), v, "kystverket")}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 32 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if open := p.tracks.rdb.Stats().OpenConnections; open > trackReaders {
+		t.Errorf("%d reader connections open", open)
+	}
+}

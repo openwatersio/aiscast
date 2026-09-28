@@ -12,6 +12,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -55,7 +56,8 @@ func newTrackPoint(mmsi uint32, ts time.Time, u *vessel, source string) trackPoi
 }
 
 type trackStore struct {
-	db   *sql.DB
+	db   *sql.DB // the writer: one connection, with a large page cache
+	rdb  *sql.DB // readers: a few connections with SQLite's default cache
 	path string
 
 	sources map[string]int64 // source kind -> id in the sources table; touched only by the writer
@@ -66,16 +68,29 @@ type trackStore struct {
 	writeNanos                            atomic.Int64
 }
 
+// trackReaders bounds the connections serving track requests. Each holds its own page cache, and the pool
+// is otherwise unlimited, so a burst of public requests could open as many connections as it liked.
+const trackReaders = 4
+
 func openTracks(path string) (*trackStore, error) {
-	// The cache pragma is per connection: the day tables are written at random MMSIs, and a larger page
-	// cache keeps their interior pages in memory between flushes.
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=cache_size(-65536)")
+	const dsn = "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)"
+	// The writer gets a 64 MB page cache: the day tables are written at random MMSIs, and a large cache
+	// keeps their interior pages in memory between flushes. It is one connection, since SQLite runs one
+	// writer at a time anyway, so the cache is paid for once.
+	db, err := sql.Open("sqlite", "file:"+path+dsn+"&_pragma=cache_size(-65536)")
 	if err != nil {
 		return nil, err
 	}
-	t := &trackStore{db: db, path: path, sources: map[string]int64{}, days: map[string]bool{}}
-	if err := t.load(); err != nil {
+	db.SetMaxOpenConns(1)
+	rdb, err := sql.Open("sqlite", "file:"+path+dsn)
+	if err != nil {
 		db.Close()
+		return nil, err
+	}
+	rdb.SetMaxOpenConns(trackReaders)
+	t := &trackStore{db: db, rdb: rdb, path: path, sources: map[string]int64{}, days: map[string]bool{}}
+	if err := t.load(); err != nil {
+		t.close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return t, nil
@@ -118,7 +133,7 @@ func (t *trackStore) load() error {
 	return tables.Err()
 }
 
-func (t *trackStore) close() error { return t.db.Close() }
+func (t *trackStore) close() error { return errors.Join(t.db.Close(), t.rdb.Close()) }
 
 // bytes is the size of the database and its write-ahead log on disk.
 func (t *trackStore) bytes() int64 {
@@ -219,7 +234,7 @@ func (t *trackStore) write(points []trackPoint, now time.Time) error {
 // read runs fn in one read transaction. In WAL mode it sees a single snapshot, so the day tables it finds
 // and the rows it reads agree even when the writer drops a day at midnight in between.
 func (t *trackStore) read(fn func(tx *sql.Tx) error) error {
-	tx, err := t.db.Begin()
+	tx, err := t.rdb.Begin()
 	if err != nil {
 		return err
 	}
