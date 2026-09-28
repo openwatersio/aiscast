@@ -48,6 +48,8 @@ VESSELS_SCHEMA = pa.schema([
     # each field's own observation time, so a merge decides field by field in any day order
     ("name_ts", pa.timestamp("us")), ("callsign_ts", pa.timestamp("us")), ("ship_type_ts", pa.timestamp("us")),
     ("draught_ts", pa.timestamp("us")), ("cls_ts", pa.timestamp("us")),
+    # history for the server's vessel record: the earliest report of any kind, and the latest position
+    ("first_ts", pa.timestamp("us")), ("last_ts", pa.timestamp("us")), ("last_lat6", pa.int32()), ("last_lon6", pa.int32()),
 ])
 WEATHER_NUM = [
     "avg_wind_speed", "wind_gust", "wind_direction", "wind_gust_direction", "air_temperature",
@@ -324,14 +326,19 @@ def refresh_vessels(con, catalog):
           -- over the stored row on a tie, so repackaging a day with corrected inputs replaces
           -- what that day contributed rather than keeping the old value
           SELECT mmsi, name, ts AS name_ts, callsign, ts AS callsign_ts, ship_type, ts AS ship_type_ts,
-                 draught10, ts AS draught_ts, NULL AS cls, NULL::TIMESTAMP AS cls_ts, 1 AS fresh FROM statics
+                 draught10, ts AS draught_ts, NULL AS cls, NULL::TIMESTAMP AS cls_ts, 1 AS fresh,
+                 ts AS first_ts, NULL::TIMESTAMP AS last_ts, NULL::INTEGER AS last_lat6, NULL::INTEGER AS last_lon6 FROM statics
           UNION ALL  -- the static's own class claim is the weakest signal: it only fills a gap
-          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, TIMESTAMP '1970-01-01', 1 FROM statics
+          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, TIMESTAMP '1970-01-01', 1,
+                 NULL, NULL, NULL, NULL FROM statics
           UNION ALL
-          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, ts, 1 FROM evidence
+          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, ts, 1, NULL, NULL, NULL, NULL FROM evidence
+          UNION ALL  -- the day's positions: the earliest counts toward first_ts, the latest with coordinates is last_*
+          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
+                 ts, CASE WHEN lat6 IS NOT NULL THEN ts END, lat6, lon6 FROM positions
           UNION ALL
           SELECT mmsi, name, name_ts, callsign, callsign_ts, ship_type, ship_type_ts,
-                 draught10, draught_ts, cls, cls_ts, 0 FROM existing_vessels
+                 draught10, draught_ts, cls, cls_ts, 0, first_ts, last_ts, last_lat6, last_lon6 FROM existing_vessels
         ), merged AS (
           -- latest-wins per field, not per row: a type 24 part B can carry a callsign and no name,
           -- and that must not discard a name learned earlier, whatever order the days arrive in
@@ -345,13 +352,20 @@ def refresh_vessels(con, catalog):
             coalesce(arg_max(draught10, (draught_ts, fresh)) FILTER (WHERE draught10 > 0), 0) AS draught10,
             max(draught_ts) FILTER (WHERE draught10 > 0) AS draught_ts,
             arg_max(cls, (cls_ts, fresh)) FILTER (WHERE cls IS NOT NULL) AS cls,
-            max(cls_ts) FILTER (WHERE cls IS NOT NULL) AS cls_ts
+            max(cls_ts) FILTER (WHERE cls IS NOT NULL) AS cls_ts,
+            min(first_ts) AS first_ts,  -- the earliest report any packaged day holds; newer days never move it forward
+            max(last_ts) FILTER (WHERE last_lat6 IS NOT NULL) AS last_ts,
+            -- latitude and longitude from the same report
+            arg_max(struct_pack(lat := last_lat6, lon := last_lon6), (last_ts, fresh)) FILTER (WHERE last_lat6 IS NOT NULL) AS last_pos
           FROM fields GROUP BY mmsi
         )
         SELECT mmsi, name, callsign, ship_type, draught10, cls,
                greatest(name_ts, callsign_ts, ship_type_ts, draught_ts) AS updated_ts,
-               name_ts, callsign_ts, ship_type_ts, draught_ts, cls_ts
-        FROM merged WHERE coalesce(name_ts, callsign_ts, ship_type_ts, draught_ts) IS NOT NULL ORDER BY mmsi
+               name_ts, callsign_ts, ship_type_ts, draught_ts, cls_ts,
+               first_ts, last_ts, last_pos.lat AS last_lat6, last_pos.lon AS last_lon6
+        -- every vessel any packaged day heard, statics or not, so history can create the server's record
+        FROM merged WHERE first_ts IS NOT NULL OR coalesce(name_ts, callsign_ts, ship_type_ts, draught_ts) IS NOT NULL
+        ORDER BY mmsi
         """
     ).to_arrow_table()
     retry(lambda: tbl.overwrite(merged.cast(tbl.schema().as_arrow())))
