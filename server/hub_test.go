@@ -906,10 +906,18 @@ func TestV1SSEIdentityWhenNotRequested(t *testing.T) {
 }
 
 func TestParseUDPAddrs(t *testing.T) {
-	got := parseUDPAddrs(" legacy=2.29.0.215:10110, udp=[::]:10110 ,:10111,,")
+	got, err := parseUDPAddrs(" legacy=2.29.0.215:10110, udp=[::]:10110 ,:10111,,")
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := [][2]string{{"legacy", "2.29.0.215:10110"}, {"udp", "[::]:10110"}, {":10111", ":10111"}}
 	if len(got) != len(want) {
 		t.Fatalf("got %d listeners, want %d", len(got), len(want))
+	}
+	for _, bad := range []string{"legacy=", "10110", "udp=2.29.0.215", ":10110,legacy"} {
+		if _, err := parseUDPAddrs(bad); err == nil {
+			t.Errorf("parseUDPAddrs(%q) accepted a malformed entry", bad)
+		}
 	}
 	for i, l := range got {
 		if l.label != want[i][0] || l.addr != want[i][1] {

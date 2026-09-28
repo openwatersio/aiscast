@@ -96,7 +96,11 @@ func main() {
 		}
 		go runAishub(p, u, iv) // best effort, outside the health gate like aisstream
 	}
-	p.udp = parseUDPAddrs(env("UDP_ADDR", ":10110"))
+	udp, err := parseUDPAddrs(env("UDP_ADDR", ":10110"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	p.udp = udp
 	for _, l := range p.udp {
 		go runUDP(p, l)
 	}

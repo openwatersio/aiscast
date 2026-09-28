@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -131,8 +132,10 @@ type udpListener struct {
 	datagrams   atomic.Int64
 }
 
-// parseUDPAddrs reads UDP_ADDR: comma-separated `[label=]host:port`. The label defaults to the address.
-func parseUDPAddrs(s string) []*udpListener {
+// parseUDPAddrs reads UDP_ADDR: comma-separated `[label=]host:port`. The label defaults to the address. A
+// malformed entry is an error rather than a skipped listener, because an empty address would bind an
+// ephemeral port and the server would look healthy while nothing listens on 10110.
+func parseUDPAddrs(s string) ([]*udpListener, error) {
 	var ls []*udpListener
 	for _, e := range strings.Split(s, ",") {
 		e = strings.TrimSpace(e)
@@ -143,9 +146,12 @@ func parseUDPAddrs(s string) []*udpListener {
 		if i := strings.Index(e, "="); i >= 0 {
 			l.label, l.addr = e[:i], e[i+1:]
 		}
+		if _, _, err := net.SplitHostPort(l.addr); err != nil {
+			return nil, fmt.Errorf("UDP_ADDR entry %q: %w", e, err)
+		}
 		ls = append(ls, l)
 	}
-	return ls
+	return ls, nil
 }
 
 // listenUDP binds one listener. An IPv6 literal binds v6 only, so a v4 listener can hold the same port.
