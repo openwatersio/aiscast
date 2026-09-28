@@ -2,7 +2,6 @@ package main
 
 import (
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -146,41 +145,4 @@ func (p *Pipeline) limited(w http.ResponseWriter, l *limiter, key string) bool {
 	p.stats.rateLimited.Add(1)
 	http.Error(w, "rate limited", http.StatusTooManyRequests)
 	return true
-}
-
-// ---- vessel snapshot: restart without a blank map ----
-
-func (p *Pipeline) saveSnapshot(path string) error {
-	p.vmu.RLock()
-	b, err := json.Marshal(p.vessels)
-	p.vmu.RUnlock()
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func (p *Pipeline) loadSnapshot(path string) (int, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	var m map[uint32]*vessel
-	if err := json.Unmarshal(b, &m); err != nil {
-		return 0, err
-	}
-	cutoff := time.Now().Add(-vesselTTL)
-	p.vmu.Lock()
-	for mmsi, v := range m {
-		if v.Seen.After(cutoff) {
-			p.putVesselLocked(mmsi, v)
-		}
-	}
-	n := len(p.vessels)
-	p.vmu.Unlock()
-	return n, nil
 }

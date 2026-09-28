@@ -1,8 +1,7 @@
 /aiscast
 /archive/
 /aiscast.log
-/vessels.json
-/vessels.json.tmp
+/vessels-usage.json
 /.env
 /hub.log
 /aiscast.db

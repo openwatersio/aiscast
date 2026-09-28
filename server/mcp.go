@@ -84,7 +84,7 @@ func newMCPService(p *Pipeline) *mcpService {
 		Description: "Vessels currently inside a latitude/longitude bounding box, newest report first, with optional kind and ship-type filters. Use for what is in a port, a strait, or a stretch of coast. Anonymous calls may cover 100 square degrees per call."},
 		p.mcpFindInArea)
 	mcp.AddTool(s, &mcp.Tool{Name: "find_vessels_near", Title: "Vessels near a point or vessel", Annotations: ro("Vessels near a point or vessel"),
-		Description: "Vessels within a radius (default 10 NM, maximum 50) of a point or of another vessel, nearest first, each with distance and bearing from the centre. Use for what is near this position or what is around vessel X."},
+		Description: "Vessels within a radius (default 10 NM, maximum 50) of a point or of another vessel's last known position, nearest first, each with distance and bearing from the centre. Use for what is near this position or what is around vessel X."},
 		p.mcpFindNear)
 	mcp.AddTool(s, &mcp.Tool{Name: "search_vessels_by_name", Title: "Search vessels by name", Annotations: ro("Search vessels by name"),
 		Description: "Vessels whose name contains the text, case-insensitive, among every vessel the network has heard, each with its last known position. Use to turn a name into an MMSI, then get_vessels or find_vessels_near for detail. An optional bounding box narrows the search."},
@@ -231,8 +231,8 @@ func (p *Pipeline) mcpCollect(now time.Time, keep func(uint32, *vessel) bool) []
 }
 
 // mcpWithRecord completes a get_vessels answer from the record. Every requested MMSI is looked up, because
-// the cache can hold an older state than the record after a restart, and requested IMOs the cache does
-// not know are too. A lookup that fails is an error, never a vessel reported as unknown.
+// a vessel back from the sweep has not yet resent its particulars, and requested IMOs the cache does not
+// know are too. A lookup that fails is an error, never a vessel reported as unknown.
 func (p *Pipeline) mcpWithRecord(now time.Time, rows []mcpVessel, want, wantIMO map[uint32]int) ([]mcpVessel, error) {
 	if p.store == nil {
 		return rows, nil
@@ -552,6 +552,22 @@ func (p *Pipeline) mcpFindNear(ctx context.Context, _ *mcp.CallToolRequest, in m
 			lat, lon = v.Lat, v.Lon
 		}
 		p.vmu.RUnlock()
+		if !hasPos && p.store != nil { // centred on the last position the network heard, as get_vessels reports it
+			rec, ok, err := p.store.get(in.MMSI)
+			if err != nil {
+				log.Printf("store: %v", err)
+				return nil, mcpVessels{}, errMCPRecord
+			}
+			if ok {
+				known = true
+				if rec.v.HasPos {
+					hasPos, lat, lon = true, rec.v.Lat, rec.v.Lon
+				}
+			}
+		}
+		if !known && p.store != nil {
+			return nil, mcpVessels{}, fmt.Errorf("vessel %d has never been heard", in.MMSI)
+		}
 		if !known {
 			return nil, mcpVessels{}, fmt.Errorf("vessel %d has not been heard in the last 30 minutes", in.MMSI)
 		}

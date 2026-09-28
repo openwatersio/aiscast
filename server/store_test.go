@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -22,7 +23,9 @@ func storePipeline(t *testing.T) *Pipeline {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.close() })
-	p.attachStore(st)
+	if err := p.attachStore(st); err != nil {
+		t.Fatal(err)
+	}
 	return p
 }
 
@@ -463,7 +466,9 @@ func TestCloseStoreWaitsForTheWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.attachStore(st)
+	if err := p.attachStore(st); err != nil {
+		t.Fatal(err)
+	}
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() { // the writer, flushing as fast as it can until shutdown is over
 		defer close(done)
@@ -552,5 +557,134 @@ func TestStoreKeepsTheEarliestFirstSeen(t *testing.T) {
 	rec, _, _ := st.get(257000001)
 	if !rec.firstSeen.Equal(now.AddDate(0, -1, 0)) || rec.v.Lat != 59.9 || !rec.v.Seen.Equal(now) {
 		t.Errorf("first %v lat %v seen %v", rec.firstSeen, rec.v.Lat, rec.v.Seen)
+	}
+}
+
+// restartedPipeline is a fresh pipeline attached to p's record file, as the next process after a restart.
+func restartedPipeline(t *testing.T, p *Pipeline) *Pipeline {
+	t.Helper()
+	st, err := openStore(p.store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.close() })
+	next := testPipeline(t)
+	if err := next.attachStore(st); err != nil {
+		t.Fatal(err)
+	}
+	return next
+}
+
+func TestRestartRestoresTheCacheFromTheRecord(t *testing.T) {
+	p := storePipeline(t)
+	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 2*time.Hour)
+	heardAgo(p, 257000002, "OSLO FERRY", 59.5, 10.6, 10*time.Second)
+	mustFlush(t, p)
+
+	next := restartedPipeline(t, p)
+	next.vmu.RLock()
+	defer next.vmu.RUnlock()
+	if len(next.vessels) != 1 {
+		t.Fatalf("restored %d vessels, want the one heard in the last 30 minutes", len(next.vessels))
+	}
+	v := next.vessels[257000002]
+	if v == nil || v.Name != "OSLO FERRY" || !v.HasPos || v.TrustedAt.IsZero() || v.StaticAt.IsZero() || v.IMO == 0 {
+		t.Fatalf("restored vessel lost state: %+v", v)
+	}
+	if !v.indexed {
+		t.Error("restored vessel not filed in the spatial index")
+	}
+}
+
+// A vessel back from the sweep sends positions before it resends its name, and the record still has it.
+func TestSearchFillsWhatTheCacheHasNotHeardAgain(t *testing.T) {
+	p := storePipeline(t)
+	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 2*time.Hour)
+	forget(p)
+	now := time.Now().Truncate(time.Second)
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 59.8, 10.6))
+	mustFlush(t, p)
+
+	fc := getFC(t, p, "/v1/vessels?q=nordic")
+	if len(fc.Features) != 1 || fc.Features[0].Properties["name"] != "NORDIC STAR" || fc.Features[0].Geometry.Coordinates[1] > 59.81 {
+		t.Errorf("search: %+v", fc.Features)
+	}
+	fc = getFC(t, p, "/v1/vessels?mmsi=257000001")
+	if len(fc.Features) != 1 || fc.Features[0].Properties["name"] != "NORDIC STAR" {
+		t.Errorf("followed MMSI: %+v", fc.Features)
+	}
+	var out mcpVessels
+	if msg := mcpCall(t, mcpClient(t, p), "search_vessels_by_name", map[string]any{"name": "nordic"}, &out); msg != "" ||
+		len(out.Vessels) != 1 || out.Vessels[0].Name != "NORDIC STAR" {
+		t.Errorf("search_vessels_by_name: %q %+v", msg, out.Vessels)
+	}
+}
+
+func TestFindNearCentresOnTheLastKnownPosition(t *testing.T) {
+	p := storePipeline(t)
+	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 2*time.Hour)
+	forget(p)
+	heardAgo(p, 257000002, "OSLO FERRY", 59.91, 10.71, 10*time.Second)
+	cs := mcpClient(t, p)
+
+	var out mcpVessels
+	if msg := mcpCall(t, cs, "find_vessels_near", map[string]any{"mmsi": 257000001}, &out); msg != "" ||
+		len(out.Vessels) != 1 || out.Vessels[0].MMSI != 257000002 {
+		t.Errorf("near a vessel the cache swept: %q %+v", msg, out.Vessels)
+	}
+	if msg := mcpCall(t, cs, "find_vessels_near", map[string]any{"mmsi": 999999999}, &out); !strings.Contains(msg, "never been heard") {
+		t.Errorf("unknown vessel: %q", msg)
+	}
+}
+
+func TestOpenStoreAddsMissingColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := storeSchema
+	for _, col := range []string{"trusted_at", "static_at"} {
+		i := strings.Index(schema, "\t"+col)
+		schema = schema[:i] + schema[i+strings.Index(schema[i:], "\n")+1:]
+	}
+	if _, err := old.Exec(schema); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	for range 2 { // and again on a file that has them
+		st, err := openStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v := newVessel()
+		v.Seen, v.TrustedAt = time.Now(), time.Now()
+		if err := st.upsert([]record{{mmsi: 257000001, v: v}}); err != nil {
+			t.Fatal(err)
+		}
+		if rec, ok, err := st.get(257000001); err != nil || !ok || rec.v.TrustedAt.IsZero() {
+			t.Fatalf("%v %v %+v", err, ok, rec.v)
+		}
+		st.close()
+	}
+}
+
+// A vessel back from the sweep with only no-fix reports is off the map, and a restart keeps it off.
+func TestRestartKeepsAnOldFixOffTheMap(t *testing.T) {
+	p := storePipeline(t)
+	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 3*time.Hour)
+	forget(p)
+	now := time.Now().Truncate(time.Second)
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 0, 0))
+	mustFlush(t, p)
+	if fc := getFC(t, p, "/v1/vessels?bbox=59,10,61,11"); len(fc.Features) != 0 {
+		t.Fatalf("before the restart: %+v", fc.Features)
+	}
+	next := restartedPipeline(t, p)
+	if fc := getFC(t, next, "/v1/vessels?bbox=59,10,61,11"); len(fc.Features) != 0 {
+		t.Errorf("the restart put an old fix on the map: %+v", fc.Features)
+	}
+	if fc := getFC(t, next, "/v1/vessels?mmsi=257000001"); len(fc.Features) != 1 || fc.Features[0].Geometry.Coordinates[1] < 59.89 {
+		t.Errorf("a followed MMSI still answers with its last known position: %+v", fc.Features)
 	}
 }
