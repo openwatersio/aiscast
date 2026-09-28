@@ -440,8 +440,11 @@ var typeNameOverride = map[string]string{"AddessedSafetyMessage": "AddressedSafe
 
 // subBuffer is the per-subscriber queue depth; a var so tests can shrink it. broadcast enqueues every
 // event before any per-subscription filtering, so this is depth measured in global events, not in the
-// ones a subscription actually matches.
-var subBuffer = 1024
+// ones a subscription actually matches. It holds a whole AISHub snapshot (about 22k changed rows a
+// minute) so a connection drains the burst at its own pace; a client that cannot drain it before the
+// next one still overflows and is disconnected. The queue holds pointers to events every subscriber
+// shares, so it costs 512 KB per connection.
+var subBuffer = 65536
 
 func (p *Pipeline) subscribe() *subscriber {
 	p.usage.streams.add(time.Now())

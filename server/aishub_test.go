@@ -15,7 +15,7 @@ func TestAishubSnapshot(t *testing.T) {
 	st := newAishubState()
 	now := time.Unix(1625826600, 0)
 	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"NAVSTAT":8,"IMO":0,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"","ETA":1596}]]`
-	n, err := p.ingestAishub([]byte(body), now, st, 0)
+	n, err := p.ingestAishub([]byte(body), now, st)
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -36,12 +36,12 @@ func TestAishubSnapshot(t *testing.T) {
 		t.Errorf("static: %+v", sd)
 	}
 	// same snapshot again: nothing new (TIME and static unchanged)
-	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute), st, 0)
+	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute), st)
 	if n != 0 || len(sub.ch) != 0 {
 		t.Errorf("repeat snapshot produced %d events", n)
 	}
 	// error envelope
-	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now, st, 0); err == nil {
+	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now, st); err == nil {
 		t.Error("error envelope not reported")
 	}
 }
@@ -57,18 +57,18 @@ func TestAishubStaticFlipBack(t *testing.T) {
 	row := func(time, dest string) string {
 		return fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%s","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"%s","ETA":1596}]]`, time, dest)
 	}
-	if n, err := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now, st, 0); err != nil || n != 2 {
+	if n, err := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now, st); err != nil || n != 2 {
 		t.Fatalf("first snapshot: n=%d err=%v", n, err) // position + static
 	}
-	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLAMS")), now.Add(time.Minute), st, 0); n != 1 {
+	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLAMS")), now.Add(time.Minute), st); n != 1 {
 		t.Fatalf("changed static: n=%d, want 1", n)
 	}
 	// the flip back: same static, same TIME as its first emission, minutes later
-	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now.Add(3*time.Minute), st, 0); n != 0 {
+	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now.Add(3*time.Minute), st); n != 0 {
 		t.Errorf("flip-back re-emitted: n=%d, want 0", n)
 	}
 	// TIME advanced: the flip-back is a fresh (id, time) and must reach subscribers again
-	if n, _ := p.ingestAishub([]byte(row("1625826583", "NLRTM")), now.Add(4*time.Minute), st, 0); n != 2 {
+	if n, _ := p.ingestAishub([]byte(row("1625826583", "NLRTM")), now.Add(4*time.Minute), st); n != 2 {
 		t.Errorf("static after TIME advance: n=%d, want 2", n)
 	}
 	// Broadcast sees position@523, static NLRTM@523, position@583, static NLRTM@583: the NLAMS
@@ -102,18 +102,18 @@ func TestAishubFutureStampFlipBack(t *testing.T) {
 	row := func(dest string) string { // TIME five minutes ahead of every snapshot's receive time
 		return fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"1625826900","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"%s","ETA":1596}]]`, dest)
 	}
-	if n, err := p.ingestAishub([]byte(row("NLRTM")), now, st, 0); err != nil || n != 2 {
+	if n, err := p.ingestAishub([]byte(row("NLRTM")), now, st); err != nil || n != 2 {
 		t.Fatalf("first snapshot: n=%d err=%v", n, err)
 	}
 	if ev := <-sub.ch; !ev.Time.Equal(now) {
 		t.Errorf("future stamp not capped to receive time: %v", ev.Time)
 	}
-	if n, _ := p.ingestAishub([]byte(row("NLAMS")), now.Add(time.Minute), st, 0); n != 1 {
+	if n, _ := p.ingestAishub([]byte(row("NLAMS")), now.Add(time.Minute), st); n != 1 {
 		t.Fatalf("changed static: n=%d, want 1", n)
 	}
 	// the flip back: TIME is still the same future stamp, but the canonical time is this
 	// snapshot's receive time, so the key is fresh and the static must be emitted
-	if n, _ := p.ingestAishub([]byte(row("NLRTM")), now.Add(2*time.Minute), st, 0); n != 1 {
+	if n, _ := p.ingestAishub([]byte(row("NLRTM")), now.Add(2*time.Minute), st); n != 1 {
 		t.Errorf("flip-back with a future stamp: n=%d, want 1", n)
 	}
 }
@@ -160,23 +160,26 @@ func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
 	}
 }
 
-func TestAishubPacing(t *testing.T) {
+// A snapshot is ingested at once, in the order replay reproduces, and a subscriber's queue holds the
+// whole burst for its connection to drain at its own pace.
+func TestAishubSnapshotIsIngestedAtOnceAndQueued(t *testing.T) {
 	p := testPipeline(t)
-	st := newAishubState()
-	rows := make([]string, 20)
+	sub := p.subscribe()
+	const n = 25000 // more than a production snapshot's changed rows
+	rows := make([]string, n)
 	for i := range rows {
 		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
 	}
-	body := "[[" + strings.Join(rows, ",") + "]]"
 	start := time.Now()
-	n, err := p.ingestAishub([]byte(body), start, st, 200*time.Millisecond)
-	if err != nil || n != 20 {
-		t.Fatalf("n=%d err=%v", n, err)
+	got, err := p.ingestAishub([]byte("[["+strings.Join(rows, ",")+"]]"), time.Unix(1625826600, 0), newAishubState())
+	if err != nil || got != n {
+		t.Fatalf("n=%d err=%v", got, err)
 	}
-	// 20 rows over 200 ms: the last row waits 190 ms, so anything under that means no pacing; the upper bound
-	// only guards against a runaway sleep, loose enough for a slow CI runner
-	if el := time.Since(start); el < 190*time.Millisecond || el > 2*time.Second {
-		t.Errorf("20 rows over 200ms took %s", el)
+	if el := time.Since(start); el > 10*time.Second {
+		t.Errorf("a snapshot took %s to ingest; it must not be paced", el)
+	}
+	if sub.overflow.Load() || len(sub.ch) != n {
+		t.Fatalf("subscriber queued %d of %d events (overflow %v): the burst must fit its queue", len(sub.ch), n, sub.overflow.Load())
 	}
 }
 
@@ -185,7 +188,7 @@ func TestAishubPositionAccuracy(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
 	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"PAC":1,"NAVSTAT":8,"IMO":0,"NAME":"","CALLSIGN":"","TYPE":0,"A":0,"B":0,"C":0,"D":0,"DRAUGHT":0,"DEST":"","ETA":0}]]`
-	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0), newAishubState(), 0); err != nil {
+	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0), newAishubState()); err != nil {
 		t.Fatal(err)
 	}
 	if len(sub.ch) != 1 {

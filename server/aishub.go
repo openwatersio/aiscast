@@ -151,9 +151,10 @@ func newAishubState() *aishubState {
 }
 
 // ingestAishub maps one snapshot into events: a position when TIME advanced, a static when static fields changed.
-// Rows are spread evenly over budget: emitted back to back, a ~45k-row snapshot overruns every subscriber's
-// channel (a far client drains ~3k events/s); paced under 1k/s it does not. The rows are about a minute old already.
-func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, budget time.Duration) (int, error) {
+// Every row is ingested at once, as the raw archive records the snapshot, so the vessel cache, dedupe, and the
+// normalized stream see the order replay reproduces. Each subscriber's queue holds the burst and drains at its
+// own connection's pace (subBuffer).
+func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState) (int, error) {
 	var parts []json.RawMessage
 	if err := json.Unmarshal(body, &parts); err != nil {
 		return 0, err
@@ -182,13 +183,7 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 		}
 	}
 	n := 0
-	t0 := time.Now()
-	for i, r := range rows {
-		if budget > 0 && !p.closing.Load() { // shutdown waits on this snapshot, so finish it unpaced
-			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(rows)))); d > 0 {
-				time.Sleep(d)
-			}
-		}
+	for _, r := range rows {
 		if r.MMSI == 0 {
 			continue
 		}
@@ -260,10 +255,9 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			if !p.admit() {
 				return -1, nil
 			}
-			defer p.intake.RUnlock() // held across the paced rows: a snapshot is one reception
+			defer p.intake.RUnlock() // held across the rows: a snapshot is one reception
 			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
-			// paced independently of the poll interval: a new snapshot appears about once a minute, so ingest can outlast a poll
-			return p.ingestAishub(body, start, st, 45*time.Second)
+			return p.ingestAishub(body, start, st)
 		}()
 		switch {
 		case err != nil:
