@@ -462,3 +462,42 @@ def test_an_older_table_layout_is_refused(tmp_path):
     cat.create_table("ais.positions", schema=old)
     with pytest.raises(SystemExit, match="older layout"):
         packager.get_catalog()
+
+
+def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
+    """ais.vessels holds every vessel a packaged day heard, statics or not, with the earliest report as
+    first_ts and the latest position as last_*: the server backdates its record from these."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    envs = fixture_envelopes()
+    ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+
+    def position(id, ts, lat, lon, source, **flags):
+        e = event_at(ev, id, ts, **flags)
+        e["r"].update(mmsi=257999001, lat=lat, lon=lon, source=source)
+        return [e, copy_at(cp, id, ts)]
+
+    root = tmp_path / "normalized"
+    days = {  # packaged in this order: the later day first
+        "2026-09-02": position("f5000001", "2026-09-02T10:00:00Z", 60.5, 5.25, "barentswatch"),
+        # a satellite report from 05:00, flagged stale when it arrived after the 08:00 one: the vessel
+        # was still heard at 05:00, so it sets first_ts, though it is never the last position
+        "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5, "digitraffic")
+                      + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", stale=True),
+    }
+    catalog = packager.get_catalog()
+    con = duckdb.connect()
+    for day, envelopes in days.items():
+        d = root / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True)
+        hour = envelopes[0]["t"][11:13]
+        with gzip.open(d / f"{hour}.gz", "wt") as f:
+            f.writelines(json.dumps(e) + "\n" for e in envelopes)
+        packager.process_day(day, sorted(glob.glob(f"{d}/*.gz")), con, catalog)
+
+    [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == 257999001]
+    assert v["name"] is None and v["ship_type"] == 0, "a vessel with no statics still has a row, its static fields unknown"
+    assert v["first_ts"].isoformat() == "2026-09-01T05:00:00", "first_ts is the earliest report of any day, flagged ones included"
+    assert v["last_ts"].isoformat() == "2026-09-02T10:00:00" and (v["last_lat6"], v["last_lon6"]) == (60.5 * 600000, 5.25 * 600000), \
+        "the latest position wins even when its day was packaged first"
+    assert v["last_source"] == "barentswatch", "the last position carries the source that delivered it, for its credit line"
