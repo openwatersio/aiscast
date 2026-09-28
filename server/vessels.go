@@ -121,10 +121,37 @@ func foldOf(pkt ais.Packet) (u *vessel, hasPos, isStatic bool) {
 	return u, hasPos, isStatic
 }
 
+// staleFor reports whether an event at t would be stale for v: folded for its static fields, withheld
+// from the stream. updateVessel decides with it, and a source that repeats itself asks it before
+// sending, so the two cannot disagree.
+func (v *vessel) staleFor(t time.Time, hasPos, isStatic, rebuilt bool) bool {
+	// Any event older than the vessel's newest (AISHub lags minutes behind VHF) must not drag the vessel
+	// back along its track; only static fields fold in. Whole-second source stamps make ties and
+	// sub-second skew meaningless.
+	stale := v.HasPos && t.Before(v.Seen.Add(-time.Second))
+	// Rebuilt events must moreover advance the vessel's clock, not merely match it: sources overlap
+	// (BarentsWatch and aisstream re-serve what Kystverket already delivered raw), and a rebuilt copy of
+	// the same transmission carries the same message time but never byte-matches the payload dedupe. AIS
+	// transmits at 2 s minimum spacing, so "more than a second newer" separates copies from genuinely new
+	// reports without any per-source rule, and a vessel every other source has gone silent on flows again
+	// on its next transmission. Raw receptions keep the exact test instead — identical bytes — because an
+	// equal-time raw event that survives dedupe is usually distinct data (1 Hz s:self reports, truncated
+	// TAG stamps), and withholding a reception loses data where withholding a reconstruction loses nothing.
+	if rebuilt {
+		if hasPos && v.HasPos && !t.After(v.PosAt.Add(time.Second)) {
+			stale = true
+		}
+		if isStatic && !v.StaticAt.IsZero() && !t.After(v.StaticAt.Add(time.Second)) {
+			stale = true
+		}
+	}
+	return stale
+}
+
 // positionIsNew reports whether a position at t is news to the vessel cache: inside the cache's window
-// and newer than the vessel's last position, or for a vessel the cache does not hold. A source that
-// repeats what it already sent (AISHub's snapshots) asks this instead of keeping its own state, and the
-// cache survives a restart.
+// and not stale by the rule updateVessel applies (staleFor), or for a vessel the cache does not hold. A
+// source that repeats what it already sent (AISHub's snapshots) asks this instead of keeping its own
+// state, and the cache survives a restart.
 func (p *Pipeline) positionIsNew(mmsi uint32, t, now time.Time) bool {
 	if t.Before(now.Add(-vesselTTL)) {
 		return false // older than anything the cache would keep
@@ -132,14 +159,16 @@ func (p *Pipeline) positionIsNew(mmsi uint32, t, now time.Time) bool {
 	p.vmu.RLock()
 	defer p.vmu.RUnlock()
 	v := p.vessels[mmsi]
-	return v == nil || !v.HasPos || t.After(v.PosAt)
+	return v == nil || !v.staleFor(t, true, false, true) // AISHub rows are rebuilt reports
 }
 
 // staticIsNew reports whether a static message at t is news to the vessel cache: inside the cache's
-// window, newer than the last static folded in, and carrying a particular the vessel does not already
-// have. The time gate is what stops an aggregate that flips a vessel between two stations' versions
-// (X, Y, X) under one timestamp from sending the same broadcast twice. pkt must be decoded as the
-// pipeline decodes it, so its fields compare with what the cache stored.
+// window, more than a second newer than the last static folded in (staleFor's rule for rebuilt statics),
+// and carrying a particular that the vessel does not already have. A static older than the vessel's last
+// position still counts: it is withheld from the stream but folds its particulars into the cache. The
+// time gate is what stops an aggregate that flips a vessel between two stations' versions (X, Y, X)
+// under one timestamp from sending the same broadcast twice. pkt must be decoded as the pipeline decodes
+// it, so its fields compare with what the cache stored.
 func (p *Pipeline) staticIsNew(mmsi uint32, t, now time.Time, pkt ais.Packet) bool {
 	if t.Before(now.Add(-vesselTTL)) {
 		return false
@@ -151,7 +180,7 @@ func (p *Pipeline) staticIsNew(mmsi uint32, t, now time.Time, pkt ais.Packet) bo
 	if v == nil {
 		return true
 	}
-	return t.After(v.StaticAt) && changesParticulars(v, u)
+	return (v.StaticAt.IsZero() || t.After(v.StaticAt.Add(time.Second))) && changesParticulars(v, u)
 }
 
 // changesParticulars reports whether folding u would change any of v's static particulars.
@@ -196,26 +225,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		v = newVessel()
 		p.vessels[ev.MMSI] = v
 	}
-	// Any event older than the vessel's newest (AISHub lags minutes behind VHF) must not drag the vessel
-	// back along its track; only static fields fold in. Whole-second source stamps make ties and
-	// sub-second skew meaningless.
-	stale := v.HasPos && ev.Time.Before(v.Seen.Add(-time.Second))
-	// Rebuilt events must moreover advance the vessel's clock, not merely match it: sources overlap
-	// (BarentsWatch and aisstream re-serve what Kystverket already delivered raw), and a rebuilt copy of
-	// the same transmission carries the same message time but never byte-matches the payload dedupe. AIS
-	// transmits at 2 s minimum spacing, so "more than a second newer" separates copies from genuinely new
-	// reports without any per-source rule, and a vessel every other source has gone silent on flows again
-	// on its next transmission. Raw receptions keep the exact test instead — identical bytes — because an
-	// equal-time raw event that survives dedupe is usually distinct data (1 Hz s:self reports, truncated
-	// TAG stamps), and withholding a reception loses data where withholding a reconstruction loses nothing.
-	if ev.rebuilt {
-		if hasPos && v.HasPos && !ev.Time.After(v.PosAt.Add(time.Second)) {
-			stale = true
-		}
-		if isStatic && !v.StaticAt.IsZero() && !ev.Time.After(v.StaticAt.Add(time.Second)) {
-			stale = true
-		}
-	}
+	stale := v.staleFor(ev.Time, hasPos, isStatic, ev.rebuilt)
 	ev.Stale = stale
 	// A position implying an impossible speed from the vessel's last position is dropped whatever the
 	// source: the aggregates carry bad positions of their own, and no vessel outruns implausibleKnots.

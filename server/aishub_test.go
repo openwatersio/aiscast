@@ -118,6 +118,50 @@ func TestAishubIgnoresRowsOlderThanTheCache(t *testing.T) {
 
 // After a restart the cache is restored from its snapshot, and the first AISHub snapshot does not
 // re-send what the stream already carried.
+func TestAishubSkipsPositionsTheCacheWouldHold(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	row := func(secs int64) []byte {
+		return []byte(fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%d","LONGITUDE":3022815,"LATITUDE":31476144}]]`, secs))
+	}
+	if n, _ := p.ingestAishub(row(now.Unix()-120), now); n != 1 {
+		t.Fatalf("first position: n=%d", n)
+	}
+	// Another source's static advances Seen past the next AISHub position without moving PosAt.
+	p.ingestPacketAt("aisstream", "aisstream", now.Add(-10*time.Second), now, aishubRow{MMSI: 244750034, Name: "CHATEAUROUX"}.static())
+	if n, _ := p.ingestAishub(row(now.Unix()-60), now.Add(20*time.Second)); n != 0 {
+		t.Fatalf("position the cache would mark stale emitted: n=%d", n)
+	}
+}
+
+func TestAishubSendsStaticsOlderThanTheLastPosition(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	p.ingestPacketAt("aisstream", "aisstream", now.Add(-10*time.Second), now, aishubRow{MMSI: 244750034, Latitude: 31476144, Longitude: 3022815}.position(now.Add(-10*time.Second)))
+	body := []byte(fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%d","NAME":"CHATEAUROUX","DEST":"NLRTM"}]]`, now.Unix()-120))
+	if n, _ := p.ingestAishub(body, now); n != 1 {
+		t.Fatalf("static behind the last position not sent: n=%d", n)
+	}
+	if v := p.vessels[244750034]; v.Destination != "NLRTM" {
+		t.Fatalf("destination not folded: %q", v.Destination)
+	}
+}
+
+func TestAishubSkipsStaticsWithinASecondOfTheLast(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	row := func(secs int64, dest string) []byte {
+		return []byte(fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%d","NAME":"CHATEAUROUX","DEST":"%s"}]]`, secs, dest))
+	}
+	if n, _ := p.ingestAishub(row(now.Unix()-60, "NLRTM"), now); n != 1 {
+		t.Fatalf("first static: n=%d", n)
+	}
+	// The cache marks a rebuilt static within a second of the last one stale, so it is not sent.
+	if n, _ := p.ingestAishub(row(now.Unix()-59, "NLAMS"), now.Add(20*time.Second)); n != 0 {
+		t.Fatalf("static a second after the last sent: n=%d", n)
+	}
+}
+
 func TestAishubAfterRestartSendsOnlyNews(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now() // the snapshot restore keeps vessels heard within the cache's window of the wall clock
