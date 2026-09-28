@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -288,7 +289,29 @@ func (p *Pipeline) writeRequestMetrics(w io.Writer) {
 
 // writeProcessMetrics uses the standard process_ names so dashboards and alerts read them like any exporter's.
 // RSS and open files come from /proc and are absent off Linux.
+// buildRevision is the git commit the binary was built from, "unknown" outside a checkout (go test, go run of
+// a tarball). A new value on the next start is a deploy; a start with the same value is a restart.
+var buildRevision = func() string {
+	rev, modified := "unknown", false
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+			case "vcs.modified":
+				modified = s.Value == "true"
+			}
+		}
+	}
+	if modified {
+		rev += "-modified"
+	}
+	return rev
+}()
+
 func writeProcessMetrics(w io.Writer) {
+	metricHead(w, "aiscast_build_info", "gauge", "always 1; the revision label is the git commit this binary was built from")
+	fmt.Fprintf(w, "aiscast_build_info{revision=%q,go_version=%q} 1\n", buildRevision, runtime.Version())
 	metricHead(w, "process_start_time_seconds", "gauge", "start time of the process since the unix epoch in seconds")
 	fmt.Fprintf(w, "process_start_time_seconds %d\n", bootTime.Unix())
 	var ru syscall.Rusage

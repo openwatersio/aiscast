@@ -2,7 +2,17 @@
 // to Grafana Cloud. The endpoint and token come from /etc/alloy.env through the systemd drop-in next to
 // this unit. The 60 s interval keeps every series at one sample a minute, which is how the free tier counts.
 
-prometheus.exporter.unix "host" { }
+// The systemd collector counts, per unit, the restarts systemd made because the process exited on its own
+// (Restart=always after a crash, panic, or OOM kill). systemctl restart, which deploys use, never moves it,
+// so it is the signal that tells a crash from a deploy.
+prometheus.exporter.unix "host" {
+	enable_collectors = ["systemd"]
+
+	systemd {
+		enable_restarts = true
+		unit_include    = "(aiscast|caddy|alloy)\\.service"
+	}
+}
 
 prometheus.scrape "host" {
 	targets    = prometheus.exporter.unix.host.targets
