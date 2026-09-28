@@ -51,10 +51,9 @@ func liveAndReplay(t *testing.T) (live, replay string) {
 	live = t.TempDir()
 	p := testPipeline(t)
 	p.norm = newNormArchive(live, nil)
-	st := newAishubState()
 	for _, r := range allReaders(t, raw) {
 		for r.next() {
-			dispatch(p, r.source, r.cur, st)
+			dispatch(p, r.source, r.cur)
 		}
 	}
 	p.norm.shutdown()

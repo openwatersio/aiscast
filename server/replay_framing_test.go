@@ -185,7 +185,7 @@ func TestReplayRefusesWhatItCannotPlace(t *testing.T) {
 		t.Fatal("a raw hour with an unparseable path was skipped")
 	}
 	p := testPipeline(t)
-	if err := dispatch(p, "digitraffic", Reception{Source: "digitraffic", Body: "no-topic-separator"}, nil); err == nil {
+	if err := dispatch(p, "digitraffic", Reception{Source: "digitraffic", Body: "no-topic-separator"}); err == nil {
 		t.Fatal("a digitraffic record without a topic was skipped")
 	}
 }
@@ -206,7 +206,7 @@ func TestReplayRoutesByTransport(t *testing.T) {
 	} {
 		p := testPipeline(t)
 		sub := p.subscribe()
-		if err := dispatch(p, c.source, Reception{Source: c.source, Station: c.source, RecvTime: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), Body: c.body}, nil); err != nil {
+		if err := dispatch(p, c.source, Reception{Source: c.source, Station: c.source, RecvTime: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), Body: c.body}); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 		if int64(len(sub.ch)) != c.events || p.stats.parseErr.Load() != c.parseErrs {
@@ -215,13 +215,13 @@ func TestReplayRoutesByTransport(t *testing.T) {
 		}
 	}
 	// http: is /v1/receive alone, so an envelope there that does not parse is corrupt
-	if err := dispatch(testPipeline(t), "http:x", Reception{Source: "http:x", Body: `{"msgs": [`}, nil); err == nil {
+	if err := dispatch(testPipeline(t), "http:x", Reception{Source: "http:x", Body: `{"msgs": [`}); err == nil {
 		t.Fatal("a corrupt envelope under http: was replayed as a line")
 	}
 	// the published mark means /v1 publish, which only ever took lines, so even a valid envelope stays one
 	pp := testPipeline(t)
 	psub := pp.subscribe()
-	if err := dispatch(pp, "station:x", Reception{Source: "station:x", Station: "station:x", Body: envelope, Published: true}, nil); err != nil {
+	if err := dispatch(pp, "station:x", Reception{Source: "station:x", Station: "station:x", Body: envelope, Published: true}); err != nil {
 		t.Fatal(err)
 	}
 	if len(psub.ch) != 0 || pp.stats.parseErr.Load() != 1 {
