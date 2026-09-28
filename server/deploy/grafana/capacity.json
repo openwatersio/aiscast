@@ -470,7 +470,7 @@
             "fillOpacity": 10,
             "showPoints": "never",
             "thresholdsStyle": {
-              "mode": "line"
+              "mode": "off"
             }
           },
           "thresholds": {
@@ -479,14 +479,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "orange",
-                "value": 4000000.0
-              },
-              {
-                "color": "red",
-                "value": 7000000.0
               }
             ]
           }
@@ -505,6 +497,32 @@
               {
                 "id": "custom.fillOpacity",
                 "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 4000000.0
+                    },
+                    {
+                      "color": "red",
+                      "value": 7000000.0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.thresholdsStyle",
+                "value": {
+                  "mode": "line"
+                }
               }
             ]
           },
