@@ -21,7 +21,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.4.0"
+const mcpVersion = "0.5.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -40,6 +40,7 @@ const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the ope
 - Anonymous calls may cover 100 square degrees and look up 10 vessels by MMSI or IMO per call. A free personal token from ` + mcpTokenURL + `, sent as an Authorization: Bearer header, raises that to 400 square degrees and 50 vessels. A tool says so when a call exceeds its limit.
 - Show the credit lines from each result's attribution field wherever the data is displayed.
 - A supplement to onboard AIS, never a substitute, and not for safety of navigation.
+- get_vessel_track answers where a vessel has been, over the last 48 hours. Older history is not available through these tools.
 - These tools answer one question at a time. For continuous updates use the WebSocket stream at wss://ais.openwaters.io/v1/stream, documented at ` + mcpDocsURL + `.
 - The network holds no port registry, weather, ownership, or inspection data.`
 
@@ -88,6 +89,9 @@ func newMCPService(p *Pipeline) *mcpService {
 	mcp.AddTool(s, &mcp.Tool{Name: "search_vessels_by_name", Title: "Search vessels by name", Annotations: ro("Search vessels by name"),
 		Description: "Vessels whose name contains the text, case-insensitive, among every vessel the network has heard, each with its last known position. Use to turn a name into an MMSI, then get_vessels or find_vessels_near for detail. An optional bounding box narrows the search."},
 		p.mcpSearchByName)
+	mcp.AddTool(s, &mcp.Tool{Name: "get_vessel_track", Title: "Where a vessel has been", Annotations: ro("Where a vessel has been"),
+		Description: "The positions heard from one vessel over a time range in the last 48 hours, oldest first, with speed, course, and navigational status. Use for where a ship was yesterday, when it left port, or its route today. By default the positions are spread evenly over the range; interval_minutes sets the spacing."},
+		p.mcpGetVesselTrack)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_coverage", Title: "Coverage and sources", Annotations: ro("Coverage and sources"),
 		Description: "Where Open Waters AIS is hearing AIS right now: sources with their current delay, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Call this before saying a region has no traffic."},
 		p.mcpGetCoverage)

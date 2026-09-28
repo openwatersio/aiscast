@@ -144,6 +144,71 @@
         }
       }
     },
+    "/v1/vessels/{mmsi}/track": {
+      "get": {
+        "operationId": "getVesselTrack",
+        "tags": ["Vessels and stations"],
+        "summary": "Where a vessel has been",
+        "description": "The positions the network heard from one vessel over the last 48 hours, as a GeoJSON Feature or a GPX 1.1 track. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. When more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. A range reaching past 48 hours is clamped to it, and `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "name": "mmsi", "in": "path", "required": true, "description": "The vessel's MMSI.", "schema": { "type": "integer" }, "example": 368168720 },
+          { "name": "from", "in": "query", "required": false, "description": "Start, RFC 3339. Defaults to 24 hours before `to`.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "to", "in": "query", "required": false, "description": "End, RFC 3339. Defaults to now.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "interval", "in": "query", "required": false, "description": "At most one position per interval, the first in each: whole seconds or a duration such as `5m`. Defaults to every position heard.", "schema": { "type": "string" }, "example": "5m" },
+          { "name": "limit", "in": "query", "required": false, "description": "Most positions to return. Defaults to 1,000 and is capped by tier: 200 anonymous, 1,000 with a personal token, 5,000 for feeder and above.", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "format", "in": "query", "required": false, "description": "`geojson`, the default, or `gpx`.", "schema": { "type": "string", "enum": ["geojson", "gpx"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The track.",
+            "content": {
+              "application/geo+json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["type", "id", "geometry", "properties", "attribution"],
+                  "properties": {
+                    "type": { "type": "string", "const": "Feature" },
+                    "id": { "type": "integer", "description": "MMSI." },
+                    "geometry": { "type": ["object", "null"], "description": "`LineString` of `[longitude, latitude]` positions, oldest first; `Point` for one position; `null` for none." },
+                    "properties": {
+                      "type": "object",
+                      "required": ["mmsi", "from", "to", "points", "truncated", "times", "sog", "cog", "heading", "nav_status"],
+                      "properties": {
+                        "mmsi": { "type": "integer" },
+                        "name": { "type": "string", "description": "Present when known." },
+                        "from": { "type": "string", "format": "date-time", "description": "Start of the range covered, after clamping." },
+                        "to": { "type": "string", "format": "date-time", "description": "End of the range covered." },
+                        "points": { "type": "integer" },
+                        "truncated": { "type": "boolean", "description": "More positions matched than `limit`; the newest were kept." },
+                        "times": { "type": "array", "items": { "type": "string", "format": "date-time" } },
+                        "sog": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Speed over ground, knots." },
+                        "cog": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Course over ground, degrees." },
+                        "heading": { "type": "array", "items": { "type": ["integer", "null"] }, "description": "True heading, degrees." },
+                        "nav_status": { "type": "array", "items": { "type": ["integer", "null"] }, "description": "AIS navigational status." }
+                      }
+                    },
+                    "attribution": { "type": "object", "additionalProperties": { "type": "string" } }
+                  }
+                }
+              },
+              "application/gpx+xml": { "schema": { "type": "string" } }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "No vessel with this MMSI has been heard.",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": {
+            "description": "A server running without the track store.",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
     "/v1/stations": {
       "get": {
         "operationId": "listStations",

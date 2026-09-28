@@ -88,12 +88,17 @@ type Pipeline struct {
 	normGate time.Time // replay warm-up: records received before this are state-building only, not written
 	nSeen    int
 
-	vmu       sync.RWMutex
-	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu
-	vessels   map[uint32]*vessel
-	cells     map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
-	dirty     map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
-	store     *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
+	vmu        sync.RWMutex
+	nextSweep  time.Time // reception time of the next vessel cache sweep; guarded by vmu
+	vessels    map[uint32]*vessel
+	cells      map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
+	dirty      map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
+	store      *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
+	tracks     *trackStore                    // recent positions (tracks.go); nil without a record, whose writer also writes tracks
+	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
+
+	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
+	storesClosed bool       // set by closeStore; flushes after it do nothing
 
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
