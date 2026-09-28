@@ -4,7 +4,7 @@ import * as maplibregl from "maplibre-gl";
 // worker 404s. Naming it here statically lets Vite bundle it (it imports a shared chunk, so
 // copying the file alone is not enough) and hands back the hashed URL to point MapLibre at.
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
-import { CLASS_COLORS, CLASS_LABELS, shipClass } from "./ais";
+import { CLASS_COLORS, CLASS_LABELS, mergeTrack, shipClass } from "./ais";
 import type { BBox, Stream } from "./stream";
 
 maplibregl.setWorkerUrl(workerUrl);
@@ -21,8 +21,13 @@ export interface MapController {
   status(): { state: "loading" | "ready" | "error"; detail: string };
   /** Re-measure the floating panels so the camera centres on the visible map, not the viewport. */
   refreshInsets(): void;
-  /** Draws the vessel the current route is about, and its session track. */
+  /** Draws the vessel the current route is about, and its track. */
   setFocus(mmsi: number | undefined): void;
+  /**
+   * The positions the server holds for the focused vessel. `endedAt` is the time of its last
+   * point, so live positions already covered by it are not drawn a second time.
+   */
+  setTrack(coords: Array<[number, number]>, endedAt?: number): void;
   flyToVessel(mmsi: number, fallback?: [number, number]): void;
   fitBBox(bbox: BBox): void;
   onSelect(fn: (mmsi: number) => void): void;
@@ -185,18 +190,18 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
     return { type: "FeatureCollection", features } as GeoJSON.FeatureCollection;
   }
 
+  // The history the server holds, set by the route. The session's own positions extend it so
+  // the line reaches the vessel's current mark between fetches.
+  let history: Array<[number, number]> = [];
+  let historyEnd = 0;
+
   function trackFeature(): GeoJSON.FeatureCollection {
     const v = focus ? stream.vessels.get(focus) : undefined;
-    if (!v || v.track.length < 2) return { type: "FeatureCollection", features: [] };
+    const coords = mergeTrack(history, historyEnd, v?.track ?? []);
+    if (coords.length < 2) return { type: "FeatureCollection", features: [] };
     return {
       type: "FeatureCollection",
-      features: [
-        {
-          type: "Feature",
-          geometry: { type: "LineString", coordinates: v.track.map(([lon, lat]) => [lon, lat]) },
-          properties: {},
-        },
-      ],
+      features: [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: {} }],
     };
   }
 
@@ -232,7 +237,7 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
       type: "line",
       source: "track",
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": "#38bdf8", "line-width": 2, "line-opacity": 0.8 },
+      paint: { "line-color": "#38bdf8", "line-width": 2.5, "line-opacity": 0.85 },
     });
 
     map.addSource("vessels", { type: "geojson", data: emptyFC(), promoteId: "mmsi" });
@@ -398,8 +403,18 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
       return { state: "loading" as const, detail: hidden ? "(window has no size)" : "" };
     },
     refreshInsets: applyInsets,
+    setTrack(coords, endedAt) {
+      history = coords;
+      historyEnd = endedAt ?? 0;
+      render();
+    },
     setFocus(mmsi) {
+      if (mmsi !== focus) {
+        history = [];
+        historyEnd = 0;
+      }
       focus = mmsi;
+      stream.trackOnly(mmsi);
       if (mmsi) stream.follow(mmsi);
       render();
     },

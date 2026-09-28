@@ -4,13 +4,15 @@ export const prerender = false;
 import VesselDetail from "../../components/VesselDetail.astro";
 import App from "../../layouts/App.astro";
 import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselPath, vesselSlug } from "../../lib/ais";
-import { getVessel } from "../../lib/api";
+import { getTrack, getVessel } from "../../lib/api";
 
 const parsed = parseVesselParam(Astro.params.param ?? "");
 if (!parsed) return Astro.rewrite("/404");
 const { mmsi, slug } = parsed;
 
 const feature = await getVessel(mmsi);
+// Fetched with the page so the line is drawn on first paint rather than appearing later.
+const track = feature ? await getTrack(mmsi) : undefined;
 const props = feature?.properties;
 const name = props?.name;
 
@@ -56,12 +58,12 @@ const jsonLd = feature
   canonical={canonical}
   jsonLd={jsonLd}
   focusMmsi={mmsi}
-  focusAt={feature?.geometry.coordinates}
+  focusAt={feature?.geometry?.coordinates ?? undefined}
   back={from ? undefined : "/"}
   sidebarKey={from || canonical}
   closeTo={from || "/"}
 >
   <Fragment slot={from ? "detail" : "stack"}>
-    <VesselDetail mmsi={mmsi} feature={feature} />
+    <VesselDetail mmsi={mmsi} feature={feature} track={track} />
   </Fragment>
 </App>

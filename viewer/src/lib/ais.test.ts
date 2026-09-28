@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { parseEta, parseLocode, parseVesselParam, shipClass, vesselPath, vesselSlug } from "./ais";
+import {
+  mergeTrack,
+  parseDestination,
+  parseEta,
+  parsePlace,
+  parseVesselParam,
+  shipClass,
+  vesselPath,
+  vesselSlug,
+} from "./ais";
 
 describe("vesselSlug", () => {
   it("lowercases and hyphenates", () => {
@@ -134,17 +143,91 @@ describe("parseEta", () => {
   });
 });
 
-describe("parseLocode", () => {
+describe("parsePlace", () => {
   it("decodes the country half of a UN/LOCODE", () => {
-    expect(parseLocode("USCHS")).toMatchObject({ country: "United States", port: "CHS" });
-    expect(parseLocode("NL RTM")).toMatchObject({ country: "Netherlands", port: "RTM" });
-    expect(parseLocode("no-osl")).toMatchObject({ country: "Norway", port: "OSL" });
+    expect(parsePlace("USCHS")).toMatchObject({ country: "United States", code: "CHS" });
+    expect(parsePlace("NL RTM")).toMatchObject({ country: "Netherlands", code: "RTM" });
   });
 
-  // A free-text destination must not be mistaken for a code.
-  it("ignores anything that is not one", () => {
-    for (const d of ["NANTUCKET ROUTE", "FOR ORDERS", "", undefined, "XXABC", "US", "USCHSX"]) {
-      expect(parseLocode(d)).toBeUndefined();
+  // US inland towing units emit a country and a facility code joined by a caret.
+  it("decodes the country half of a caret facility code", () => {
+    expect(parsePlace("US^0XG5")).toMatchObject({ country: "United States", code: "0XG5" });
+    expect(parsePlace("US^0NP9")).toMatchObject({ code: "0NP9" });
+  });
+
+  it("keeps free text as sent", () => {
+    expect(parsePlace("FOURCHON")).toEqual({ raw: "FOURCHON" });
+    expect(parsePlace("CH 16")).toEqual({ raw: "CH 16" });
+  });
+
+  it("treats a placeholder as nothing reported", () => {
+    for (const p of ["XX XXX", "?? ???", "-", "  ", "", undefined, "...."]) {
+      expect(parsePlace(p)).toBeUndefined();
     }
+  });
+});
+
+describe("parseDestination", () => {
+  it("splits an origin and a destination on the separator", () => {
+    expect(parseDestination("USSAV>USORF")).toEqual({
+      from: { raw: "USSAV", flag: "🇺🇸", country: "United States", code: "SAV" },
+      to: { raw: "USORF", flag: "🇺🇸", country: "United States", code: "ORF" },
+    });
+  });
+
+  it("tolerates spaces around the separator", () => {
+    const v = parseDestination("US ORF > MY PKG");
+    expect(v?.from).toMatchObject({ code: "ORF", country: "United States" });
+    expect(v?.to).toMatchObject({ code: "PKG", country: "Malaysia" });
+  });
+
+  it("drops a placeholder half and keeps the real one", () => {
+    expect(parseDestination("XX XXX>US^0G7C")?.from).toBeUndefined();
+    expect(parseDestination("XX XXX>US^0G7C")?.to).toMatchObject({ code: "0G7C" });
+    expect(parseDestination("US^0GR0>?? ???")?.to).toBeUndefined();
+    expect(parseDestination("US^0GR0>?? ???")?.from).toMatchObject({ code: "0GR0" });
+  });
+
+  it("is nothing when both halves are placeholders", () => {
+    expect(parseDestination("XX XXX>?? ???")).toBeUndefined();
+    expect(parseDestination("")).toBeUndefined();
+  });
+
+  it("reads a lone destination with no separator", () => {
+    expect(parseDestination("NANTUCKET ROUTE")).toEqual({ to: { raw: "NANTUCKET ROUTE" } });
+    expect(parseDestination("USNYC")?.to).toMatchObject({ code: "NYC" });
+  });
+});
+
+describe("mergeTrack", () => {
+  const history: Array<[number, number]> = [
+    [-76.1, 37.1],
+    [-76.2, 37.0],
+  ];
+  const end = Date.parse("2026-09-28T18:00:00Z");
+
+  it("drops live positions the history already covers", () => {
+    const live: Array<[number, number, number]> = [
+      [-76.15, 37.05, end - 600_000],
+      [-76.18, 37.02, end - 60_000],
+    ];
+    expect(mergeTrack(history, end, live)).toEqual(history);
+  });
+
+  it("extends the history with newer positions only", () => {
+    const live: Array<[number, number, number]> = [
+      [-76.15, 37.05, end - 60_000],
+      [-76.3, 36.9, end + 60_000],
+    ];
+    expect(mergeTrack(history, end, live)).toEqual([...history, [-76.3, 36.9]]);
+  });
+
+  it("uses every live position when there is no history", () => {
+    const live: Array<[number, number, number]> = [[-76.15, 37.05, 1]];
+    expect(mergeTrack([], 0, live)).toEqual([[-76.15, 37.05]]);
+  });
+
+  it("never reorders the history it was given", () => {
+    expect(mergeTrack(history, end, [])).toEqual(history);
   });
 });

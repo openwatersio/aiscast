@@ -23,8 +23,9 @@ const description = st
 // a satellite or an aggregate is most of the planet. What a reader wants on opening a
 // station is where its traffic is right now, so fit the vessels it is currently reporting
 // and fall back to the recorded extent only when it has none.
-const lats = vessels.map((f) => f.geometry.coordinates[1]);
-const lons = vessels.map((f) => f.geometry.coordinates[0]);
+const positions = vessels.map((f) => f.geometry?.coordinates).filter((c) => c != null);
+const lats = positions.map((c) => c![1]);
+const lons = positions.map((c) => c![0]);
 const fitBBox: [number, number, number, number] | undefined = lats.length
   ? [Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons)]
   : st?.bbox;

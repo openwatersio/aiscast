@@ -182,6 +182,28 @@ const DESTINATIONS = [
     return li;
   }
 
+  // The server searches every vessel it has ever heard, not just what this tab is hearing,
+  // so a berthed boat is findable. Results are cached per query: the list repaints every
+  // second for ages and speeds, and that must not re-ask the server.
+  const cache = new Map<string, any[]>();
+  let inflight = "";
+
+  async function fetchResults(q: string) {
+    if (cache.has(q) || inflight === q) return;
+    inflight = q;
+    const base =
+      document.querySelector<HTMLMetaElement>('meta[name="aiscast:api"]')?.content ?? "";
+    try {
+      const res = await fetch(`${base}/v1/vessels?q=${encodeURIComponent(q)}`);
+      if (res.ok) cache.set(q, (await res.json()).features ?? []);
+    } catch {
+      // Leave it uncached so the next keystroke retries; the live cache still answers.
+    } finally {
+      if (inflight === q) inflight = "";
+      paint();
+    }
+  }
+
   function paint() {
     const el = input();
     const app = window.aiscast;
@@ -198,28 +220,39 @@ const DESTINATIONS = [
     results.hidden = !searching;
     clear.classList.toggle("hidden", !searching);
     clear.classList.toggle("flex", searching);
-    if (!searching || !app) return;
+    if (!searching) return;
 
-    const lower = q.toLowerCase();
+    if (q.length >= 2) fetchResults(q);
+    const hits = cache.get(q);
     const now = Date.now();
-    const matches = [...app.stream.vessels.values()]
+
+    // Before the server answers, show what this tab already holds rather than nothing.
+    const lower = q.toLowerCase();
+    const local = [...(app?.stream.vessels.values() ?? [])]
       .filter((v) => v.name?.toLowerCase().includes(lower) || String(v.mmsi).includes(q))
       .sort((a, b) => b.seen - a.seen)
-      .slice(0, 100);
+      .slice(0, 50)
+      .map((v) => ({
+        mmsi: v.mmsi,
+        name: v.name,
+        sog: v.sog,
+        kind: v.kind,
+        shipType: v.shipType,
+        seen: v.seen,
+      }));
+
+    const rowsData = (hits ?? []).map((f: any) => ({
+      mmsi: f.properties.mmsi,
+      name: f.properties.name,
+      sog: f.properties.sog,
+      kind: f.properties.kind,
+      shipType: f.properties.type,
+      seen: Date.parse(f.properties.seen),
+    }));
+    const merged = hits ? rowsData : local;
 
     const wanted: HTMLLIElement[] = [];
-
-    if (/^\d{7,9}$/.test(q) && !matches.some((v) => String(v.mmsi) === q)) {
-      const li = row(-1);
-      li.querySelector("a")!.setAttribute("href", `/vessels/${q}?from=%2F`);
-      li.querySelector<HTMLElement>("[data-dot]")!.style.background = "var(--accent)";
-      li.querySelector<HTMLElement>("[data-name]")!.textContent = `Open MMSI ${q}`;
-      li.querySelector<HTMLElement>("[data-sub]")!.textContent = "Look up this vessel";
-      li.querySelector<HTMLElement>("[data-age]")!.textContent = "";
-      wanted.push(li);
-    }
-
-    for (const v of matches) {
+    for (const v of merged) {
       const li = row(v.mmsi);
       li.querySelector("a")!.setAttribute("href", `${vesselPath(v.mmsi, v.name)}?from=%2F`);
       li.querySelector<HTMLElement>("[data-dot]")!.style.background =
@@ -229,7 +262,7 @@ const DESTINATIONS = [
       li.querySelector<HTMLElement>("[data-sub]")!.textContent = `${speed}MMSI ${v.mmsi}`;
       const age = Math.round((now - v.seen) / 1000);
       li.querySelector<HTMLElement>("[data-age]")!.textContent =
-        age < 60 ? `${age}s` : `${Math.round(age / 60)}m`;
+        age < 60 ? `${age}s` : age < 3600 ? `${Math.round(age / 60)}m` : `${Math.round(age / 3600)}h`;
       wanted.push(li);
     }
 
@@ -244,7 +277,11 @@ const DESTINATIONS = [
     });
 
     empty.hidden = wanted.length > 0;
-    empty.textContent = "No vessel in view matches that. Enter a full MMSI to look one up.";
+    empty.textContent = hits
+      ? "No vessel matches that name or MMSI."
+      : q.length < 2
+        ? "Keep typing."
+        : "Searching…";
   }
 
   function wire() {

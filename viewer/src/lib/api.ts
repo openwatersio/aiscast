@@ -27,6 +27,7 @@ export interface VesselProps {
   draught?: number;
   length?: number;
   beam?: number;
+  first_seen?: string;
   seen: string;
   source: string;
   station: string;
@@ -36,7 +37,8 @@ export interface VesselProps {
 export interface VesselFeature {
   type: "Feature";
   id: number;
-  geometry: { type: "Point"; coordinates: [number, number] };
+  /** Null for a vessel the network has heard but never had a position from. */
+  geometry: { type: "Point"; coordinates: [number, number] } | null;
   properties: VesselProps;
 }
 
@@ -75,12 +77,39 @@ async function get<T>(path: string, init?: RequestInit): Promise<T | undefined> 
 }
 
 /**
- * One vessel's current state. `/v1/vessels/{mmsi}` does not exist yet, so this asks the
- * MMSI-filtered collection, which is anonymous-safe and unaffected by the area cap.
+ * One vessel, however long ago it was last heard. `geometry` is null for a vessel whose
+ * position the network has never heard, and an unknown MMSI is a 404.
  */
 export async function getVessel(mmsi: number): Promise<VesselFeature | undefined> {
-  const fc = await get<FeatureCollection>(`/v1/vessels?mmsi=${mmsi}`);
-  return fc?.features?.find((f) => f.properties.mmsi === mmsi);
+  return get<VesselFeature>(`/v1/vessels/${mmsi}`);
+}
+
+/** Name prefix, or MMSI prefix when the query is all digits. The server caps this at 50. */
+export async function searchVessels(q: string): Promise<VesselFeature[]> {
+  const fc = await get<FeatureCollection>(`/v1/vessels?q=${encodeURIComponent(q)}`);
+  return fc?.features ?? [];
+}
+
+export interface Track {
+  type: "Feature";
+  geometry: { type: "LineString"; coordinates: Array<[number, number]> } | null;
+  properties: {
+    mmsi: number;
+    name?: string;
+    points: number;
+    from: string;
+    to: string;
+    truncated: boolean;
+    times: string[];
+    sog?: Array<number | null>;
+    cog?: Array<number | null>;
+  };
+}
+
+/** Where a vessel has been. The server holds the last 48 hours and clamps to it. */
+export async function getTrack(mmsi: number, hours = 24): Promise<Track | undefined> {
+  const from = new Date(Date.now() - hours * 3600e3).toISOString();
+  return get<Track>(`/v1/vessels/${mmsi}/track?from=${from}`);
 }
 
 export async function getStations(): Promise<Station[] | undefined> {

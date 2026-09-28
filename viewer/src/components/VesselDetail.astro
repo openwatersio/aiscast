@@ -1,16 +1,22 @@
 ---
-import { CLASS_COLORS, CLASS_LABELS, NAV_STATUS, flagEmoji, flagName, formatCoord, parseEta, parseLocode, relativeTime, shipClass } from "../lib/ais";
-import type { VesselFeature } from "../lib/api";
+import { CLASS_COLORS, CLASS_LABELS, NAV_STATUS, flagEmoji, flagName, formatCoord, parseDestination, parseEta, relativeTime, shipClass } from "../lib/ais";
+import { API_PUBLIC, type Track, type VesselFeature } from "../lib/api";
 
 interface Props {
   mmsi: number;
   feature: VesselFeature | undefined;
+  track?: Track;
 }
 
-const { mmsi, feature } = Astro.props;
+const { mmsi, feature, track } = Astro.props;
+const points = track?.properties.points ?? 0;
+const trackCoords = track?.geometry?.coordinates ?? [];
+const trackFrom = track?.properties.times?.[0];
+const trackTimes = track?.properties.times ?? [];
+const trackEnd = trackTimes.length ? Date.parse(trackTimes[trackTimes.length - 1]!) : 0;
 const p = feature?.properties;
 const cls = shipClass(p?.kind, p?.type);
-const [lon, lat] = feature?.geometry.coordinates ?? [];
+const [lon, lat] = feature?.geometry?.coordinates ?? [];
 const country = flagName(p?.flag);
 
 // `/v1/vessels` carries the particulars now, so the page is complete in its first response
@@ -30,8 +36,8 @@ const etaText = eta
       timeZone: "UTC",
     })
   : p?.eta;
-const locode = parseLocode(p?.destination);
-const hasVoyage = Boolean(p?.destination || p?.eta);
+const voyage = parseDestination(p?.destination);
+const hasVoyage = Boolean(voyage || p?.eta);
 
 // Identifiers belong with the name, not in the table of things that change.
 // Speed, course and heading are what a reader glances at, so they are read at a glance
@@ -65,6 +71,8 @@ const rows: Array<[string, string | undefined]> = [
 
 <article
   data-vessel={mmsi}
+  data-track={trackCoords.length > 1 ? JSON.stringify(trackCoords) : undefined}
+  data-track-end={trackEnd || undefined}
   data-seed={feature
     ? JSON.stringify({
         mmsi,
@@ -141,32 +149,63 @@ const rows: Array<[string, string | undefined]> = [
       <div class="mt-4 flex items-baseline justify-between gap-2">
         <h2 class={LABEL} style="color: var(--text-muted)">Destination</h2>
       </div>
-      <section class={TILE}>
-        {locode ? (
-          <>
-            <div class="flex items-baseline gap-2">
-              <span class="text-base font-semibold" style="color: var(--text)">
-                {locode.flag} {locode.port}
+      <section class={TILE} title={p!.destination}>
+        <div class="flex items-center gap-2">
+          {voyage?.from && (
+            <>
+              <span class="truncate text-sm" style="color: var(--text-secondary)">
+                {voyage.from.flag} {voyage.from.code ?? voyage.from.raw}
               </span>
-              <span class="text-sm" style="color: var(--text-secondary)">
-                {locode.country}
-              </span>
-            </div>
-          </>
-        ) : (
-          <div class="text-base font-semibold wrap-break-words" style="color: var(--text)">
-            {p!.destination || "Not reported"}
-          </div>
-        )}
-        {etaText && (
-          <span class="text-[11px] tabular-nums" style="color: var(--text-muted)">
-            <span style="color: var(--text-secondary)">ETA</span>
-            {etaText} UTC{eta && ` · ${relativeTime(eta)}`}
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                class="size-4 shrink-0"
+                style="color: var(--text-muted)"
+                aria-label="to"
+              >
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            </>
+          )}
+          <span class="truncate text-base font-semibold" style="color: var(--text)">
+            {voyage?.to ? `${voyage.to.flag ?? ""} ${voyage.to.code ?? voyage.to.raw}`.trim() : "Not reported"}
           </span>
+        </div>
+        {voyage?.to?.country && (
+          <div class="text-sm" style="color: var(--text-secondary)">
+            {voyage.to.country}
+          </div>
         )}
       </section>
     </>
   )}
+
+  {
+    points > 1 && (
+      <>
+        <div class="mt-4 flex items-baseline justify-between gap-2">
+          <h2 class={LABEL} style="color: var(--text-muted)">Track</h2>
+          <a
+            class="text-[11px]"
+            href={`${API_PUBLIC}/v1/vessels/${mmsi}/track?format=gpx`}
+            download={`${mmsi}.gpx`}
+          >
+            Download GPX
+          </a>
+        </div>
+        <section class={`${TILE} flex items-baseline justify-between gap-2 text-sm`}>
+          <span style="color: var(--text)">
+            {points.toLocaleString("en-US")} positions
+          </span>
+          <span class="text-xs" style="color: var(--text-muted)">
+            {trackFrom ? `since ${relativeTime(new Date(trackFrom))}` : ""}
+          </span>
+        </section>
+      </>
+    )
+  }
 
   {
     feature && (
@@ -210,9 +249,8 @@ const rows: Array<[string, string | undefined]> = [
         </dl>
 
 
-        {/* Only what the stream knows and the snapshot does not: positions seen since this
-            page opened, plus the credit that came with this vessel's own last message. */}
-        <dl class="mt-4" data-live-fields hidden></dl>
+        {/* The credit that came with this vessel's own last message, which only the
+            stream carries. */}
         <p class="mt-4 text-xs" style="color: var(--text-muted)" data-attribution hidden></p>
 
       </>
@@ -233,23 +271,22 @@ const rows: Array<[string, string | undefined]> = [
       seeded = true;
       app.stream.seed(JSON.parse(article.dataset.seed));
       app.ctl.setFocus(mmsi);
+      // Separate from the seed: the stream's own track is [lon, lat, time] triples it
+      // collects live, where this is the server's [lon, lat] history.
+      app.ctl.setTrack(
+        article.dataset.track ? JSON.parse(article.dataset.track) : [],
+        Number(article.dataset.trackEnd ?? 0),
+      );
     }
 
     const v = app.stream.vessels.get(mmsi);
-    const dl = article.querySelector<HTMLElement>("[data-live-fields]");
-    if (!v || !dl) return;
-
-    if (v.track.length > 1) {
-      dl.innerHTML = `<dt>Track this session</dt><dd>${v.track.length} positions</dd>`;
-      dl.hidden = false;
-    }
+    if (!v) return;
 
     const credit = article.querySelector<HTMLElement>("[data-attribution]");
     if (credit && v.attribution) {
       credit.textContent = v.license ? `${v.attribution} Licence: ${v.license}.` : v.attribution;
       credit.hidden = false;
     }
-
   }
 
   hydrate();

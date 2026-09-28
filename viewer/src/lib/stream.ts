@@ -27,7 +27,11 @@ export interface Vessel {
   draught?: number;
   dimension?: { A: number; B: number; C: number; D: number };
   eta?: { Month: number; Day: number; Hour: number; Minute: number };
-  /** Positions collected while this page has been open. Not history; see the spec. */
+  /**
+   * Positions collected since this vessel was opened, kept only for the one on screen. The
+   * server serves the real track, and this exists to carry the drawn line from the end of
+   * that fetch to the vessel's current mark.
+   */
   track: Array<[number, number, number]>;
 }
 
@@ -59,7 +63,8 @@ const POSITION_TYPES = new Set([
 ]);
 
 const TTL = 30 * 60e3; // matches the server's vessel cache
-const MAX_TRACK = 500;
+// Enough to bridge the gap since the track was fetched, not to be a track in its own right.
+const MAX_TRACK = 120;
 
 type Listener = () => void;
 
@@ -75,6 +80,7 @@ export class Stream {
   #bbox: BBox[] = [];
   #mmsi = new Set<number>();
   #count = 0;
+  #trackFor: number | undefined;
   #listeners = new Set<Listener>();
   #dirty = false;
 
@@ -112,6 +118,17 @@ export class Stream {
   subscribe(fn: Listener): () => void {
     this.#listeners.add(fn);
     return () => this.#listeners.delete(fn);
+  }
+
+  /**
+   * Collect positions for this vessel alone. Every vessel in view used to accumulate a
+   * track, which for a busy viewport is hundreds of thousands of points that nothing draws.
+   */
+  trackOnly(mmsi: number | undefined) {
+    if (this.#trackFor === mmsi) return;
+    const previous = this.#trackFor === undefined ? undefined : this.vessels.get(this.#trackFor);
+    if (previous) previous.track = [];
+    this.#trackFor = mmsi;
   }
 
   /** Replaces the whole subscription; the server treats a resubscribe as wholesale. */
@@ -227,8 +244,10 @@ export class Stream {
       v.lat = ev.lat;
       v.lon = ev.lon;
       if (moved) {
-        v.track.push([ev.lon, ev.lat, t]);
-        if (v.track.length > MAX_TRACK) v.track.splice(0, v.track.length - MAX_TRACK);
+        if (ev.mmsi === this.#trackFor) {
+          v.track.push([ev.lon, ev.lat, t]);
+          if (v.track.length > MAX_TRACK) v.track.splice(0, v.track.length - MAX_TRACK);
+        }
       }
     }
 
