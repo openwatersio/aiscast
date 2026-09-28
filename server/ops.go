@@ -130,18 +130,27 @@ func connectKey(c *Claims, r *http.Request) string {
 // Content-Type for the JSON body /mcp takes.
 const corsHeaders = "Authorization, Content-Type"
 
-// api wraps a public JSON handler with open CORS and the per-address request limit. allow names the request
-// headers the preflight permits. The preflight is answered here, before the limit, so a client at the limit
-// sees the 429 on its real request rather than an opaque CORS failure, and the 429 carries the origin header
-// for the same reason. No Allow-Methods: GET and POST are safelisted, and nothing here takes another method.
+// preflight opens CORS on a public endpoint and answers a browser's preflight, returning true when it did so
+// and the handler is done. allow names the request headers the preflight permits. No Allow-Methods: GET and
+// POST are safelisted, and no endpoint takes another method.
+func preflight(w http.ResponseWriter, r *http.Request, allow string) bool {
+	hd := w.Header()
+	hd.Set("Access-Control-Allow-Origin", "*")
+	hd.Set("Access-Control-Allow-Headers", allow)
+	hd.Set("Access-Control-Max-Age", "86400")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	return false
+}
+
+// api wraps a public JSON handler with open CORS and the per-address request limit. The preflight is
+// answered before the limit, so a client at the limit sees the 429 on its real request rather than an opaque
+// CORS failure, and the 429 carries the origin header for the same reason.
 func (p *Pipeline) api(allow string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hd := w.Header()
-		hd.Set("Access-Control-Allow-Origin", "*")
-		hd.Set("Access-Control-Allow-Headers", allow)
-		hd.Set("Access-Control-Max-Age", "86400")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+		if preflight(w, r, allow) {
 			return
 		}
 		if p.limited(w, httpLimit, clientIP(r)) {

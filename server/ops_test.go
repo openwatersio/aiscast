@@ -48,7 +48,7 @@ func TestPreflightAllowsAuthorization(t *testing.T) {
 	srv := httptest.NewServer(httpHandler(p))
 	defer srv.Close()
 
-	for _, path := range []string{"/v1/vessels", "/v1/vessels/441754000", "/v1/vessels/441754000/track", "/v1/stations", "/v1/stats", "/mcp", "/openapi.json"} {
+	for _, path := range []string{"/v1/vessels", "/v1/vessels/441754000", "/v1/vessels/441754000/track", "/v1/stations", "/v1/stats", "/mcp", "/openapi.json", "/v1/receive", "/v1/keys"} {
 		req, _ := http.NewRequest("OPTIONS", srv.URL+path, nil)
 		req.Header.Set("Origin", "https://example.test")
 		req.Header.Set("Access-Control-Request-Method", "GET")
