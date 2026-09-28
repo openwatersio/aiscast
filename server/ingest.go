@@ -132,11 +132,13 @@ type udpListener struct {
 	datagrams   atomic.Int64
 }
 
-// parseUDPAddrs reads UDP_ADDR: comma-separated `[label=]host:port`. The label defaults to the address. A
-// malformed entry is an error rather than a skipped listener, because an empty address would bind an
-// ephemeral port and the server would look healthy while nothing listens on 10110.
+// parseUDPAddrs reads UDP_ADDR: comma-separated `[label=]host:port`. The label defaults to the address and
+// is the metric series identity, so it must be unique. A malformed entry is an error rather than a skipped
+// listener, because an empty address would bind an ephemeral port and the server would look healthy while
+// nothing listens on 10110.
 func parseUDPAddrs(s string) ([]*udpListener, error) {
 	var ls []*udpListener
+	labels := map[string]bool{}
 	for _, e := range strings.Split(s, ",") {
 		e = strings.TrimSpace(e)
 		if e == "" {
@@ -149,6 +151,10 @@ func parseUDPAddrs(s string) ([]*udpListener, error) {
 		if _, _, err := net.SplitHostPort(l.addr); err != nil {
 			return nil, fmt.Errorf("UDP_ADDR entry %q: %w", e, err)
 		}
+		if l.label == "" || labels[l.label] {
+			return nil, fmt.Errorf("UDP_ADDR entry %q: label must be non-empty and unique", e)
+		}
+		labels[l.label] = true
 		ls = append(ls, l)
 	}
 	return ls, nil

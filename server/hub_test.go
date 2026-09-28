@@ -914,7 +914,7 @@ func TestParseUDPAddrs(t *testing.T) {
 	if len(got) != len(want) {
 		t.Fatalf("got %d listeners, want %d", len(got), len(want))
 	}
-	for _, bad := range []string{"legacy=", "10110", "udp=2.29.0.215", ":10110,legacy"} {
+	for _, bad := range []string{"legacy=", "10110", "udp=2.29.0.215", ":10110,legacy", "=:10110", "x=:10110,x=:10111", ":10110,:10110"} {
 		if _, err := parseUDPAddrs(bad); err == nil {
 			t.Errorf("parseUDPAddrs(%q) accepted a malformed entry", bad)
 		}
