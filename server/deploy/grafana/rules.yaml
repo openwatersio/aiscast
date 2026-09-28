@@ -229,16 +229,17 @@ groups:
         annotations:
           summary: '{{ $labels.name }} crashed and systemd restarted it'
           description: The process exited on its own (a panic, a fatal error, or an out-of-memory kill), so this is not a deploy or a systemctl restart. Run journalctl -u {{ $labels.name }} -n 100 on the box to see why it exited.
-      # A backstop that does not depend on the systemd collector: any kind of start, more often than deploys
-      # and manual restarts happen together. changes() sees only starts that lived to a scrape, so a fast
-      # crash loop counts low here; it also stops the scrapes, which MetricsMissing catches, and
-      # ServiceCrashed counts every automatic restart exactly.
+      # A backstop that does not depend on the systemd collector: starts that no deploy explains. Each deploy
+      # brings a new aiscast_build_info revision, so the revisions seen in the hour, less the one already
+      # running, are the deploys. changes() sees only starts that lived to a scrape, so a fast crash loop
+      # counts low here; it also stops the scrapes, which MetricsMissing catches, and ServiceCrashed counts
+      # every automatic restart exactly.
       - alert: AiscastRestartStorm
-        expr: changes(process_start_time_seconds{job="aiscast"}[1h]) > 3
+        expr: changes(process_start_time_seconds{job="aiscast"}[1h]) - scalar(count(count_over_time(aiscast_build_info[1h])) - 1) > 2
         labels: {severity: warning}
         annotations:
-          summary: aiscast started {{ $value }} times in the last hour
-          description: Deploys and manual restarts account for one or two starts an hour at most, so this many points to repeated crashes or restarts. Check journalctl -u aiscast on the box and the recent deploy runs in GitHub Actions.
+          summary: aiscast started {{ $value }} times in the last hour without a deploy
+          description: Deploys are already subtracted, so these are crashes or manual restarts. Check journalctl -u aiscast on the box, and whether someone ran systemctl restart.
       - alert: CrashDetectionMissing
         expr: absent(node_systemd_service_restart_total{name="aiscast.service"})
         for: 30m
