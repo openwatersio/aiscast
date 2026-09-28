@@ -125,35 +125,10 @@ func (r aishubRow) static() ais.Packet {
 	}
 }
 
-func (r aishubRow) staticKey() string {
-	return fmt.Sprintf("%d|%s|%s|%d|%d|%d|%d|%d|%d|%s|%d", r.IMO, r.Name, r.CallSign, r.Type, r.A, r.B, r.C, r.D, r.Draught, r.Dest, r.Eta)
-}
-
-type aishubState struct {
-	lastTime   map[uint32]string // MMSI → TIME of the last position emitted
-	lastStatic map[uint32]string // MMSI → staticKey of the last static emitted
-	// staticAt: MMSI → the staticKeys already emitted at the vessel's current canonical time.
-	// AISHub's aggregate flips a vessel's static fields between stations' versions (X → Y → X)
-	// while TIME, the canonical time, stands still; re-emitting X then repeats an (id, time) the
-	// archive and stream already carry, long after the pipeline's dedupe window has been pruned
-	// past it. Keyed by the canonical time so a flip-back after the vessel's clock moves on is
-	// emitted again under its new time.
-	staticAt map[uint32]staticWindow
-}
-
-type staticWindow struct {
-	time time.Time       // the canonical time the keys below were emitted with
-	keys map[string]bool // staticKeys emitted at that time
-}
-
-func newAishubState() *aishubState {
-	return &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}, staticAt: map[uint32]staticWindow{}}
-}
-
 // ingestAishub maps one snapshot into events: a position when TIME advanced, a static when static fields changed.
 // Every row is ingested at once, as the raw archive records the snapshot, so the vessel cache, dedupe, and the
 // normalized stream see the order replay reproduces. Live, only delivery to subscribers is paced (deliverPaced).
-func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState) (int, error) {
+func (p *Pipeline) ingestAishub(body []byte, now time.Time) (int, error) {
 	var parts []json.RawMessage
 	if err := json.Unmarshal(body, &parts); err != nil {
 		return 0, err
@@ -186,29 +161,28 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState) (in
 		if r.MMSI == 0 {
 			continue
 		}
-		t := now
-		if secs, err := strconv.ParseInt(r.Time, 10, 64); err == nil && secs > 0 {
-			t = time.Unix(secs, 0)
-			if t.After(now) { // ingestPacket caps a future stamp to the receive time; match it here
-				t = now // so the staticAt window and the packet carry the time the event actually gets
-			}
+		// A row's own TIME is the only thing that says whether it is news, so a row without one, or one
+		// stamped in the future, is skipped. Capping a future stamp to the receive time would make the
+		// same unchanged row look newer on every snapshot. The next snapshot carries it again, by then
+		// in the past, and it goes through once with its true time.
+		secs, err := strconv.ParseInt(r.Time, 10, 64)
+		if err != nil || secs <= 0 {
+			continue
 		}
-		if st.lastTime[r.MMSI] != r.Time && r.Latitude != 0 && r.Longitude != 0 {
-			st.lastTime[r.MMSI] = r.Time
+		t := time.Unix(secs, 0)
+		if t.After(now) {
+			continue
+		}
+		// A snapshot repeats every vessel AISHub holds, most of them unchanged since the last one, so a
+		// row becomes an event only when the vessel cache says it is news. The cache survives a restart,
+		// so the first snapshot after one does not re-send what the stream already carried.
+		if r.Latitude != 0 && r.Longitude != 0 && p.positionIsNew(r.MMSI, t, now) {
 			p.ingestPacketAt("aishub", "aishub", t, now, r.position(t))
 			n++
 		}
-		if k := r.staticKey(); (r.Name != "" || r.IMO != 0) && st.lastStatic[r.MMSI] != k {
-			w := st.staticAt[r.MMSI]
-			if !w.time.Equal(t) { // t is never the zero value, so the zero window always resets
-				w = staticWindow{time: t, keys: map[string]bool{}}
-				st.staticAt[r.MMSI] = w
-			}
-			// A suppressed flip-back leaves lastStatic alone, so it is emitted again once TIME moves on.
-			if !w.keys[k] {
-				w.keys[k] = true
-				st.lastStatic[r.MMSI] = k
-				p.ingestPacketAt("aishub", "aishub", t, now, r.static())
+		if r.Name != "" || r.IMO != 0 {
+			if pkt := r.static(); p.staticIsNew(r.MMSI, t, now, p.asDecoded(pkt)) {
+				p.ingestPacketAt("aishub", "aishub", t, now, pkt)
 				n++
 			}
 		}
@@ -218,13 +192,13 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState) (in
 
 // aishubSnapshot archives and ingests one snapshot as a single reception, then hands its events to
 // paced delivery once the locks are released, so other sources never wait on delivery.
-func (p *Pipeline) aishubSnapshot(body []byte, start time.Time, st *aishubState) (int, error) {
+func (p *Pipeline) aishubSnapshot(body []byte, start time.Time) (int, error) {
 	start, ok := p.admit(start)
 	if !ok {
 		return -1, nil
 	}
 	p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
-	n, err := p.ingestAishub(body, start, st)
+	n, err := p.ingestAishub(body, start)
 	batch := p.aishubBatch
 	p.aishubBatch = nil
 	p.release()
@@ -283,7 +257,6 @@ func (p *Pipeline) ingestPacketAt(source, station string, t, recv time.Time, pkt
 
 func runAishub(p *Pipeline, username string, interval time.Duration) {
 	url := "https://data.aishub.net/ws.php?username=" + username + "&format=0&output=json&compress=2"
-	st := newAishubState()
 	client := &http.Client{Timeout: 50 * time.Second}
 	var lastHash [32]byte
 	for {
@@ -310,7 +283,7 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			} else {
 				lastHash = h
 			}
-			return p.aishubSnapshot(body, start, st)
+			return p.aishubSnapshot(body, start)
 		}()
 		switch {
 		case err != nil:

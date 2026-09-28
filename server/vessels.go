@@ -64,12 +64,12 @@ func newVessel() *vessel {
 	return &vessel{Cog: 360, Sog: 102.3, Heading: 511, NavStatus: 15, Kind: "vessel"}
 }
 
-// updateVessel folds the event into the per-MMSI cache and stamps the event with the cached name/position,
-// so positionless messages (5, 24) can be bbox-routed and carry MetaData like aisstream.
-func (p *Pipeline) updateVessel(ev *Event) {
-	u := newVessel() // fields at sentinel = "not in this message"
-	var hasPos, isStatic bool
-	switch m := ev.Packet.(type) {
+// foldOf extracts what a message contributes to a vessel: fields at their sentinel mean "not in this
+// message". updateVessel folds it into the cache, and a source can use it to ask whether a message
+// would change what the cache already holds.
+func foldOf(pkt ais.Packet) (u *vessel, hasPos, isStatic bool) {
+	u = newVessel()
+	switch m := pkt.(type) {
 	case ais.PositionReport:
 		u.Lat, u.Lon, hasPos, u.Class = float64(m.Latitude), float64(m.Longitude), true, "A"
 		u.Cog, u.Sog, u.Heading, u.NavStatus = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.NavigationalStatus
@@ -118,6 +118,70 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if hasPos && (math.Abs(u.Lat) > 90 || math.Abs(u.Lon) > 180 || (u.Lat == 0 && u.Lon == 0)) {
 		hasPos = false
 	}
+	return u, hasPos, isStatic
+}
+
+// positionIsNew reports whether a position at t is news to the vessel cache: inside the cache's window
+// and newer than the vessel's last position, or for a vessel the cache does not hold. A source that
+// repeats what it already sent (AISHub's snapshots) asks this instead of keeping its own state, and the
+// cache survives a restart.
+func (p *Pipeline) positionIsNew(mmsi uint32, t, now time.Time) bool {
+	if t.Before(now.Add(-vesselTTL)) {
+		return false // older than anything the cache would keep
+	}
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	v := p.vessels[mmsi]
+	return v == nil || !v.HasPos || t.After(v.PosAt)
+}
+
+// staticIsNew reports whether a static message at t is news to the vessel cache: inside the cache's
+// window, newer than the last static folded in, and carrying a particular the vessel does not already
+// have. The time gate is what stops an aggregate that flips a vessel between two stations' versions
+// (X, Y, X) under one timestamp from sending the same broadcast twice. pkt must be decoded as the
+// pipeline decodes it, so its fields compare with what the cache stored.
+func (p *Pipeline) staticIsNew(mmsi uint32, t, now time.Time, pkt ais.Packet) bool {
+	if t.Before(now.Add(-vesselTTL)) {
+		return false
+	}
+	u, _, _ := foldOf(pkt)
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	v := p.vessels[mmsi]
+	if v == nil {
+		return true
+	}
+	return t.After(v.StaticAt) && changesParticulars(v, u)
+}
+
+// changesParticulars reports whether folding u would change any of v's static particulars.
+func changesParticulars(v, u *vessel) bool {
+	return u.Name != "" && u.Name != v.Name ||
+		u.ShipType != 0 && u.ShipType != v.ShipType ||
+		u.IMO != 0 && u.IMO != v.IMO ||
+		u.CallSign != "" && u.CallSign != v.CallSign ||
+		u.Destination != "" && u.Destination != v.Destination ||
+		u.ETA.Month != 0 && u.ETA != v.ETA ||
+		u.Draught > 0 && u.Draught != v.Draught ||
+		u.Length > 0 && u.Length != v.Length ||
+		u.Beam > 0 && u.Beam != v.Beam
+}
+
+// asDecoded returns pkt as the pipeline sees it after re-encoding, which is what the cache folds in: the
+// 6-bit text alphabet and the fixed-point fields can change a value on the way through.
+func (p *Pipeline) asDecoded(pkt ais.Packet) ais.Packet {
+	if payload := p.codec.EncodePacket(pkt); payload != nil {
+		if d := p.codec.DecodePacket(payload); d != nil {
+			return d
+		}
+	}
+	return pkt
+}
+
+// updateVessel folds the event into the per-MMSI cache and stamps the event with the cached name/position,
+// so positionless messages (5, 24) can be bbox-routed and carry MetaData like aisstream.
+func (p *Pipeline) updateVessel(ev *Event) {
+	u, hasPos, isStatic := foldOf(ev.Packet)
 	p.vmu.Lock()
 	// The cache sweeps on the reception clock, not a wall-clock ticker. It decides which events are
 	// stale and gives a static its vessel's position, and both reach the archive, so replay has to
