@@ -531,7 +531,10 @@ def main():
     shutil.rmtree(stage, ignore_errors=True)  # a run the OS killed leaves it behind
     stage.mkdir(parents=True)
     con = duckdb.connect(str(stage / "packager.duckdb"))
-    con.execute(f"SET memory_limit='4GB'; SET temp_directory='{stage}/tmp'")
+    # Two threads keep a full day under the memory limit and leave the box's cores to the live server:
+    # at the default of one thread per core, a 24-hour day runs out of memory. Every output is written
+    # with an explicit ORDER BY, so insertion order need not be kept.
+    con.execute(f"SET memory_limit='4GB'; SET threads=2; SET preserve_insertion_order=false; SET temp_directory='{stage}/tmp'")
     try:
         failed = package_days(days, args, all_files, today, packaged, con, catalog)
     finally:
