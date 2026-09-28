@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -94,7 +92,7 @@ func (r *hourRing) restore(s ringState) {
 }
 
 // usageCounters are the rolling counters behind /v1/stats. Totals since start are not kept: deploys restart the
-// server, so they would measure time since the last deploy. The rings persist in a JSON file next to the vessel snapshot.
+// server, so they would measure time since the last deploy. The rings persist in a JSON file, saved every minute and on shutdown.
 type usageCounters struct {
 	events   hourRing // deduplicated events
 	dups     hourRing // duplicates dropped
@@ -143,11 +141,6 @@ func (u *usageCounters) sourceNames(now time.Time) []string {
 type usageFile struct {
 	Events, Dups, Streams, Requests ringState
 	Sources, Stations               map[string]ringState
-}
-
-// usagePath derives the usage file from the vessel snapshot path: vessels.json → vessels-usage.json.
-func usagePath(snapshot string) string {
-	return strings.TrimSuffix(snapshot, filepath.Ext(snapshot)) + "-usage.json"
 }
 
 func (p *Pipeline) saveUsage(path string) error {

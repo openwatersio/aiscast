@@ -50,8 +50,8 @@ type vessel struct {
 	PosAt       time.Time // time of the last position folded in (Seen also moves on static messages)
 	StaticAt    time.Time // time of the last static folded in; gates rebuilt copies of the same broadcast
 
-	// last events heard, replayed by snapshot subscriptions; unexported so the vessel snapshot file skips
-	// them — nil after a restore, and then a reconstruction is synthesized instead.
+	// last events heard, replayed by snapshot subscriptions. The record does not keep them, so they are nil
+	// for a vessel restored from it, and a reconstruction is synthesized instead.
 	lastPos    *Event
 	lastStatic *Event
 
@@ -319,6 +319,9 @@ func (p *Pipeline) markTrusted(mmsi uint32, t time.Time) {
 	p.vmu.Lock()
 	if v := p.vessels[mmsi]; v != nil && t.After(v.TrustedAt) {
 		v.TrustedAt = t
+		if p.dirty != nil {
+			p.dirty[mmsi] = struct{}{}
+		}
 	}
 	p.vmu.Unlock()
 }
@@ -495,20 +498,22 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			taken[rec.mmsi] = true
-			f, source, ahead := p.newest(rec)
-			if i, ok := emitted[rec.mmsi]; ok {
-				if ahead {
-					features[i] = f
-					noteAttribution(attribution, source)
-				}
+			i, ok := emitted[rec.mmsi]
+			// A vessel the cache holds with a position the cache did not answer with is outside this request:
+			// its newest position has left the boxes or is older than max_age.
+			if c := p.vessels[rec.mmsi]; !ok && c != nil && c.HasPos {
 				continue
 			}
-			// A vessel the cache holds with a position at least as new is the cache's to answer, and this
-			// request did not ask about where it is or how old that position is.
-			if ahead {
-				features = append(features, f)
-				noteAttribution(attribution, source)
+			f, source, merged := p.newest(rec)
+			if ok && !merged {
+				continue
 			}
+			if ok {
+				features[i] = f
+			} else {
+				features = append(features, f)
+			}
+			noteAttribution(attribution, source)
 		}
 		p.vmu.RUnlock()
 		truncated = more
@@ -546,12 +551,10 @@ func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time
 	return recs, more, nil
 }
 
-// newest is a vessel's newest state as a Feature, with the source it credits. The cache is usually ahead
-// of the record by up to a second, and then its own encoded Feature is the answer. After a restart the
-// record can be ahead instead, until the vessel next reports, because the snapshot is written every minute
-// and the record every second. Then ahead is true and the Feature is the cache merged with the record.
-// The caller holds vmu for reading.
-func (p *Pipeline) newest(rec record) (feature []byte, source string, ahead bool) {
+// newest is a vessel's newest state as a Feature, with the source it credits. When the record adds nothing
+// to the cache, the cache's own encoded Feature is the answer. Otherwise merged is true and the Feature is
+// the cache completed by the record. The caller holds vmu for reading.
+func (p *Pipeline) newest(rec record) (feature []byte, source string, merged bool) {
 	v, cached := p.newestState(rec)
 	if cached {
 		return v.featureJSON(rec.mmsi), v.Source, false
@@ -560,18 +563,18 @@ func (p *Pipeline) newest(rec record) (feature []byte, source string, ahead bool
 	return b, v.Source, true
 }
 
-// newestState is newest's vessel state: the cached vessel itself when it is at least as new as the record,
-// with cached true, else a merged copy. The caller holds vmu for reading and must not modify a cached one.
+// newestState is newest's vessel state: the cached vessel itself when the record adds nothing to it, with
+// cached true, else the cache merged with the record, or the record alone for a vessel the cache does not
+// hold. The caller holds vmu for reading and must not modify a cached one.
 func (p *Pipeline) newestState(rec record) (v *vessel, cached bool) {
 	c := p.vessels[rec.mmsi]
-	if c != nil && !rec.v.Seen.After(c.Seen) && !rec.v.PosAt.After(c.PosAt) {
-		return c, true
-	}
 	if c == nil {
 		return rec.v, false
 	}
 	v = c.state()
-	v.merge(rec.v)
+	if !v.merge(rec.v) {
+		return c, true
+	}
 	return v, false
 }
 
