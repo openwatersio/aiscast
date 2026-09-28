@@ -198,13 +198,31 @@ groups:
           summary: '{{ $value | humanizePercentage }} of the root disk is free'
           description: An archive backlog, or the journal cap slipped.
 
-      # A deploy restarts aiscast once, so a second start inside the hour is a crash.
-      - alert: AiscastRestarting
-        expr: changes(process_start_time_seconds{job="aiscast"}[1h]) > 1
+      # systemd counts only the restarts it makes because a process exited on its own (Restart=always after
+      # a crash, panic, or OOM kill). Deploys and manual restarts go through systemctl and never count.
+      - alert: ServiceCrashed
+        expr: increase(node_systemd_service_restart_total{name=~"(aiscast|caddy|alloy)\\.service"}[10m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: '{{ $labels.name }} crashed and systemd restarted it'
+          description: The process exited on its own (a panic, a fatal error, or an out-of-memory kill), so this is not a deploy or a systemctl restart. Run journalctl -u {{ $labels.name }} -n 100 on the box to see why it exited.
+      # A backstop that does not depend on the systemd collector: any kind of start, more often than deploys
+      # and manual restarts happen together. changes() sees only starts that lived to a scrape, so a fast
+      # crash loop counts low here; it also stops the scrapes, which MetricsMissing catches, and
+      # ServiceCrashed counts every automatic restart exactly.
+      - alert: AiscastRestartStorm
+        expr: changes(process_start_time_seconds{job="aiscast"}[1h]) > 3
         labels: {severity: warning}
         annotations:
-          summary: aiscast restarted {{ $value }} times in the last hour
-          description: A crash loop. Check journalctl -u aiscast.
+          summary: aiscast started {{ $value }} times in the last hour
+          description: Deploys and manual restarts account for one or two starts an hour at most, so this many points to repeated crashes or restarts. Check journalctl -u aiscast on the box and the recent deploy runs in GitHub Actions.
+      - alert: CrashDetectionMissing
+        expr: absent(node_systemd_service_restart_total{name="aiscast.service"})
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: The systemd restart counter for aiscast is missing
+          description: Without this counter, ServiceCrashed cannot fire and crashes go unreported. Check that Alloy is running and that its systemd collector can reach D-Bus, with systemctl status alloy and journalctl -u alloy on the box.
 
       # Every rule above reads nothing when the samples stop, so their silence needs its own alert.
       - alert: MetricsMissing

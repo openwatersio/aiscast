@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,7 @@ func TestMetrics(t *testing.T) {
 		fmt.Sprintf(`aiscast_fanout_bytes_total{protocol="v1"} %d`, len(msg)),
 		`aiscast_fanout_sends_total{protocol="v0"} 0`,
 		fmt.Sprintf("process_start_time_seconds %d", bootTime.Unix()),
+		fmt.Sprintf("aiscast_build_info{revision=%q,go_version=%q} 1", buildRevision, runtime.Version()),
 	)
 	m := get("/metrics")
 	for _, prefix := range []string{"process_cpu_seconds_total ", "go_goroutines ", `aiscast_source_delay_seconds{source="t",quantile="0.99"} `} {
