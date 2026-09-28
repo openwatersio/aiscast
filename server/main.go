@@ -45,6 +45,17 @@ func main() {
 	if n, err := p.loadSnapshot(snapshot); err == nil {
 		log.Printf("restored %d vessels from %s", n, snapshot)
 	}
+	// The record opens after the snapshot, so attaching it marks every restored vessel for its first write.
+	// A record that will not open costs the lookups it serves, never live ingest or the stream: the server
+	// runs without it, and aiscast_store_up says so.
+	if path := env("STORE", "aiscast.db"); path != "off" {
+		if st, err := openStore(path); err != nil {
+			log.Printf("store: %v; running without the vessel record", err)
+		} else {
+			p.attachStore(st)
+			go p.runStore()
+		}
+	}
 	dedupe := env("DEDUPE", "dedupe.json")
 	if n, err := p.loadDedupe(dedupe); err == nil {
 		log.Printf("restored %d dedupe entries from %s", n, dedupe)
@@ -112,6 +123,9 @@ func main() {
 		if err := p.saveDedupe(dedupe); err != nil {
 			log.Printf("dedupe: %v (the next process may re-accept copies inside the window)", err)
 		}
+		if err := p.closeStore(); err != nil {
+			log.Printf("store: %v", err)
+		}
 		os.Exit(0)
 	}()
 
@@ -130,20 +144,21 @@ func main() {
 // build until the document mentions it.
 func routes(p *Pipeline) map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"/v0/stream":    p.serveV0,
-		"/v1/stream":    p.serveV1,
-		"/v1/receive":   p.serveReceive,
-		"/v1/keys":      p.serveKeys,
-		"/v1/nmea":      p.serveNMEA,
-		"/v1/stations":  p.rateLimited(p.serveStations),
-		"/v1/stations/": p.rateLimited(p.serveStations),
-		"/v1/vessels":   p.rateLimited(p.serveVessels),
-		"/v1/stats":     p.rateLimited(p.serveStats),
-		"/mcp":          p.rateLimited(p.serveMCP),
-		"/health":       p.serveHealth,
-		"/metrics":      p.serveMetrics,
-		"/robots.txt":   serveRobots,
-		"/openapi.json": p.rateLimited(serveOpenAPI),
+		"/v0/stream":         p.serveV0,
+		"/v1/stream":         p.serveV1,
+		"/v1/receive":        p.serveReceive,
+		"/v1/keys":           p.serveKeys,
+		"/v1/nmea":           p.serveNMEA,
+		"/v1/stations":       p.rateLimited(p.serveStations),
+		"/v1/stations/":      p.rateLimited(p.serveStations),
+		"/v1/vessels":        p.rateLimited(p.serveVessels),
+		"/v1/vessels/{mmsi}": p.rateLimited(p.serveVessel),
+		"/v1/stats":          p.rateLimited(p.serveStats),
+		"/mcp":               p.rateLimited(p.serveMCP),
+		"/health":            p.serveHealth,
+		"/metrics":           p.serveMetrics,
+		"/robots.txt":        serveRobots,
+		"/openapi.json":      p.rateLimited(serveOpenAPI),
 	}
 }
 

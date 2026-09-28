@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -20,7 +21,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.3.0"
+const mcpVersion = "0.4.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -34,7 +35,7 @@ const (
 const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the open AIS network: live vessel positions from government feeds, partner aggregates, and volunteer receivers, deduplicated into one picture.
 
 - Live terrestrial coverage is strongest in the Nordics and wherever volunteer receivers are; elsewhere positions come from partner aggregates, mostly AISHub, which runs about a minute behind. get_coverage reports each source's current delay, also published at https://ais.openwaters.io/v1/stats. Where no feed or receiver hears, there is nothing. Call get_coverage before saying a region has no traffic.
-- A position is the last report heard, up to 30 minutes old. Every row carries seen and age_s. A vessel unheard for 30 minutes is dropped.
+- A position is the last report heard. find_vessels_in_area and find_vessels_near return vessels heard in the last 30 minutes. get_vessels and search_vessels_by_name also find vessels heard earlier, with the last position the network heard from them. Every row carries seen and age_s, so read an old position as where the vessel was, not where it is.
 - Destination, ETA, draught, dimensions, call sign, and IMO come from a vessel's static data, which it sends every six minutes, so a vessel heard for the first time may lack them. Flag comes from the MMSI's maritime identification digits and is present when those are known. ETA has no year: read it as the next occurrence.
 - Anonymous calls may cover 100 square degrees and look up 10 vessels by MMSI or IMO per call. A free personal token from ` + mcpTokenURL + `, sent as an Authorization: Bearer header, raises that to 400 square degrees and 50 vessels. A tool says so when a call exceeds its limit.
 - Show the credit lines from each result's attribution field wherever the data is displayed.
@@ -76,7 +77,7 @@ func newMCPService(p *Pipeline) *mcpService {
 			SetCacheable: func(_ context.Context, _ mcp.Request, c *mcp.Cacheable) { c.TTLMs, c.CacheScope = 3600_000, "public" },
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "get_vessels", Title: "Vessels by MMSI", Annotations: ro("Vessels by MMSI"),
-		Description: "Current position and particulars of specific vessels by MMSI (Maritime Mobile Service Identity) or IMO number: the last report heard for each, with destination, ETA, draught, and dimensions once its static data has been heard, and which identifiers matched nothing in the last 30 minutes. Use search_vessels_by_name first when you only have a name."},
+		Description: "Last known position and particulars of specific vessels by MMSI (Maritime Mobile Service Identity) or IMO number: the last report heard for each, however long ago, with destination, ETA, draught, and dimensions once its static data has been heard, and which identifiers match no vessel the network has heard. Use search_vessels_by_name first when you only have a name."},
 		p.mcpGetVessels)
 	mcp.AddTool(s, &mcp.Tool{Name: "find_vessels_in_area", Title: "Vessels in an area", Annotations: ro("Vessels in an area"),
 		Description: "Vessels currently inside a latitude/longitude bounding box, newest report first, with optional kind and ship-type filters. Use for what is in a port, a strait, or a stretch of coast. Anonymous calls may cover 100 square degrees per call."},
@@ -85,7 +86,7 @@ func newMCPService(p *Pipeline) *mcpService {
 		Description: "Vessels within a radius (default 10 NM, maximum 50) of a point or of another vessel, nearest first, each with distance and bearing from the centre. Use for what is near this position or what is around vessel X."},
 		p.mcpFindNear)
 	mcp.AddTool(s, &mcp.Tool{Name: "search_vessels_by_name", Title: "Search vessels by name", Annotations: ro("Search vessels by name"),
-		Description: "Vessels whose name contains the text, case-insensitive, among vessels heard in the last 30 minutes. Use to turn a name into an MMSI, then get_vessels or find_vessels_near for detail. An optional bounding box narrows the search."},
+		Description: "Vessels whose name contains the text, case-insensitive, among every vessel the network has heard, each with its last known position. Use to turn a name into an MMSI, then get_vessels or find_vessels_near for detail. An optional bounding box narrows the search."},
 		p.mcpSearchByName)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_coverage", Title: "Coverage and sources", Annotations: ro("Coverage and sources"),
 		Description: "Where Open Waters AIS is hearing AIS right now: sources with their current delay, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Call this before saying a region has no traffic."},
@@ -169,8 +170,8 @@ type mcpVessels struct {
 	Vessels     []mcpVessel       `json:"vessels"`
 	Total       int               `json:"total" jsonschema:"vessels matched before the limit was applied"`
 	Truncated   bool              `json:"truncated" jsonschema:"true when total exceeds the rows returned; narrow the query or raise limit"`
-	Unknown     []uint32          `json:"unknown_mmsi,omitempty" jsonschema:"requested MMSIs not heard in the last 30 minutes"`
-	UnknownIMO  []uint32          `json:"unknown_imo,omitempty" jsonschema:"requested IMO numbers matching no vessel heard in the last 30 minutes"`
+	Unknown     []uint32          `json:"unknown_mmsi,omitempty" jsonschema:"requested MMSIs matching no vessel the network has heard"`
+	UnknownIMO  []uint32          `json:"unknown_imo,omitempty" jsonschema:"requested IMO numbers matching no vessel the network has heard"`
 	Attribution map[string]string `json:"attribution" jsonschema:"credit line per source kind in the rows, to show with the data"`
 }
 
@@ -223,6 +224,59 @@ func (p *Pipeline) mcpCollect(now time.Time, keep func(uint32, *vessel) bool) []
 		}
 	}
 	return rows
+}
+
+// mcpWithRecord completes a get_vessels answer from the record. Every requested MMSI is looked up, because
+// the cache can hold an older state than the record after a restart, and requested IMOs the cache does
+// not know are too. A lookup that fails is an error, never a vessel reported as unknown.
+func (p *Pipeline) mcpWithRecord(now time.Time, rows []mcpVessel, want, wantIMO map[uint32]int) ([]mcpVessel, error) {
+	if p.store == nil {
+		return rows, nil
+	}
+	at := make(map[uint32]int, len(rows))
+	gotIMO := map[uint32]bool{}
+	for i, r := range rows {
+		at[r.MMSI] = i
+		if r.IMO != 0 {
+			gotIMO[r.IMO] = true
+		}
+	}
+	var mmsis, imos []uint32
+	for m := range want {
+		mmsis = append(mmsis, m)
+	}
+	for n := range wantIMO {
+		if !gotIMO[n] {
+			imos = append(imos, n)
+		}
+	}
+	var recs []record
+	for _, q := range []recordQuery{{mmsis: mmsis}, {imos: imos}} {
+		if len(q.mmsis) == 0 && len(q.imos) == 0 {
+			continue
+		}
+		rs, err := p.store.find(q)
+		if err != nil {
+			return nil, err
+		}
+		recs = append(recs, rs...)
+	}
+	for _, rec := range recs {
+		v := rec.v
+		p.vmu.RLock()
+		if c := p.vessels[rec.mmsi]; c != nil {
+			v = c.state()
+			v.merge(rec.v)
+		}
+		p.vmu.RUnlock()
+		if i, ok := at[rec.mmsi]; ok {
+			rows[i] = mcpRow(rec.mmsi, v, now)
+		} else {
+			at[rec.mmsi] = len(rows)
+			rows = append(rows, mcpRow(rec.mmsi, v, now))
+		}
+	}
+	return rows, nil
 }
 
 // mcpCollectIn is mcpCollect over the vessels positioned inside boxes, found through the spatial index.
@@ -382,13 +436,19 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 		}
 		return wantIMO[r.IMO]
 	}
-	rows := p.mcpCollect(time.Now(), func(m uint32, v *vessel) bool {
+	now := time.Now()
+	rows := p.mcpCollect(now, func(m uint32, v *vessel) bool {
 		if _, ok := want[m]; ok {
 			return true
 		}
 		_, ok := wantIMO[v.IMO]
 		return ok && v.IMO != 0
 	})
+	rows, err := p.mcpWithRecord(now, rows, want, wantIMO)
+	if err != nil {
+		log.Printf("store: %v", err)
+		return nil, mcpVessels{}, errMCPRecord
+	}
 	known, knownIMO := map[uint32]bool{}, map[uint32]bool{} // from every match, not the page: a vessel cut by the row cap is still known
 	for _, r := range rows {
 		known[r.MMSI] = true
@@ -588,16 +648,54 @@ func (p *Pipeline) mcpSearchByName(ctx context.Context, _ *mcp.CallToolRequest, 
 		}
 		box = &b
 	}
-	rows := p.mcpCollect(time.Now(), func(m uint32, v *vessel) bool {
-		if !strings.Contains(strings.ToUpper(v.Name), q) || (flag != "" && flagOf(m) != flag) {
-			return false
+	now := time.Now()
+	// Sorted as the record's search column is, so a page read from the record keeps its order.
+	byName := func(a, b *mcpVessel) bool {
+		an, bn := strings.ToUpper(strings.TrimSpace(a.Name)), strings.ToUpper(strings.TrimSpace(b.Name))
+		return an < bn || (an == bn && a.MMSI < b.MMSI)
+	}
+	if p.store == nil {
+		rows := p.mcpCollect(now, func(m uint32, v *vessel) bool {
+			if !strings.Contains(strings.ToUpper(v.Name), q) || (flag != "" && flagOf(m) != flag) {
+				return false
+			}
+			return box == nil || (v.HasPos && box.contains(v.Lat, v.Lon))
+		})
+		return nil, mcpPage(rows, byName, limit), nil
+	}
+	// With the record, it answers alone: it holds every vessel the cache does, give or take the last
+	// second's first reports, and each row is merged with the cache so the newer state wins.
+	rq := recordQuery{contains: q, flag: flag, byName: true, limit: limit}
+	if box != nil {
+		rq.boxes, rq.hasPos = []bbox{*box}, true
+	}
+	recs, err := p.store.find(rq)
+	var total int
+	if err == nil {
+		total, err = p.store.count(rq)
+	}
+	if err != nil {
+		log.Printf("store: %v", err)
+		return nil, mcpVessels{}, errMCPRecord
+	}
+	var rows []mcpVessel
+	p.vmu.RLock()
+	for _, rec := range recs {
+		v, _ := p.newestState(rec)
+		if box != nil && !box.contains(v.Lat, v.Lon) {
+			total-- // the vessel has moved out of the box since the record was written
+			continue
 		}
-		return box == nil || (v.HasPos && box.contains(v.Lat, v.Lon))
-	})
-	return nil, mcpPage(rows, func(a, b *mcpVessel) bool {
-		return a.Name < b.Name || (a.Name == b.Name && a.MMSI < b.MMSI)
-	}, limit), nil
+		rows = append(rows, mcpRow(rec.mmsi, v, now))
+	}
+	p.vmu.RUnlock()
+	out := mcpPage(rows, byName, limit)
+	out.Total = max(total, out.Total)
+	out.Truncated = out.Total > len(out.Vessels)
+	return nil, out, nil
 }
+
+var errMCPRecord = errors.New("the vessel record is unavailable; try again shortly")
 
 type mcpCoverageIn struct {
 	BBox    *mcpBox `json:"bbox,omitempty" jsonschema:"report the stations covering this box and the vessels currently in it"`

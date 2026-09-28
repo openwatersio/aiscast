@@ -3,10 +3,16 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BertoldVdb/go-ais"
 )
@@ -26,6 +32,7 @@ type vessel struct {
 	NavStatus uint8
 	ShipType  uint8  // ITU ship/cargo type code; AtoN type for aids
 	Kind      string // vessel | aton | base | sar
+	Class     string // A or B from the position report types, the truthful class signal; empty until one is heard
 	// Static particulars from type 5 and 24 messages, zero or empty until heard. Length and beam come
 	// from the dimension fields (reference point to bow plus to stern, port plus starboard).
 	IMO         uint32
@@ -64,13 +71,13 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	var hasPos, isStatic bool
 	switch m := ev.Packet.(type) {
 	case ais.PositionReport:
-		u.Lat, u.Lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
+		u.Lat, u.Lon, hasPos, u.Class = float64(m.Latitude), float64(m.Longitude), true, "A"
 		u.Cog, u.Sog, u.Heading, u.NavStatus = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.NavigationalStatus
 	case ais.StandardClassBPositionReport:
-		u.Lat, u.Lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
+		u.Lat, u.Lon, hasPos, u.Class = float64(m.Latitude), float64(m.Longitude), true, "B"
 		u.Cog, u.Sog, u.Heading = float64(m.Cog), float64(m.Sog), m.TrueHeading
 	case ais.ExtendedClassBPositionReport:
-		u.Lat, u.Lon, hasPos, u.Name = float64(m.Latitude), float64(m.Longitude), true, m.Name
+		u.Lat, u.Lon, hasPos, u.Name, u.Class = float64(m.Latitude), float64(m.Longitude), true, m.Name, "B"
 		u.Cog, u.Sog, u.Heading, u.ShipType = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.Type
 		u.Length, u.Beam = dimensions(m.Dimension)
 	case ais.LongRangeAisBroadcastMessage:
@@ -184,6 +191,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if u.Kind != "vessel" {
 		v.Kind = u.Kind
 	}
+	if u.Class != "" {
+		v.Class = u.Class
+	}
 	// Particulars are folded like the name: whenever present, stale or not, since they do not move.
 	if u.IMO != 0 {
 		v.IMO = u.IMO
@@ -220,6 +230,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	ev.Name, ev.Lat, ev.Lon, ev.HasPos = v.Name, v.Lat, v.Lon, v.HasPos
 	if stale && hasPos { // the event still carries its own position; only the cache ignores it
 		ev.Lat, ev.Lon = u.Lat, u.Lon
+	}
+	if p.dirty != nil {
+		p.dirty[ev.MMSI] = struct{}{}
 	}
 	p.vmu.Unlock()
 }
@@ -274,6 +287,7 @@ type vesselProps struct {
 	Destination string   `json:"destination,omitempty"`
 	Draught     float64  `json:"draught,omitempty"`
 	ETA         string   `json:"eta,omitempty"`
+	FirstSeen   string   `json:"first_seen,omitempty"` // from the record, on /v1/vessels/{mmsi} only
 	Flag        string   `json:"flag,omitempty"`
 	Heading     *uint16  `json:"heading,omitempty"`
 	IMO         uint32   `json:"imo,omitempty"`
@@ -332,8 +346,19 @@ func (v *vessel) featureJSON(mmsi uint32) []byte {
 	return b
 }
 
-// serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b → GeoJSON of current positions.
-// The filters, the token, and the area and MMSI caps are exactly those of /v1/stream.
+// recordLimit caps the vessels a /v1/vessels answer takes from the record for a box past the cache's 30
+// minutes. The area cap bounds an answer from the cache, since a box holds only so many vessels at once.
+// Over all time the same box holds far more.
+var recordLimit = 500
+
+// searchLimit caps a search answer. A person picks from a short list, and a short prefix matches thousands.
+const searchLimit = 50
+
+// serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b&max_age= → GeoJSON of vessel
+// positions. The filters, the token, and the area and MMSI caps are exactly those of /v1/stream. A box
+// answers from the cache: vessels heard in the last 30 minutes, or further back when max_age asks. A
+// followed MMSI answers with its last known position however old, unless max_age says otherwise. ?q=
+// searches instead (serveVesselSearch).
 func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	cl, err := p.requestClaims(r)
@@ -341,23 +366,322 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	s, msg := parseSSESub(r, cl)
+	vals := r.URL.Query()
+	if vals.Has("q") {
+		p.serveVesselSearch(w, vals, cl)
+		return
+	}
+	s, msg := parseSub(vals, cl, true)
+	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
+	if msg == "" {
+		msg = ageMsg
+	}
 	if msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
+	}
+	now := time.Now()
+	var cutoff time.Time // zero: no age limit beyond what the cache holds
+	if set {
+		cutoff = ageCutoff(now, age)
+	}
+	deep := set && age > vesselTTL && (len(s.boxes) > 0 || s.everything)
+	var emitted map[uint32]int // each vessel the cache answered, and its index in features
+	if p.store != nil && (len(s.mmsi) > 0 || deep) {
+		emitted = map[uint32]int{}
 	}
 	var features [][]byte
 	attribution := map[string]string{}
 	p.vmu.RLock()
 	p.eachMatch(s, func(mmsi uint32, v *vessel) {
-		if v.HasPos {
+		if v.HasPos && !v.Seen.Before(cutoff) {
 			features = append(features, v.featureJSON(mmsi))
 			noteAttribution(attribution, v.Source)
+			if emitted != nil {
+				emitted[mmsi] = len(features) - 1
+			}
 		}
 	})
 	p.vmu.RUnlock()
+	truncated := false
+	if emitted != nil {
+		recs, more, err := p.recordVessels(s, cutoff, deep, now)
+		if err != nil {
+			log.Printf("store: %v", err)
+			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
+			return
+		}
+		taken := map[uint32]bool{}
+		p.vmu.RLock()
+		for _, rec := range recs {
+			if taken[rec.mmsi] {
+				continue
+			}
+			taken[rec.mmsi] = true
+			f, source, ahead := p.newest(rec)
+			if i, ok := emitted[rec.mmsi]; ok {
+				if ahead {
+					features[i] = f
+					noteAttribution(attribution, source)
+				}
+				continue
+			}
+			// A vessel the cache holds with a position at least as new is the cache's to answer, and this
+			// request did not ask about where it is or how old that position is.
+			if ahead {
+				features = append(features, f)
+				noteAttribution(attribution, source)
+			}
+		}
+		p.vmu.RUnlock()
+		truncated = more
+	}
 	w.Header().Set("Content-Type", "application/geo+json")
-	w.Write(append(featureCollection(features, attribution), '\n'))
+	w.Write(append(featureCollection(features, attribution, truncated), '\n'))
+}
+
+// recordVessels reads what the record holds for a request: every followed vessel, and, for a deep request,
+// vessels last heard inside the boxes more than 30 minutes ago. more reports that the box query stopped at
+// recordLimit.
+func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time.Time) (_ []record, more bool, _ error) {
+	var recs []record
+	if len(s.mmsi) > 0 {
+		followed := make([]uint32, 0, len(s.mmsi))
+		for m := range s.mmsi {
+			followed = append(followed, m)
+		}
+		rs, err := p.store.find(recordQuery{mmsis: followed, since: cutoff, hasPos: true})
+		if err != nil {
+			return nil, false, err
+		}
+		recs = append(recs, rs...)
+	}
+	if deep {
+		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: cutoff, before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1})
+		if err != nil {
+			return nil, false, err
+		}
+		if len(rs) > recordLimit {
+			rs, more = rs[:recordLimit], true
+		}
+		recs = append(recs, rs...)
+	}
+	return recs, more, nil
+}
+
+// newest is a vessel's newest state as a Feature, with the source it credits. The cache is usually ahead
+// of the record by up to a second, and then its own encoded Feature is the answer. After a restart the
+// record can be ahead instead, until the vessel next reports, because the snapshot is written every minute
+// and the record every second. Then ahead is true and the Feature is the cache merged with the record.
+// The caller holds vmu for reading.
+func (p *Pipeline) newest(rec record) (feature []byte, source string, ahead bool) {
+	v, cached := p.newestState(rec)
+	if cached {
+		return v.featureJSON(rec.mmsi), v.Source, false
+	}
+	b, _ := json.Marshal(v.feature(rec.mmsi))
+	return b, v.Source, true
+}
+
+// newestState is newest's vessel state: the cached vessel itself when it is at least as new as the record,
+// with cached true, else a merged copy. The caller holds vmu for reading and must not modify a cached one.
+func (p *Pipeline) newestState(rec record) (v *vessel, cached bool) {
+	c := p.vessels[rec.mmsi]
+	if c != nil && !rec.v.Seen.After(c.Seen) && !rec.v.PosAt.After(c.PosAt) {
+		return c, true
+	}
+	if c == nil {
+		return rec.v, false
+	}
+	v = c.state()
+	v.merge(rec.v)
+	return v, false
+}
+
+// searchParams are the parameters a search accepts. Search refuses any other, so a filter added later
+// never changes an answer an older client already received. The rest of /v1/vessels ignores unknown
+// parameters, as it always has.
+var searchParams = map[string]bool{"q": true, "bbox": true, "mmsi": true, "max_age": true, "key": true}
+
+// serveVesselSearch: GET /v1/vessels?q= → vessels whose name starts with q, or whose MMSI does when q is
+// digits, most recently heard first, from the record. bbox, mmsi, and max_age narrow it.
+func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl *Claims) {
+	for k := range vals {
+		if !searchParams[k] {
+			http.Error(w, "unknown parameter "+k, http.StatusBadRequest)
+			return
+		}
+	}
+	text := strings.TrimSpace(vals.Get("q"))
+	if utf8.RuneCountInString(text) < 2 {
+		http.Error(w, "q needs at least 2 characters", http.StatusBadRequest)
+		return
+	}
+	s, msg := parseSub(vals, cl, false)
+	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
+	if msg == "" {
+		msg = ageMsg
+	}
+	if msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	if p.store == nil {
+		http.Error(w, errNoStore.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	// The record is ordered by the seen it stores, and the cache usually runs a second ahead of it, so read
+	// past the cap and order by each vessel's newest seen before cutting.
+	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1}
+	if len(s.mmsi) > 0 {
+		q.mmsis = make([]uint32, 0, len(s.mmsi))
+		for m := range s.mmsi {
+			q.mmsis = append(q.mmsis, m)
+		}
+	}
+	if set {
+		q.since = ageCutoff(time.Now(), age)
+	}
+	recs, err := p.store.find(q)
+	if err != nil {
+		log.Printf("store: %v", err)
+		http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
+		return
+	}
+	type hit struct {
+		feature []byte
+		source  string
+		seen    time.Time
+	}
+	hits := make([]hit, 0, len(recs))
+	p.vmu.RLock()
+	for _, rec := range recs {
+		v, cached := p.newestState(rec)
+		var f []byte
+		if cached {
+			f = v.featureJSON(rec.mmsi)
+		} else {
+			f, _ = json.Marshal(v.feature(rec.mmsi))
+		}
+		hits = append(hits, hit{f, v.Source, v.Seen})
+	}
+	p.vmu.RUnlock()
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].seen.After(hits[j].seen) })
+	truncated := len(hits) > searchLimit
+	if truncated {
+		hits = hits[:searchLimit]
+	}
+	var features [][]byte
+	attribution := map[string]string{}
+	for _, h := range hits {
+		features = append(features, h.feature)
+		noteAttribution(attribution, h.source)
+	}
+	w.Header().Set("Content-Type", "application/geo+json")
+	w.Write(append(featureCollection(features, attribution, truncated), '\n'))
+}
+
+// serveVessel: GET /v1/vessels/{mmsi} → one vessel's last known state as a GeoJSON Feature, from the cache
+// completed by the record, or from the record alone for a vessel the cache no longer holds. geometry is
+// null for a vessel whose position was never heard. An unknown vessel is a 404.
+func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if _, err := p.requestClaims(r); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	n, err := strconv.ParseUint(r.PathValue("mmsi"), 10, 32)
+	if err != nil {
+		http.Error(w, "mmsi must be a number", http.StatusBadRequest)
+		return
+	}
+	mmsi := uint32(n)
+	notFound := func() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound) // not http.Error: that would override the JSON Content-Type
+		json.NewEncoder(w).Encode(map[string]string{"error": "unknown vessel"})
+	}
+	var cur *vessel
+	p.vmu.RLock()
+	if v := p.vessels[mmsi]; v != nil {
+		cur = v.state()
+	}
+	p.vmu.RUnlock()
+	var first time.Time
+	if p.store != nil {
+		rec, ok, err := p.store.get(mmsi)
+		if err != nil {
+			log.Printf("store: %v", err)
+			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
+			return
+		}
+		if ok {
+			first = rec.firstSeen
+			if cur == nil {
+				cur = rec.v
+			} else {
+				cur.merge(rec.v)
+			}
+		}
+	}
+	if cur == nil {
+		notFound()
+		return
+	}
+	// In the second before a vessel's first write the record has no row yet. That write will store the
+	// vessel's seen as its first_seen, so answer with that now rather than leave the field out.
+	if first.IsZero() && p.store != nil {
+		first = cur.Seen
+	}
+	f := cur.feature(mmsi)
+	if !first.IsZero() {
+		f.Properties.FirstSeen = first.UTC().Format(time.RFC3339)
+	}
+	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
+	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
+	// allocation.
+	out := struct {
+		Attribution map[string]string `json:"attribution"`
+		Geometry    *pointGeometry    `json:"geometry"`
+		ID          uint32            `json:"id"`
+		Properties  vesselProps       `json:"properties"`
+		Type        string            `json:"type"`
+	}{Attribution: map[string]string{}, ID: f.ID, Properties: f.Properties, Type: f.Type}
+	if cur.HasPos {
+		out.Geometry = &f.Geometry
+	}
+	noteAttribution(out.Attribution, cur.Source)
+	w.Header().Set("Content-Type", "application/geo+json")
+	json.NewEncoder(w).Encode(out)
+}
+
+// ageAll is max_age=all: no age limit at all.
+const ageAll = time.Duration(math.MaxInt64)
+
+// parseMaxAge reads max_age: whole seconds, a duration such as 90m or 24h, or all. set is false when the
+// parameter is absent.
+func parseMaxAge(s string) (age time.Duration, set bool, msg string) {
+	if s == "" {
+		return 0, false, ""
+	}
+	if s == "all" {
+		return ageAll, true, ""
+	}
+	if n, err := strconv.ParseUint(s, 10, 32); err == nil && n > 0 {
+		return time.Duration(n) * time.Second, true, ""
+	}
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d, true, ""
+	}
+	return 0, false, "max_age=<seconds>, a duration such as 24h, or all"
+}
+
+// ageCutoff is the oldest seen time an age admits; zero, which admits everything, for ageAll.
+func ageCutoff(now time.Time, age time.Duration) time.Time {
+	if age == ageAll {
+		return time.Time{}
+	}
+	return now.Add(-age)
 }
 
 // noteAttribution records the credit line for the source's kind (its name up to the first `:`).
@@ -369,8 +693,9 @@ func noteAttribution(m map[string]string, source string) {
 
 // featureCollection assembles a GeoJSON FeatureCollection from encoded Features. attribution is a foreign
 // member (RFC 7946 §6.1): per source kind present in the features, the credit line the consumer must
-// display. Keys are in sorted order, as encoding/json writes a map's.
-func featureCollection(features [][]byte, attribution map[string]string) []byte {
+// display. truncated, another, is present when a cap cut the list. Keys are in sorted order, as
+// encoding/json writes a map's.
+func featureCollection(features [][]byte, attribution map[string]string, truncated bool) []byte {
 	a, _ := json.Marshal(attribution)
 	n := len(a) + 48
 	for _, f := range features {
@@ -386,7 +711,11 @@ func featureCollection(features [][]byte, attribution map[string]string) []byte 
 		}
 		b = append(b, f...)
 	}
-	return append(b, `],"type":"FeatureCollection"}`...)
+	b = append(b, ']')
+	if truncated {
+		b = append(b, `,"truncated":true`...)
+	}
+	return append(b, `,"type":"FeatureCollection"}`...)
 }
 
 // ---- snapshot subscriptions: replay the cache so a new client starts with the vessels already tracked ----

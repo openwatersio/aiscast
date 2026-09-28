@@ -53,3 +53,26 @@ func BenchmarkVessels1SqDeg(b *testing.B)       { benchVessels(b, "59,10,60,11",
 func BenchmarkVessels1SqDegCold(b *testing.B)   { benchVessels(b, "59,10,60,11", true) }
 func BenchmarkVessels400SqDeg(b *testing.B)     { benchVessels(b, "50,0,70,20", false) }
 func BenchmarkVessels400SqDegCold(b *testing.B) { benchVessels(b, "50,0,70,20", true) }
+
+// benchFold times folding one position report into a 60k-vessel cache. recorded attaches the vessel
+// record's dirty set, which is the fold's only extra work when the store is on; the write itself runs
+// outside the fold, once a second.
+func benchFold(b *testing.B, recorded bool) {
+	p := testPipeline(nil)
+	benchFleet(p, 60000)
+	if recorded {
+		p.dirty = map[uint32]struct{}{}
+	}
+	start := time.Now()
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		i++
+		at := start.Add(time.Duration(i) * 3 * time.Second) // each report newer than the last, as a live vessel's are
+		p.updateVessel(&Event{MMSI: uint32(200000000 + i%60000), Time: at, RecvTime: at,
+			Packet: posReport(uint32(200000000+i%60000), 59.5+float64(i%100)/10000, 10.5), Type: "PositionReport"})
+	}
+}
+
+func BenchmarkFold(b *testing.B)         { benchFold(b, false) }
+func BenchmarkFoldRecorded(b *testing.B) { benchFold(b, true) }

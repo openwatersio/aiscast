@@ -87,7 +87,7 @@ func (f *fanoutCounter) add(n int) {
 var latencyBuckets = [...]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
 
 // timedRoutes get a latency histogram: they do real work per request, and the rest are cheap or are streams.
-var timedRoutes = []string{"/v1/vessels", "/mcp"}
+var timedRoutes = []string{"/v1/vessels", "/v1/vessels/{mmsi}", "/mcp"}
 
 type histogram struct {
 	counts [len(latencyBuckets) + 1]int64 // per bucket, not cumulative; the last is above every bound
@@ -190,6 +190,25 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_archive_staged_bytes{archive=%q} %d\n", a.name, a.a.staged.Load())
 	}
 
+	up := 0
+	if p.store != nil {
+		up = 1
+	}
+	metricHead(w, "aiscast_store_up", "gauge", "1 when the durable vessel record is attached; 0 means lookups past the 30-minute cache are failing")
+	fmt.Fprintf(w, "aiscast_store_up %d\n", up)
+	if st := p.store; st != nil {
+		metricHead(w, "aiscast_store_flushes_total", "counter", "once-a-second writes of folded vessels to the record")
+		fmt.Fprintf(w, "aiscast_store_flushes_total %d\n", st.flushes.Load())
+		metricHead(w, "aiscast_store_flush_failures_total", "counter", "record writes that failed; each vessel's next fold rewrites it")
+		fmt.Fprintf(w, "aiscast_store_flush_failures_total %d\n", st.flushFailures.Load())
+		metricHead(w, "aiscast_store_flush_seconds_total", "counter", "time spent writing to the record")
+		fmt.Fprintf(w, "aiscast_store_flush_seconds_total %.3f\n", float64(st.flushNanos.Load())/1e9)
+		metricHead(w, "aiscast_store_rows_written_total", "counter", "vessel rows written to the record")
+		fmt.Fprintf(w, "aiscast_store_rows_written_total %d\n", st.rowsWritten.Load())
+		metricHead(w, "aiscast_store_bytes", "gauge", "size of the record database and its write-ahead log")
+		fmt.Fprintf(w, "aiscast_store_bytes %d\n", st.bytes())
+	}
+
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")
 	streams := p.streams.snapshot()
 	keys := make([][2]string, 0, len(streams))
@@ -269,7 +288,7 @@ func (p *Pipeline) writeRequestMetrics(w io.Writer) {
 	for _, k := range keys {
 		fmt.Fprintf(w, "aiscast_http_requests_total{route=%q,status=%q} %d\n", k[0], k[1], m.count[k])
 	}
-	metricHead(w, "aiscast_http_request_duration_seconds", "histogram", "time to serve /v1/vessels and /mcp")
+	metricHead(w, "aiscast_http_request_duration_seconds", "histogram", "time to serve the vessel routes and /mcp")
 	for _, route := range timedRoutes {
 		h := m.hist[route]
 		if h == nil {

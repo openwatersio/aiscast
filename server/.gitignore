@@ -5,3 +5,5 @@
 /vessels.json.tmp
 /.env
 /hub.log
+/aiscast.db
+/aiscast.db-*
