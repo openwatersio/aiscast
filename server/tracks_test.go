@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"math/rand/v2"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -266,4 +267,53 @@ func BenchmarkTrackWrite(b *testing.B) {
 		}
 	}
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/400, "ns/point")
+}
+
+// Raw reports with equal stamps survive dedupe as distinct data, so a track keeps both unless they are the
+// same point.
+func TestTrackKeepsEqualTimeReports(t *testing.T) {
+	p, _ := trackPipeline(t)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	at := now.Add(-time.Hour)
+	here, there := newVessel(), newVessel()
+	here.Lat, here.Lon, there.Lat, there.Lon = 59.9, 10.7, 59.91, 10.71
+	points := []trackPoint{
+		newTrackPoint(257000001, at, here, "kystverket"),
+		newTrackPoint(257000001, at, there, "station"),
+		newTrackPoint(257000001, at, here, "aishub"), // the same point again
+	}
+	if err := p.tracks.write(points, now); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := p.tracks.track(257000001, now.Add(-2*time.Hour), now, 0, 10)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("%v %+v", err, got)
+	}
+	sources := map[string]bool{got[0].source: true, got[1].source: true}
+	if !sources["kystverket"] || !sources["station"] {
+		t.Errorf("the first write of a point stays, and each keeps its source: %+v", got)
+	}
+}
+
+func TestTrackRangeOutsideTheWindow(t *testing.T) {
+	p, _ := trackPipeline(t)
+	sail(t, p, 257000001, time.Hour)
+	base := "/v1/vessels/257000001/track"
+	long := time.Now().Add(-5 * 24 * time.Hour)
+	for _, q := range []string{
+		"?from=" + long.Format(time.RFC3339) + "&to=" + long.Add(time.Hour).Format(time.RFC3339),
+		"?from=" + time.Now().Add(time.Hour).Format(time.RFC3339) + "&to=" + time.Now().Add(2*time.Hour).Format(time.RFC3339),
+	} {
+		tr := getTrack(t, p, base+q)
+		from, _ := time.Parse(time.RFC3339, tr.Properties.From)
+		to, _ := time.Parse(time.RFC3339, tr.Properties.To)
+		if tr.Properties.Points != 0 || to.Before(from) {
+			t.Errorf("%s: %d points, %s to %s", q, tr.Properties.Points, tr.Properties.From, tr.Properties.To)
+		}
+	}
+	w := httptest.NewRecorder()
+	p.serveMetrics(w, httptest.NewRequest("GET", "/metrics", nil))
+	if !strings.Contains(w.Body.String(), "aiscast_tracks_up 1") {
+		t.Error("aiscast_tracks_up missing")
+	}
 }

@@ -42,7 +42,8 @@ type trackRequest struct {
 }
 
 // parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. Both are
-// clamped to the window, which ends now and reaches back trackWindow.
+// clamped to the window, which ends now and reaches back trackWindow. A range entirely outside the window
+// clamps to an empty one at its nearer edge, so the answer is an empty track that says where it looked.
 func parseTrackRange(fromS, toS string, now time.Time) (from, to time.Time, msg string) {
 	to = now
 	if toS != "" {
@@ -63,13 +64,18 @@ func parseTrackRange(fromS, toS string, now time.Time) (from, to time.Time, msg 
 	if !from.Before(to) {
 		return from, to, "from must be before to"
 	}
-	if start := now.Add(-trackWindow); from.Before(start) {
-		from = start
+	start := now.Add(-trackWindow)
+	return clampTime(from, start, now).UTC(), clampTime(to, start, now).UTC(), ""
+}
+
+func clampTime(t, lo, hi time.Time) time.Time {
+	if t.Before(lo) {
+		return lo
 	}
-	if to.After(now) {
-		to = now
+	if t.After(hi) {
+		return hi
 	}
-	return from.UTC(), to.UTC(), ""
+	return t
 }
 
 func parseTrackRequest(r *http.Request, cl *Claims, now time.Time) (trackRequest, string) {

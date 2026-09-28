@@ -59,8 +59,7 @@ type trackStore struct {
 	path string
 
 	sources map[string]int64 // source kind -> id in the sources table; touched only by the writer
-	names   atomic.Pointer[map[int64]string]
-	days    map[string]bool // day tables known to exist; touched only by the writer
+	days    map[string]bool  // day tables known to exist; touched only by the writer
 
 	// read by /metrics
 	pointsWritten, writeFailures, dropped atomic.Int64
@@ -90,7 +89,6 @@ func (t *trackStore) load() error {
 	if err != nil {
 		return err
 	}
-	names := map[int64]string{}
 	for rows.Next() {
 		var id int64
 		var kind string
@@ -98,10 +96,13 @@ func (t *trackStore) load() error {
 			rows.Close()
 			return err
 		}
-		t.sources[kind], names[id] = id, kind
+		t.sources[kind] = id
 	}
+	err = rows.Err()
 	rows.Close()
-	t.names.Store(&names)
+	if err != nil {
+		return err
+	}
 	tables, err := t.db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'positions_%'`)
 	if err != nil {
 		return err
@@ -172,12 +173,15 @@ func (t *trackStore) write(points []trackPoint, now time.Time) error {
 				if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS positions_` + day + ` (
 					mmsi INTEGER NOT NULL, ts INTEGER NOT NULL, lat6 INTEGER NOT NULL, lon6 INTEGER NOT NULL,
 					sog10 INTEGER NOT NULL, cog10 INTEGER NOT NULL, heading INTEGER NOT NULL, nav_status INTEGER NOT NULL,
-					src INTEGER NOT NULL, PRIMARY KEY (mmsi, ts)) WITHOUT ROWID`); err != nil {
+					src INTEGER NOT NULL, PRIMARY KEY (mmsi, ts, lat6, lon6)) WITHOUT ROWID`); err != nil {
 					return err
 				}
 				created = append(created, day)
 			}
-			if st, err = tx.Prepare(`INSERT OR REPLACE INTO positions_` + day +
+			// Two accepted reports can share a vessel and a millisecond: raw reports with equal stamps survive
+			// dedupe as distinct data. The position is in the key so both are kept; a second report at the same
+			// time and place is the same point on a track, and the first one written stays.
+			if st, err = tx.Prepare(`INSERT OR IGNORE INTO positions_` + day +
 				` (mmsi, ts, lat6, lon6, sog10, cog10, heading, nav_status, src) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`); err != nil {
 				return err
 			}
@@ -206,92 +210,109 @@ func (t *trackStore) write(points []trackPoint, now time.Time) error {
 	for _, d := range created {
 		t.days[d] = true
 	}
-	if len(newSources) > 0 {
-		names := map[int64]string{}
-		for id, kind := range *t.names.Load() {
-			names[id] = kind
-		}
-		for kind, id := range newSources {
-			t.sources[kind], names[id] = id, kind
-		}
-		t.names.Store(&names)
+	for kind, id := range newSources {
+		t.sources[kind] = id
 	}
 	return nil
 }
 
-// first is the time of the vessel's earliest position between from and to; ok is false when there is none.
-func (t *trackStore) first(mmsi uint32, from, to time.Time) (first time.Time, ok bool, err error) {
+// read runs fn in one read transaction. In WAL mode it sees a single snapshot, so the day tables it finds
+// and the rows it reads agree even when the writer drops a day at midnight in between.
+func (t *trackStore) read(fn func(tx *sql.Tx) error) error {
+	tx, err := t.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	return fn(tx)
+}
+
+// dayTables lists the day tables that exist between from and to.
+func dayTables(tx *sql.Tx, from, to time.Time) ([]string, error) {
+	var tables []string
 	for d := from.UTC().Truncate(24 * time.Hour); !d.After(to); d = d.Add(24 * time.Hour) {
-		day := dayKey(d)
+		name := "positions_" + dayKey(d)
 		var exists int
-		if err := t.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, "positions_"+day).Scan(&exists); err != nil {
-			return first, false, err
+		if err := tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&exists); err != nil {
+			return nil, err
 		}
-		if exists == 0 {
-			continue
-		}
-		var ts sql.NullInt64
-		if err := t.db.QueryRow(`SELECT min(ts) FROM positions_`+day+` WHERE mmsi = ? AND ts BETWEEN ? AND ?`, mmsi, from.UnixMilli(), to.UnixMilli()).Scan(&ts); err != nil {
-			return first, false, err
-		}
-		if ts.Valid {
-			return time.UnixMilli(ts.Int64).UTC(), true, nil
+		if exists > 0 {
+			tables = append(tables, name)
 		}
 	}
-	return first, false, nil
+	return tables, nil
+}
+
+// first is the time of the vessel's earliest position between from and to; ok is false when there is none.
+func (t *trackStore) first(mmsi uint32, from, to time.Time) (first time.Time, ok bool, err error) {
+	err = t.read(func(tx *sql.Tx) error {
+		tables, err := dayTables(tx, from, to)
+		if err != nil {
+			return err
+		}
+		for _, table := range tables {
+			var ts sql.NullInt64
+			if err := tx.QueryRow(`SELECT min(ts) FROM `+table+` WHERE mmsi = ? AND ts BETWEEN ? AND ?`, mmsi, from.UnixMilli(), to.UnixMilli()).Scan(&ts); err != nil {
+				return err
+			}
+			if ts.Valid {
+				first, ok = time.UnixMilli(ts.Int64).UTC(), true
+				return nil
+			}
+		}
+		return nil
+	})
+	return first, ok, err
 }
 
 // track reads one vessel's positions between from and to, oldest first. interval thins the track to the
 // first position in each interval. When more than limit match, the newest limit are returned and more is
 // true.
 func (t *trackStore) track(mmsi uint32, from, to time.Time, interval time.Duration, limit int) (points []trackPoint, more bool, err error) {
-	var parts []string
-	var args []any
-	for d := from.UTC().Truncate(24 * time.Hour); !d.After(to); d = d.Add(24 * time.Hour) {
-		day := dayKey(d)
-		var exists int
-		if err := t.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, "positions_"+day).Scan(&exists); err != nil {
-			return nil, false, err
+	err = t.read(func(tx *sql.Tx) error {
+		tables, err := dayTables(tx, from, to)
+		if err != nil || len(tables) == 0 {
+			return err
 		}
-		if exists == 0 {
-			continue
+		var parts []string
+		var args []any
+		for _, table := range tables {
+			parts = append(parts, `SELECT ts, lat6, lon6, sog10, cog10, heading, nav_status, src FROM `+table+` WHERE mmsi = ? AND ts BETWEEN ? AND ?`)
+			args = append(args, mmsi, from.UnixMilli(), to.UnixMilli())
 		}
-		parts = append(parts, `SELECT ts, lat6, lon6, sog10, cog10, heading, nav_status, src FROM positions_`+day+` WHERE mmsi = ? AND ts BETWEEN ? AND ?`)
-		args = append(args, mmsi, from.UnixMilli(), to.UnixMilli())
-	}
-	if len(parts) == 0 {
-		return nil, false, nil
-	}
-	q := strings.Join(parts, " UNION ALL ")
-	if ms := interval.Milliseconds(); ms > 0 {
-		// SQLite takes the other columns of an aggregate query with min() from the row holding the minimum,
-		// so each group yields its first position whole.
-		q = `SELECT min(ts), lat6, lon6, sog10, cog10, heading, nav_status, src FROM (` + q + `) GROUP BY ts / ` + fmt.Sprint(ms)
-	}
-	q = `SELECT * FROM (` + q + `) ORDER BY 1 DESC LIMIT ?`
-	args = append(args, limit+1)
-	rows, err := t.db.Query(q, args...)
+		q := strings.Join(parts, " UNION ALL ")
+		if ms := interval.Milliseconds(); ms > 0 {
+			// SQLite takes the other columns of an aggregate query with min() from the row holding the
+			// minimum, so each group yields its first position whole.
+			q = `SELECT min(ts), lat6, lon6, sog10, cog10, heading, nav_status, src FROM (` + q + `) GROUP BY ts / ` + fmt.Sprint(ms)
+		}
+		// The source names come from the same snapshot as the rows, so a source the writer has just added
+		// is always named.
+		q = `SELECT p.*, coalesce(s.kind, '') FROM (SELECT * FROM (` + q + `) ORDER BY 1 DESC LIMIT ?) p LEFT JOIN sources s ON s.id = p.src ORDER BY 1 DESC`
+		args = append(args, limit+1)
+		rows, err := tx.Query(q, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ts, src int64
+			pt := trackPoint{mmsi: mmsi}
+			if err := rows.Scan(&ts, &pt.lat6, &pt.lon6, &pt.sog10, &pt.cog10, &pt.heading, &pt.navStatus, &src, &pt.source); err != nil {
+				return err
+			}
+			pt.ts = time.UnixMilli(ts).UTC()
+			points = append(points, pt)
+		}
+		return rows.Err()
+	})
 	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	names := *t.names.Load()
-	for rows.Next() {
-		var ts, src int64
-		pt := trackPoint{mmsi: mmsi}
-		if err := rows.Scan(&ts, &pt.lat6, &pt.lon6, &pt.sog10, &pt.cog10, &pt.heading, &pt.navStatus, &src); err != nil {
-			return nil, false, err
-		}
-		pt.ts, pt.source = time.UnixMilli(ts).UTC(), names[src]
-		points = append(points, pt)
-	}
-	if err := rows.Err(); err != nil {
 		return nil, false, err
 	}
 	if len(points) > limit {
 		points, more = points[:limit], true
 	}
-	sort.Slice(points, func(i, j int) bool { return points[i].ts.Before(points[j].ts) })
+	sort.SliceStable(points, func(i, j int) bool { return points[i].ts.Before(points[j].ts) })
 	return points, more, nil
 }
 

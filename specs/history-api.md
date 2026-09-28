@@ -95,7 +95,7 @@ Name prefix or MMSI prefix over the durable record, case-insensitive, capped at 
 
 Positions for one vessel between two times, as a GeoJSON Feature: a `LineString` in `coordinates`, and in `properties` the MMSI, the resolved `from` and `to`, and arrays aligned with the coordinates for `times`, `sog`, `cog`, `heading`, and `nav_status`. `points` says how many, `truncated` says whether the cap cut the list, and `attribution` carries the credit lines of the sources that contributed. `interval=60s` thins to one point per interval. `format=gpx` returns a GPX 1.1 track, which is the export the vessel page wants. The map in #88 draws a `[lon, lat][]` today, so the GeoJSON form drops in.
 
-Limits per request: seven days of range and 5,000 points, with a default of 1,000. Longer histories page by moving `to`.
+Limits per request: seven days of range and 5,000 points, with a default of 1,000. Longer histories page by moving `to`. The seven days apply once tracks reach into the archive. Until then a track reaches only the 48-hour hot window, and a longer range is clamped to it.
 
 The MCP tool `get_vessel_track` ([#80](https://github.com/openwatersio/aiscast/issues/80)) calls the same handler with the same tier gate and bumps `mcpVersion` and `server.json`.
 

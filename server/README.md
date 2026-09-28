@@ -69,7 +69,7 @@ Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: rece
 
 ## Vessel record
 
-The cache drops a vessel 30 minutes after its last report. The vessel record keeps one row per MMSI ever heard, with its particulars and last known position, in the SQLite file `STORE` names. It answers what the cache cannot: `GET /v1/vessels/{mmsi}` for any vessel ever heard, a followed MMSI's last position on `/v1/vessels?mmsi=`, `/v1/vessels?bbox=&max_age=` past 30 minutes, the `?q=` search, and the MCP `get_vessels` and `search_vessels_by_name` tools.
+The cache drops a vessel 30 minutes after its last report. The vessel record keeps one row per MMSI ever heard, with its particulars and last known position, in the SQLite file named by `STORE`. It answers what the cache cannot: `GET /v1/vessels/{mmsi}` for any vessel ever heard, a followed MMSI's last position on `/v1/vessels?mmsi=`, `/v1/vessels?bbox=&max_age=` past 30 minutes, the `?q=` search, and the MCP `get_vessels` and `search_vessels_by_name` tools.
 
 The fold marks each vessel it updates, and a writer upserts the marked vessels once a second in one transaction, so the fold never waits on the disk. The upsert merges with the fold's rules: a vessel that returns after the cache dropped it arrives without its name or position, and a blank field keeps the stored value. On boot every vessel in the snapshot is written, which seeds an empty record. `aiscast replay` never attaches the record, so a replayed day cannot overwrite a live position. A record that will not open leaves the server running without it, and `aiscast_store_up` drops to 0.
 
@@ -77,7 +77,7 @@ The fold marks each vessel it updates, and a writer upserts the marked vessels o
 
 ## Recent tracks
 
-`GET /v1/vessels/{mmsi}/track` and the MCP `get_vessel_track` tool answer where a vessel has been over the last 48 hours. Every position report the pipeline accepts is kept in the SQLite file `TRACKS` names, which runs only beside the vessel record. A report the cache withholds as stale or implausible is withheld here too.
+`GET /v1/vessels/{mmsi}/track` and the MCP `get_vessel_track` tool answer where a vessel has been over the last 48 hours. Every position report the pipeline accepts is kept in the SQLite file named by `TRACKS`, which runs only beside the vessel record. A report the cache withholds as stale or implausible is withheld here too.
 
 Each UTC day is one table keyed by MMSI and time, so a track is a range read in each day it spans, and expiry drops a whole table once the window has left it. That keeps two to three days, several gigabytes. Positions use the lake's integer encodings, and each row names its source kind for attribution. The fold appends each accepted position to a queue under the cache lock it already holds, and the vessel record's writer drains the queue once a second. The queue holds about eight minutes of traffic; past that, a stalled disk costs new positions, counted in `aiscast_tracks_points_dropped_total`, rather than memory. `aiscast replay` never attaches the store.
 

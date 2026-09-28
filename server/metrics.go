@@ -213,6 +213,12 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		metricHead(w, "aiscast_store_bytes", "gauge", "size of the record database and its write-ahead log")
 		fmt.Fprintf(w, "aiscast_store_bytes %d\n", st.bytes())
 	}
+	tracksUp := 0
+	if p.tracks != nil {
+		tracksUp = 1
+	}
+	metricHead(w, "aiscast_tracks_up", "gauge", "1 when the recent track store is attached; 0 means track requests are failing")
+	fmt.Fprintf(w, "aiscast_tracks_up %d\n", tracksUp)
 	if t := p.tracks; t != nil {
 		metricHead(w, "aiscast_tracks_points_written_total", "counter", "positions written to the recent track store")
 		fmt.Fprintf(w, "aiscast_tracks_points_written_total %d\n", t.pointsWritten.Load())

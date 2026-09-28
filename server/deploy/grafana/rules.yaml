@@ -185,12 +185,12 @@ groups:
 
       # The vessel record answers lookups past the cache's 30 minutes.
       - alert: StoreDown
-        expr: aiscast_store_up == 0
+        expr: aiscast_store_up == 0 or aiscast_tracks_up == 0
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: aiscast is running without the vessel record
-          description: Lookups past 30 minutes and search fail. Check the store lines in journalctl -u aiscast and /var/lib/aiscast/aiscast.db.
+          summary: aiscast is running without the vessel record or the track store
+          description: Lookups past 30 minutes, search, or tracks fail. Check the store and tracks lines in journalctl -u aiscast and the files aiscast.db and tracks.db in /var/lib/aiscast.
       - alert: StoreWritesFailing
         expr: increase(aiscast_store_flush_failures_total[10m]) > 0
         labels: {severity: warning}
