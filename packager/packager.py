@@ -289,13 +289,44 @@ def cell_sql(lat, lon):
 ORDER = {"positions": "cell NULLS LAST, mmsi, ts", "receptions": "source, station, recv_ts", "weather": "mmsi, ts"}
 
 
+# A day is written in this many passes, each holding whole mmsi buckets. The Arrow copies of a full
+# day of positions (the result, its cast, pyiceberg's split by partition) outgrow the packager's
+# memory on top of DuckDB's own; a pass holds a quarter of them and still writes one file per bucket.
+WRITE_PASSES = 4
+
+
+def write_passes(con, tbl, name):
+    """WHERE clauses that split a staged table into WRITE_PASSES groups of whole mmsi buckets, computed
+    with the table's own bucket transform, or one pass for a table not bucketed by mmsi."""
+    import pyarrow as pa
+    from pyiceberg.transforms import BucketTransform
+
+    field = next((f for f in tbl.spec().fields if isinstance(f.transform, BucketTransform)), None)
+    source = field and tbl.schema().find_field(field.source_id)
+    mmsis = field and con.execute(f"SELECT DISTINCT {source.name} AS mmsi FROM {name} WHERE {source.name} IS NOT NULL").to_arrow_table()
+    if not mmsis:  # no bucketing, or no vessel to bucket
+        return [""]
+    col = mmsis.column("mmsi").cast(tbl.schema().as_arrow().field(source.name).type)
+    buckets = field.transform.pyarrow_transform(source.field_type)(col)
+    con.register("write_bucket", pa.table({"mmsi": mmsis.column("mmsi"), "b": buckets}))
+    con.execute("CREATE OR REPLACE TEMP TABLE write_bucket_t AS SELECT * FROM write_bucket")
+    con.unregister("write_bucket")
+    passes = [f"WHERE {source.name} IN (SELECT mmsi FROM write_bucket_t WHERE b % {WRITE_PASSES} = {i})" for i in range(WRITE_PASSES)]
+    passes[0] += f" OR {source.name} IS NULL"
+    return passes
+
+
 def replace_day(con, catalog, day, name, properties=None):
     def go():
         tbl = catalog.load_table(f"ais.{name}")
-        data = con.execute(f"SELECT * FROM {name} ORDER BY {ORDER[name]}").to_arrow_table().cast(tbl.schema().as_arrow())
+        schema = tbl.schema().as_arrow()
         with tbl.transaction() as tx:
             tx.delete(f"day = '{day}'")  # rerunning a day replaces it
-            tx.append(data)
+            for where in write_passes(con, tbl, name):
+                data = con.execute(f"SELECT * FROM {name} {where} ORDER BY {ORDER[name]}").to_arrow_table().cast(schema)
+                if data.num_rows:
+                    tx.append(data)
+                del data
             if properties:
                 tx.set_properties(properties)
 

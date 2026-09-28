@@ -242,6 +242,23 @@ def test_package_day(packaged):
         assert cells == sorted(cells), f"{f['file_path']} is not in cell order"
 
 
+def test_write_passes_hold_whole_buckets(packaged):
+    """Each pass holds whole mmsi buckets, so a day written in passes still has one file per bucket."""
+    _, catalog, _, _ = packaged
+    tbl = catalog.load_table("ais.positions")
+    con = duckdb.connect()
+    con.execute("CREATE TABLE positions AS SELECT range::BIGINT AS mmsi FROM range(200000000, 200002000) UNION ALL SELECT NULL")
+    field = next(f for f in tbl.spec().fields if f.name == "mmsi_bucket")
+    seen, total = {}, 0
+    for i, where in enumerate(packager.write_passes(con, tbl, "positions")):
+        got = con.execute(f"SELECT mmsi FROM positions {where}").to_arrow_table().column("mmsi")
+        total += len(got)
+        for b in field.transform.pyarrow_transform(tbl.schema().find_field(field.source_id).field_type)(got.drop_null().cast(pa.int64())).to_pylist():
+            assert seen.setdefault(b, i) == i, f"bucket {b} split across passes {seen[b]} and {i}"
+    assert set(seen) == set(range(32))
+    assert total == 2001, "every row, the null mmsi too, lands in exactly one pass"
+
+
 def test_rerun_replaces_day(packaged):
     envs, catalog, con, files = packaged
     first = {(p["id"], p["ts"]) for p in rows(catalog, "positions")}
