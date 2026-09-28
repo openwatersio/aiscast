@@ -248,14 +248,29 @@ func (p *Pipeline) startAishubPacing(budget time.Duration) {
 // every other source broadcast as they are ingested, so they interleave with a snapshot being
 // delivered rather than wait behind it.
 func (p *Pipeline) deliverPaced(batches <-chan []*Event, budget time.Duration) {
-	for batch := range batches {
-		t0 := time.Now()
-		for i, ev := range batch {
-			// once shutdown starts, the rest goes out at once, while the archives drain
-			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(batch)))); d > 0 && !p.closing.Load() {
-				time.Sleep(d)
+	var pending []*Event
+	var gap time.Duration
+	next := time.NewTimer(0)
+	for {
+		if len(pending) == 0 {
+			pending = <-batches
+			gap = budget / time.Duration(len(pending))
+			next.Reset(0)
+		}
+		select {
+		case b := <-batches:
+			// A snapshot arriving before the last is delivered joins the backlog, and the whole backlog is
+			// re-spread over budget from now: nothing waits more than budget behind the newest snapshot,
+			// and the fetch loop never blocks on delivery.
+			pending = append(pending, b...)
+			gap = budget / time.Duration(len(pending))
+		case <-next.C:
+			p.broadcast(pending[0])
+			pending = pending[1:]
+			if p.closing.Load() { // once shutdown starts, the rest goes out at once, while the archives drain
+				gap = 0
 			}
-			p.broadcast(ev)
+			next.Reset(gap)
 		}
 	}
 }

@@ -266,3 +266,36 @@ func TestAishubPositionAccuracy(t *testing.T) {
 		t.Fatalf("PAC 1 did not set position accuracy: %+v", pr)
 	}
 }
+
+// Snapshots can arrive faster than a budget's delivery (the poll runs every 20 s). A new one joins the
+// backlog and everything pending goes out within one budget of it, in order, so delivery never falls
+// behind and the poll loop never blocks on it.
+func TestPacedDeliveryKeepsUpWithSnapshots(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	p.startAishubPacing(200 * time.Millisecond)
+	batch := func(base int) []*Event {
+		b := make([]*Event, 20)
+		for i := range b {
+			b[i] = &Event{Source: "aishub", MMSI: uint32(base + i)}
+		}
+		return b
+	}
+	start := time.Now()
+	for k := 0; k < 3; k++ { // three snapshots, back to back
+		select {
+		case p.aishubPace <- batch(k * 100):
+		case <-time.After(time.Second):
+			t.Fatal("the poll loop blocked handing a snapshot to delivery")
+		}
+	}
+	for i := 0; i < 60; i++ {
+		ev := <-sub.ch
+		if want := uint32(i/20*100 + i%20); ev.MMSI != want {
+			t.Fatalf("event %d is %d, want %d: delivery must keep order", i, ev.MMSI, want)
+		}
+	}
+	if el := time.Since(start); el > 400*time.Millisecond {
+		t.Fatalf("three snapshots took %s to deliver; the backlog must go out within one budget of the newest", el)
+	}
+}
