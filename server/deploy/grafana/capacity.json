@@ -785,8 +785,8 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "Vessel record writes",
-      "description": "Share of each second the once-a-second writer spends writing; above 50% for 15 minutes alerts. Failed writes alert at once.",
+      "title": "Vessel record and track writes",
+      "description": "Share of each second the once-a-second writer spends on the record and on recent tracks; either above 50% for 15 minutes alerts. Failed writes alert at once.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -805,7 +805,16 @@
           },
           "refId": "A",
           "expr": "rate(aiscast_store_flush_seconds_total[5m])",
-          "legendFormat": "writing"
+          "legendFormat": "writing the record"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "rate(aiscast_tracks_write_seconds_total[5m])",
+          "legendFormat": "writing tracks"
         },
         {
           "datasource": {
@@ -863,8 +872,8 @@
     {
       "id": 14,
       "type": "timeseries",
-      "title": "Vessel record size",
-      "description": "The SQLite file and its write-ahead log. One row per vessel ever heard.",
+      "title": "Vessel record and track size",
+      "description": "The SQLite files and their write-ahead logs: one row per vessel ever heard, and every position of the last two to three days.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -883,7 +892,16 @@
           },
           "refId": "A",
           "expr": "aiscast_store_bytes",
-          "legendFormat": "bytes"
+          "legendFormat": "record"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "aiscast_tracks_bytes",
+          "legendFormat": "tracks"
         }
       ],
       "fieldConfig": {

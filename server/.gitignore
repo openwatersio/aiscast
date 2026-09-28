@@ -7,3 +7,5 @@
 /hub.log
 /aiscast.db
 /aiscast.db-*
+/tracks.db
+/tracks.db-*

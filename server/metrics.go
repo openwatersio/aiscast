@@ -87,7 +87,7 @@ func (f *fanoutCounter) add(n int) {
 var latencyBuckets = [...]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
 
 // timedRoutes get a latency histogram: they do real work per request, and the rest are cheap or are streams.
-var timedRoutes = []string{"/v1/vessels", "/v1/vessels/{mmsi}", "/mcp"}
+var timedRoutes = []string{"/v1/vessels", "/v1/vessels/{mmsi}", "/v1/vessels/{mmsi}/track", "/mcp"}
 
 type histogram struct {
 	counts [len(latencyBuckets) + 1]int64 // per bucket, not cumulative; the last is above every bound
@@ -212,6 +212,24 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_store_rows_written_total %d\n", st.rowsWritten.Load())
 		metricHead(w, "aiscast_store_bytes", "gauge", "size of the record database and its write-ahead log")
 		fmt.Fprintf(w, "aiscast_store_bytes %d\n", st.bytes())
+	}
+	tracksUp := 0
+	if p.tracks != nil {
+		tracksUp = 1
+	}
+	metricHead(w, "aiscast_tracks_up", "gauge", "1 when the recent track store is attached; 0 means track requests are failing")
+	fmt.Fprintf(w, "aiscast_tracks_up %d\n", tracksUp)
+	if t := p.tracks; t != nil {
+		metricHead(w, "aiscast_tracks_points_written_total", "counter", "positions written to the recent track store")
+		fmt.Fprintf(w, "aiscast_tracks_points_written_total %d\n", t.pointsWritten.Load())
+		metricHead(w, "aiscast_tracks_write_failures_total", "counter", "track store writes that failed; the positions are retried on the next flush")
+		fmt.Fprintf(w, "aiscast_tracks_write_failures_total %d\n", t.writeFailures.Load())
+		metricHead(w, "aiscast_tracks_write_seconds_total", "counter", "time spent writing to the track store")
+		fmt.Fprintf(w, "aiscast_tracks_write_seconds_total %.3f\n", float64(t.writeNanos.Load())/1e9)
+		metricHead(w, "aiscast_tracks_points_dropped_total", "counter", "positions dropped because the track writer fell behind by more than its queue holds")
+		fmt.Fprintf(w, "aiscast_tracks_points_dropped_total %d\n", t.dropped.Load())
+		metricHead(w, "aiscast_tracks_bytes", "gauge", "size of the track database and its write-ahead log")
+		fmt.Fprintf(w, "aiscast_tracks_bytes %d\n", t.bytes())
 	}
 
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")

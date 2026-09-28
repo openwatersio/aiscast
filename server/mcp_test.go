@@ -97,7 +97,7 @@ func TestMCPToolList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"get_vessels": true, "find_vessels_in_area": true, "find_vessels_near": true, "search_vessels_by_name": true, "get_coverage": true}
+	want := map[string]bool{"get_vessels": true, "find_vessels_in_area": true, "find_vessels_near": true, "search_vessels_by_name": true, "get_coverage": true, "get_vessel_track": true}
 	for _, tool := range res.Tools {
 		if !want[tool.Name] {
 			t.Errorf("unexpected tool %q", tool.Name)
@@ -419,7 +419,7 @@ func TestMCPHTTP(t *testing.T) {
 	var listed struct {
 		Result struct{ Tools []struct{ Name string } }
 	}
-	if err := json.NewDecoder(res.Body).Decode(&listed); err != nil || res.StatusCode != 200 || len(listed.Result.Tools) != 5 ||
+	if err := json.NewDecoder(res.Body).Decode(&listed); err != nil || res.StatusCode != 200 || len(listed.Result.Tools) != 6 ||
 		!strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") || res.Header.Get("Access-Control-Allow-Origin") != "*" {
 		t.Errorf("raw tools/list: %d %s %v %+v", res.StatusCode, res.Header.Get("Content-Type"), err, listed)
 	}

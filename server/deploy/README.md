@@ -17,7 +17,7 @@ The nightly [packager](../../packager/README.md) rides along: `packager.timer` f
 - Hetzner Cloud server `ais-server-1`: `cx43` (8 shared vCPU, 16 GB, 160 GB NVMe, 20 TB/mo traffic, €18.49/mo) in `hel1` (Helsinki), Ubuntu 24.04, IPv4 `2.29.0.215`, IPv6 `2a01:4f9:c015:e7ca::/64`, label `project=ais`. Resize when the CPU alerts fire, and move to a dedicated-CPU type (`ccx23`, €101.49/mo) when the steal alerts do.
 - Firewall `ais-server`: in 22/tcp, 80/tcp, 443/tcp, 10110/udp, ICMP.
 - SSH: root logs in with `bkeepers-ed25519` (the 1Password agent key) and the CI deploy key (`DEPLOY_SSH_KEY` secret). sshd is key-only with the settings in [rootfs](rootfs/etc/ssh/sshd_config.d/10-hardening.conf) plus fail2ban (3 tries / 10 min → 1 h ban): the box gets continuous root-password brute force, and with sshd defaults those attempts fill the pre-auth slots and randomly drop real connections, including CI deploys.
-- On the box: user `aiscast` runs `/opt/aiscast/aiscast` with state under `/var/lib/aiscast/{archive,vessels.json,aiscast.db}` and config in `/etc/aiscast.env` (0600). The issuer *seed* for minting tokens lives only in the repo's untracked `.env` as `ISSUER_SEED`/`ISSUER_KID`.
+- On the box: user `aiscast` runs `/opt/aiscast/aiscast` with state under `/var/lib/aiscast/{archive,vessels.json,aiscast.db,tracks.db}` and config in `/etc/aiscast.env` (0600). The issuer *seed* for minting tokens lives only in the repo's untracked `.env` as `ISSUER_SEED`/`ISSUER_KID`.
 - Public: `https://ais.openwaters.io` serves `/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, and `/health`. The request path is a DNS-only A record → Caddy → aiscast on `127.0.0.1:8080`. The Caddyfile sets the Let's Encrypt cert, `zstd`/`gzip` response compression, a block on `/metrics`, which stays reachable only on the box, and per-request metrics on Caddy's admin endpoint at `localhost:2019`. Cloudflare proxying is off for the beta, and `TRUST_CF_HEADERS=1` re-enables it if the box needs DDoS cover.
 - UDP ingest at `udp.ais.openwaters.io:10110`, a DNS-only name for the same box. It is separate from the API name so that name can be proxied: a proxied name drops UDP, and a forwarder resolves its target once and keeps sending to that address until restarted, so feeders still using the API name stop silently at their next restart once it is proxied. `UDP_ADDR` can bind one labelled listener per address, counted apart in `/metrics`, which becomes useful if the UDP name ever gets its own address.
 - Upstreams: Kystverket, BarentsWatch, Digitraffic, aisstream.io. Credentials go in `/etc/aiscast.env`.
@@ -34,7 +34,7 @@ Manual deploy: `server/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0
 
 ## Replacing the server
 
-`/var/lib/aiscast` is disposable: the archive is in R2 and the vessel cache rebuilds from live traffic. `aiscast.db`, the vessel record, rebuilds too, but only from the vessels heard after the move, so the rest lose their last known position unless it is copied. So a replacement is:
+`/var/lib/aiscast` is disposable: the archive is in R2 and the vessel cache rebuilds from live traffic. `aiscast.db`, the vessel record, rebuilds too, but only from the vessels heard after the move, so the rest lose their last known position unless it is copied. `tracks.db` holds only the last 48 hours and is not worth copying. So a replacement is:
 
 1. Create the server with the Hetzner API (`HCLOUD_TOKEN` from the repo's `.env`; no `hcloud` CLI needed), reusing the existing firewall and ssh keys — include the CI deploy public key in `ssh_keys`:
 

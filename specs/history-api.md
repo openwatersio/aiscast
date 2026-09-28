@@ -67,6 +67,17 @@ Backed by a durable vessel record in SQLite: one row per MMSI with name, call si
 
 This is the first item of #32 and the item the vessel page in #88 is built on. Without it a vessel page answers 404 for most of a boat's life.
 
+### Backdating the record from history
+
+Only the live fold writes the record, so `first_seen` is the first time the server heard a vessel after the record existed, and a vessel last heard before that has no row at all. History has to reach the record, and it has to keep reaching it every time a historical source is ingested, not once:
+
+- The upsert takes `first_seen` as the earlier of the stored and the incoming value, so older evidence moves it back and newer evidence never moves it forward. Position and `seen` keep their newer-wins rules, so an import of old data cannot overwrite a live position.
+- The packager adds `first_ts` and the last known position (`last_ts`, `last_lat6`, `last_lon6`) to `ais.vessels`: the minimum over every day packaged for `first_ts`, latest-wins for the position, as its other fields already merge. These are additive columns.
+- The server owns the merge rule, so the packager never writes SQLite. After each packaging run the server reads `ais.vessels` through the R2 SQL client and merges every row into the record. A vessel with no row gets one, with its last position from history. The live upsert cannot do this merge as it stands: it lets any non-blank incoming name or particular replace the stored one, which is right for live data and wrong for history, where the incoming value is usually older. The import fills blank fields only, takes the earlier `first_seen`, and takes a position only when it is newer.
+- Every historical source lands in `ais.vessels`: the replayed normalized archive, and any archive from another provider added later. Each one backdates `first_seen` as it is packaged, with nothing source-specific in the server.
+
+`first_seen` then means the earliest report any archive holds for the vessel, and the OpenAPI document says so from the step that lands the import.
+
 ### `GET /v1/vessels` past the 30-minute window
 
 The cache keeps a vessel for 30 minutes after its last report, and that stays the meaning of "now" for the live map, `/v1/stats`, and the station counts. The record answers two questions the cache cannot:
@@ -84,7 +95,7 @@ Name prefix or MMSI prefix over the durable record, case-insensitive, capped at 
 
 Positions for one vessel between two times, as a GeoJSON Feature: a `LineString` in `coordinates`, and in `properties` the MMSI, the resolved `from` and `to`, and arrays aligned with the coordinates for `times`, `sog`, `cog`, `heading`, and `nav_status`. `points` says how many, `truncated` says whether the cap cut the list, and `attribution` carries the credit lines of the sources that contributed. `interval=60s` thins to one point per interval. `format=gpx` returns a GPX 1.1 track, which is the export the vessel page wants. The map in #88 draws a `[lon, lat][]` today, so the GeoJSON form drops in.
 
-Limits per request: seven days of range and 5,000 points, with a default of 1,000. Longer histories page by moving `to`.
+Limits per request: seven days of range and 5,000 points, with a default of 1,000. Longer histories page by moving `to`. The seven days apply once tracks reach into the archive. Until then a track reaches only the 48-hour hot window, and a longer range is clamped to it.
 
 The MCP tool `get_vessel_track` ([#80](https://github.com/openwatersio/aiscast/issues/80)) calls the same handler with the same tier gate and bumps `mcpVersion` and `server.json`.
 
@@ -111,7 +122,7 @@ History costs money to run and the policy already says it is a metered capabilit
 | Feeder | yes | full archive | one square degree by 24 hours |
 | Commercial | yes | full archive | by arrangement |
 
-A request past the tier's reach gets a 403 with a body that says what tier reaches it and where to get a token, so the web client can show that as a normal state. Whether anonymous callers see the hot window at all is the one metering decision to make before the track ships. The recommendation above is yes: it is what makes a shared vessel link legible, and it costs a SQLite index scan.
+A request past the tier's reach gets a 403 with a body that says what tier reaches it and where to get a token, so the web client can show that as a normal state. Whether anonymous callers see the hot window at all is the one metering decision to make before the track ships. The recommendation above is yes: it is what makes a shared vessel link legible, and it costs a SQLite index scan. Until the archive stage lands, every tier reaches only the hot window, so a request past it is clamped to the window rather than refused, and the answer's `from` and `to` say what was covered. The 403 arrives with the archive, when a feeder can reach further than an anonymous caller.
 
 ## Opt-out
 
@@ -122,11 +133,11 @@ Opt-out is a separate feature, built when the first request arrives, and nothing
 | Store | Contents | Steady size |
 | --- | --- | --- |
 | SQLite `vessels` | one row per MMSI ever heard, indexed on name and cell | under 100 MB |
-| SQLite `positions_recent` | every accepted position for 48 hours, indexed on `(mmsi, ts)` and `ts` | about 85 M rows, 4 to 6 GB |
+| SQLite `tracks.db` | every accepted position for two to three days, one table per UTC day keyed by `(mmsi, ts)` | 70 to 105 M rows, 4 to 6 GB |
 | SQLite `stations` | station names | negligible |
 | Query cache | closed-day track and history results | capped at 2 GB, LRU |
 
-Writes are about 480 rows a second, batched in one transaction a second. Hourly deletes by `ts` keep the file at a steady size because SQLite reuses freed pages. `modernc.org/sqlite` keeps the build pure Go. The 160 GB NVMe has room for ten times this. The store lives on the box that ingests, because the fold feeds it. If the server ever splits into an ingesting core and serving relays, the relays forward record, track, and history requests to the core.
+Writes are about 400 positions a second, batched in one transaction a second. Tracks live in their own file, because the record is the file an operator copies when replacing the box. Each UTC day is its own table, so expiry drops a table instead of deleting 35 M rows. Measured on a laptop, a flush of 400 positions takes 6 ms against a day table of 400 k rows and 22 ms against 10 M rows. Each position lands at a random MMSI and dirties its own page, so the write-ahead log sees on the order of a page per position, over a megabyte a second. If disk writes on the box turn out to matter, the alternative is a per-vessel ring in memory, about 2 GB, saved on shutdown like the vessel snapshot. `modernc.org/sqlite` keeps the build pure Go. The 160 GB NVMe has room for ten times this.
 
 ## Order of work
 
@@ -139,9 +150,9 @@ Each step is one pull request with tests, `openapi.json`, the server README, and
 
 
 1. **The store and the durable vessel record.** SQLite behind an interface, the `vessels` table fed from the fold, `GET /v1/vessels/{mmsi}`, the `mmsi=` fallback and `max_age` on `/v1/vessels`, `GET /v1/vessels?q=`, and the matching MCP tool changes. This is Stage 2 of the web-client spec and unblocks indexable vessel pages and the sitemap.
-2. **Recent positions and the hot track.** `positions_recent`, `GET /v1/vessels/{mmsi}/track` over the hot window with thinning and GPX, the tier gate, and `get_vessel_track` on `/mcp`. Stage 3 of the web-client spec, without an in-memory ring.
+2. **Recent positions and the hot track.** `tracks.db`, `GET /v1/vessels/{mmsi}/track` over the hot window with thinning and GPX, the tier gate, and `get_vessel_track` on `/mcp`. Stage 3 of the web-client spec, without an in-memory ring.
 3. **The backfill.** `aiscast replay` over the raw archive from 2026-08-20 and a full packaging run, once #63 is deployed.
-4. **The archive stage.** The R2 SQL client, a spike that measures latency for the three query shapes and records it in the README, the disk cache, tracks stitched over closed days, and `/v1/history`. This is what closes #31's verification and #32.
+4. **The archive stage.** The R2 SQL client, a spike that measures latency for the three query shapes and records it in the README, the disk cache, tracks stitched over closed days, and `/v1/history`. It also lands the record import: `first_ts` and the last position in `ais.vessels`, and the nightly merge that backdates `first_seen` after every packaging run. This is what closes #31's verification and #32.
 5. **Series and coverage.** `?series=hourly`, `ais.station_days`, `GET /v1/stations/{id}/history`, and the coverage tile job.
 6. **More vessel filters.** `kind`, `class` (A or B), `type` as a category such as cargo, tanker, passenger, fishing, sailing, or pleasure, mapped from the ITU ship type codes, and `flag` as a country code, on `/v1/vessels` and in the MCP search tool. Columns and parameter handling come with step 1, so this step is the category mapping, validation, tests, and the OpenAPI document.
 
@@ -157,7 +168,7 @@ The unchecked items in #88 and the later stages of [specs/web-client.md](web-cli
 | Station names ([#51](https://github.com/openwatersio/aiscast/issues/51)) | `PUT /v1/stations/{id}` signed by the station's token, `name` in the list | SQLite `stations` | negligible |
 | Heard-first per station ([#53](https://github.com/openwatersio/aiscast/issues/53)) | a field in `/v1/stations` | a counter in the existing usage file, or `ais.station_days` for the exact number | 0 |
 | A map above the area cap | `GET /v1/vessels/summary?bbox` returning vessels per one-degree cell, read straight from the spatial index the cache already keeps | in memory | 0 |
-| Recent track on the vessel page | `GET /v1/vessels/{mmsi}/track` | SQLite `positions_recent` | 4 to 6 GB |
+| Recent track on the vessel page | `GET /v1/vessels/{mmsi}/track` | SQLite `tracks.db` | 4 to 6 GB |
 | Time range, GPX and GeoJSON export | same endpoint over the lake | `ais.positions` with the bucket partition | 1 to 1.5 GB a day |
 | Playback over a bbox | `GET /v1/history` | `ais.positions` with the `cell` column | same table |
 | Real coverage cells ([#30](https://github.com/openwatersio/aiscast/issues/30)) | PMTiles from a public bucket | nightly over `ais.receptions` | tens of MB per build |

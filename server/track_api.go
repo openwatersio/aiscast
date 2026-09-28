@@ -1,0 +1,402 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+const (
+	trackDefaultSpan  = 24 * time.Hour
+	trackDefaultLimit = 1000
+)
+
+// trackLimit is the most positions one track request returns for a tier. The window is the same for every
+// tier; the cap bounds the work a request can ask for.
+func trackLimit(cl *Claims) int {
+	switch {
+	case cl.Role == "anonymous":
+		return 200
+	case cl.Role == "personal" && !cl.Feeder:
+		return 1000
+	default:
+		return 5000
+	}
+}
+
+// trackRequest is a track query after defaults, clamping, and validation.
+type trackRequest struct {
+	mmsi     uint32
+	from, to time.Time
+	interval time.Duration
+	limit    int
+}
+
+// parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. Both are
+// clamped to the window, which ends now and reaches back trackWindow. A range entirely outside the window
+// clamps to an empty one at its nearer edge, so the answer is an empty track that says where it looked.
+func parseTrackRange(fromS, toS string, now time.Time) (from, to time.Time, msg string) {
+	to = now
+	if toS != "" {
+		t, err := time.Parse(time.RFC3339, toS)
+		if err != nil {
+			return from, to, "to must be an RFC 3339 time, such as 2026-09-28T12:00:00Z"
+		}
+		to = t
+	}
+	from = to.Add(-trackDefaultSpan)
+	if fromS != "" {
+		t, err := time.Parse(time.RFC3339, fromS)
+		if err != nil {
+			return from, to, "from must be an RFC 3339 time, such as 2026-09-27T12:00:00Z"
+		}
+		from = t
+	}
+	if !from.Before(to) {
+		return from, to, "from must be before to"
+	}
+	start := now.Add(-trackWindow)
+	return clampTime(from, start, now).UTC(), clampTime(to, start, now).UTC(), ""
+}
+
+func clampTime(t, lo, hi time.Time) time.Time {
+	if t.Before(lo) {
+		return lo
+	}
+	if t.After(hi) {
+		return hi
+	}
+	return t
+}
+
+func parseTrackRequest(r *http.Request, cl *Claims, now time.Time) (trackRequest, string) {
+	var q trackRequest
+	n, err := strconv.ParseUint(r.PathValue("mmsi"), 10, 32)
+	if err != nil {
+		return q, "mmsi must be a number"
+	}
+	q.mmsi = uint32(n)
+	vals := r.URL.Query()
+	var msg string
+	if q.from, q.to, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now); msg != "" {
+		return q, msg
+	}
+	if s := vals.Get("interval"); s != "" {
+		if secs, err := strconv.ParseUint(s, 10, 32); err == nil {
+			q.interval = time.Duration(secs) * time.Second
+		} else if d, err := time.ParseDuration(s); err == nil && d >= 0 {
+			q.interval = d
+		} else {
+			return q, "interval=<seconds> or a duration such as 5m"
+		}
+	}
+	cap := trackLimit(cl)
+	q.limit = min(trackDefaultLimit, cap)
+	if s := vals.Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return q, "limit must be a positive number"
+		}
+		q.limit = min(n, cap)
+	}
+	return q, ""
+}
+
+// vesselName is the vessel's name from the cache or the record, and whether either knows the vessel.
+func (p *Pipeline) vesselName(mmsi uint32) (name string, known bool, err error) {
+	p.vmu.RLock()
+	if v := p.vessels[mmsi]; v != nil {
+		name, known = v.Name, true
+	}
+	p.vmu.RUnlock()
+	if name == "" && p.store != nil {
+		rec, ok, err := p.store.get(mmsi)
+		if err != nil {
+			return "", known, err
+		}
+		if ok {
+			name, known = rec.v.Name, true
+		}
+	}
+	return strings.TrimSpace(name), known, nil
+}
+
+// serveTrack: GET /v1/vessels/{mmsi}/track?from&to&interval&limit&format → the positions the network
+// heard from one vessel in the last 48 hours, as a GeoJSON Feature or, with format=gpx, a GPX track.
+func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	cl, err := p.requestClaims(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	format := r.URL.Query().Get("format")
+	if format != "" && format != "geojson" && format != "gpx" {
+		http.Error(w, "format=geojson or gpx", http.StatusBadRequest)
+		return
+	}
+	q, msg := parseTrackRequest(r, p.effective(cl), time.Now())
+	if msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	if p.tracks == nil {
+		http.Error(w, "tracks are not available on this server", http.StatusServiceUnavailable)
+		return
+	}
+	points, more, err := p.tracks.track(q.mmsi, q.from, q.to, q.interval, q.limit)
+	var name string
+	var known bool
+	if err == nil {
+		name, known, err = p.vesselName(q.mmsi)
+	}
+	if err != nil {
+		log.Printf("tracks: %v", err)
+		http.Error(w, "track unavailable", http.StatusInternalServerError)
+		return
+	}
+	if len(points) == 0 && !known {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "unknown vessel"})
+		return
+	}
+	attribution := map[string]string{}
+	for _, pt := range points {
+		noteAttribution(attribution, pt.source)
+	}
+	if format == "gpx" {
+		w.Header().Set("Content-Type", "application/gpx+xml")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%d.gpx"`, q.mmsi))
+		writeGPX(w, q.mmsi, name, points, attribution)
+		return
+	}
+	w.Header().Set("Content-Type", "application/geo+json")
+	json.NewEncoder(w).Encode(trackGeoJSON(q, name, points, more, attribution))
+}
+
+type trackFeature struct {
+	Attribution map[string]string `json:"attribution"`
+	Geometry    *trackGeometry    `json:"geometry"`
+	ID          uint32            `json:"id"`
+	Properties  trackProps        `json:"properties"`
+	Type        string            `json:"type"`
+}
+
+type trackGeometry struct {
+	Coordinates any    `json:"coordinates"`
+	Type        string `json:"type"`
+}
+
+// trackProps carries per-position values as arrays aligned with the geometry's coordinates. A value AIS
+// marks not available is null.
+type trackProps struct {
+	Cog       []*float64 `json:"cog"`
+	From      string     `json:"from"`
+	Heading   []*uint16  `json:"heading"`
+	MMSI      uint32     `json:"mmsi"`
+	Name      string     `json:"name,omitempty"`
+	NavStatus []*uint8   `json:"nav_status"`
+	Points    int        `json:"points"`
+	Sog       []*float64 `json:"sog"`
+	Times     []string   `json:"times"`
+	To        string     `json:"to"`
+	Truncated bool       `json:"truncated"`
+}
+
+func (pt trackPoint) latLon() (float64, float64) {
+	return float64(pt.lat6) / 600000, float64(pt.lon6) / 600000
+}
+
+func (pt trackPoint) motion() (sog, cog *float64, heading *uint16, nav *uint8) {
+	if pt.sog10 < 1023 {
+		sog = mcpPtr(float64(pt.sog10) / 10)
+	}
+	if pt.cog10 < 3600 {
+		cog = mcpPtr(float64(pt.cog10) / 10)
+	}
+	if pt.heading < 511 {
+		heading = mcpPtr(pt.heading)
+	}
+	if pt.navStatus != 15 {
+		nav = mcpPtr(pt.navStatus)
+	}
+	return
+}
+
+// trackGeoJSON is the track as a Feature: a LineString for two or more positions, a Point for one, and no
+// geometry for none.
+func trackGeoJSON(q trackRequest, name string, points []trackPoint, more bool, attribution map[string]string) trackFeature {
+	props := trackProps{MMSI: q.mmsi, Name: name, From: q.from.Format(time.RFC3339), To: q.to.Format(time.RFC3339),
+		Points: len(points), Truncated: more, Times: []string{}, Sog: []*float64{}, Cog: []*float64{},
+		Heading: []*uint16{}, NavStatus: []*uint8{}}
+	coords := make([][2]float64, 0, len(points))
+	for _, pt := range points {
+		lat, lon := pt.latLon()
+		coords = append(coords, [2]float64{lon, lat})
+		sog, cog, heading, nav := pt.motion()
+		props.Times = append(props.Times, pt.ts.Format(time.RFC3339))
+		props.Sog, props.Cog = append(props.Sog, sog), append(props.Cog, cog)
+		props.Heading, props.NavStatus = append(props.Heading, heading), append(props.NavStatus, nav)
+	}
+	f := trackFeature{Attribution: attribution, ID: q.mmsi, Properties: props, Type: "Feature"}
+	switch len(coords) {
+	case 0:
+	case 1:
+		f.Geometry = &trackGeometry{Type: "Point", Coordinates: coords[0]}
+	default:
+		f.Geometry = &trackGeometry{Type: "LineString", Coordinates: coords}
+	}
+	return f
+}
+
+// writeGPX writes a GPX 1.1 track. The credit lines go in the metadata description, since a GPX file
+// travels without the page it came from.
+func writeGPX(w http.ResponseWriter, mmsi uint32, name string, points []trackPoint, attribution map[string]string) {
+	title := strconv.FormatUint(uint64(mmsi), 10)
+	if name != "" {
+		title = name + " (" + title + ")"
+	}
+	credits := make([]string, 0, len(attribution))
+	for _, c := range attribution {
+		credits = append(credits, c)
+	}
+	sort.Strings(credits)
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	b.WriteString(`<gpx version="1.1" creator="Open Waters AIS (https://openwaters.io/ais/)" xmlns="http://www.topografix.com/GPX/1/1">` + "\n")
+	fmt.Fprintf(&b, "<metadata><name>%s</name><desc>%s</desc></metadata>\n", xmlEscape(title), xmlEscape(strings.Join(credits, " ")))
+	fmt.Fprintf(&b, "<trk><name>%s</name><trkseg>\n", xmlEscape(title))
+	for _, pt := range points {
+		lat, lon := pt.latLon()
+		fmt.Fprintf(&b, `<trkpt lat="%.6f" lon="%.6f"><time>%s</time></trkpt>`+"\n", lat, lon, pt.ts.Format(time.RFC3339))
+	}
+	b.WriteString("</trkseg></trk>\n</gpx>\n")
+	w.Write([]byte(b.String()))
+}
+
+func xmlEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		case '"':
+			b.WriteString("&quot;")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// ---- MCP ----
+
+const mcpTrackDefaultLimit = 50
+
+type mcpTrackIn struct {
+	MMSI            uint32 `json:"mmsi" jsonschema:"the vessel's MMSI; use search_vessels_by_name first when you only have a name"`
+	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. Positions reach back 48 hours"`
+	To              string `json:"to,omitempty" jsonschema:"end, RFC 3339 UTC; default now"`
+	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the positions are spread evenly over the range"`
+	Limit           int    `json:"limit,omitempty" jsonschema:"positions to return: default 50, maximum 200; when more match, the newest are kept"`
+}
+
+type mcpTrackPoint struct {
+	Seen          string   `json:"seen" jsonschema:"time of the report, RFC 3339 UTC"`
+	Lat           float64  `json:"lat"`
+	Lon           float64  `json:"lon"`
+	Sog           *float64 `json:"sog,omitempty" jsonschema:"speed over ground, knots"`
+	Cog           *float64 `json:"cog,omitempty" jsonschema:"course over ground, degrees true"`
+	Heading       *uint16  `json:"heading,omitempty" jsonschema:"true heading, degrees"`
+	NavStatus     *uint8   `json:"nav_status,omitempty" jsonschema:"AIS navigational status code"`
+	NavStatusName string   `json:"nav_status_name,omitempty"`
+}
+
+type mcpTrack struct {
+	MMSI        uint32            `json:"mmsi"`
+	Name        string            `json:"name,omitempty"`
+	From        string            `json:"from" jsonschema:"start of the range covered, after clamping to the last 48 hours"`
+	To          string            `json:"to"`
+	Positions   []mcpTrackPoint   `json:"positions" jsonschema:"oldest first"`
+	Truncated   bool              `json:"truncated" jsonschema:"true when more positions matched than were returned; the newest were kept, so set from later or raise interval_minutes"`
+	Attribution map[string]string `json:"attribution" jsonschema:"credit line per source kind in the positions, to show with the data"`
+}
+
+func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest, in mcpTrackIn) (*mcp.CallToolResult, mcpTrack, error) {
+	cl := p.effective(mcpClaims(ctx))
+	limit := mcpTrackDefaultLimit
+	if in.Limit != 0 {
+		n, err := mcpLimit(in.Limit)
+		if err != nil {
+			return nil, mcpTrack{}, err
+		}
+		limit = n
+	}
+	limit = min(limit, trackLimit(cl))
+	now := time.Now()
+	from, to, msg := parseTrackRange(in.From, in.To, now)
+	if msg != "" {
+		return nil, mcpTrack{}, errors.New(msg)
+	}
+	if in.IntervalMinutes < 0 {
+		return nil, mcpTrack{}, errors.New("interval_minutes cannot be negative")
+	}
+	if p.tracks == nil {
+		return nil, mcpTrack{}, errors.New("tracks are not available on this server")
+	}
+	// An assistant asking for a day wants the whole of the vessel's day, not its last few minutes at full
+	// rate, so the limit is spread from the vessel's first position in the range to its end.
+	interval := time.Duration(in.IntervalMinutes) * time.Minute
+	var err error
+	if interval == 0 {
+		var start time.Time
+		var ok bool
+		if start, ok, err = p.tracks.first(in.MMSI, from, to); ok {
+			interval = to.Sub(start) / time.Duration(limit)
+		}
+	}
+	var points []trackPoint
+	var more bool
+	if err == nil {
+		points, more, err = p.tracks.track(in.MMSI, from, to, interval, limit)
+	}
+	var name string
+	var known bool
+	if err == nil {
+		name, known, err = p.vesselName(in.MMSI)
+	}
+	if err != nil {
+		log.Printf("tracks: %v", err)
+		return nil, mcpTrack{}, errors.New("the track store is unavailable; try again shortly")
+	}
+	if len(points) == 0 && !known {
+		return nil, mcpTrack{}, fmt.Errorf("no vessel with MMSI %d has been heard", in.MMSI)
+	}
+	out := mcpTrack{MMSI: in.MMSI, Name: name, From: from.Format(time.RFC3339), To: to.Format(time.RFC3339),
+		Positions: []mcpTrackPoint{}, Truncated: more, Attribution: map[string]string{}}
+	for _, pt := range points {
+		lat, lon := pt.latLon()
+		sog, cog, heading, nav := pt.motion()
+		row := mcpTrackPoint{Seen: pt.ts.Format(time.RFC3339), Lat: lat, Lon: lon, Sog: sog, Cog: cog, Heading: heading, NavStatus: nav}
+		if nav != nil {
+			row.NavStatusName = navStatusName(*nav)
+		}
+		out.Positions = append(out.Positions, row)
+		noteAttribution(out.Attribution, pt.source)
+	}
+	return nil, out, nil
+}
