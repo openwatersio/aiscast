@@ -122,6 +122,59 @@ func TestReplayWithholdsABufferedBacklog(t *testing.T) {
 	}
 }
 
+// /v1 publish lines and /v1/receive envelopes archive under the same station:<sub> source, so a
+// published line whose body is a valid AIS-catcher envelope must round-trip its mark: live fed it
+// to the NMEA parser and produced nothing, and replay must not unpack it into events.
+func TestReplayKeepsAPublishedEnvelopeALine(t *testing.T) {
+	rawDir, normDir := t.TempDir(), t.TempDir()
+	p := testPipeline(t)
+	p.arch = newArchive(rawDir, nil)
+	p.norm = newNormArchive(normDir, nil)
+	recv := time.Date(2026, 9, 1, 12, 0, 40, 0, time.UTC)
+	envelope := `{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260901120039","nmea":["` + testSentence + `"]}]}`
+	p.Ingest(Reception{Source: "station:boat", Station: "station:boat", RecvTime: recv, Body: envelope, Published: true})
+	if p.stats.parseErr.Load() != 1 {
+		t.Fatalf("live parse errors = %d, want 1 (a publish line goes through the NMEA parser)", p.stats.parseErr.Load())
+	}
+	p.closeArchives()
+
+	rs := allReaders(t, rawDir)
+	if len(rs) != 1 || !rs[0].next() {
+		t.Fatal("the raw archive did not round-trip the record")
+	}
+	if rx := rs[0].cur; !rx.Published || rx.Station != "station:boat" {
+		t.Fatalf("round-tripped record: Published = %v, Station = %q", rx.Published, rx.Station)
+	}
+
+	out := t.TempDir()
+	runReplay([]string{"-archive", rawDir, "-out", out, "-from", "2026-09-01", "-to", "2026-09-02"})
+	rep := diffNorm(loadNorm(normDir), loadNorm(out))
+	if n := rep.live.eventCount(); n != 0 {
+		t.Fatalf("live produced %d transmissions from a published line, want 0", n)
+	}
+	if !rep.clean() {
+		t.Fatalf("replay unpacked a published line as an envelope:\n%s", rep.render(3))
+	}
+}
+
+// Both marks apply to one record when a publisher replays its offline backlog. The writer emits
+// them in a fixed order and the reader strips both.
+func TestRawArchiveRoundTripsBothMarks(t *testing.T) {
+	dir := t.TempDir()
+	a := newArchive(dir, nil)
+	recv := time.Date(2026, 9, 1, 12, 0, 40, 0, time.UTC)
+	a.write(Reception{Source: "station:boat", Station: "station:boat", RecvTime: recv, Body: testSentence, Published: true, Buffered: true})
+	a.shutdown()
+	rs := allReaders(t, dir)
+	if len(rs) != 1 || !rs[0].next() {
+		t.Fatal("the raw archive did not round-trip the record")
+	}
+	rx := rs[0].cur
+	if rx.Station != "station:boat" || !rx.Published || !rx.Buffered {
+		t.Fatalf("Station = %q, Published = %v, Buffered = %v; want the bare station with both marks set", rx.Station, rx.Published, rx.Buffered)
+	}
+}
+
 // A raw hour replay cannot place, or a record it cannot route, is history it would leave out.
 func TestReplayRefusesWhatItCannotPlace(t *testing.T) {
 	dir := t.TempDir()
@@ -164,6 +217,15 @@ func TestReplayRoutesByTransport(t *testing.T) {
 	// http: is /v1/receive alone, so an envelope there that does not parse is corrupt
 	if err := dispatch(testPipeline(t), "http:x", Reception{Source: "http:x", Body: `{"msgs": [`}, nil); err == nil {
 		t.Fatal("a corrupt envelope under http: was replayed as a line")
+	}
+	// the published mark means /v1 publish, which only ever took lines, so even a valid envelope stays one
+	pp := testPipeline(t)
+	psub := pp.subscribe()
+	if err := dispatch(pp, "station:x", Reception{Source: "station:x", Station: "station:x", Body: envelope, Published: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(psub.ch) != 0 || pp.stats.parseErr.Load() != 1 {
+		t.Fatalf("published envelope: %d events and %d parse errors, want 0 and 1", len(psub.ch), pp.stats.parseErr.Load())
 	}
 }
 

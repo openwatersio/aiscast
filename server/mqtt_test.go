@@ -199,6 +199,48 @@ func TestMQTTPublish(t *testing.T) {
 	}
 }
 
+// A valid AIS-catcher envelope published over MQTT is a line, like one published over the JSON
+// protocol: live feeds it to the NMEA parser, and the raw record must carry the published mark so
+// replay keeps it a line instead of unpacking it into events.
+func TestMQTTPublishedEnvelopeStaysALine(t *testing.T) {
+	rawDir, normDir := t.TempDir(), t.TempDir()
+	p := testPipeline(t)
+	p.arch = newArchive(rawDir, nil)
+	p.norm = newNormArchive(normDir, nil)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	m := dialMQTT(t, srv, "")
+	m.send(mqttConnect, 0, connectPacket("x", "anything"))
+	if pk := m.expect(mqttConnack); pk.body[1] != mqttAccepted {
+		t.Fatalf("connack %v", pk.body)
+	}
+	envelope := `{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260901120039","nmea":["` + sentence + `"]}]}`
+	m.send(mqttPublish, 0x02, publishPacket("ais/data", 7, envelope)) // QoS 1: the ack confirms the ingest happened
+	m.expect(mqttPuback)
+	if p.stats.parseErr.Load() != 1 {
+		t.Fatalf("live parse errors = %d, want 1 (an MQTT publish goes through the NMEA parser)", p.stats.parseErr.Load())
+	}
+	p.closeArchives()
+
+	rs := allReaders(t, rawDir)
+	if len(rs) != 1 || !rs[0].next() {
+		t.Fatal("the raw archive did not round-trip the record")
+	}
+	rx := rs[0].cur
+	if !rx.Published || rx.Station != "station:anon" {
+		t.Fatalf("round-tripped record: Published = %v, Station = %q", rx.Published, rx.Station)
+	}
+
+	out := t.TempDir()
+	day := rx.RecvTime.UTC().Truncate(24 * time.Hour)
+	runReplay([]string{"-archive", rawDir, "-out", out,
+		"-from", day.Format("2006-01-02"), "-to", day.AddDate(0, 0, 1).Format("2006-01-02")})
+	rep := diffNorm(loadNorm(normDir), loadNorm(out))
+	if !rep.clean() {
+		t.Fatalf("replay unpacked an MQTT-published line as an envelope:\n%s", rep.render(3))
+	}
+}
+
 // CONNECT carries the token as the password and is answered with the MQTT return code that fits: accepted
 // for a publishing role, not authorized for a role that may not publish, bad credentials for no token at all.
 func TestMQTTConnectAuth(t *testing.T) {

@@ -489,7 +489,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 						p.stats.rateLimited.Add(1)
 						break
 					}
-					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line, Buffered: f.Replay})
+					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line, Buffered: f.Replay, Published: true})
 					n++
 				}
 				wsWriteJSON(ctx, c, map[string]any{"type": "ack", "n": n})

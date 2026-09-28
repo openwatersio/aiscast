@@ -24,6 +24,7 @@ type Reception struct {
 	SourceTime time.Time // feeder-supplied, zero if none
 	Body       string
 	Buffered   bool // sender replays an offline backlog: sentences with a TAG time older than replayAge are archived, not emitted
+	Published  bool // a /v1/stream publish line: replay must take the body as a line, never an AIS-catcher envelope
 }
 
 // Event is one decoded AIS message after reassembly and dedupe.
