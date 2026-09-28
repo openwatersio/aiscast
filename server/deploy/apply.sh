@@ -4,8 +4,6 @@
 set -eu
 cd "$(dirname "$0")"
 
-UV_VERSION=0.12.12
-
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v curl >/dev/null; then # a minimal image may lack it, and the repositories below need it first
 	apt-get update -q
@@ -51,18 +49,16 @@ fi
 rm -f "$drop.bak"
 systemctl reload ssh
 
-mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/aiscast/normalized /var/lib/aiscast/packager
+mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/aiscast/normalized
 chown -R aiscast:aiscast /var/lib/aiscast
 
-# The nightly packager runs packager.py under uv, which resolves the script's own dependencies and
-# Python. Not in apt; pinned so a box and CI agree on what ran.
-if [ "$(/usr/local/bin/uv --version 2>/dev/null | cut -d' ' -f2)" != "$UV_VERSION" ]; then
-	curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" |
-		UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 INSTALLER_NO_MODIFY_PATH=1 sh
-	# a failed download still exits 0 through the pipe, so fail here rather than at 01:30 UTC
-	/usr/local/bin/uv --version >/dev/null
+# The packager runs on GitHub Actions (.github/workflows/packager.yml). Boxes converged before
+# that still carry its units and script.
+if [ -f /etc/systemd/system/packager.timer ]; then
+	systemctl disable --now packager.timer
+	rm -f /etc/systemd/system/packager.timer /etc/systemd/system/packager.service /opt/aiscast/packager.py
+	rm -rf /var/lib/aiscast/packager
 fi
-install -m 755 packager.py /opt/aiscast/packager.py
 
 # Seed only: secrets live on the box, never in the repo.
 if [ ! -f /etc/aiscast.env ]; then
@@ -77,9 +73,6 @@ fi
 systemctl daemon-reload
 systemctl restart systemd-journald
 systemctl enable aiscast caddy fail2ban
-# The timer skips itself while /etc/aiscast.env has no LAKE_CATALOG_URI, so enabling it is safe on
-# a box whose template is still unfilled.
-systemctl enable --now packager.timer
 systemctl reload-or-restart fail2ban
 caddy validate --config /etc/caddy/Caddyfile
 # The Caddyfile's stream_close_delay keeps the reload from blocking on open WebSockets; the

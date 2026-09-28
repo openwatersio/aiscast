@@ -10,8 +10,6 @@ Everything the box needs lives in this directory, and changing any of it is a pu
 - [`aiscast.env.example`](aiscast.env.example) lists every variable `/etc/aiscast.env` holds, and [`alloy.env.example`](alloy.env.example) the Grafana Cloud credentials in `/etc/alloy.env`. The real files stay on the box; secrets never enter the repo.
 - [`grafana/`](grafana/) holds the alert rules and the capacity dashboard, applied to Grafana Cloud by [`grafana/push.sh`](grafana/push.sh).
 
-The nightly [packager](../../packager/README.md) rides along: `packager.timer` fires at 01:30 UTC, once the closed day's last hours have rotated into the archive bucket, and `packager.service` runs `/opt/aiscast/packager.py` under uv, turning them into Iceberg tables in R2 Data Catalog. Each run packages every closed day of the past week not yet packaged from its current input hours, so a failed night or a late upload heals on the next. It reads the `LAKE_*` and `R2_*` variables from the same `/etc/aiscast.env` and skips itself while `LAKE_CATALOG_URI` is empty, so a box whose template is still unfilled does no nightly work. `apply.sh` installs a pinned uv for it.
-
 ## What exists
 
 - Hetzner Cloud server `ais-server-1`: `cx43` (8 shared vCPU, 16 GB, 160 GB NVMe, 20 TB/mo traffic, €18.49/mo) in `hel1` (Helsinki), Ubuntu 24.04, IPv4 `2.29.0.215`, IPv6 `2a01:4f9:c015:e7ca::/64`, label `project=ais`. Resize when the CPU alerts fire, and move to a dedicated-CPU type (`ccx23`, €101.49/mo) when the steal alerts do.
