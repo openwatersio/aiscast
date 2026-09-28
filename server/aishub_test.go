@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +13,9 @@ import (
 func TestAishubSnapshot(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	st := newAishubState()
 	now := time.Unix(1625826600, 0)
 	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"NAVSTAT":8,"IMO":0,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"","ETA":1596}]]`
-	n, err := p.ingestAishub([]byte(body), now, st)
+	n, err := p.ingestAishub([]byte(body), now)
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -36,12 +36,12 @@ func TestAishubSnapshot(t *testing.T) {
 		t.Errorf("static: %+v", sd)
 	}
 	// same snapshot again: nothing new (TIME and static unchanged)
-	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute), st)
+	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute))
 	if n != 0 || len(sub.ch) != 0 {
 		t.Errorf("repeat snapshot produced %d events", n)
 	}
 	// error envelope
-	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now, st); err == nil {
+	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now); err == nil {
 		t.Error("error envelope not reported")
 	}
 }
@@ -52,69 +52,162 @@ func TestAishubSnapshot(t *testing.T) {
 func TestAishubStaticFlipBack(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	st := newAishubState()
 	now := time.Unix(1625826600, 0)
 	row := func(time, dest string) string {
 		return fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%s","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"%s","ETA":1596}]]`, time, dest)
 	}
-	if n, err := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now, st); err != nil || n != 2 {
+	if n, err := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now); err != nil || n != 2 {
 		t.Fatalf("first snapshot: n=%d err=%v", n, err) // position + static
 	}
-	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLAMS")), now.Add(time.Minute), st); n != 1 {
-		t.Fatalf("changed static: n=%d, want 1", n)
+	// AISHub's aggregate flips the vessel's statics between stations' versions while TIME stands still.
+	// Neither the flip nor the flip back is news to the cache: the vessel's static time has not moved.
+	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLAMS")), now.Add(time.Minute)); n != 0 {
+		t.Fatalf("static changed under an unchanged TIME: n=%d, want 0", n)
 	}
-	// the flip back: same static, same TIME as its first emission, minutes later
-	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now.Add(3*time.Minute), st); n != 0 {
+	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now.Add(3*time.Minute)); n != 0 {
 		t.Errorf("flip-back re-emitted: n=%d, want 0", n)
 	}
-	// TIME advanced: the flip-back is a fresh (id, time) and must reach subscribers again
-	if n, _ := p.ingestAishub([]byte(row("1625826583", "NLRTM")), now.Add(4*time.Minute), st); n != 2 {
-		t.Errorf("static after TIME advance: n=%d, want 2", n)
+	// TIME advanced: a new position, and the static changed since what the cache holds goes out with it
+	if n, _ := p.ingestAishub([]byte(row("1625826583", "NLAMS")), now.Add(4*time.Minute)); n != 2 {
+		t.Errorf("after TIME advance: n=%d, want position and changed static", n)
 	}
-	// Broadcast sees position@523, static NLRTM@523, position@583, static NLRTM@583: the NLAMS
-	// static shares the vessel's static time, so it is archived stale and never broadcast.
-	recv := func() *Event {
-		select {
-		case ev := <-sub.ch:
-			return ev
-		case <-time.After(time.Second):
-			t.Fatal("subscriber starved: expected another broadcast event")
-			return nil
-		}
+	// an unchanged static under an advanced TIME is not news
+	if n, _ := p.ingestAishub([]byte(row("1625826643", "NLAMS")), now.Add(5*time.Minute)); n != 1 {
+		t.Errorf("unchanged static after TIME advance: n=%d, want the position alone", n)
 	}
-	for i := 0; i < 3; i++ {
-		recv()
+	for i := 0; i < 4; i++ {
+		<-sub.ch
 	}
-	last := recv()
-	if sd, ok := last.Packet.(ais.ShipStaticData); !ok || sd.Destination != "NLRTM" || last.Time.Unix() != 1625826583 {
-		t.Errorf("last event: %+v", last)
+	last := <-sub.ch
+	if pr, ok := last.Packet.(ais.PositionReport); !ok || last.Time.Unix() != 1625826643 {
+		t.Errorf("last event: %+v %v", last, pr)
 	}
 }
 
-// A future-stamped row's canonical time is capped to the receive time by ingestPacket, so the
-// flip-back window must track the capped time: keyed on the raw future TIME it would suppress a
-// flip-back whose actual (id, time) is unique, because each snapshot's receive time differs.
-func TestAishubFutureStampFlipBack(t *testing.T) {
+// A future-stamped row is not news yet: capping its time to the receive time would make the same
+// unchanged row look newer on every snapshot. It goes through once, with its true time, in the first
+// snapshot after that time has passed.
+func TestAishubFutureStampWaitsForItsTime(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	st := newAishubState()
 	now := time.Unix(1625826600, 0)
-	row := func(dest string) string { // TIME five minutes ahead of every snapshot's receive time
-		return fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"1625826900","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"%s","ETA":1596}]]`, dest)
+	body := []byte(`[[{"MMSI":244750034,"TIME":"1625826610","LONGITUDE":3022815,"LATITUDE":31476144}]]`) // 10 s ahead
+	if n, _ := p.ingestAishub(body, now); n != 0 {
+		t.Fatalf("future-stamped row emitted: n=%d", n)
 	}
-	if n, err := p.ingestAishub([]byte(row("NLRTM")), now, st); err != nil || n != 2 {
-		t.Fatalf("first snapshot: n=%d err=%v", n, err)
+	if n, _ := p.ingestAishub(body, now.Add(20*time.Second)); n != 1 {
+		t.Fatalf("row not emitted once its time passed: n=%d", n)
 	}
-	if ev := <-sub.ch; !ev.Time.Equal(now) {
-		t.Errorf("future stamp not capped to receive time: %v", ev.Time)
+	if ev := <-sub.ch; ev.Time.Unix() != 1625826610 {
+		t.Errorf("event time %v, want the row's own", ev.Time)
 	}
-	if n, _ := p.ingestAishub([]byte(row("NLAMS")), now.Add(time.Minute), st); n != 1 {
-		t.Fatalf("changed static: n=%d, want 1", n)
+	if n, _ := p.ingestAishub(body, now.Add(40*time.Second)); n != 0 {
+		t.Errorf("unchanged row re-emitted: n=%d", n)
 	}
-	// the flip back: TIME is still the same future stamp, but the canonical time is this
-	// snapshot's receive time, so the key is fresh and the static must be emitted
-	if n, _ := p.ingestAishub([]byte(row("NLRTM")), now.Add(2*time.Minute), st); n != 1 {
-		t.Errorf("flip-back with a future stamp: n=%d, want 1", n)
+}
+
+// A row older than the vessel cache's window is ignored: AISHub keeps vessels it has not heard for hours.
+func TestAishubIgnoresRowsOlderThanTheCache(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	old := fmt.Sprint(now.Add(-vesselTTL - time.Minute).Unix())
+	if n, _ := p.ingestAishub([]byte(`[[{"MMSI":244750034,"TIME":"`+old+`","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX"}]]`), now); n != 0 {
+		t.Fatalf("row older than the cache's window emitted: n=%d", n)
+	}
+}
+
+// After a restart the cache is restored from its snapshot, and the first AISHub snapshot does not
+// re-send what the stream already carried.
+func TestAishubSkipsPositionsTheCacheWouldHold(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	row := func(secs int64) []byte {
+		return []byte(fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%d","LONGITUDE":3022815,"LATITUDE":31476144}]]`, secs))
+	}
+	if n, _ := p.ingestAishub(row(now.Unix()-120), now); n != 1 {
+		t.Fatalf("first position: n=%d", n)
+	}
+	// Another source's static advances Seen past the next AISHub position without moving PosAt.
+	p.ingestPacketAt("aisstream", "aisstream", now.Add(-10*time.Second), now, aishubRow{MMSI: 244750034, Name: "CHATEAUROUX"}.static())
+	if n, _ := p.ingestAishub(row(now.Unix()-60), now.Add(20*time.Second)); n != 0 {
+		t.Fatalf("position the cache would mark stale emitted: n=%d", n)
+	}
+}
+
+func TestAishubSendsStaticsOlderThanTheLastPosition(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	p.ingestPacketAt("aisstream", "aisstream", now.Add(-10*time.Second), now, aishubRow{MMSI: 244750034, Latitude: 31476144, Longitude: 3022815}.position(now.Add(-10*time.Second)))
+	body := []byte(fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%d","NAME":"CHATEAUROUX","DEST":"NLRTM"}]]`, now.Unix()-120))
+	if n, _ := p.ingestAishub(body, now); n != 1 {
+		t.Fatalf("static behind the last position not sent: n=%d", n)
+	}
+	if v := p.vessels[244750034]; v.Destination != "NLRTM" {
+		t.Fatalf("destination not folded: %q", v.Destination)
+	}
+}
+
+func TestAishubSkipsStaticsWithinASecondOfTheLast(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	row := func(secs int64, dest string) []byte {
+		return []byte(fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%d","NAME":"CHATEAUROUX","DEST":"%s"}]]`, secs, dest))
+	}
+	if n, _ := p.ingestAishub(row(now.Unix()-60, "NLRTM"), now); n != 1 {
+		t.Fatalf("first static: n=%d", n)
+	}
+	// The cache marks a rebuilt static within a second of the last one stale, so it is not sent.
+	if n, _ := p.ingestAishub(row(now.Unix()-59, "NLAMS"), now.Add(20*time.Second)); n != 0 {
+		t.Fatalf("static a second after the last sent: n=%d", n)
+	}
+}
+
+func TestAishubStaticFlipBehindTheLastPosition(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Unix(1625826600, 0)
+	p.ingestPacketAt("aisstream", "aisstream", now.Add(-10*time.Second), now, aishubRow{MMSI: 244750034, Latitude: 31476144, Longitude: 3022815}.position(now.Add(-10*time.Second)))
+	row := func(dest string) []byte {
+		return []byte(fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%d","NAME":"CHATEAUROUX","DEST":"%s"}]]`, now.Unix()-120, dest))
+	}
+	for i, dest := range []string{"NLRTM", "NLAMS", "NLRTM"} {
+		want := 0
+		if i == 0 {
+			want = 1
+		}
+		if n, _ := p.ingestAishub(row(dest), now.Add(time.Duration(i)*20*time.Second)); n != want {
+			t.Fatalf("snapshot %d (%s): n=%d, want %d", i, dest, n, want)
+		}
+	}
+}
+
+func TestAishubSkipsRowsWithoutAUsableTime(t *testing.T) {
+	p := testPipeline(t)
+	for _, tm := range []string{``, `,"TIME":"soon"`, `,"TIME":"0"`} {
+		body := []byte(`[[{"MMSI":244750034` + tm + `,"LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX"}]]`)
+		if n, err := p.ingestAishub(body, time.Unix(1625826600, 0)); err != nil || n != 0 {
+			t.Fatalf("TIME %q: n=%d err=%v", tm, n, err)
+		}
+	}
+}
+
+func TestAishubAfterRestartSendsOnlyNews(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now() // the snapshot restore keeps vessels heard within the cache's window of the wall clock
+	body := []byte(`[[{"MMSI":244750034,"TIME":"` + fmt.Sprint(now.Add(-time.Minute).Unix()) + `","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"NLRTM","ETA":1596}]]`)
+	p := testPipeline(t)
+	if n, _ := p.ingestAishub(body, now); n != 2 {
+		t.Fatalf("first snapshot: n=%d", n)
+	}
+	snap := filepath.Join(dir, "vessels.json")
+	if err := p.saveSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	restarted := testPipeline(t)
+	if _, err := restarted.loadSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := restarted.ingestAishub(body, now.Add(20*time.Second)); n != 0 {
+		t.Fatalf("after a restart the unchanged snapshot re-sent %d events", n)
 	}
 }
 
@@ -171,7 +264,7 @@ func TestAishubIngestsAtOnceAndDeliversPaced(t *testing.T) {
 		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
 	}
 	start := time.Now()
-	n, err := p.aishubSnapshot([]byte("[["+strings.Join(rows, ",")+"]]"), time.Unix(1625826600, 0), newAishubState())
+	n, err := p.aishubSnapshot([]byte("[["+strings.Join(rows, ",")+"]]"), time.Unix(1625826600, 0))
 	if err != nil || n != 20 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -203,7 +296,7 @@ func TestAishubSnapshotIsNotInterleaved(t *testing.T) {
 	const n = 20000
 	rows := make([]string, n)
 	for i := range rows {
-		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
+		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"%d","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i, time.Now().Add(-time.Minute).Unix())
 	}
 	body := []byte("[[" + strings.Join(rows, ",") + "]]")
 	stop := make(chan struct{})
@@ -224,7 +317,7 @@ func TestAishubSnapshotIsNotInterleaved(t *testing.T) {
 	if _, ok := p.admit(time.Now()); !ok {
 		t.Fatal("not admitted")
 	}
-	_, err := p.ingestAishub(body, time.Now(), newAishubState())
+	_, err := p.ingestAishub(body, time.Now())
 	p.release()
 	close(stop)
 	<-done
@@ -256,7 +349,7 @@ func TestAishubPositionAccuracy(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
 	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"PAC":1,"NAVSTAT":8,"IMO":0,"NAME":"","CALLSIGN":"","TYPE":0,"A":0,"B":0,"C":0,"D":0,"DRAUGHT":0,"DEST":"","ETA":0}]]`
-	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0), newAishubState()); err != nil {
+	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if len(sub.ch) != 1 {

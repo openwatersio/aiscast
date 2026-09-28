@@ -64,12 +64,12 @@ func newVessel() *vessel {
 	return &vessel{Cog: 360, Sog: 102.3, Heading: 511, NavStatus: 15, Kind: "vessel"}
 }
 
-// updateVessel folds the event into the per-MMSI cache and stamps the event with the cached name/position,
-// so positionless messages (5, 24) can be bbox-routed and carry MetaData like aisstream.
-func (p *Pipeline) updateVessel(ev *Event) {
-	u := newVessel() // fields at sentinel = "not in this message"
-	var hasPos, isStatic bool
-	switch m := ev.Packet.(type) {
+// foldOf extracts what a message contributes to a vessel: fields at their sentinel mean "not in this
+// message". updateVessel folds it into the cache, and a source can use it to ask whether a message
+// would change what the cache already holds.
+func foldOf(pkt ais.Packet) (u *vessel, hasPos, isStatic bool) {
+	u = newVessel()
+	switch m := pkt.(type) {
 	case ais.PositionReport:
 		u.Lat, u.Lon, hasPos, u.Class = float64(m.Latitude), float64(m.Longitude), true, "A"
 		u.Cog, u.Sog, u.Heading, u.NavStatus = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.NavigationalStatus
@@ -118,6 +118,99 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if hasPos && (math.Abs(u.Lat) > 90 || math.Abs(u.Lon) > 180 || (u.Lat == 0 && u.Lon == 0)) {
 		hasPos = false
 	}
+	return u, hasPos, isStatic
+}
+
+// staleFor reports whether an event at t would be stale for v: folded for its static fields, withheld
+// from the stream. updateVessel decides with it, and a source that repeats itself asks it before
+// sending, so the two cannot disagree.
+func (v *vessel) staleFor(t time.Time, hasPos, isStatic, rebuilt bool) bool {
+	// Any event older than the vessel's newest (AISHub lags minutes behind VHF) must not drag the vessel
+	// back along its track; only static fields fold in. Whole-second source stamps make ties and
+	// sub-second skew meaningless.
+	stale := v.HasPos && t.Before(v.Seen.Add(-time.Second))
+	// Rebuilt events must moreover advance the vessel's clock, not merely match it: sources overlap
+	// (BarentsWatch and aisstream re-serve what Kystverket already delivered raw), and a rebuilt copy of
+	// the same transmission carries the same message time but never byte-matches the payload dedupe. AIS
+	// transmits at 2 s minimum spacing, so "more than a second newer" separates copies from genuinely new
+	// reports without any per-source rule, and a vessel every other source has gone silent on flows again
+	// on its next transmission. Raw receptions keep the exact test instead — identical bytes — because an
+	// equal-time raw event that survives dedupe is usually distinct data (1 Hz s:self reports, truncated
+	// TAG stamps), and withholding a reception loses data where withholding a reconstruction loses nothing.
+	if rebuilt {
+		if hasPos && v.HasPos && !t.After(v.PosAt.Add(time.Second)) {
+			stale = true
+		}
+		if isStatic && !v.StaticAt.IsZero() && !t.After(v.StaticAt.Add(time.Second)) {
+			stale = true
+		}
+	}
+	return stale
+}
+
+// positionIsNew reports whether a position at t is news to the vessel cache: inside the cache's window
+// and not stale by the rule updateVessel applies (staleFor), or for a vessel the cache does not hold. A
+// source that repeats what it already sent (AISHub's snapshots) asks this instead of keeping its own
+// state, and the cache survives a restart.
+func (p *Pipeline) positionIsNew(mmsi uint32, t, now time.Time) bool {
+	if t.Before(now.Add(-vesselTTL)) {
+		return false // older than anything the cache would keep
+	}
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	v := p.vessels[mmsi]
+	return v == nil || !v.staleFor(t, true, false, true) // AISHub rows are rebuilt reports
+}
+
+// staticIsNew reports whether a static message at t is news to the vessel cache: inside the cache's
+// window, more than a second newer than the last static folded in (staleFor's rule for rebuilt statics),
+// and carrying a particular that the vessel does not already have. A static older than the vessel's last
+// position still counts: it is withheld from the stream but folds its particulars into the cache. The
+// time gate is what stops an aggregate that flips a vessel between two stations' versions (X, Y, X)
+// under one timestamp from sending the same broadcast twice. pkt must be decoded as the pipeline decodes
+// it, so its fields compare with what the cache stored.
+func (p *Pipeline) staticIsNew(mmsi uint32, t, now time.Time, pkt ais.Packet) bool {
+	if t.Before(now.Add(-vesselTTL)) {
+		return false
+	}
+	u, _, _ := foldOf(pkt)
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	v := p.vessels[mmsi]
+	if v == nil {
+		return true
+	}
+	return (v.StaticAt.IsZero() || t.After(v.StaticAt.Add(time.Second))) && changesParticulars(v, u)
+}
+
+// changesParticulars reports whether folding u would change any of v's static particulars.
+func changesParticulars(v, u *vessel) bool {
+	return u.Name != "" && u.Name != v.Name ||
+		u.ShipType != 0 && u.ShipType != v.ShipType ||
+		u.IMO != 0 && u.IMO != v.IMO ||
+		u.CallSign != "" && u.CallSign != v.CallSign ||
+		u.Destination != "" && u.Destination != v.Destination ||
+		u.ETA.Month != 0 && u.ETA != v.ETA ||
+		u.Draught > 0 && u.Draught != v.Draught ||
+		u.Length > 0 && u.Length != v.Length ||
+		u.Beam > 0 && u.Beam != v.Beam
+}
+
+// asDecoded returns pkt as the pipeline sees it after re-encoding, which is what the cache folds in: the
+// 6-bit text alphabet and the fixed-point fields can change a value on the way through.
+func (p *Pipeline) asDecoded(pkt ais.Packet) ais.Packet {
+	if payload := p.codec.EncodePacket(pkt); payload != nil {
+		if d := p.codec.DecodePacket(payload); d != nil {
+			return d
+		}
+	}
+	return pkt
+}
+
+// updateVessel folds the event into the per-MMSI cache and stamps the event with the cached name/position,
+// so positionless messages (5, 24) can be bbox-routed and carry MetaData like aisstream.
+func (p *Pipeline) updateVessel(ev *Event) {
+	u, hasPos, isStatic := foldOf(ev.Packet)
 	p.vmu.Lock()
 	// The cache sweeps on the reception clock, not a wall-clock ticker. It decides which events are
 	// stale and gives a static its vessel's position, and both reach the archive, so replay has to
@@ -132,26 +225,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		v = newVessel()
 		p.vessels[ev.MMSI] = v
 	}
-	// Any event older than the vessel's newest (AISHub lags minutes behind VHF) must not drag the vessel
-	// back along its track; only static fields fold in. Whole-second source stamps make ties and
-	// sub-second skew meaningless.
-	stale := v.HasPos && ev.Time.Before(v.Seen.Add(-time.Second))
-	// Rebuilt events must moreover advance the vessel's clock, not merely match it: sources overlap
-	// (BarentsWatch and aisstream re-serve what Kystverket already delivered raw), and a rebuilt copy of
-	// the same transmission carries the same message time but never byte-matches the payload dedupe. AIS
-	// transmits at 2 s minimum spacing, so "more than a second newer" separates copies from genuinely new
-	// reports without any per-source rule, and a vessel every other source has gone silent on flows again
-	// on its next transmission. Raw receptions keep the exact test instead — identical bytes — because an
-	// equal-time raw event that survives dedupe is usually distinct data (1 Hz s:self reports, truncated
-	// TAG stamps), and withholding a reception loses data where withholding a reconstruction loses nothing.
-	if ev.rebuilt {
-		if hasPos && v.HasPos && !ev.Time.After(v.PosAt.Add(time.Second)) {
-			stale = true
-		}
-		if isStatic && !v.StaticAt.IsZero() && !ev.Time.After(v.StaticAt.Add(time.Second)) {
-			stale = true
-		}
-	}
+	stale := v.staleFor(ev.Time, hasPos, isStatic, ev.rebuilt)
 	ev.Stale = stale
 	// A position implying an impossible speed from the vessel's last position is dropped whatever the
 	// source: the aggregates carry bad positions of their own, and no vessel outruns implausibleKnots.
@@ -221,7 +295,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
 	if isStatic { // names don't move, so a stale static is still worth keeping
 		v.lastStatic = ev
-		if !stale {
+		// A stale static folds in too, so it advances the gate: otherwise an aggregate flipping between
+		// two versions under one old timestamp would pass the gate on every snapshot.
+		if ev.Time.After(v.StaticAt) {
 			v.StaticAt = ev.Time
 		}
 	}
