@@ -170,11 +170,9 @@ const bufferedMark = " buffered"
 // transport a record arrived on. When both marks apply, publishedMark comes first.
 const publishedMark = " published"
 
-// hourGrace is how long past its end an hour stays open. Receptions from two hours interleave near
-// a boundary: AISHub stamps every row of a snapshot with its fetch time and paces them over most of a
-// minute, so a snapshot fetched just before the hour writes into the previous hour while every other
-// source writes into the new one. Closing on each switch would upload a file still being written,
-// over and over.
+// hourGrace is how long past its end an hour stays open. Receptions near a boundary arrive a little
+// out of receive-time order (a snapshot fetched just before the hour is ingested just after it), and
+// closing on each switch would upload a file still being written, over and over.
 const hourGrace = 5 * time.Minute
 
 func (a *archive) handle(rx Reception, files map[string]*hourFile) {

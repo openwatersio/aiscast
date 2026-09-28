@@ -15,7 +15,7 @@ func TestAishubSnapshot(t *testing.T) {
 	st := newAishubState()
 	now := time.Unix(1625826600, 0)
 	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"NAVSTAT":8,"IMO":0,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"","ETA":1596}]]`
-	n, err := p.ingestAishub([]byte(body), now, st, 0)
+	n, err := p.ingestAishub([]byte(body), now, st)
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -36,12 +36,12 @@ func TestAishubSnapshot(t *testing.T) {
 		t.Errorf("static: %+v", sd)
 	}
 	// same snapshot again: nothing new (TIME and static unchanged)
-	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute), st, 0)
+	n, _ = p.ingestAishub([]byte(body), now.Add(time.Minute), st)
 	if n != 0 || len(sub.ch) != 0 {
 		t.Errorf("repeat snapshot produced %d events", n)
 	}
 	// error envelope
-	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now, st, 0); err == nil {
+	if _, err := p.ingestAishub([]byte(`[{"ERROR":true,"ERROR_MESSAGE":"Invalid username"}]`), now, st); err == nil {
 		t.Error("error envelope not reported")
 	}
 }
@@ -57,18 +57,18 @@ func TestAishubStaticFlipBack(t *testing.T) {
 	row := func(time, dest string) string {
 		return fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%s","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"%s","ETA":1596}]]`, time, dest)
 	}
-	if n, err := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now, st, 0); err != nil || n != 2 {
+	if n, err := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now, st); err != nil || n != 2 {
 		t.Fatalf("first snapshot: n=%d err=%v", n, err) // position + static
 	}
-	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLAMS")), now.Add(time.Minute), st, 0); n != 1 {
+	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLAMS")), now.Add(time.Minute), st); n != 1 {
 		t.Fatalf("changed static: n=%d, want 1", n)
 	}
 	// the flip back: same static, same TIME as its first emission, minutes later
-	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now.Add(3*time.Minute), st, 0); n != 0 {
+	if n, _ := p.ingestAishub([]byte(row("1625826523", "NLRTM")), now.Add(3*time.Minute), st); n != 0 {
 		t.Errorf("flip-back re-emitted: n=%d, want 0", n)
 	}
 	// TIME advanced: the flip-back is a fresh (id, time) and must reach subscribers again
-	if n, _ := p.ingestAishub([]byte(row("1625826583", "NLRTM")), now.Add(4*time.Minute), st, 0); n != 2 {
+	if n, _ := p.ingestAishub([]byte(row("1625826583", "NLRTM")), now.Add(4*time.Minute), st); n != 2 {
 		t.Errorf("static after TIME advance: n=%d, want 2", n)
 	}
 	// Broadcast sees position@523, static NLRTM@523, position@583, static NLRTM@583: the NLAMS
@@ -102,18 +102,18 @@ func TestAishubFutureStampFlipBack(t *testing.T) {
 	row := func(dest string) string { // TIME five minutes ahead of every snapshot's receive time
 		return fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"1625826900","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"%s","ETA":1596}]]`, dest)
 	}
-	if n, err := p.ingestAishub([]byte(row("NLRTM")), now, st, 0); err != nil || n != 2 {
+	if n, err := p.ingestAishub([]byte(row("NLRTM")), now, st); err != nil || n != 2 {
 		t.Fatalf("first snapshot: n=%d err=%v", n, err)
 	}
 	if ev := <-sub.ch; !ev.Time.Equal(now) {
 		t.Errorf("future stamp not capped to receive time: %v", ev.Time)
 	}
-	if n, _ := p.ingestAishub([]byte(row("NLAMS")), now.Add(time.Minute), st, 0); n != 1 {
+	if n, _ := p.ingestAishub([]byte(row("NLAMS")), now.Add(time.Minute), st); n != 1 {
 		t.Fatalf("changed static: n=%d, want 1", n)
 	}
 	// the flip back: TIME is still the same future stamp, but the canonical time is this
 	// snapshot's receive time, so the key is fresh and the static must be emitted
-	if n, _ := p.ingestAishub([]byte(row("NLRTM")), now.Add(2*time.Minute), st, 0); n != 1 {
+	if n, _ := p.ingestAishub([]byte(row("NLRTM")), now.Add(2*time.Minute), st); n != 1 {
 		t.Errorf("flip-back with a future stamp: n=%d, want 1", n)
 	}
 }
@@ -160,23 +160,94 @@ func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
 	}
 }
 
-func TestAishubPacing(t *testing.T) {
+// A snapshot is ingested at once, in the order replay reproduces, and only its delivery to
+// subscribers is paced.
+func TestAishubIngestsAtOnceAndDeliversPaced(t *testing.T) {
 	p := testPipeline(t)
-	st := newAishubState()
+	sub := p.subscribe()
+	p.startAishubPacing(200 * time.Millisecond)
 	rows := make([]string, 20)
 	for i := range rows {
 		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
 	}
-	body := "[[" + strings.Join(rows, ",") + "]]"
 	start := time.Now()
-	n, err := p.ingestAishub([]byte(body), start, st, 200*time.Millisecond)
+	n, err := p.aishubSnapshot([]byte("[["+strings.Join(rows, ",")+"]]"), time.Unix(1625826600, 0), newAishubState())
 	if err != nil || n != 20 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
-	// 20 rows over 200 ms: the last row waits 190 ms, so anything under that means no pacing; the upper bound
-	// only guards against a runaway sleep, loose enough for a slow CI runner
+	if el := time.Since(start); el > 100*time.Millisecond {
+		t.Errorf("ingest took %s; it must not wait on delivery", el)
+	}
+	if v := p.vesselCount(); v != 20 {
+		t.Errorf("vessel cache holds %d of the snapshot's 20 vessels right after ingest", v)
+	}
+	for i := 0; i < 20; i++ {
+		<-sub.ch
+	}
+	// 20 events over 200 ms: the last waits 190 ms, so anything under that means no pacing; the upper
+	// bound only guards against a runaway sleep, loose enough for a slow CI runner
 	if el := time.Since(start); el < 190*time.Millisecond || el > 2*time.Second {
-		t.Errorf("20 rows over 200ms took %s", el)
+		t.Errorf("20 events delivered over %s, want about 200ms", el)
+	}
+}
+
+// Receptions are processed whole: another source's reception never lands between two rows of an AISHub
+// snapshot, since replay processes the snapshot as one record. Without the ordering lock the concurrent
+// Digitraffic reports below interleave with the rows.
+func TestAishubSnapshotIsNotInterleaved(t *testing.T) {
+	// The stream mirrors ingest order here (pacing is off), so the subscriber's queue must hold all of it.
+	defer func(n int) { subBuffer = n }(subBuffer)
+	subBuffer = 1 << 17
+	p := testPipeline(t)
+	sub := p.subscribe()
+	const n = 20000
+	rows := make([]string, n)
+	for i := range rows {
+		rows[i] = fmt.Sprintf(`{"MMSI":%d,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144}`, 200000000+i)
+	}
+	body := []byte("[[" + strings.Join(rows, ",") + "]]")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() { // another adapter, running concurrently as it does live
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			p.digitrafficMessage(fmt.Sprintf("vessels-v2/%d/location", 230000000+i),
+				[]byte(fmt.Sprintf(`{"time":%d,"sog":1,"cog":1,"navStat":0,"rot":0,"posAcc":false,"raim":false,"heading":1,"lon":20.3,"lat":60.0}`, time.Now().Unix())), time.Now())
+		}
+	}()
+	time.Sleep(20 * time.Millisecond) // let the other adapter get going
+	if _, ok := p.admit(time.Now()); !ok {
+		t.Fatal("not admitted")
+	}
+	_, err := p.ingestAishub(body, time.Now(), newAishubState())
+	p.release()
+	close(stop)
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, last, seen, others := -1, -1, 0, 0
+	for i := 0; len(sub.ch) > 0; i++ {
+		if ev := <-sub.ch; ev.Source == "aishub" {
+			if first < 0 {
+				first = i
+			}
+			last = i
+			seen++
+		} else {
+			others++
+		}
+	}
+	if others == 0 {
+		t.Fatal("the other adapter produced no events, so the test shows nothing")
+	}
+	if seen != n || last-first+1 != n {
+		t.Fatalf("snapshot's %d events spread over %d positions in the stream: another reception interleaved", seen, last-first+1)
 	}
 }
 
@@ -185,7 +256,7 @@ func TestAishubPositionAccuracy(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
 	body := `[{"ERROR":false,"USERNAME":"AH_TEST","FORMAT":"AIS","RECORDS":1},[{"MMSI":244750034,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"COG":3600,"SOG":0,"HEADING":511,"ROT":128,"PAC":1,"NAVSTAT":8,"IMO":0,"NAME":"","CALLSIGN":"","TYPE":0,"A":0,"B":0,"C":0,"D":0,"DRAUGHT":0,"DEST":"","ETA":0}]]`
-	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0), newAishubState(), 0); err != nil {
+	if _, err := p.ingestAishub([]byte(body), time.Unix(1625826600, 0), newAishubState()); err != nil {
 		t.Fatal(err)
 	}
 	if len(sub.ch) != 1 {
@@ -193,5 +264,38 @@ func TestAishubPositionAccuracy(t *testing.T) {
 	}
 	if pr, ok := (<-sub.ch).Packet.(ais.PositionReport); !ok || !pr.PositionAccuracy {
 		t.Fatalf("PAC 1 did not set position accuracy: %+v", pr)
+	}
+}
+
+// Snapshots can arrive faster than a budget's delivery (the poll runs every 20 s). A new one joins the
+// backlog and everything pending goes out within one budget of it, in order, so delivery never falls
+// behind and the poll loop never blocks on it.
+func TestPacedDeliveryKeepsUpWithSnapshots(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	p.startAishubPacing(200 * time.Millisecond)
+	batch := func(base int) []*Event {
+		b := make([]*Event, 20)
+		for i := range b {
+			b[i] = &Event{Source: "aishub", MMSI: uint32(base + i)}
+		}
+		return b
+	}
+	start := time.Now()
+	for k := 0; k < 3; k++ { // three snapshots, back to back
+		select {
+		case p.aishubPace <- batch(k * 100):
+		case <-time.After(time.Second):
+			t.Fatal("the poll loop blocked handing a snapshot to delivery")
+		}
+	}
+	for i := 0; i < 60; i++ {
+		ev := <-sub.ch
+		if want := uint32(i/20*100 + i%20); ev.MMSI != want {
+			t.Fatalf("event %d is %d, want %d: delivery must keep order", i, ev.MMSI, want)
+		}
+	}
+	if el := time.Since(start); el > 400*time.Millisecond {
+		t.Fatalf("three snapshots took %s to deliver; the backlog must go out within one budget of the newest", el)
 	}
 }

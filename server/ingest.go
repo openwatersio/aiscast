@@ -90,10 +90,11 @@ func (p *Pipeline) ingestCatcher(src string, body []byte, now time.Time) bool {
 	if err := json.Unmarshal(body, &env); err != nil {
 		return false
 	}
-	if !p.admit() {
+	now, ok := p.admit(now)
+	if !ok {
 		return true // shutting down: dropped from both archives, never half recorded
 	}
-	defer p.intake.RUnlock()
+	defer p.release()
 	if shadowSample("catcher") {
 		shadowCheck("catcher", body, catcherKnown) // recursive: per-message fields ride the msgs subtree
 	}

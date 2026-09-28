@@ -42,10 +42,11 @@ type v0Envelope struct {
 const goTimeLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
 
 func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
-	if !p.admit() {
+	now, ok := p.admit(now)
+	if !ok {
 		return
 	}
-	defer p.intake.RUnlock()
+	defer p.release()
 	p.arch.write(Reception{Source: "aisstream", Station: "aisstream", RecvTime: now, Body: string(body)})
 	var env v0Envelope
 	if json.Unmarshal(body, &env) != nil {

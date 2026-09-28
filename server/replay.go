@@ -112,7 +112,7 @@ func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) error {
 	case source == "aisstream":
 		p.aisstreamMessage([]byte(rx.Body), rx.RecvTime)
 	case source == "aishub":
-		if _, err := p.ingestAishub([]byte(rx.Body), rx.RecvTime, st, 0); err != nil {
+		if _, err := p.ingestAishub([]byte(rx.Body), rx.RecvTime, st); err != nil {
 			p.stats.parseErr.Add(1)
 		}
 	case strings.HasPrefix(source, "http:") && strings.HasPrefix(strings.TrimSpace(rx.Body), "{"):

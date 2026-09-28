@@ -151,9 +151,9 @@ func newAishubState() *aishubState {
 }
 
 // ingestAishub maps one snapshot into events: a position when TIME advanced, a static when static fields changed.
-// Rows are spread evenly over budget: emitted back to back, a ~45k-row snapshot overruns every subscriber's
-// channel (a far client drains ~3k events/s); paced under 1k/s it does not. The rows are about a minute old already.
-func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, budget time.Duration) (int, error) {
+// Every row is ingested at once, as the raw archive records the snapshot, so the vessel cache, dedupe, and the
+// normalized stream see the order replay reproduces. Live, only delivery to subscribers is paced (deliverPaced).
+func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState) (int, error) {
 	var parts []json.RawMessage
 	if err := json.Unmarshal(body, &parts); err != nil {
 		return 0, err
@@ -182,13 +182,7 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 		}
 	}
 	n := 0
-	t0 := time.Now()
-	for i, r := range rows {
-		if budget > 0 && !p.closing.Load() { // shutdown waits on this snapshot, so finish it unpaced
-			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(rows)))); d > 0 {
-				time.Sleep(d)
-			}
-		}
+	for _, r := range rows {
 		if r.MMSI == 0 {
 			continue
 		}
@@ -220,6 +214,65 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 		}
 	}
 	return n, nil
+}
+
+// aishubSnapshot archives and ingests one snapshot as a single reception, then hands its events to
+// paced delivery once the locks are released, so other sources never wait on delivery.
+func (p *Pipeline) aishubSnapshot(body []byte, start time.Time, st *aishubState) (int, error) {
+	start, ok := p.admit(start)
+	if !ok {
+		return -1, nil
+	}
+	p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
+	n, err := p.ingestAishub(body, start, st)
+	batch := p.aishubBatch
+	p.aishubBatch = nil
+	p.release()
+	if p.aishubPace != nil && len(batch) > 0 {
+		p.aishubPace <- batch
+	}
+	return n, err
+}
+
+// startAishubPacing sets up paced delivery of AISHub snapshots. main calls it before any source
+// starts, so every emit sees it set.
+func (p *Pipeline) startAishubPacing(budget time.Duration) {
+	p.aishubPace = make(chan []*Event, 4)
+	go p.deliverPaced(p.aishubPace, budget)
+}
+
+// deliverPaced broadcasts each snapshot's events spread evenly over budget. Emitted back to back, a
+// ~22k-event snapshot overruns every subscriber's queue (a far client drains ~3k events/s) and uses up
+// a rate-limited client's per-second allowance, so fresher reports from other sources in that second
+// would be thinned; spread out, they are not. The rows are about a minute old already. Events from
+// every other source broadcast as they are ingested, so they interleave with a snapshot being
+// delivered rather than wait behind it.
+func (p *Pipeline) deliverPaced(batches <-chan []*Event, budget time.Duration) {
+	var pending []*Event
+	var gap time.Duration
+	next := time.NewTimer(0)
+	for {
+		if len(pending) == 0 {
+			pending = <-batches
+			gap = budget / time.Duration(len(pending))
+			next.Reset(0)
+		}
+		select {
+		case b := <-batches:
+			// A snapshot arriving before the last is delivered joins the backlog, and the whole backlog is
+			// re-spread over budget from now: nothing waits more than budget behind the newest snapshot,
+			// and the fetch loop never blocks on delivery.
+			pending = append(pending, b...)
+			gap = budget / time.Duration(len(pending))
+		case <-next.C:
+			p.broadcast(pending[0])
+			pending = pending[1:]
+			if p.closing.Load() { // once shutdown starts, the rest goes out at once, while the archives drain
+				gap = 0
+			}
+			next.Reset(gap)
+		}
+	}
 }
 
 // ingestPacketAt is ingestPacket for sources whose timestamps are trusted minutes back (AISHub rows carry the
@@ -257,13 +310,7 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			} else {
 				lastHash = h
 			}
-			if !p.admit() {
-				return -1, nil
-			}
-			defer p.intake.RUnlock() // held across the paced rows: a snapshot is one reception
-			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
-			// paced independently of the poll interval: a new snapshot appears about once a minute, so ingest can outlast a poll
-			return p.ingestAishub(body, start, st, 45*time.Second)
+			return p.aishubSnapshot(body, start, st)
 		}()
 		switch {
 		case err != nil:
