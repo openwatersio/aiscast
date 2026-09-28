@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -116,8 +115,6 @@ func TestAishubIgnoresRowsOlderThanTheCache(t *testing.T) {
 	}
 }
 
-// After a restart the cache is restored from its snapshot, and the first AISHub snapshot does not
-// re-send what the stream already carried.
 func TestAishubSkipsPositionsTheCacheWouldHold(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Unix(1625826600, 0)
@@ -190,22 +187,17 @@ func TestAishubSkipsRowsWithoutAUsableTime(t *testing.T) {
 	}
 }
 
+// After a restart the cache is restored from the vessel record, and the first AISHub snapshot does not
+// re-send what the stream already carried.
 func TestAishubAfterRestartSendsOnlyNews(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now() // the snapshot restore keeps vessels heard within the cache's window of the wall clock
+	now := time.Now() // the restore keeps vessels heard within the cache's window of the wall clock
 	body := []byte(`[[{"MMSI":244750034,"TIME":"` + fmt.Sprint(now.Add(-time.Minute).Unix()) + `","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"NLRTM","ETA":1596}]]`)
-	p := testPipeline(t)
+	p := storePipeline(t)
 	if n, _ := p.ingestAishub(body, now); n != 2 {
 		t.Fatalf("first snapshot: n=%d", n)
 	}
-	snap := filepath.Join(dir, "vessels.json")
-	if err := p.saveSnapshot(snap); err != nil {
-		t.Fatal(err)
-	}
-	restarted := testPipeline(t)
-	if _, err := restarted.loadSnapshot(snap); err != nil {
-		t.Fatal(err)
-	}
+	mustFlush(t, p)
+	restarted := restartedPipeline(t, p)
 	if n, _ := restarted.ingestAishub(body, now.Add(20*time.Second)); n != 0 {
 		t.Fatalf("after a restart the unchanged snapshot re-sent %d events", n)
 	}
