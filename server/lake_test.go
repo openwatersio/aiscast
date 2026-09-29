@@ -62,9 +62,9 @@ func lakePipeline(t *testing.T, f *fakeLake) *Pipeline {
 func TestTrackStitchesTheLake(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-3 * 24 * time.Hour).Truncate(time.Hour)
-	unsourced := lakePosition(old.Add(20*time.Minute), 59.2)
+	unsourced := lakePosition(old.Add(20*time.Minute), 59.02)
 	unsourced["source"] = nil // packaged before positions carried their source
-	f := &fakeLake{positions: []map[string]any{lakePosition(old, 59.0), lakePosition(old.Add(10*time.Minute), 59.1), unsourced}}
+	f := &fakeLake{positions: []map[string]any{lakePosition(old, 59.0), lakePosition(old.Add(10*time.Minute), 59.01), unsourced}}
 	p := lakePipeline(t, f)
 	sail(t, p, 257000001, 2*time.Hour, time.Hour)
 
@@ -346,5 +346,19 @@ func TestLakeCacheTrimsByBytes(t *testing.T) {
 	}
 	if strings.Join(kept, ",") != "2026-01-02,2026-01-03" {
 		t.Errorf("the least recently fetched day goes first: %v", kept)
+	}
+}
+
+// Lake positions are despiked like the track store's: a fix displaced a nautical mile in a minute from a
+// vessel making 11 knots is left out.
+func TestLakePositionsAreDespiked(t *testing.T) {
+	now := time.Now()
+	t0 := now.Add(-4 * 24 * time.Hour).Truncate(time.Hour)
+	f := &fakeLake{positions: []map[string]any{lakePosition(t0, 59.0), lakePosition(t0.Add(time.Minute), 59.00311),
+		lakePosition(t0.Add(2*time.Minute), 59.02), lakePosition(t0.Add(3*time.Minute), 59.00933)}}
+	p := lakePipeline(t, f)
+	points, _, _, err := p.trackPoints(context.Background(), 257000001, t0.Add(-time.Hour), t0.Add(time.Hour), 0, 100, now)
+	if err != nil || len(points) != 3 || points[2].lat6 != int32(59.00933*600000) {
+		t.Errorf("the displaced fix should be dropped: %v %+v", err, points)
 	}
 }

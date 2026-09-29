@@ -162,8 +162,9 @@ func defaultInterval(span time.Duration, limit int) time.Duration {
 }
 
 // trackPoints reads a vessel's positions between from and to: the lake for the part before the track store's
-// window, the track store for the rest. interval thins both with the same buckets, and when more than limit
-// match, the newest limit are kept. sources are the source kinds that delivered the positions returned.
+// window, the track store for the rest. interval thins both with the same buckets, positions implying an
+// impossible speed are dropped from both, and when more than limit match, the newest limit are kept. sources
+// are the source kinds that delivered the positions returned.
 func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.Time, interval time.Duration, limit int, now time.Time) (points []trackPoint, sources []string, more bool, err error) {
 	start := now.Add(-trackWindow)
 	hotFrom := from
@@ -219,6 +220,9 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 		}
 		old = append(old, pt)
 	}
+	// Judged after thinning, as the track store judges its own, and before the limit, so the limit counts
+	// only positions the answer keeps.
+	old = despike(old)
 	if room := limit - len(hot); len(old) > room {
 		old, more = old[len(old)-room:], true
 	}

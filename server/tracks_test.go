@@ -379,10 +379,10 @@ func TestTrackDespikesImpossibleSpeeds(t *testing.T) {
 	if err := p.tracks.write(points, now); err != nil {
 		t.Fatal(err)
 	}
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track"); tr.Properties.Points != 5 {
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?interval=0"); tr.Properties.Points != 5 {
 		t.Errorf("the displaced fix stays, jitter under the floor stays: %d points, want 5", tr.Properties.Points)
 	}
-	if tr := getTrack(t, p, "/v1/vessels/257000002/track"); tr.Properties.Points != 3 {
+	if tr := getTrack(t, p, "/v1/vessels/257000002/track?interval=0"); tr.Properties.Points != 3 {
 		t.Errorf("a genuinely fast vessel lost fixes: %d points, want 3", tr.Properties.Points)
 	}
 }
