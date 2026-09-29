@@ -282,7 +282,7 @@ func (t *trackStore) first(mmsi uint32, from, to time.Time) (first time.Time, ok
 
 // track reads one vessel's positions between from and to, oldest first. interval thins the track to the
 // first position in each interval. When more than limit match, the newest limit are returned and more is
-// true.
+// true. Positions whose implied speed from their neighbors is impossible are dropped (despike).
 func (t *trackStore) track(mmsi uint32, from, to time.Time, interval time.Duration, limit int) (points []trackPoint, more bool, err error) {
 	err = t.read(func(tx *sql.Tx) error {
 		tables, err := dayTables(tx, from, to)
@@ -328,7 +328,55 @@ func (t *trackStore) track(mmsi uint32, from, to time.Time, interval time.Durati
 		points, more = points[:limit], true
 	}
 	sort.SliceStable(points, func(i, j int) bool { return points[i].ts.Before(points[j].ts) })
-	return points, more, nil
+	return despike(points), more, nil
+}
+
+// The store keeps every accepted position, but a track drawn straight through them kinks wherever a
+// report's stamp disagrees with its fix: AISHub's snapshot stamps run tens of seconds off the
+// positions they carry, and a few vessels broadcast broken fixes outright. Those errors are metres
+// to a few hundred metres — far under the ingest gate's 10 NM teleport floor — so they are only
+// visible here, as segments implying two to forty times the vessel's speed. Serving is the one
+// place that can judge them: the fix time never arrives to correct the stamp, and dropping a point
+// from a drawn line loses nothing the store does not still hold.
+const (
+	despikeFloorNM  = 0.03 // under ~55 m a segment cannot draw a visible kink, and jitter over a short dt implies any speed
+	despikeMinKnots = 25.0 // fastest implied speed always kept, whatever the vessel reports
+	despikeMaxRun   = 3    // consecutive drops before the anchor is judged wrong and the next point re-anchors
+)
+
+// despike walks a track oldest first and drops each position implying an impossible speed from the
+// last kept one: over despikeMinKnots and more than twice either endpoint's reported speed. A run of
+// drops longer than despikeMaxRun means the kept anchor is the bad fix — a duplicate MMSI, or a
+// vessel the store last heard somewhere it left long ago — so the next position is kept as the new
+// anchor rather than erasing the rest of the track.
+func despike(points []trackPoint) []trackPoint {
+	kept := points[:0]
+	run := 0
+	for _, pt := range points {
+		if len(kept) == 0 {
+			kept = append(kept, pt)
+			continue
+		}
+		a := kept[len(kept)-1]
+		dt := pt.ts.Sub(a.ts).Seconds()
+		d := nm(float64(a.lat6)/600000, float64(a.lon6)/600000, float64(pt.lat6)/600000, float64(pt.lon6)/600000)
+		vmax := despikeMinKnots
+		if a.sog10 != 1023 {
+			vmax = max(vmax, 2*float64(a.sog10)/10)
+		}
+		if pt.sog10 != 1023 {
+			vmax = max(vmax, 2*float64(pt.sog10)/10)
+		}
+		// Equal stamps are distinct reports the store keeps (see TestTrackKeepsEqualTimeReports);
+		// with no time between them there is no speed to judge.
+		if dt > 0 && d > despikeFloorNM && d/(dt/3600) > vmax && run < despikeMaxRun {
+			run++
+			continue
+		}
+		run = 0
+		kept = append(kept, pt)
+	}
+	return kept
 }
 
 // ---- the pipeline side ----

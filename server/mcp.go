@@ -21,7 +21,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.5.1"
+const mcpVersion = "0.5.2"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -90,7 +90,7 @@ func newMCPService(p *Pipeline) *mcpService {
 		Description: "Vessels whose name contains the text, case-insensitive, among every vessel the network has heard, each with its last known position. Use to turn a name into an MMSI, then get_vessels or find_vessels_near for detail. An optional bounding box narrows the search."},
 		p.mcpSearchByName)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_vessel_track", Title: "Where a vessel has been", Annotations: ro("Where a vessel has been"),
-		Description: "The positions heard from one vessel over a time range in the last 48 hours, oldest first, with speed, course, and navigational status. Use for where a ship was yesterday, when it left port, or its route today. By default the positions are spread evenly over the range; interval_minutes sets the spacing."},
+		Description: "The positions heard from one vessel over a time range in the last 48 hours, oldest first, with speed, course, and navigational status. Positions implying an impossible speed for the vessel are left out. Use for where a ship was yesterday, when it left port, or its route today. By default the positions are spread evenly over the range; interval_minutes sets the spacing."},
 		p.mcpGetVesselTrack)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_coverage", Title: "Coverage and sources", Annotations: ro("Coverage and sources"),
 		Description: "Where Open Waters AIS is hearing AIS right now: sources with their current delay, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Call this before saying a region has no traffic."},

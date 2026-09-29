@@ -352,3 +352,54 @@ func TestTrackStorePoolsAreBounded(t *testing.T) {
 		t.Errorf("%d reader connections open", open)
 	}
 }
+
+// Reports whose stamps disagree with their fixes (AISHub snapshots, broken GPS) pass the ingest
+// gate's teleport floor but draw kinks; the track leaves them out.
+func TestTrackDespikesImpossibleSpeeds(t *testing.T) {
+	p, _ := trackPipeline(t)
+	now := time.Now()
+	mk := func(mmsi uint32, age time.Duration, lat float64, sog float64) trackPoint {
+		v := newVessel()
+		v.Lat, v.Lon, v.Sog = lat, 10.7, sog
+		return newTrackPoint(mmsi, now.Add(-age), v, "aishub")
+	}
+	points := []trackPoint{
+		// north at 16 kn, one fix displaced 0.43 NM (102 kn implied), one 0.018 NM jitter pair
+		mk(257000001, 10*time.Minute, 59.0, 16),
+		mk(257000001, 9*time.Minute+30*time.Second, 59.00222, 16),
+		mk(257000001, 9*time.Minute+15*time.Second, 59.00933, 16),
+		mk(257000001, 9*time.Minute, 59.00444, 16),
+		mk(257000001, 8*time.Minute+30*time.Second, 59.00666, 16),
+		mk(257000001, 8*time.Minute+29*time.Second, 59.00696, 16),
+		// a 45 kn vessel reporting 45 kn is fast, not implausible
+		mk(257000002, 10*time.Minute, 59.0, 45),
+		mk(257000002, 9*time.Minute+30*time.Second, 59.00625, 45),
+		mk(257000002, 9*time.Minute, 59.0125, 45),
+	}
+	if err := p.tracks.write(points, now); err != nil {
+		t.Fatal(err)
+	}
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track"); tr.Properties.Points != 5 {
+		t.Errorf("the displaced fix stays, jitter under the floor stays: %d points, want 5", tr.Properties.Points)
+	}
+	if tr := getTrack(t, p, "/v1/vessels/257000002/track"); tr.Properties.Points != 3 {
+		t.Errorf("a genuinely fast vessel lost fixes: %d points, want 3", tr.Properties.Points)
+	}
+}
+
+// When every position disagrees with the anchor, the anchor is the bad fix (a duplicate MMSI, a
+// stale first position): the run is capped and the track re-anchors instead of vanishing.
+func TestDespikeReanchorsAfterARun(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	pt := func(sec int, lat float64) trackPoint {
+		return trackPoint{ts: now.Add(time.Duration(sec) * time.Second), lat6: int32(lat * 600000), lon6: 6420000, sog10: 1023}
+	}
+	points := []trackPoint{pt(0, 59.0)}
+	for i := 1; i <= 6; i++ {
+		points = append(points, pt(i*30, 60+float64(i)*0.00001)) // 60 NM from the anchor, near-stationary
+	}
+	kept := despike(points)
+	if len(kept) != 4 || !kept[1].ts.Equal(points[4].ts) {
+		t.Errorf("want the anchor, then the fourth far point onward; got %d points starting %v", len(kept), kept)
+	}
+}
