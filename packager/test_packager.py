@@ -311,6 +311,25 @@ def test_a_new_column_joins_an_older_table(tmp_path, monkeypatch):
     assert all(p["source"] for p in rows(catalog, "positions")), "days packaged after it carry it"
 
 
+def test_a_table_from_before_the_sort_was_recorded_counts_as_cell_sorted(packaged, monkeypatch):
+    """The lake packaged before the setting existed has data and no recorded sort. It must count as
+    cell-sorted, so switching the setting to mmsi is refused rather than relabeling it."""
+    _, catalog, _, _ = packaged
+    tbl = catalog.load_table("ais.positions")
+    with tbl.transaction() as tx:
+        tx.remove_properties(packager.SORT_KEY)
+    assert packager.SORT_KEY not in catalog.load_table("ais.positions").properties and tbl.current_snapshot()
+
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "mmsi")
+    with pytest.raises(SystemExit, match="sorted by cell, not mmsi"):
+        packager.get_catalog()
+    assert packager.SORT_KEY not in catalog.load_table("ais.positions").properties, "a refused run labels nothing"
+
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "cell")
+    packager.get_catalog()
+    assert catalog.load_table("ais.positions").properties[packager.SORT_KEY] == "cell"
+
+
 def test_rerun_replaces_day(packaged):
     envs, catalog, con, files = packaged
     first = {(p["id"], p["ts"]) for p in rows(catalog, "positions")}
