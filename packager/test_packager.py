@@ -259,6 +259,36 @@ def test_write_passes_hold_whole_buckets(packaged):
     assert total == 2001, "every row, the null mmsi too, lands in exactly one pass"
 
 
+def test_a_warehouse_keeps_the_layout_it_was_created_with(tmp_path, monkeypatch):
+    """A new warehouse takes the layout settings; a run with other settings is refused, so a table never
+    mixes sort orders or bucket counts across days."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "mmsi")
+    monkeypatch.setitem(packager.ORDER, "positions", packager.POSITIONS_SORTS["mmsi"])
+    monkeypatch.setattr(packager, "MMSI_BUCKETS", 128)
+    envs = fixture_envelopes()
+    extra_day, boundary = crafted(envs)
+    root = make_tree(tmp_path, extra_day, boundary)
+    catalog = packager.get_catalog()
+    packager.process_day(DAY, sorted(glob.glob(f"{root}/**/*.gz", recursive=True)), duckdb.connect(), catalog)
+
+    tbl = catalog.load_table("ais.positions")
+    assert tbl.properties[packager.SORT_KEY] == "mmsi"
+    assert [str(f.transform) for f in tbl.spec().fields] == ["identity", "bucket[128]"]
+    for f in tbl.inspect.files().to_pylist():
+        keys = pq.read_table(f["file_path"].removeprefix("file://"), columns=["mmsi", "ts"]).to_pylist()
+        assert keys == sorted(keys, key=lambda r: (r["mmsi"], r["ts"])), f"{f['file_path']} is not in (mmsi, ts) order"
+
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "cell")
+    with pytest.raises(SystemExit, match="sorted by mmsi, not cell"):
+        packager.get_catalog()
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "mmsi")
+    monkeypatch.setattr(packager, "MMSI_BUCKETS", 32)
+    with pytest.raises(SystemExit, match="older layout"):
+        packager.get_catalog()
+
+
 def test_rerun_replaces_day(packaged):
     envs, catalog, con, files = packaged
     first = {(p["id"], p["ts"]) for p in rows(catalog, "positions")}

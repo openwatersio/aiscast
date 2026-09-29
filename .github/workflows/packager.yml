@@ -73,6 +73,9 @@ jobs:
       LAKE_CATALOG_URI: ${{ (github.event_name == 'schedule' || inputs.write) && secrets.LAKE_CATALOG_URI || '' }}
       LAKE_WAREHOUSE: ${{ secrets.LAKE_WAREHOUSE }}
       LAKE_CATALOG_TOKEN: ${{ secrets.LAKE_CATALOG_TOKEN }}
+      LAKE_POSITIONS_SORT: ${{ vars.LAKE_POSITIONS_SORT }}
+      LAKE_MMSI_BUCKETS: ${{ vars.LAKE_MMSI_BUCKETS }}
+      LAKE_ROW_GROUP_ROWS: ${{ vars.LAKE_ROW_GROUP_ROWS }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
@@ -103,6 +106,10 @@ jobs:
       # peaks near 13 GB resident with the Arrow copies of each write pass.
       PACKAGER_THREADS: 4
       PACKAGER_MEMORY: 10GB
+      # the warehouse's layout (packager/README.md); unset means the packager's defaults
+      LAKE_POSITIONS_SORT: ${{ vars.LAKE_POSITIONS_SORT }}
+      LAKE_MMSI_BUCKETS: ${{ vars.LAKE_MMSI_BUCKETS }}
+      LAKE_ROW_GROUP_ROWS: ${{ vars.LAKE_ROW_GROUP_ROWS }}
       DAY: ${{ matrix.day }}
       MIN_HOURS: ${{ inputs.min_hours || '20' }}
       WRITE: ${{ github.event_name == 'schedule' || inputs.write }}
