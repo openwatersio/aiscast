@@ -37,6 +37,9 @@ POSITIONS_SCHEMA = pa.schema([
     ("id", pa.binary(16)), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("msg_type", pa.int8()),
     ("lat6", pa.int32()), ("lon6", pa.int32()), ("cell", pa.int32()), ("sog10", pa.int16()), ("cog10", pa.int16()),
     ("heading", pa.int16()), ("navstat", pa.int8()), ("corroborated", pa.bool_()), ("day", pa.date32()),
+    # the source whose copy the server accepted, the one a track's credit line names; last, since it
+    # joined after the first days were packaged and a new column goes at the end
+    ("source", pa.string()),
 ])
 RECEPTIONS_SCHEMA = pa.schema([
     ("id", pa.binary(16)), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("source", pa.string()), ("station", pa.string()),
@@ -159,9 +162,9 @@ def process_day(day, files, con, catalog, fingerprint=None):
         CREATE OR REPLACE TABLE positions AS
         SELECT unhex(id) AS id, mmsi, ts, msg_type, lat6, lon6,
                {cell_sql("lat", "lon")} AS cell,
-               sog10, cog10, heading, navstat, NOT uncorroborated AS corroborated, CAST(recv AS DATE) AS day
+               sog10, cog10, heading, navstat, NOT uncorroborated AS corroborated, CAST(recv AS DATE) AS day, source
         FROM (
-            SELECT id, mmsi, ct AS ts, recv, uncorroborated,
+            SELECT id, mmsi, ct AS ts, recv, uncorroborated, source,
                    CAST(r->>'lat' AS DOUBLE) AS lat, CAST(r->>'lon' AS DOUBLE) AS lon,
                    CAST(message->>'MessageID' AS TINYINT) AS msg_type,
                    -- the event's lat/lon, not the message's: the server leaves them off for the
@@ -284,10 +287,17 @@ def cell_sql(lat, lon):
             f"ELSE CAST(least(floor({lat}) + 90, 179) * 360 + least(floor({lon}) + 180, 359) AS INTEGER) END")
 
 
-# Row order within each written file. Positions sort by cell first so a bbox query prunes on the cell
-# column's statistics; per-vessel queries lose nothing, since the mmsi bucket already confines them
-# to one file in 32 per day.
-ORDER = {"positions": "cell NULLS LAST, mmsi, ts", "receptions": "source, station, recv_ts", "weather": "mmsi, ts"}
+# The lake's layout, set per warehouse so a new one can take another without a code change. A table
+# records the positions sort and bucket count it was created with and refuses the others (check_layout).
+# Sorting positions by cell lets a bbox query skip row groups on the cell column's statistics; sorting
+# by mmsi lets one vessel's track read a few row groups of its bucket's file instead of all of them.
+POSITIONS_SORTS = {"cell": "cell NULLS LAST, mmsi, ts", "mmsi": "mmsi, ts"}
+POSITIONS_SORT = os.environ.get("LAKE_POSITIONS_SORT") or "cell"  # unset or empty: the defaults
+MMSI_BUCKETS = int(os.environ.get("LAKE_MMSI_BUCKETS") or 32)
+SORT_KEY = "aiscast.positions-sort"
+
+# Row order within each written file.
+ORDER = {"positions": POSITIONS_SORTS[POSITIONS_SORT], "receptions": "source, station, recv_ts", "weather": "mmsi, ts"}
 
 
 # A day is written in this many passes, each holding whole mmsi buckets. The Arrow copies of a full
@@ -491,19 +501,19 @@ def _fetch(fs, local, info, path):
         raise OSError(f"{info.path}: copied {got} of {info.size} bytes")
 
 
-# Positions sort by cell inside each file, but a reader skips data by row-group statistics, and at the
-# default of about a million rows a day's file is one or two row groups spanning nearly every cell.
-# Smaller groups give each a narrow cell range for a bbox query to skip on.
-ROW_GROUP_KEY, ROW_GROUP_ROWS = "write.parquet.row-group-limit", "32768"
+# A reader skips data by row-group statistics, and at the default of about a million rows a day's
+# file is one or two row groups spanning nearly every value of the sort key. Smaller groups each cover
+# a narrow range for a query to skip on.
+ROW_GROUP_KEY, ROW_GROUP_ROWS = "write.parquet.row-group-limit", os.environ.get("LAKE_ROW_GROUP_ROWS") or "32768"
 
 
 def _specs():
     from pyiceberg.transforms import BucketTransform, IdentityTransform
 
     # Identity on day, so replacing a day rewrites that partition, not the table. Positions and
-    # receptions also bucket by mmsi, so one vessel's history reads one file in 32 per day.
+    # receptions also bucket by mmsi, so one vessel's history reads one file per day.
     by_day = [("day", IdentityTransform(), "day")]
-    by_vessel = by_day + [("mmsi", BucketTransform(32), "mmsi_bucket")]
+    by_vessel = by_day + [("mmsi", BucketTransform(MMSI_BUCKETS), "mmsi_bucket")]
     return {"positions": by_vessel, "receptions": by_vessel, "weather": by_day}
 
 
@@ -522,9 +532,22 @@ def get_catalog():
         if ("ais", name) not in retry(lambda: list(catalog.list_tables("ais"))):
             retry(lambda: catalog.create_table(f"ais.{name}", schema=schema))
         tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
-        if name == "positions" and tbl.properties.get(ROW_GROUP_KEY) != ROW_GROUP_ROWS:
-            with tbl.transaction() as tx:
-                tx.set_properties({ROW_GROUP_KEY: ROW_GROUP_ROWS})
+        if name == "positions":
+            # a table from before the sort was recorded is cell-sorted; a new one takes the setting
+            sort = tbl.properties.get(SORT_KEY) or ("cell" if tbl.current_snapshot() else POSITIONS_SORT)
+            if sort != POSITIONS_SORT:
+                sys.exit(f"ais.positions is sorted by {sort}, not {POSITIONS_SORT}: a table keeps one order, "
+                         f"so set LAKE_POSITIONS_SORT={sort} or package into a new warehouse")
+            want = {SORT_KEY: sort, ROW_GROUP_KEY: ROW_GROUP_ROWS}
+            if {k: tbl.properties.get(k) for k in want} != want:
+                with tbl.transaction() as tx:
+                    tx.set_properties(want)
+                tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
+        have = {f.name for f in tbl.schema().fields}
+        if missing := [f for f in schema if f.name not in have]:
+            # schema changes are additive: a new column joins the table at the end, null for the days before it
+            with tbl.update_schema() as u:
+                u.union_by_name(pa.schema(missing))
             tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
         spec = _specs().get(name, [])
         if spec and not tbl.spec().fields:
