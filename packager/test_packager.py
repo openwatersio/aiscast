@@ -456,6 +456,46 @@ def test_vessel_fields_merge_on_their_own_times_in_any_day_order(tmp_path):
     assert (v["name"], v["callsign"]) == ("N10", "C8"), "the callsign seen at 08:00 beats the one seen at 05:00"
 
 
+def test_days_packaged_at_once_both_reach_the_vessels(tmp_path, monkeypatch):
+    """Parallel days each rewrite ais.vessels. When another day commits between this day's read and
+    its write, the write is refused and redone from a fresh read, so neither day's fields are lost."""
+    from pyiceberg.table import Table
+
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    envs = fixture_envelopes()
+    st, cp = template(envs, "event", "ShipStaticData"), template(envs, "copy")
+    mmsi = st["r"]["mmsi"]
+
+    def day_files(day, id, ts, **fields):
+        e = event_at(st, id, ts, recv=ts)
+        e["r"]["message"].update({"Name": "", "CallSign": "", **fields})
+        d = tmp_path / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True)
+        with gzip.open(d / "08.gz", "wt") as f:
+            f.writelines(json.dumps(x) + "\n" for x in (e, copy_at(cp, id, ts, recv=ts)))
+        return sorted(glob.glob(f"{d}/*.gz"))
+
+    a = day_files("2026-09-01", "5b000001", "2026-09-01T08:00:00Z", CallSign="CA")
+    b = day_files("2026-09-02", "5b000002", "2026-09-02T08:00:00Z", Name="NB")
+    catalog = packager.get_catalog()
+    overwrite, interleaved = Table.overwrite, []
+
+    def racing_overwrite(self, *args, **kwargs):
+        if self.name()[-1] == "vessels" and not interleaved:
+            interleaved.append(True)  # day A lands after day B read the table
+            packager.process_day("2026-09-01", a, duckdb.connect(), catalog)
+        return overwrite(self, *args, **kwargs)
+
+    monkeypatch.setattr(Table, "overwrite", racing_overwrite)
+    packager.process_day("2026-09-02", b, duckdb.connect(), catalog)
+
+    assert interleaved
+    [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == mmsi]
+    assert (v["name"], v["callsign"]) == ("NB", "CA"), "the day that committed first kept its callsign"
+
+
 def test_cell_covers_the_poles_and_the_antimeridian():
     """Every position has a cell in 0..64799 (latitude 90 and longitude 180 fold into the last row and
     column), and no position means no cell."""
