@@ -289,6 +289,28 @@ def test_a_warehouse_keeps_the_layout_it_was_created_with(tmp_path, monkeypatch)
         packager.get_catalog()
 
 
+def test_a_new_column_joins_an_older_table(tmp_path, monkeypatch):
+    """Schema changes are additive: a table packaged before a column existed gains it, null for its days."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    envs = fixture_envelopes()
+    extra_day, boundary = crafted(envs)
+    root = make_tree(tmp_path, extra_day, boundary)
+    files = sorted(glob.glob(f"{root}/**/*.gz", recursive=True))
+    new = packager.POSITIONS_SCHEMA
+    old = pa.schema([f for f in new if f.name != "source"])
+    monkeypatch.setattr(packager, "POSITIONS_SCHEMA", old)
+    catalog = packager.get_catalog()
+    assert "source" not in {f.name for f in catalog.load_table("ais.positions").schema().fields}
+
+    monkeypatch.setattr(packager, "POSITIONS_SCHEMA", new)
+    catalog = packager.get_catalog()
+    tbl = catalog.load_table("ais.positions")
+    assert [f.name for f in tbl.schema().fields][-1] == "source", "the column joins at the end"
+    packager.process_day(DAY, files, duckdb.connect(), catalog)
+    assert all(p["source"] for p in rows(catalog, "positions")), "days packaged after it carry it"
+
+
 def test_rerun_replaces_day(packaged):
     envs, catalog, con, files = packaged
     first = {(p["id"], p["ts"]) for p in rows(catalog, "positions")}
@@ -617,3 +639,6 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
     assert v["last_ts"].isoformat() == "2026-09-02T10:00:00" and (v["last_lat6"], v["last_lon6"]) == (60.5 * 600000, 5.25 * 600000), \
         "the latest position wins even when its day was packaged first"
     assert v["last_source"] == "barentswatch", "the last position carries the source that delivered it, for its credit line"
+    sources = {p["ts"].isoformat(): p["source"] for p in rows(catalog, "positions") if p["mmsi"] == 257999001}
+    assert sources == {"2026-09-02T10:00:00": "barentswatch", "2026-09-01T08:00:00": "digitraffic"}, \
+        "each position names the source of the copy the server accepted, so a track needs no second table"

@@ -37,6 +37,9 @@ POSITIONS_SCHEMA = pa.schema([
     ("id", pa.binary(16)), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("msg_type", pa.int8()),
     ("lat6", pa.int32()), ("lon6", pa.int32()), ("cell", pa.int32()), ("sog10", pa.int16()), ("cog10", pa.int16()),
     ("heading", pa.int16()), ("navstat", pa.int8()), ("corroborated", pa.bool_()), ("day", pa.date32()),
+    # the source whose copy the server accepted, the one a track's credit line names; last, since it
+    # joined after the first days were packaged and a new column goes at the end
+    ("source", pa.string()),
 ])
 RECEPTIONS_SCHEMA = pa.schema([
     ("id", pa.binary(16)), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("source", pa.string()), ("station", pa.string()),
@@ -159,9 +162,9 @@ def process_day(day, files, con, catalog, fingerprint=None):
         CREATE OR REPLACE TABLE positions AS
         SELECT unhex(id) AS id, mmsi, ts, msg_type, lat6, lon6,
                {cell_sql("lat", "lon")} AS cell,
-               sog10, cog10, heading, navstat, NOT uncorroborated AS corroborated, CAST(recv AS DATE) AS day
+               sog10, cog10, heading, navstat, NOT uncorroborated AS corroborated, CAST(recv AS DATE) AS day, source
         FROM (
-            SELECT id, mmsi, ct AS ts, recv, uncorroborated,
+            SELECT id, mmsi, ct AS ts, recv, uncorroborated, source,
                    CAST(r->>'lat' AS DOUBLE) AS lat, CAST(r->>'lon' AS DOUBLE) AS lon,
                    CAST(message->>'MessageID' AS TINYINT) AS msg_type,
                    -- the event's lat/lon, not the message's: the server leaves them off for the
@@ -540,6 +543,12 @@ def get_catalog():
                 with tbl.transaction() as tx:
                     tx.set_properties(want)
                 tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
+        have = {f.name for f in tbl.schema().fields}
+        if missing := [f for f in schema if f.name not in have]:
+            # schema changes are additive: a new column joins the table at the end, null for the days before it
+            with tbl.update_schema() as u:
+                u.union_by_name(pa.schema(missing))
+            tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
         spec = _specs().get(name, [])
         if spec and not tbl.spec().fields:
             with tbl.update_spec() as u:
