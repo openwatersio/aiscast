@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { Await, data, redirect } from "react-router";
-import { Panel, useShell } from "../components/Shell";
+import { Panel } from "../components/Shell";
 import { VesselDetail } from "../components/VesselDetail";
 import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselPath, vesselSlug } from "../lib/ais";
 import { browserAuth, getVessel, type VesselFeature } from "../lib/api";
@@ -78,13 +78,11 @@ export function meta({ loaderData }: Route.MetaArgs) {
 }
 
 export default function Vessel({ loaderData }: Route.ComponentProps) {
-  const { split } = useShell();
   const { mmsi, feature } = loaderData;
   const detail = (
     <Suspense fallback={<VesselDetail mmsi={mmsi} feature={undefined} loading />}>
       <Await resolve={feature}>{(f) => <VesselDetail mmsi={mmsi} feature={f} />}</Await>
     </Suspense>
   );
-  // Beside the list it was opened from, or on its own in the sidebar for a direct visit.
-  return split ? detail : <Panel back="/map">{detail}</Panel>;
+  return <Panel back="/map">{detail}</Panel>;
 }

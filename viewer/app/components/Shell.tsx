@@ -7,6 +7,8 @@ import {
   useMemo,
   useRef,
   useState,
+  ViewTransition,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 import { Link, useLocation, useMatches, useNavigate, useOutlet } from "react-router";
@@ -15,35 +17,27 @@ import { createMap } from "../lib/map.client";
 import { liveInstance, LiveContext, setLiveInstance, useLive, useNow, useStreamFrame, type Live } from "../lib/live";
 import { Stream } from "../lib/stream";
 import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
-import { CloseIcon } from "./icons";
+import { Sheet, type Detent } from "./Sheet";
 import { ThemeToggle } from "./ThemeToggle";
 import { TrackBar, type TrackSummary } from "./TrackBar";
 
-/** Where a vessel was opened from, carried in history state rather than in its URL. */
-export interface FromState {
-  from?: string;
-}
-
 interface ShellState {
-  /** True when this render is the second pane, beside the list it was opened from. */
-  split: boolean;
-  /** A list route hands over what it rendered, so a vessel opened from it can keep it on screen. */
-  rememberList(path: string, node: ReactNode): void;
   query: string;
   setQuery(q: string): void;
   track: TrackSummary | undefined;
   theme: ThemeChoice;
   setTheme(choice: ThemeChoice): void;
+  /** The sheet's height on a phone. On a wider screen the panel ignores it. */
+  setDetent(detent: Detent): void;
 }
 
 const ShellContext = createContext<ShellState>({
-  split: false,
-  rememberList: () => undefined,
   query: "",
   setQuery: () => undefined,
   track: undefined,
   theme: "dark",
   setTheme: () => undefined,
+  setDetent: () => undefined,
 });
 
 export function useShell(): ShellState {
@@ -55,9 +49,18 @@ export function useShell(): ShellState {
 const SAVED_QUERY = "aiscast.query";
 
 /**
- * The map is the page and the panes float over it. The map, the stream, and the vessel cache
- * are built once and outlive every navigation: the stream is capped at two connections per
- * network address, and remounting would spend that budget.
+ * How high the sheet sits when a route opens: low over the map with nothing chosen, halfway
+ * for anything that has content to read while the map still shows where it is.
+ */
+function routeDetent(pathname: string): Detent {
+  return pathname === "/map" ? "peek" : "half";
+}
+
+/**
+ * The map is the page and one panel floats over it, holding a navigation stack: each route is
+ * an entry. The map, the stream, and the vessel cache are built once and outlive every
+ * navigation: the stream is capped at two connections per network address, and remounting
+ * would spend that budget.
  */
 export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   const container = useRef<HTMLDivElement>(null);
@@ -69,16 +72,15 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
   const vessel = matches.find((m) => m.id === "routes/vessel");
   const focusMmsi = (vessel?.loaderData as { mmsi?: number } | undefined)?.mmsi;
-  const from = (location.state as FromState | null)?.from;
 
-  // What the last list route rendered. A ref, not state: it is read when the next route
-  // renders, and storing it as state would re-render the list that is storing it.
-  const list = useRef<{ path: string; node: ReactNode } | undefined>(undefined);
-  const rememberList = useCallback((path: string, node: ReactNode) => {
-    list.current = { path, node };
-  }, []);
-  const remembered = vessel && from && list.current?.path === from ? list.current : undefined;
-  const split = Boolean(remembered);
+  // Set while rendering the new route rather than in an effect, so the sheet has moved in the
+  // same commit and a route's camera move is aimed above where the sheet is going.
+  const [detent, setDetent] = useState<Detent>(() => routeDetent(location.pathname));
+  const [detentFor, setDetentFor] = useState(location.key);
+  if (detentFor !== location.key) {
+    setDetentFor(location.key);
+    setDetent(routeDetent(location.pathname));
+  }
 
   const [query, setQueryState] = useState("");
   useEffect(() => setQueryState(sessionStorage.getItem(SAVED_QUERY) ?? ""), []);
@@ -101,25 +103,36 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
     setLive(built);
   }, []);
 
-  // A click on the map opens the vessel beside whatever list is showing, as a click on the
-  // list itself would.
-  const listPath = vessel ? (split ? from : undefined) : location.pathname;
+  // A vessel tapped on the map is pushed onto the stack, over whatever is showing.
   const onSelect = useRef<(mmsi: number, name?: string) => void>(undefined);
   onSelect.current = (mmsi, name) => {
     const known = live?.stream.vessels.get(mmsi)?.name;
-    navigate(vesselPath(mmsi, known ?? name), { state: { from: listPath } satisfies FromState });
+    navigate(vesselPath(mmsi, known ?? name));
   };
   useEffect(() => {
-    live?.ctl.onSelect((mmsi, name) => onSelect.current?.(mmsi, name));
+    if (!live) return;
+    live.ctl.onSelect((mmsi, name) => onSelect.current?.(mmsi, name));
+    // Moving the map means looking at it, so the sheet gets out of the way.
+    live.ctl.map.on("dragstart", () => setDetent("peek"));
   }, [live]);
 
   // A layout effect so it runs before any route's own effects: those ask for camera moves,
-  // which have to be computed against the panes this route shows, and a padding change after
-  // a move has started cancels it.
+  // which have to be computed against where the panel will be, and a padding change after a
+  // move has started cancels it.
   useLayoutEffect(() => {
     if (!live) return;
     live.ctl.refreshInsets();
-  }, [live, location.key, split]);
+  }, [live, location.key]);
+
+  // Which way this navigation went, for the panel's transition: back when the history index
+  // went down, which covers the browser's own back button as well as the panel's.
+  const historyIndex = useRef<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx;
+    const prev = historyIndex.current;
+    document.documentElement.dataset.nav = prev != null && idx != null && idx < prev ? "back" : "forward";
+    historyIndex.current = idx;
+  }, [location.key]);
 
   useEffect(() => {
     if (live && !vessel) live.ctl.setFocus(undefined);
@@ -130,8 +143,8 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   }, [live, theme]);
 
   const state = useMemo(
-    () => ({ split, rememberList, query, setQuery, track, theme: choice, setTheme: setChoice }),
-    [split, rememberList, query, setQuery, track, choice, setChoice],
+    () => ({ query, setQuery, track, theme: choice, setTheme: setChoice, setDetent }),
+    [query, setQuery, track, choice, setChoice],
   );
 
   return (
@@ -143,37 +156,19 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
         {focusMmsi ? <TrackBar key={focusMmsi} mmsi={focusMmsi} onLoaded={setTrack} /> : null}
 
-        <div className="pointer-events-none fixed inset-0 flex flex-col justify-end gap-2 p-2 md:flex-row md:justify-start md:gap-3 md:p-3">
-          <aside
-            data-map-inset
-            className="pane pointer-events-auto order-2 flex max-h-[50vh] w-full flex-col overflow-hidden md:order-1 md:max-h-full md:w-[340px] lg:w-[380px]"
-          >
-            <div className="flex min-h-0 flex-1 flex-col">{remembered ? remembered.node : outlet}</div>
-            <footer className="flex items-center gap-2 border-t border-line py-1 pr-1.5 pl-3 text-xs text-fg-muted">
-              <span className="min-w-0 flex-1">
-                <StreamStatus /> · <a href="/ais/">Open Waters AIS</a> · not for navigation
-              </span>
-              <ThemeToggle />
-            </footer>
-          </aside>
-
-          {split && (
-            <section
-              data-map-inset
-              className="pane sidebar-scroll pointer-events-auto relative order-1 max-h-[45vh] w-full md:order-2 md:max-h-full md:w-[380px] lg:w-[420px]"
-            >
-              <Link
-                to={from!}
-                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full border no-underline backdrop-blur"
-                style={{ backgroundColor: "var(--surface-subtle)", color: "var(--text-secondary)" }}
-                aria-label="Close"
-              >
-                <CloseIcon className="size-4" />
-              </Link>
-              <div className="p-4 pr-12">{outlet}</div>
-            </section>
-          )}
-        </div>
+        <Sheet detent={detent} onDetentChange={setDetent}>
+          {/* Keyed by route, so a navigation is this entry leaving and the next arriving. React
+              runs it as a view transition because React Router navigates in transitions. */}
+          <ViewTransition key={location.pathname} enter="panel-enter" exit="panel-exit" update="none">
+            <div className="flex min-h-0 flex-1 flex-col">{outlet}</div>
+          </ViewTransition>
+          <footer className="flex items-center gap-2 border-t border-line py-1 pr-1.5 pl-3 text-xs text-fg-muted">
+            <span className="min-w-0 flex-1">
+              <StreamStatus /> · <a href="/ais/">Open Waters AIS</a> · not for navigation
+            </span>
+            <ThemeToggle />
+          </footer>
+        </Sheet>
       </ShellContext.Provider>
     </LiveContext.Provider>
   );
@@ -201,45 +196,47 @@ function StreamStatus() {
 }
 
 /**
- * A sidebar view. `back` pops the stack. A list view is also remembered, so a vessel opened
- * from it takes the second pane and leaves the list where it was.
+ * The back arrow of a stack entry. Within the app it steps back through history, so it
+ * returns to whatever pushed this entry, as the browser's own back does. After a direct visit
+ * there is nothing to return to, and it goes to `parent` instead.
  */
-export function Panel({
-  back,
-  header,
-  list = false,
-  children,
-}: {
-  back?: string;
-  /** Stays put above the scrolling content. */
-  header?: ReactNode;
-  list?: boolean;
-  children: ReactNode;
-}) {
-  const { rememberList } = useShell();
-  const { pathname } = useLocation();
-  const node = (
+function BackButton({ parent }: { parent: string }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  // React Router gives the entry the app loaded on the key "default"; every entry pushed
+  // since has its own, and keeps it across a reload.
+  const pushed = location.key !== "default";
+  return (
+    <Link
+      to={parent}
+      onClick={(e: MouseEvent) => {
+        if (!pushed) return;
+        e.preventDefault();
+        navigate(-1);
+      }}
+      className="inline-flex size-8 items-center justify-center rounded-full text-fg-secondary no-underline hover:bg-surface-subtle"
+      aria-label="Back"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-5">
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+    </Link>
+  );
+}
+
+/** One entry on the panel's stack. `back` names its parent, for after a direct visit. */
+export function Panel({ back, header, children }: { back?: string; header?: ReactNode; children: ReactNode }) {
+  return (
     <>
       {back && (
         <div className="px-3 pt-3">
-          <Link
-            to={back}
-            className="inline-flex size-8 items-center justify-center rounded-full no-underline hover:bg-[var(--surface-subtle)]"
-            style={{ color: "var(--text-secondary)" }}
-            aria-label="Back"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-5">
-              <path d="M15 18l-6-6 6-6" />
-            </svg>
-          </Link>
+          <BackButton parent={back} />
         </div>
       )}
       {header}
-      <div className={`sidebar-scroll min-h-0 flex-1 pb-3 ${header ? "px-2" : "px-4"}`}>{children}</div>
+      <div data-sheet-scroll className={`sidebar-scroll min-h-0 flex-1 pb-3 ${header ? "px-2" : "px-4"}`}>
+        {children}
+      </div>
     </>
   );
-  useEffect(() => {
-    if (list) rememberList(pathname, node);
-  });
-  return node;
 }

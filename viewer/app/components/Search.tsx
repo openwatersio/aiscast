@@ -4,7 +4,7 @@ import { CLASS_COLORS, shipClass, vesselPath } from "../lib/ais";
 import { browserAuth, searchVessels, type VesselFeature } from "../lib/api";
 import { useLive, useNow, useStreamFrame } from "../lib/live";
 import { CloseIcon, SearchIcon } from "./icons";
-import { useShell, type FromState } from "./Shell";
+import { useShell } from "./Shell";
 
 const DESTINATIONS = [
   {
@@ -53,7 +53,7 @@ const results = new Map<string, Row[]>();
 
 /** The search box that heads the home panel. */
 export function SearchBox() {
-  const { query, setQuery } = useShell();
+  const { query, setQuery, setDetent } = useShell();
   const navigate = useNavigate();
   return (
     <div className="p-3">
@@ -63,7 +63,7 @@ export function SearchBox() {
         onSubmit={(e) => {
           e.preventDefault();
           const q = query.trim();
-          if (/^\d{7,9}$/.test(q)) navigate(`/vessels/${q}`, { state: { from: "/map" } satisfies FromState });
+          if (/^\d{7,9}$/.test(q)) navigate(`/vessels/${q}`);
         }}
       >
         <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-[var(--text-muted)]" />
@@ -76,10 +76,13 @@ export function SearchBox() {
           type="search"
           autoComplete="off"
           placeholder="Search vessels by name or MMSI"
-          className="w-full rounded-full border py-2.5 pr-9 pl-9 text-sm outline-none focus:border-[var(--accent)]"
+          // 16px on phones: iOS Safari zooms the page into any field set smaller when it takes focus.
+          className="w-full rounded-full border py-2.5 pr-9 pl-9 text-base outline-none focus:border-[var(--accent)] md:text-sm"
           style={{ backgroundColor: "var(--surface-subtle)", color: "var(--text)" }}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          // Searching needs room for results, as in a maps app.
+          onFocus={() => setDetent("full")}
         />
         {query && (
           <button
@@ -203,7 +206,6 @@ function Results({ q }: { q: string }) {
         <li key={v.mmsi}>
           <Link
             to={vesselPath(v.mmsi, v.name)}
-            state={{ from: "/map" } satisfies FromState}
             className="flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm no-underline hover:bg-[var(--surface-subtle)]"
             style={{ color: "var(--text)" }}
           >

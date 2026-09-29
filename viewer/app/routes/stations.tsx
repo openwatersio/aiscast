@@ -33,7 +33,7 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
   const { stations } = loaderData;
   const active = stations?.filter((s) => s.last_age_s < 300).length ?? 0;
   return (
-    <Panel back="/map" list>
+    <Panel back="/map">
       <h1 className="text-xl font-semibold" style={{ color: "var(--text)" }}>
         Stations
       </h1>

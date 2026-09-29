@@ -117,11 +117,26 @@ export function createMap(
     zoom: 8,
     hash: "map",
     attributionControl: false,
+    // North up and flat, always. A chart that turns under a stray two-finger twist is a chart
+    // that has to be put back before it can be read.
+    dragRotate: false,
+    pitchWithRotate: false,
+    touchPitch: false,
     // The vessel tiles say max-age=10, and by default MapLibre reloads every tile in view as
     // it expires. Within the area cap the stream already reports what changes, so the tiles
     // reload on the rules in refreshTiles() instead. The basemap does not change.
     refreshExpiredTiles: false,
   });
+  map.touchZoomRotate.disableRotation();
+  map.keyboard.disableRotation();
+  // A link made before rotation was off can still carry a bearing and a pitch in its hash, so
+  // they are put back here. Not with maxPitch: 0, which makes such a hash invalid and loses the
+  // link's position along with its tilt. And only after load: moving the camera any earlier
+  // rewrites the hash before the link's own position has been read from it.
+  map.once("load", () => {
+    if (map.getBearing() !== 0 || map.getPitch() !== 0) map.jumpTo({ bearing: 0, pitch: 0 });
+  });
+
   // Browser tests query what is drawn through this. Production builds leave it out.
   if (import.meta.env.DEV) (window as { aiscastMap?: maplibregl.Map }).aiscastMap = map;
   map.addControl(
@@ -186,10 +201,16 @@ export function createMap(
     const h = container.clientHeight;
     if (!w || !h) return;
 
+    // A panel that animates between resting places says where it will rest, so a camera
+    // move made while it is still travelling is aimed at where the map will be visible.
     const panels = [
       ...document.querySelectorAll<HTMLElement>("[data-map-inset]"),
     ]
-      .map((el) => el.getBoundingClientRect())
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        const restTop = Number(el.dataset.restTop);
+        return Number.isFinite(restTop) && el.dataset.restTop ? new DOMRect(r.x, restTop, r.width, r.height) : r;
+      })
       .filter((r) => r.width > 0 && r.height > 0);
 
     const padding = { top: 0, right: 0, bottom: 0, left: 0 };

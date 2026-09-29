@@ -70,7 +70,7 @@ The subscription asks for no snapshot. The tiles already paint where every vesse
 
 The app should feel like Apple Maps or Google Maps to someone who uses either: the map is the page, one panel holds everything else, and the panel behaves the way theirs does.
 
-**Phone: a bottom sheet.** One sheet, never dismissed, over a map that stays interactive, with three heights. Peek shows the grabber and the search field. Half is where a vessel opens. Full is for long lists. Content scrolls only at full height, and dragging down with the content at its top moves the sheet instead. Panning the map lowers the sheet to peek, and focusing search raises it to full. The sheet's position feeds the camera padding as it moves, so the open vessel stays centred in the map above it.
+**Phone: a bottom sheet.** One sheet, never dismissed, over a map that stays interactive, with three heights. It is the page's main content region, not a dialog, and it is ours rather than a library's: the server renders it with its content and its height, which a portal-based drawer cannot, and nothing else would give the map a resting position to aim the camera at while the sheet is still moving. Peek shows the grabber and the search field. Half is where a vessel opens. Full is for long lists. Content scrolls only at full height, and dragging down with the content at its top moves the sheet instead. Panning the map lowers the sheet to peek, and focusing search raises it to full. The sheet's position feeds the camera padding as it moves, so the open vessel stays centred in the map above it.
 
 **Desktop: a floating panel** down the left edge, as in Google Maps, holding the same stack.
 
@@ -78,7 +78,7 @@ The app should feel like Apple Maps or Google Maps to someone who uses either: t
 
 **Themes.** Dark is the default, and Light and System are the other choices. The choice is a cookie scoped to `/ais`, so the Worker renders the right theme in the first response and nothing flashes. Colour tokens are written once with `light-dark()`, and each choice sets only `color-scheme`, with System setting `light dark`. The basemap is OpenFreeMap Fiord in dark and Positron in light, and the vessel, track, and label colours follow it.
 
-**Design system.** Semantic tokens are Tailwind utilities (`bg-surface`, `text-fg-muted`, `border-line`), with the same names and values as openwaters.io, so no component references a CSS variable by hand. A type scale follows iOS: large title, title, headline, body, footnote, caption, in the system font with tabular figures for data. A small set of components lives in `app/components/ui/`, owned in this repo: `Sheet`, `PanelHeader`, `List` and `ListRow`, `Section` in the inset-grouped style, `StatGrid`, `SearchField`, `IconButton`, `SegmentedControl`, `Menu`, `Popover`. Base UI supplies their behaviour, including the drawer with snap points, and `lucide-react` the icons. CI fails on a CSS variable in a `className` or `style`. Once openwaters.io uses the same tokens, they move to a package both import.
+**Design system.** Semantic tokens are Tailwind utilities (`bg-surface`, `text-fg-muted`, `border-line`), with the same names and values as openwaters.io, so no component references a CSS variable by hand. A type scale follows iOS: large title, title, headline, body, footnote, caption, in the system font with tabular figures for data. A small set of components lives in `app/components/ui/`, owned in this repo: `Sheet`, `PanelHeader`, `List` and `ListRow`, `Section` in the inset-grouped style, `StatGrid`, `SearchField`, `IconButton`, `SegmentedControl`, `Menu`, `Popover`. Base UI supplies the behaviour of menus and popovers, and `lucide-react` the icons. CI fails on a CSS variable in a `className` or `style`. Once openwaters.io uses the same tokens, they move to a package both import.
 
 On the map: a status chip saying Live or Overview in place of the footer, the controls at the bottom right above the sheet on touch devices without zoom buttons, touch targets of at least 44 px, and an action row under a vessel's name for Follow, Share, and Track.
 
@@ -107,11 +107,13 @@ An unknown MMSI answers 404 with `noindex`. A vessel the record holds always ren
 - [ ] Website: link `/ais/` to `/ais/map`, allow the app's paths in `robots.txt`, and point the status monitor at the app.
 - [ ] Retire `viewer/index.html`, `viewer/token.html`, and the Pages workflow. The Pages copy becomes a page that forwards to `openwaters.io/ais/map`, keeping `?station=`.
 - [ ] Share one stream across tabs with a `SharedWorker`, so a second tab does not spend the address's second stream.
-- [ ] Theme: Dark, Light, and System, the cookie, `light-dark()` tokens, and the basemap and vessel colours following it.
-- [ ] Spike: the Base UI drawer as the phone sheet, with three heights and the scroll handoff, on a real phone, and one animated push and pop. It decides the sheet library; `react-modal-sheet` or our own pointer handling are the fallbacks.
+- [x] Theme: Dark, Light, and System, the cookie, `light-dark()` tokens, and the basemap and vessel colours following it.
+- [x] The phone sheet: three heights set by the server, drag and flick with rubber-banding, native scrolling at full height, and a drag down from the top of the content moving the sheet.
+- [ ] Try the sheet on real phones, iOS Safari especially, and tune the flick projection and the peek height.
 - [ ] Tokens as Tailwind utilities, the `ui/` components, and `lucide-react`; every view migrated and no inline style left, with the CI check.
-- [ ] One navigation stack in place of the second pane, with push and pop transitions and scroll restored per entry.
-- [ ] The phone sheet and the desktop panel.
+- [x] One navigation stack in place of the second pane, with push and pop transitions that follow the history index.
+- [ ] Scroll position restored per stack entry, and a pending state for slow entries such as a large station's vessel list.
+- [ ] A panel header per entry that shows the title at peek height, in place of the bare back arrow.
 - [ ] Map chrome: status chip, controls, action row, touch targets; browser tests for the sheet heights and the back stack.
 - [ ] Station list detail: source kind, vessels heard, duplicates. All are in `/v1/stations`.
 - [ ] Network page: vessel counts by kind and `/health`.

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { data, Link } from "react-router";
-import { Panel, type FromState } from "../components/Shell";
+import { Panel } from "../components/Shell";
 import { CLASS_COLORS, formatAge, shipClass, vesselPath } from "../lib/ais";
 import { browserAuth, getStation, type ApiAuth } from "../lib/api";
 import { serverEnv } from "../lib/context";
@@ -67,7 +67,7 @@ export default function Station({ loaderData }: Route.ComponentProps) {
     : undefined;
 
   return (
-    <Panel back="/stations" list>
+    <Panel back="/stations">
       <h1 className="text-xl font-semibold break-all" style={{ color: "var(--text)" }}>
         {id}
       </h1>
@@ -109,7 +109,6 @@ export default function Station({ loaderData }: Route.ComponentProps) {
               <li key={f.properties.mmsi}>
                 <Link
                   to={vesselPath(f.properties.mmsi, f.properties.name)}
-                  state={{ from: `/stations/${id}` } satisfies FromState}
                   className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm no-underline hover:bg-[var(--surface-subtle)]"
                   style={{ color: "var(--text)" }}
                 >

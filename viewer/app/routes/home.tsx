@@ -29,7 +29,7 @@ export const meta = () =>
 
 export default function Home() {
   return (
-    <Panel list header={<SearchBox />}>
+    <Panel header={<SearchBox />}>
       <SearchResults />
     </Panel>
   );

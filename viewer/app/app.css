@@ -311,3 +311,149 @@
   border-radius: 9999px;
   background: var(--accent);
 }
+
+/* The panel (components/Sheet.tsx). On a phone, a bottom sheet the full height of the screen
+   less a strip of map, pushed down to one of three detents. The detent is an attribute the
+   server renders, so the first paint is right before any script runs. A drag sets
+   --sheet-drag, which wins over the detent until the finger lifts. The numbers match
+   GAP and PEEK in Sheet.tsx. */
+.sheet {
+  --sheet-gap: 48px;
+  --sheet-peek: calc(76px + env(safe-area-inset-bottom));
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  height: calc(100dvh - var(--sheet-gap));
+  border-bottom-width: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  transform: translateY(var(--sheet-drag, var(--sheet-rest)));
+  transition: transform 450ms cubic-bezier(0.32, 0.72, 0, 1);
+  touch-action: none;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.sheet[data-detent="peek"] {
+  --sheet-rest: calc(100dvh - var(--sheet-gap) - var(--sheet-peek));
+}
+.sheet[data-detent="half"] {
+  --sheet-rest: calc(50dvh - var(--sheet-gap));
+}
+.sheet[data-detent="full"] {
+  --sheet-rest: 0px;
+}
+.sheet[data-dragging] {
+  transition: none;
+}
+/* Content scrolls only at full height; below it, a drag on the content moves the sheet. */
+.sheet [data-sheet-scroll] {
+  overflow-y: hidden;
+}
+.sheet[data-detent="full"] [data-sheet-scroll] {
+  overflow-y: auto;
+  touch-action: pan-y;
+  /* What the software keyboard covers, set by Sheet.tsx, so the last results stay reachable. */
+  padding-bottom: calc(0.75rem + var(--keyboard-inset, 0px));
+}
+/* The handle's bar is small; the button around it is a thumb-sized target. */
+.sheet-grabber {
+  flex-shrink: 0;
+  align-self: center;
+  width: 4rem;
+  height: 1.25rem;
+  margin-bottom: -0.5rem;
+}
+.sheet-grabber::before {
+  content: "";
+  display: block;
+  width: 2.25rem;
+  height: 0.3125rem;
+  margin: 0.375rem auto 0;
+  border-radius: 9999px;
+  background: var(--border);
+}
+
+@media (min-width: 768px) {
+  .sheet {
+    inset: 0.75rem auto 0.75rem 0.75rem;
+    width: 380px;
+    height: auto;
+    border-bottom-width: 1px;
+    border-radius: var(--radius-xl);
+    transform: none;
+    transition: none;
+    touch-action: auto;
+    padding-bottom: 0;
+  }
+  .sheet [data-sheet-scroll] {
+    overflow-y: auto;
+    touch-action: auto;
+  }
+  .sheet-grabber {
+    display: none;
+  }
+}
+
+/* The search field has its own clear button; the browser's would be a second one. */
+input[type="search"]::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+/* Stack transitions (the ViewTransition in components/Shell.tsx). Only the panel's content is
+   captured: the root opts out, so the map keeps rendering live underneath, and the overlay
+   lets the pointer through. A push brings the new entry in from the right while the old one
+   leaves to the left; data-nav="back" reverses both. The travel is short because the images
+   cannot be clipped to the panel, and a full slide would cross the map. */
+:root {
+  view-transition-name: none;
+}
+::view-transition {
+  pointer-events: none;
+}
+::view-transition-old(.panel-exit),
+::view-transition-new(.panel-enter) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  animation-fill-mode: both;
+}
+::view-transition-old(.panel-exit) {
+  animation-name: panel-leave-left;
+}
+::view-transition-new(.panel-enter) {
+  animation-name: panel-arrive-right;
+}
+:root[data-nav="back"]::view-transition-old(.panel-exit) {
+  animation-name: panel-leave-right;
+}
+:root[data-nav="back"]::view-transition-new(.panel-enter) {
+  animation-name: panel-arrive-left;
+}
+@keyframes panel-arrive-right {
+  from {
+    opacity: 0;
+    transform: translateX(48px);
+  }
+}
+@keyframes panel-arrive-left {
+  from {
+    opacity: 0;
+    transform: translateX(-48px);
+  }
+}
+@keyframes panel-leave-left {
+  to {
+    opacity: 0;
+    transform: translateX(-48px);
+  }
+}
+@keyframes panel-leave-right {
+  to {
+    opacity: 0;
+    transform: translateX(48px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(.panel-exit),
+  ::view-transition-new(.panel-enter) {
+    animation: none;
+  }
+}

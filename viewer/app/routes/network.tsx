@@ -27,7 +27,7 @@ export default function Network({ loaderData }: Route.ComponentProps) {
   const { stats } = loaderData;
   const sources = Object.entries(stats?.sources ?? {}).sort((a, b) => b[1].events.last_24h - a[1].events.last_24h);
   return (
-    <Panel back="/map" list>
+    <Panel back="/map">
       <h1 className="text-xl font-semibold" style={{ color: "var(--text)" }}>
         Network
       </h1>
