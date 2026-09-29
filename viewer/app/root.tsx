@@ -1,18 +1,22 @@
 import "maplibre-gl/dist/maplibre-gl.css";
-import { isRouteErrorResponse, Links, Meta, Scripts, ScrollRestoration } from "react-router";
+import { isRouteErrorResponse, Links, Meta, Scripts, ScrollRestoration, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/root";
 import "./app.css";
 import { Shell } from "./components/Shell";
 import { setPublicApi } from "./lib/api";
 import { serverEnv } from "./lib/context";
+import { themeFromCookie } from "./lib/theme";
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://tiles.openfreemap.org", crossOrigin: "anonymous" },
 ];
 
-/** The API the server rendered against is the one the browser should use. */
-export function loader({ context }: Route.LoaderArgs) {
-  return { api: context.get(serverEnv).api };
+/**
+ * The API the server rendered against is the one the browser should use. The theme choice
+ * comes from its cookie so the first response is already in it.
+ */
+export function loader({ context, request }: Route.LoaderArgs) {
+  return { api: context.get(serverEnv).api, theme: themeFromCookie(request.headers.get("cookie")) };
 }
 
 // Nothing here changes after the first load, and revalidating it would send every
@@ -22,12 +26,13 @@ export function shouldRevalidate() {
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  const data = useRouteLoaderData<typeof loader>("root");
   return (
-    <html lang="en">
+    // The theme switcher writes data-theme directly, after hydration.
+    <html lang="en" data-theme={data?.theme ?? "dark"} suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="color-scheme" content="dark" />
         <Meta />
         <Links />
       </head>
@@ -42,7 +47,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 export default function App({ loaderData }: Route.ComponentProps) {
   setPublicApi(loaderData.api);
-  return <Shell />;
+  return <Shell initialTheme={loaderData.theme} />;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

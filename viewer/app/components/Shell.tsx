@@ -14,7 +14,9 @@ import { vesselPath } from "../lib/ais";
 import { createMap } from "../lib/map.client";
 import { liveInstance, LiveContext, setLiveInstance, useLive, useNow, useStreamFrame, type Live } from "../lib/live";
 import { Stream } from "../lib/stream";
+import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { CloseIcon } from "./icons";
+import { ThemeToggle } from "./ThemeToggle";
 import { TrackBar, type TrackSummary } from "./TrackBar";
 
 /** Where a vessel was opened from, carried in history state rather than in its URL. */
@@ -30,6 +32,8 @@ interface ShellState {
   query: string;
   setQuery(q: string): void;
   track: TrackSummary | undefined;
+  theme: ThemeChoice;
+  setTheme(choice: ThemeChoice): void;
 }
 
 const ShellContext = createContext<ShellState>({
@@ -38,6 +42,8 @@ const ShellContext = createContext<ShellState>({
   query: "",
   setQuery: () => undefined,
   track: undefined,
+  theme: "dark",
+  setTheme: () => undefined,
 });
 
 export function useShell(): ShellState {
@@ -53,7 +59,7 @@ const SAVED_QUERY = "aiscast.query";
  * are built once and outlive every navigation: the stream is capped at two connections per
  * network address, and remounting would spend that budget.
  */
-export function Shell() {
+export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   const container = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState<Live | undefined>(liveInstance);
   const location = useLocation();
@@ -83,11 +89,14 @@ export function Shell() {
   }, []);
 
   const [track, setTrack] = useState<TrackSummary>();
+  const { choice, theme, setChoice } = useTheme(initialTheme);
 
   useEffect(() => {
     if (liveInstance() || !container.current) return;
     const stream = new Stream();
-    const built = { stream, ctl: createMap(container.current, stream) };
+    // Resolved here rather than taken from render: during hydration a System choice still
+    // reads as the server's dark, and the map should open in the device's scheme.
+    const built = { stream, ctl: createMap(container.current, stream, resolveTheme(choice)) };
     setLiveInstance(built);
     setLive(built);
   }, []);
@@ -116,9 +125,13 @@ export function Shell() {
     if (live && !vessel) live.ctl.setFocus(undefined);
   }, [live, vessel]);
 
+  useEffect(() => {
+    live?.ctl.setTheme(theme);
+  }, [live, theme]);
+
   const state = useMemo(
-    () => ({ split, rememberList, query, setQuery, track }),
-    [split, rememberList, query, setQuery, track],
+    () => ({ split, rememberList, query, setQuery, track, theme: choice, setTheme: setChoice }),
+    [split, rememberList, query, setQuery, track, choice, setChoice],
   );
 
   return (
@@ -136,8 +149,11 @@ export function Shell() {
             className="pane pointer-events-auto order-2 flex max-h-[50vh] w-full flex-col overflow-hidden md:order-1 md:max-h-full md:w-[340px] lg:w-[380px]"
           >
             <div className="flex min-h-0 flex-1 flex-col">{remembered ? remembered.node : outlet}</div>
-            <footer className="border-t px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>
-              <StreamStatus /> · <a href="/ais/">Open Waters AIS</a> · not for navigation
+            <footer className="flex items-center gap-2 border-t border-line py-1 pr-1.5 pl-3 text-xs text-fg-muted">
+              <span className="min-w-0 flex-1">
+                <StreamStatus /> · <a href="/ais/">Open Waters AIS</a> · not for navigation
+              </span>
+              <ThemeToggle />
             </footer>
           </aside>
 

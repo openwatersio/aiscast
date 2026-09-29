@@ -40,31 +40,69 @@
   --color-coral-900: #7f1d1d;
 }
 
-:root {
+/* The theme is a choice of colour scheme, and every token below follows it through
+   light-dark(). Dark is the default; the Worker renders the stored choice as data-theme, so
+   the first paint is already right. System follows the device. */
+:root,
+[data-theme="dark"] {
   color-scheme: dark;
+}
+[data-theme="light"] {
+  color-scheme: light;
+}
+[data-theme="system"] {
+  color-scheme: light dark;
+}
 
-  --surface: var(--color-navy-900);
-  --surface-subtle: var(--color-navy-800);
+:root {
+  --surface: light-dark(#ffffff, var(--color-navy-900));
+  --surface-subtle: light-dark(var(--color-navy-100), var(--color-navy-800));
   /* The panes float over the map, so they are glass rather than opaque: the chart reads
      through them and the app stops feeling like a sidebar bolted onto a map. */
-  --surface-glass: rgba(5, 7, 14, 0.4);
-  --text: var(--color-navy-100);
-  --text-secondary: var(--color-navy-300);
-  --text-muted: var(--color-navy-400);
-  --border: var(--color-navy-700);
-  --border-subtle: var(--color-navy-800);
-  --accent: var(--color-ocean-400);
-  --accent-hover: var(--color-ocean-300);
-  --accent-bg: var(--color-ocean-950);
-  --accent-bg-subtle: var(--color-ocean-900);
-  --shadow: rgba(0, 0, 0, 0.45);
+  --surface-glass: light-dark(rgba(255, 255, 255, 0.72), rgba(5, 7, 14, 0.4));
+  /* A grouped tile inside a pane. A fixed navy lands within a few percent of the dark glass
+     and disappears, so this is a wash that lifts off whatever is behind. */
+  --surface-tile: light-dark(rgba(15, 23, 42, 0.05), rgba(4, 8, 12, 0.2));
+  --text: light-dark(var(--color-navy-900), var(--color-navy-100));
+  --text-secondary: light-dark(var(--color-navy-600), var(--color-navy-300));
+  --text-muted: light-dark(var(--color-navy-500), var(--color-navy-400));
+  --border: light-dark(var(--color-navy-200), var(--color-navy-700));
+  --border-subtle: light-dark(var(--color-navy-100), var(--color-navy-800));
+  --accent: light-dark(var(--color-ocean-600), var(--color-ocean-400));
+  --accent-hover: light-dark(var(--color-ocean-700), var(--color-ocean-300));
+  --accent-bg: light-dark(var(--color-ocean-50), var(--color-ocean-950));
+  --accent-bg-subtle: light-dark(var(--color-ocean-100), var(--color-ocean-900));
+  --shadow: light-dark(rgba(15, 23, 42, 0.18), rgba(0, 0, 0, 0.45));
+}
 
-  --status-green-bg: rgba(22, 101, 52, 0.2);
-  --status-green-text: #86efac;
-  --status-red-bg: rgba(153, 27, 27, 0.2);
-  --status-red-text: #fca5a5;
-  --status-yellow-bg: rgba(133, 77, 14, 0.2);
-  --status-yellow-text: #fde047;
+/* The tokens as utilities: bg-surface, text-fg-muted, border-line. Components use these and
+   never name a variable. */
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-surface-glass: var(--surface-glass);
+  --color-surface-tile: var(--surface-tile);
+  --color-fg: var(--text);
+  --color-fg-secondary: var(--text-secondary);
+  --color-fg-muted: var(--text-muted);
+  --color-line: var(--border);
+  --color-line-subtle: var(--border-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-bg: var(--accent-bg);
+  --color-accent-bg-subtle: var(--accent-bg-subtle);
+}
+
+/* For what a colour token cannot carry, such as a filter. */
+@custom-variant dark {
+  :root:not([data-theme="light"]):not([data-theme="system"]) & {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    [data-theme="system"] & {
+      @slot;
+    }
+  }
 }
 
 @layer base {
@@ -124,7 +162,7 @@
   }
 }
 
-/* Every floating pane. Dark mode only, so the blur always sits over the basemap. */
+/* Every floating pane. The blur always sits over the basemap. */
 @utility pane {
   background-color: var(--surface-glass);
   border-color: var(--border);
@@ -136,7 +174,7 @@
    of it and disappears. A light wash plus a hairline lifts off whatever is actually behind,
    dark chart or bright coastline. */
 @utility tile-surface {
-  background-color: rgba(4, 8, 12, 0.2);
+  background-color: var(--surface-tile);
 }
 
 @utility sidebar-scroll {
@@ -160,23 +198,27 @@
    on source order and the controls stay white on a dark chart. The controls live inside
    #map, so prefixing with the id settles it wherever the imports end up. */
 #map .maplibregl-ctrl-group {
-  background: var(--color-navy-800);
-  border: 1px solid var(--color-navy-700);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px var(--shadow);
 }
 #map .maplibregl-ctrl-group button + button {
-  border-top-color: var(--color-navy-700);
+  border-top-color: var(--border);
 }
 #map .maplibregl-ctrl-group button:hover {
-  background: var(--color-navy-700);
+  background: var(--surface-subtle);
 }
 #map .maplibregl-ctrl-group button:not(:disabled) .maplibregl-ctrl-icon {
   /* MapLibre ships its control glyphs as dark SVG data URIs. */
-  filter: invert(1);
+  @variant dark {
+    filter: invert(1);
+  }
 }
 #map .maplibregl-ctrl-group button:disabled .maplibregl-ctrl-icon {
-  filter: invert(1);
   opacity: 0.35;
+  @variant dark {
+    filter: invert(1);
+  }
 }
 /* Geolocate ships its own coloured glyphs for the tracking states: blue when following,
    red on error. Inverting those turns the blue orange, so every state that is already
@@ -206,20 +248,22 @@
 }
 #map .maplibregl-user-location-dot,
 #map .maplibregl-user-location-dot::before {
-  background-color: var(--color-ocean-400);
+  background-color: var(--accent);
 }
 #map .maplibregl-user-location-dot::after {
-  border-color: var(--color-navy-900);
+  border-color: var(--surface);
 }
 #map .maplibregl-ctrl-attrib {
-  background: rgba(15, 23, 42, 0.8);
-  color: var(--color-navy-300);
+  background: var(--surface-glass);
+  color: var(--text-secondary);
 }
 #map .maplibregl-ctrl-attrib a {
-  color: var(--color-ocean-300);
+  color: var(--accent);
 }
 #map .maplibregl-ctrl-attrib-button {
-  filter: invert(1);
+  @variant dark {
+    filter: invert(1);
+  }
 }
 
 /* Hovercard. MapLibre's popup ships a white bubble and a white tip, both keyed to classes

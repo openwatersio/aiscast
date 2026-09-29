@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "isbot": "^5.2.2",
+    "lucide-react": "^1.48.0",
     "maplibre-gl": "^6.11.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

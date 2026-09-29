@@ -52,7 +52,7 @@ The map, the WebSocket, and the vessel cache live in the root layout and are bui
 /ais/network                sources, rates, delay
 ```
 
-A vessel opened from a list takes a second pane beside it, and the list stays where it was. A vessel opened directly, from a shared link or a crawler, fills the sidebar. Where a vessel was opened from travels in history state, not in its URL, so a copied link is always the canonical one.
+The panel is a navigation stack, and every route is an entry on it. Opening a vessel from search, a station, or the map pushes it; the back arrow pops to the previous entry, or to the route's parent after a direct visit; a vessel's close button returns to the map. Search keeps its query and results in the shell, so popping back to it finds them as they were, and each entry keeps its scroll position.
 
 The vessel URL carries the name as a slug: `/ais/vessels/368168720-cerulean`. The slug matches what people search for, which is a boat's name far more often than its MMSI. Names are neither unique nor permanent, so the MMSI stays canonical: any slug resolves, a wrong or missing one redirects once to the current form, and `<link rel="canonical">` names that form. A vessel with no known name is `/ais/vessels/368168720`. `?station=<id>` on `/ais/map` redirects to the station page, for links from the first viewer.
 
@@ -65,6 +65,22 @@ The subscription asks for no snapshot. The tiles already paint where every vesse
 **One stream.** Anonymous clients get two concurrent streams per network address, which a household or a marina shares. The app holds one connection and rebuilds a single `subscribe` frame from the viewport plus the open vessel, letting go of the last one, since followed MMSIs are capped at 10. The server accepts a socket before it checks the stream limit, so the client resets its backoff only on `welcome`, and says so in the footer when another tab holds the stream. Everything else goes over the HTTP budget.
 
 **Attribution is per source.** The app credits each source from the `attribution` field of its events and shows the open vessel's own credit and licence. The tiles carry one credit that links to the per-source list.
+
+## Interface
+
+The app should feel like Apple Maps or Google Maps to someone who uses either: the map is the page, one panel holds everything else, and the panel behaves the way theirs does.
+
+**Phone: a bottom sheet.** One sheet, never dismissed, over a map that stays interactive, with three heights. Peek shows the grabber and the search field. Half is where a vessel opens. Full is for long lists. Content scrolls only at full height, and dragging down with the content at its top moves the sheet instead. Panning the map lowers the sheet to peek, and focusing search raises it to full. The sheet's position feeds the camera padding as it moves, so the open vessel stays centred in the map above it.
+
+**Desktop: a floating panel** down the left edge, as in Google Maps, holding the same stack.
+
+**Transitions.** A push slides the new entry in from the right while the old one slides partway left and dims; a pop reverses it. The direction comes from the history index, so the browser's back button animates as a pop. React's `<ViewTransition>` runs them, since React Router wraps navigations in transitions. Only the panel is captured: the page root opts out, so the map keeps rendering live underneath. Reduced motion turns them off.
+
+**Themes.** Dark is the default, and Light and System are the other choices. The choice is a cookie scoped to `/ais`, so the Worker renders the right theme in the first response and nothing flashes. Colour tokens are written once with `light-dark()`, and each choice sets only `color-scheme`, with System setting `light dark`. The basemap is OpenFreeMap Fiord in dark and Positron in light, and the vessel, track, and label colours follow it.
+
+**Design system.** Semantic tokens are Tailwind utilities (`bg-surface`, `text-fg-muted`, `border-line`), with the same names and values as openwaters.io, so no component references a CSS variable by hand. A type scale follows iOS: large title, title, headline, body, footnote, caption, in the system font with tabular figures for data. A small set of components lives in `app/components/ui/`, owned in this repo: `Sheet`, `PanelHeader`, `List` and `ListRow`, `Section` in the inset-grouped style, `StatGrid`, `SearchField`, `IconButton`, `SegmentedControl`, `Menu`, `Popover`. Base UI supplies their behaviour, including the drawer with snap points, and `lucide-react` the icons. CI fails on a CSS variable in a `className` or `style`. Once openwaters.io uses the same tokens, they move to a package both import.
+
+On the map: a status chip saying Live or Overview in place of the footer, the controls at the bottom right above the sheet on touch devices without zoom buttons, touch targets of at least 44 px, and an action row under a vessel's name for Follow, Share, and Track.
 
 ## Indexing
 
@@ -91,6 +107,12 @@ An unknown MMSI answers 404 with `noindex`. A vessel the record holds always ren
 - [ ] Website: link `/ais/` to `/ais/map`, allow the app's paths in `robots.txt`, and point the status monitor at the app.
 - [ ] Retire `viewer/index.html`, `viewer/token.html`, and the Pages workflow. The Pages copy becomes a page that forwards to `openwaters.io/ais/map`, keeping `?station=`.
 - [ ] Share one stream across tabs with a `SharedWorker`, so a second tab does not spend the address's second stream.
+- [ ] Theme: Dark, Light, and System, the cookie, `light-dark()` tokens, and the basemap and vessel colours following it.
+- [ ] Spike: the Base UI drawer as the phone sheet, with three heights and the scroll handoff, on a real phone, and one animated push and pop. It decides the sheet library; `react-modal-sheet` or our own pointer handling are the fallbacks.
+- [ ] Tokens as Tailwind utilities, the `ui/` components, and `lucide-react`; every view migrated and no inline style left, with the CI check.
+- [ ] One navigation stack in place of the second pane, with push and pop transitions and scroll restored per entry.
+- [ ] The phone sheet and the desktop panel.
+- [ ] Map chrome: status chip, controls, action row, touch targets; browser tests for the sheet heights and the back stack.
 - [ ] Station list detail: source kind, vessels heard, duplicates. All are in `/v1/stations`.
 - [ ] Network page: vessel counts by kind and `/health`.
 - [ ] Live charts from the stream. Every event carries `station` and `source`, so events per minute needs no server change.

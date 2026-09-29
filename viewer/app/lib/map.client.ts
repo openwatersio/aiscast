@@ -15,11 +15,22 @@ import {
 } from "./ais";
 import { publicApiBase } from "./api";
 import type { BBox, Stream } from "./stream";
+import type { Theme } from "./theme";
 
 maplibregl.setWorkerUrl(workerUrl);
 
-// Same basemap as openwaters.io/ais.
-const BASEMAP = "https://tiles.openfreemap.org/styles/fiord";
+// Fiord is the basemap on openwaters.io/ais. Positron is its light counterpart from the same
+// server, with the same fonts.
+const BASEMAP: Record<Theme, string> = {
+  dark: "https://tiles.openfreemap.org/styles/fiord",
+  light: "https://tiles.openfreemap.org/styles/positron",
+};
+
+/** Colours drawn on the map, which cannot read CSS tokens. */
+const PALETTE: Record<Theme, { track: string; outline: string; label: string; labelHalo: string; disc: string; discOpacity: number }> = {
+  dark: { track: "#38bdf8", outline: "#0f172a", label: "#e2e8f0", labelHalo: "#0f172a", disc: "#0b1220", discOpacity: 0.55 },
+  light: { track: "#0284c7", outline: "#ffffff", label: "#0f172a", labelHalo: "#ffffff", disc: "#ffffff", discOpacity: 0.8 },
+};
 
 /** The anonymous cap, until the stream's welcome frame says what this client may have. */
 const DEFAULT_AREA_CAP = 100;
@@ -69,6 +80,8 @@ export interface MapController {
   onSelect(fn: (mmsi: number, name?: string) => void): void;
   /** `overview` above the stream's area cap, where vessels come from tiles instead. */
   mode(): "live" | "overview";
+  /** Swaps the basemap and the colours drawn over it. */
+  setTheme(theme: Theme): void;
 }
 
 function shipIcon(): ImageData {
@@ -94,10 +107,12 @@ function bboxArea(b: BBox): number {
 export function createMap(
   container: HTMLElement,
   stream: Stream,
+  initialTheme: Theme,
 ): MapController {
+  let theme = initialTheme;
   const map = new maplibregl.Map({
     container,
-    style: BASEMAP,
+    style: BASEMAP[theme],
     center: [-70.9, 41.6],
     zoom: 8,
     hash: "map",
@@ -281,7 +296,7 @@ export function createMap(
           "circle-color": colorExpr,
           "circle-opacity": opacity,
           "circle-stroke-width": ["step", ["zoom"], 0, 6, 1],
-          "circle-stroke-color": "#0f172a",
+          "circle-stroke-color": PALETTE[theme].outline,
           "circle-stroke-opacity": opacity,
         },
       },
@@ -301,7 +316,7 @@ export function createMap(
         paint: {
           "icon-color": colorExpr,
           "icon-opacity": opacity,
-          "icon-halo-color": "#0f172a",
+          "icon-halo-color": PALETTE[theme].outline,
           "icon-halo-width": 1,
         },
       },
@@ -321,8 +336,8 @@ export function createMap(
           "text-optional": true,
         },
         paint: {
-          "text-color": "#e2e8f0",
-          "text-halo-color": "#0f172a",
+          "text-color": PALETTE[theme].label,
+          "text-halo-color": PALETTE[theme].labelHalo,
           "text-halo-width": 1.5,
           "text-opacity": opacity,
         },
@@ -584,7 +599,83 @@ export function createMap(
     renderTrack();
   }
 
-  map.on("load", () => {
+  // Hovercard. setDOMContent rather than setHTML: a vessel name is operator-typed text
+  // arriving off the air, so it never goes near an HTML parser.
+  const hover = new maplibregl.Popup({
+    closeButton: false,
+    closeOnClick: false,
+    offset: 12,
+    className: "vessel-hovercard",
+  });
+
+  // The first feature under the pointer that is showing. A tile's copy of a vessel the stream
+  // is drawing is invisible but still answers queries, at wherever the tile last had it.
+  const visible = (e: maplibregl.MapLayerMouseEvent) => e.features?.find((f) => !f.state?.live);
+
+  function showHover(e: maplibregl.MapLayerMouseEvent) {
+    const f = visible(e);
+    if (!f) return;
+    map.getCanvas().style.cursor = "pointer";
+    const mmsi = Number(f.properties?.mmsi);
+    const live = stream.vessels.get(mmsi);
+    // A tile feature carries its own summary; a stream feature is looked up for the latest.
+    const p = f?.properties ?? {};
+    const v = live
+      ? live
+      : f && f.geometry.type === "Point"
+        ? {
+            name: p.name as string | undefined,
+            kind: p.kind as string | undefined,
+            shipType: p.type as number | undefined,
+            sog: p.sog as number | undefined,
+            cog: p.cog as number | undefined,
+            seen: Date.now() - Number(p.age_s ?? 0) * 1000,
+            lon: f.geometry.coordinates[0],
+            lat: f.geometry.coordinates[1],
+          }
+        : undefined;
+    if (!v) return;
+
+    const el = document.createElement("div");
+    const title = el.appendChild(document.createElement("strong"));
+    title.textContent = v.name ?? String(mmsi);
+
+    const meta = el.appendChild(document.createElement("div"));
+    meta.className = "meta";
+    meta.textContent = [
+      CLASS_LABELS[shipClass(v.kind, v.shipType)],
+      v.sog != null ? `${v.sog.toFixed(1)} kn` : undefined,
+      v.cog != null ? `${Math.round(v.cog)}°` : undefined,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+    const age = el.appendChild(document.createElement("div"));
+    age.className = "meta";
+    const secs = Math.max(0, Math.round((Date.now() - v.seen) / 1000));
+    age.textContent = `${v.name ? `MMSI ${mmsi} · ` : ""}${secs < 60 ? `${secs}s` : `${Math.round(secs / 60)} min`} ago`;
+
+    hover.setLngLat([v.lon!, v.lat!]).setDOMContent(el).addTo(map);
+  }
+
+  for (const layer of ["vessel-still", "vessel-moving", "tile-still", "tile-moving"]) {
+    map.on("mousemove", layer, showHover);
+    map.on("mouseleave", layer, () => {
+      map.getCanvas().style.cursor = "";
+      hover.remove();
+    });
+    map.on("click", layer, (e: maplibregl.MapLayerMouseEvent) => {
+      const props = visible(e)?.properties;
+      const mmsi = Number(props?.mmsi);
+      const name = typeof props?.name === "string" && props.name ? props.name : undefined;
+      if (mmsi) for (const fn of selectHandlers) fn(mmsi, name);
+    });
+  }
+
+  // Sources, layers, and images belong to the style, so swapping the basemap for a theme
+  // removes them. This puts them back, on the first style and on every swap.
+  map.on("style.load", () => {
+    const c = PALETTE[theme];
     map.addImage("ship", shipIcon(), { sdf: true });
 
     map.addSource("track", { type: "geojson", data: emptyFC() });
@@ -599,7 +690,7 @@ export function createMap(
       source: "track-all",
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
-        "line-color": "#38bdf8",
+        "line-color": c.track,
         "line-width": 2,
         "line-opacity": 0.3,
         "line-dasharray": [0.5, 3],
@@ -612,7 +703,7 @@ export function createMap(
       source: "track",
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
-        "line-color": "#38bdf8",
+        "line-color": c.track,
         "line-width": 2.5,
         "line-opacity": 0.85,
       },
@@ -624,9 +715,9 @@ export function createMap(
       source: "track-head",
       paint: {
         "circle-radius": 6,
-        "circle-color": "#38bdf8",
+        "circle-color": c.track,
         "circle-stroke-width": 2,
-        "circle-stroke-color": "#0f172a",
+        "circle-stroke-color": c.outline,
       },
     });
 
@@ -640,140 +731,82 @@ export function createMap(
       type: "circle",
       source: "vessels",
       filter: ["get", "focused"],
-      // A dark disc, not a tint. Class colours run from green through orange to violet, and
-      // every one of them has more contrast against near-black than against a pale wash of
-      // the accent. The rim carries the selection; the disc carries the symbol.
+      // A disc of the theme's own background, not a tint. Class colours run from green
+      // through orange to violet, and every one of them stands out more against that than
+      // against a wash of the accent. The rim carries the selection; the disc the symbol.
       paint: {
         "circle-radius": 15,
-        "circle-color": "#0b1220",
-        "circle-opacity": 0.55,
+        "circle-color": c.disc,
+        "circle-opacity": c.discOpacity,
         "circle-stroke-width": 2,
-        "circle-stroke-color": "#38bdf8",
+        "circle-stroke-color": c.track,
       },
     });
     for (const layer of vesselLayers("vessel", "vessels", undefined, fadeExpr)) map.addLayer(layer);
 
-    // Hovercard. setDOMContent rather than setHTML: a vessel name is operator-typed text
-    // arriving off the air, so it never goes near an HTML parser.
-    const hover = new maplibregl.Popup({
-      closeButton: false,
-      closeOnClick: false,
-      offset: 12,
-      className: "vessel-hovercard",
-    });
-
-    // The first feature under the pointer that is showing. A tile's copy of a vessel the stream
-    // is drawing is invisible but still answers queries, at wherever the tile last had it.
-    const visible = (e: maplibregl.MapLayerMouseEvent) => e.features?.find((f) => !f.state?.live);
-
-    function showHover(e: maplibregl.MapLayerMouseEvent) {
-      const f = visible(e);
-      if (!f) return;
-      map.getCanvas().style.cursor = "pointer";
-      const mmsi = Number(f.properties?.mmsi);
-      const live = stream.vessels.get(mmsi);
-      // A tile feature carries its own summary; a stream feature is looked up for the latest.
-      const p = f?.properties ?? {};
-      const v = live
-        ? live
-        : f && f.geometry.type === "Point"
-          ? {
-              name: p.name as string | undefined,
-              kind: p.kind as string | undefined,
-              shipType: p.type as number | undefined,
-              sog: p.sog as number | undefined,
-              cog: p.cog as number | undefined,
-              seen: Date.now() - Number(p.age_s ?? 0) * 1000,
-              lon: f.geometry.coordinates[0],
-              lat: f.geometry.coordinates[1],
-            }
-          : undefined;
-      if (!v) return;
-
-      const el = document.createElement("div");
-      const title = el.appendChild(document.createElement("strong"));
-      title.textContent = v.name ?? String(mmsi);
-
-      const meta = el.appendChild(document.createElement("div"));
-      meta.className = "meta";
-      meta.textContent = [
-        CLASS_LABELS[shipClass(v.kind, v.shipType)],
-        v.sog != null ? `${v.sog.toFixed(1)} kn` : undefined,
-        v.cog != null ? `${Math.round(v.cog)}°` : undefined,
-      ]
-        .filter(Boolean)
-        .join(" · ");
-
-      const age = el.appendChild(document.createElement("div"));
-      age.className = "meta";
-      const secs = Math.max(0, Math.round((Date.now() - v.seen) / 1000));
-      age.textContent = `${v.name ? `MMSI ${mmsi} · ` : ""}${secs < 60 ? `${secs}s` : `${Math.round(secs / 60)} min`} ago`;
-
-      hover.setLngLat([v.lon!, v.lat!]).setDOMContent(el).addTo(map);
-    }
-
-    for (const layer of ["vessel-still", "vessel-moving", "tile-still", "tile-moving"]) {
-      map.on("mousemove", layer, showHover);
-      map.on("mouseleave", layer, () => {
-        map.getCanvas().style.cursor = "";
-        hover.remove();
-      });
-      map.on("click", layer, (e: maplibregl.MapLayerMouseEvent) => {
-        const props = visible(e)?.properties;
-        const mmsi = Number(props?.mmsi);
-        const name = typeof props?.name === "string" && props.name ? props.name : undefined;
-        if (mmsi) for (const fn of selectHandlers) fn(mmsi, name);
-      });
-    }
+    // What the map held went with the old style, so everything is sent again.
+    drawn.clear();
+    hiddenInTiles.clear();
+    historyKey = "";
+    trackKey = "";
+    hasTiles = false;
+    if (tileJSON) addTileLayers();
 
     ready = true;
     updateView();
     render();
     applyInsets();
     runPendingCamera();
-    void addTiles();
   });
 
   // Every vessel's last known position comes from the tile endpoint, at every zoom: a snapshot
   // the server rebuilds every 10 s, which no tier's area cap applies to. Within the cap the
   // stream draws over it live. Without tiles (a server that does not serve them) the stream
   // draws alone and the wide view stays empty.
+  let tileJSON: { tiles: string[]; minzoom?: number; maxzoom?: number; attribution?: string } | undefined;
+  // True while the current style has the tile source.
   let hasTiles = false;
   // Past the stream's area cap, where the stream follows only the open vessel.
   let overview = false;
+  let lastRefresh = 0;
 
-  async function addTiles() {
-    let tj: { tiles: string[]; minzoom?: number; maxzoom?: number; attribution?: string };
+  void (async () => {
     try {
       const res = await fetch(`${publicApiBase()}/v1/vessels/tiles.json`);
       if (!res.ok) return;
-      tj = await res.json();
+      tileJSON = await res.json();
     } catch {
       return;
     }
-    // One credit linking to the per-source list, which is how the tiles are licensed to be
-    // credited. The attribution control adds it beside the stream's per-source lines.
-    map.addSource("tiles", {
-      type: "vector",
-      tiles: tj.tiles,
-      minzoom: tj.minzoom ?? 0,
-      maxzoom: tj.maxzoom ?? 14,
-      attribution: tj.attribution,
-    });
-    // Beneath the stream's layers, so the stream's labels are placed first and the open
-    // vessel's halo draws over everything.
-    for (const layer of vesselLayers("tile", "tiles", "vessels", tileFadeExpr)) map.addLayer(layer, "vessel-halo");
-    hasTiles = true;
     lastRefresh = Date.now();
     setInterval(() => {
       if (Date.now() - lastRefresh >= (overview ? TILE_OVERVIEW_MS : TILE_BACKSTOP_MS)) refreshTiles();
     }, 5_000);
     // Tiles a pan brings back from MapLibre's cache are as old as when they left the view.
     map.on("movestart", refreshTiles);
-    render();
-  }
+    // Before the style has loaded, its style.load adds them.
+    if (ready) {
+      addTileLayers();
+      render();
+    }
+  })();
 
-  let lastRefresh = 0;
+  function addTileLayers() {
+    if (!tileJSON) return;
+    // One credit linking to the per-source list, which is how the tiles are licensed to be
+    // credited. The attribution control adds it beside the stream's per-source lines.
+    map.addSource("tiles", {
+      type: "vector",
+      tiles: tileJSON.tiles,
+      minzoom: tileJSON.minzoom ?? 0,
+      maxzoom: tileJSON.maxzoom ?? 14,
+      attribution: tileJSON.attribution,
+    });
+    // Beneath the stream's layers, so the stream's labels are placed first and the open
+    // vessel's halo draws over everything.
+    for (const layer of vesselLayers("tile", "tiles", "vessels", tileFadeExpr)) map.addLayer(layer, "vessel-halo");
+    hasTiles = true;
+  }
 
   function refreshTiles() {
     // A hidden tab would fetch tiles nobody sees. The next visible tick catches up.
@@ -842,7 +875,14 @@ export function createMap(
       };
     },
     refreshInsets: applyInsets,
-    mode: () => (overview && hasTiles ? "overview" : "live"),
+    mode: () => (overview && tileJSON ? "overview" : "live"),
+    setTheme(next) {
+      if (next === theme) return;
+      theme = next;
+      // Nothing is drawn until the new style's layers are back.
+      ready = false;
+      map.setStyle(BASEMAP[theme], { diff: false });
+    },
     setTrack(coords, endedAt, times) {
       history = coords;
       historyTimes = times ?? coords.map((_, i) => i);
