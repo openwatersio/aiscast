@@ -220,9 +220,10 @@ func TestImportMergesHistoryIntoTheRecord(t *testing.T) {
 		// Heard live today, and in history a month ago under an older name.
 		{"mmsi": 257000001, "name": "OLD NAME", "callsign": "OLDCS", "ship_type": 70, "draught10": 52, "cls": "A",
 			"first_ts": ts(month), "last_ts": ts(month), "last_lat6": 58 * 600000, "last_lon6": 9 * 600000, "updated_ts": ts(month), "last_source": "kystverket"},
-		// Only in history.
+		// Only in history, with a static update after its last position: seen stays with the position, the
+		// message its source describes.
 		{"mmsi": 257000002, "name": "GONE", "callsign": nil, "ship_type": nil, "draught10": nil, "cls": "B",
-			"first_ts": ts(month), "last_ts": ts(month.Add(time.Hour)), "last_lat6": int(59.5 * 600000), "last_lon6": int(10.5 * 600000), "updated_ts": nil, "last_source": "digitraffic"},
+			"first_ts": ts(month), "last_ts": ts(month.Add(time.Hour)), "last_lat6": int(59.5 * 600000), "last_lon6": int(10.5 * 600000), "updated_ts": ts(month.Add(2 * time.Hour)), "last_source": "digitraffic"},
 		// Only in history, never with a position.
 		{"mmsi": 257000003, "name": "STATIC ONLY", "callsign": nil, "ship_type": 30, "draught10": nil, "cls": nil,
 			"first_ts": ts(month), "last_ts": nil, "last_lat6": nil, "last_lon6": nil, "updated_ts": ts(month), "last_source": nil},
@@ -259,13 +260,15 @@ func TestImportMergesHistoryIntoTheRecord(t *testing.T) {
 		t.Errorf("an imported vessel answers its lookup with its credit line: %d %s", w.Code, w.Body)
 	}
 
-	// Running again changes nothing; an older first sighting from a later backfill moves first_seen back.
+	// Running again changes nothing; an older first sighting from a later backfill moves first_seen back, and a
+	// newer static update without a newer position leaves seen with the position.
 	f.vessels[1]["first_ts"] = ts(month.AddDate(0, -1, 0))
+	f.vessels[1]["updated_ts"] = ts(month.Add(3 * time.Hour))
 	if _, err := p.importVessels(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	rec, _, _ = p.store.get(257000002)
-	if !rec.firstSeen.Equal(month.AddDate(0, -1, 0)) || rec.v.Lat != 59.5 {
+	if !rec.firstSeen.Equal(month.AddDate(0, -1, 0)) || rec.v.Lat != 59.5 || !rec.v.Seen.Equal(month.Add(time.Hour)) {
 		t.Errorf("backdated first_seen: %+v %v", rec.v, rec.firstSeen)
 	}
 }

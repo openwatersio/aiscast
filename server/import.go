@@ -61,7 +61,7 @@ ON CONFLICT (mmsi) DO UPDATE SET
 	msg_type   = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, '', vessels.msg_type),
 	pos_at     = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, excluded.pos_at, vessels.pos_at),
 	has_pos    = max(excluded.has_pos, vessels.has_pos),
-	seen       = max(excluded.seen, vessels.seen),
+	seen       = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, max(excluded.seen, vessels.seen), vessels.seen),
 	first_seen = min(excluded.first_seen, vessels.first_seen)
 `
 
@@ -93,12 +93,15 @@ func (s *store) importRows(rows []historyRow) error {
 	}
 	defer st.Close()
 	for _, r := range rows {
+		// seen is the time of the message that source, station, and msg_type describe. History knows the source
+		// of the last position only, so with a position seen is that position's time. A vessel without one is
+		// new to the record, with no source, and seen is its latest static update.
 		seen := r.last
-		if r.updated.After(seen) {
+		if !r.hasPos {
 			seen = r.updated
-		}
-		if seen.IsZero() {
-			seen = r.first
+			if seen.IsZero() || r.first.After(seen) {
+				seen = r.first
+			}
 		}
 		first := r.first
 		if first.IsZero() || first.After(seen) {
