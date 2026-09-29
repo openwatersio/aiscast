@@ -219,6 +219,14 @@ groups:
         annotations:
           summary: '{{ $value | printf "%.0f" }} lake queries failed in 15 minutes'
           description: Tracks past 48 hours are failing. Check the lake and duckdb lines in journalctl -u aiscast, the LAKE_CATALOG_TOKEN, and the Cloudflare status page.
+      - alert: ImportStale
+        # The import runs daily after 03:00 UTC. The timestamp is absent until the first import succeeds.
+        expr: time() - aiscast_import_last_success_timestamp_seconds > 2 * 86400 or absent(aiscast_import_last_success_timestamp_seconds)
+        for: 6h
+        labels: {severity: warning}
+        annotations:
+          summary: The lake's vessels have not merged into the record for two days
+          description: New history is not reaching vessel lookups or first_seen. Check the import lines in journalctl -u aiscast, the packager's last run, and the LAKE_CATALOG_TOKEN.
       - alert: TracksWritesSlow
         expr: rate(aiscast_tracks_write_seconds_total[15m]) > 0.5
         for: 15m
