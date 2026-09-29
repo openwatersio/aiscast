@@ -242,6 +242,23 @@ def test_package_day(packaged):
         assert cells == sorted(cells), f"{f['file_path']} is not in cell order"
 
 
+def test_write_passes_hold_whole_buckets(packaged):
+    """Each pass holds whole mmsi buckets, so a day written in passes still has one file per bucket."""
+    _, catalog, _, _ = packaged
+    tbl = catalog.load_table("ais.positions")
+    con = duckdb.connect()
+    con.execute("CREATE TABLE positions AS SELECT range::BIGINT AS mmsi FROM range(200000000, 200002000) UNION ALL SELECT NULL")
+    field = next(f for f in tbl.spec().fields if f.name == "mmsi_bucket")
+    seen, total = {}, 0
+    for i, where in enumerate(packager.write_passes(con, tbl, "positions")):
+        got = con.execute(f"SELECT mmsi FROM positions {where}").to_arrow_table().column("mmsi")
+        total += len(got)
+        for b in field.transform.pyarrow_transform(tbl.schema().find_field(field.source_id).field_type)(got.drop_null().cast(pa.int64())).to_pylist():
+            assert seen.setdefault(b, i) == i, f"bucket {b} split across passes {seen[b]} and {i}"
+    assert set(seen) == set(range(32))
+    assert total == 2001, "every row, the null mmsi too, lands in exactly one pass"
+
+
 def test_rerun_replaces_day(packaged):
     envs, catalog, con, files = packaged
     first = {(p["id"], p["ts"]) for p in rows(catalog, "positions")}
@@ -348,6 +365,17 @@ def test_weather_columns_cover_every_methyd_field():
     assert set(record) - known == set(), f"unhandled MetHyd fields: {sorted(set(record) - known)}"
 
 
+def test_init_creates_the_tables_and_packages_nothing(tmp_path, monkeypatch):
+    """--init sets up the catalog once, before a workflow packages days in parallel."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    monkeypatch.setattr(sys, "argv", ["packager", "--init"])
+    packager.main()
+    catalog = packager.get_catalog()
+    assert {t[-1] for t in catalog.list_tables("ais")} == {"positions", "receptions", "vessels", "weather"}
+    assert not catalog.load_table("ais.positions").snapshots(), "nothing was packaged"
+
+
 def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatch, capsys):
     """A day is skipped only when packaged from exactly its current hours; an hour that lands late
     repackages it. A day that fails does not stop the rest of the week, but fails the run."""
@@ -378,6 +406,15 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
         except SystemExit as e:
             return str(e)
 
+    # a week of days in one staging database outgrows a runner's disk, so each day starts empty
+    real, staged = packager.process_day, []
+
+    def process_day(day, files, con, *rest):
+        staged.append(con.execute("SELECT count(*) FROM duckdb_tables()").fetchone()[0])
+        return real(day, files, con, *rest)
+
+    monkeypatch.setattr(packager, "process_day", process_day)
+
     hour(d2, "01", tx(d2, "01", "d2000001"))
     hour(d1, "01", tx(d1, "01", "d1000001"))
     bad = copy.deepcopy(ev)
@@ -387,6 +424,7 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
     assert not (packager.HERE / "stage").exists(), "a run leaves no staging database behind"
     days = {p["day"].isoformat() for p in rows(packager.get_catalog(), "positions")}
     assert days == {d1, d2}, "the days after the bad one still package"
+    assert len(staged) == 3 and not any(staged), f"each day starts from an empty staging database: {staged}"
 
     capsys.readouterr()
     run()
@@ -439,6 +477,46 @@ def test_vessel_fields_merge_on_their_own_times_in_any_day_order(tmp_path):
     assert (v["name"], v["callsign"]) == ("N10", "C8"), "the callsign seen at 08:00 beats the one seen at 05:00"
 
 
+def test_days_packaged_at_once_both_reach_the_vessels(tmp_path, monkeypatch):
+    """Parallel days each rewrite ais.vessels. When another day commits between this day's read and
+    its write, the write is refused and redone from a fresh read, so neither day's fields are lost."""
+    from pyiceberg.table import Table
+
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    envs = fixture_envelopes()
+    st, cp = template(envs, "event", "ShipStaticData"), template(envs, "copy")
+    mmsi = st["r"]["mmsi"]
+
+    def day_files(day, id, ts, **fields):
+        e = event_at(st, id, ts, recv=ts)
+        e["r"]["message"].update({"Name": "", "CallSign": "", **fields})
+        d = tmp_path / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True)
+        with gzip.open(d / "08.gz", "wt") as f:
+            f.writelines(json.dumps(x) + "\n" for x in (e, copy_at(cp, id, ts, recv=ts)))
+        return sorted(glob.glob(f"{d}/*.gz"))
+
+    a = day_files("2026-09-01", "5b000001", "2026-09-01T08:00:00Z", CallSign="CA")
+    b = day_files("2026-09-02", "5b000002", "2026-09-02T08:00:00Z", Name="NB")
+    catalog = packager.get_catalog()
+    overwrite, interleaved = Table.overwrite, []
+
+    def racing_overwrite(self, *args, **kwargs):
+        if self.name()[-1] == "vessels" and not interleaved:
+            interleaved.append(True)  # day A lands after day B read the table
+            packager.process_day("2026-09-01", a, duckdb.connect(), catalog)
+        return overwrite(self, *args, **kwargs)
+
+    monkeypatch.setattr(Table, "overwrite", racing_overwrite)
+    packager.process_day("2026-09-02", b, duckdb.connect(), catalog)
+
+    assert interleaved
+    [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == mmsi]
+    assert (v["name"], v["callsign"]) == ("NB", "CA"), "the day that committed first kept its callsign"
+
+
 def test_cell_covers_the_poles_and_the_antimeridian():
     """Every position has a cell in 0..64799 (latitude 90 and longitude 180 fold into the last row and
     column), and no position means no cell."""
@@ -471,19 +549,27 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
     packager.HERE.mkdir()
     envs = fixture_envelopes()
     ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+    st = template(envs, "event", "ShipStaticData")
 
-    def position(id, ts, lat, lon, source, **flags):
-        e = event_at(ev, id, ts, **flags)
+    def position(id, ts, lat, lon, source, recv=None, **flags):
+        e = event_at(ev, id, ts, recv=recv, **flags)
         e["r"].update(mmsi=257999001, lat=lat, lon=lon, source=source)
-        return [e, copy_at(cp, id, ts)]
+        return [e, copy_at(cp, id, ts, recv=recv)]
+
+    def reset_clock_static(id, recv):  # a device whose clock reset stamps its reports years back
+        e = event_at(st, id, "2013-12-31T23:00:00Z", recv=recv)
+        e["r"]["mmsi"] = 257999001
+        e["r"]["message"].update(Name="", CallSign="", Type=0, MaximumStaticDraught=0)  # it carries no particulars
+        return [e]
 
     root = tmp_path / "normalized"
     days = {  # packaged in this order: the later day first
         "2026-09-02": position("f5000001", "2026-09-02T10:00:00Z", 60.5, 5.25, "barentswatch"),
-        # a satellite report from 05:00, flagged stale when it arrived after the 08:00 one: the vessel
-        # was still heard at 05:00, so it sets first_ts, though it is never the last position
+        # a satellite report from 05:00, flagged stale when it arrived at 08:30, after the 08:00 one: it
+        # counts as hearing the vessel, but first_ts is when the network heard it, 08:00
         "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5, "digitraffic")
-                      + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", stale=True),
+                      + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", recv="2026-09-01T08:30:00Z", stale=True)
+                      + reset_clock_static("f5000004", "2026-09-01T09:00:00Z"),
     }
     catalog = packager.get_catalog()
     con = duckdb.connect()
@@ -497,7 +583,7 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
 
     [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == 257999001]
     assert v["name"] is None and v["ship_type"] == 0, "a vessel with no statics still has a row, its static fields unknown"
-    assert v["first_ts"].isoformat() == "2026-09-01T05:00:00", "first_ts is the earliest report of any day, flagged ones included"
+    assert v["first_ts"].isoformat() == "2026-09-01T08:00:00", "first_ts is the earliest receive time, not a report's own clock"
     assert v["last_ts"].isoformat() == "2026-09-02T10:00:00" and (v["last_lat6"], v["last_lon6"]) == (60.5 * 600000, 5.25 * 600000), \
         "the latest position wins even when its day was packaged first"
     assert v["last_source"] == "barentswatch", "the last position carries the source that delivered it, for its credit line"

@@ -78,7 +78,9 @@ func (f *tileFilter) match(mmsi uint32, v *vessel, now time.Time) bool {
 // serveVesselTile: GET /v1/vessels/tiles/{z}/{x}/{y} → the vessels in one tile, gzipped. The area
 // cap does not apply: a tile bounds its own cost by thinning, and the tile rate limit bounds how many.
 func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if preflight(w, r, corsHeaders) {
+		return
+	}
 	if p.limited(w, tileLimit, clientIP(r)) {
 		return
 	}

@@ -209,7 +209,6 @@ func (s *stationStats) rows(now time.Time) []stationRow {
 // serveStations: GET /v1/stations → every station heard since boot; GET /v1/stations/{id} → that station with
 // the vessels it last updated as GeoJSON. Volunteer UDP stations appear as keyed hashes, never addresses.
 func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 	now := time.Now()
 	id := strings.TrimPrefix(r.URL.Path, "/v1/stations")
