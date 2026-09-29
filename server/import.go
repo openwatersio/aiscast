@@ -56,6 +56,7 @@ ON CONFLICT (mmsi) DO UPDATE SET
 	cog        = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, 360, vessels.cog),
 	sog        = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, 102.3, vessels.sog),
 	heading    = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, 511, vessels.heading),
+	nav_status = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, 15, vessels.nav_status),
 	source     = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, excluded.source, vessels.source),
 	station    = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, '', vessels.station),
 	msg_type   = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, '', vessels.msg_type),

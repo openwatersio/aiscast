@@ -271,6 +271,19 @@ func TestImportMergesHistoryIntoTheRecord(t *testing.T) {
 	if !rec.firstSeen.Equal(month.AddDate(0, -1, 0)) || rec.v.Lat != 59.5 || !rec.v.Seen.Equal(month.Add(time.Hour)) {
 		t.Errorf("backdated first_seen: %+v %v", rec.v, rec.firstSeen)
 	}
+
+	// A newer position from history clears the motion the older one carried, navigational status included.
+	if _, err := p.store.db.Exec(`UPDATE vessels SET nav_status = 5 WHERE mmsi = 257000002`); err != nil {
+		t.Fatal(err)
+	}
+	f.vessels[1]["last_ts"], f.vessels[1]["last_lat6"] = ts(month.Add(4*time.Hour)), int(59.6*600000)
+	if _, err := p.importVessels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, _ = p.store.get(257000002)
+	if rec.v.Lat != 59.6 || rec.v.NavStatus != 15 || !rec.v.Seen.Equal(month.Add(4*time.Hour)) {
+		t.Errorf("a newer position from history: %+v", rec.v)
+	}
 }
 
 func TestImportSchedule(t *testing.T) {
