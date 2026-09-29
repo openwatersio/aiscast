@@ -456,7 +456,7 @@ type mcpTrackPoint struct {
 type mcpTrack struct {
 	MMSI        uint32            `json:"mmsi"`
 	Name        string            `json:"name,omitempty"`
-	From        string            `json:"from" jsonschema:"start of the range covered, after clamping to the last 48 hours"`
+	From        string            `json:"from" jsonschema:"start of the range covered, after clamping to what the caller can reach: the last 48 hours, or the archive for feeder and commercial tokens"`
 	To          string            `json:"to"`
 	IntervalS   int64             `json:"interval_s" jsonschema:"at most one position per this many seconds; 0 is every position heard"`
 	Positions   []mcpTrackPoint   `json:"positions" jsonschema:"oldest first"`
