@@ -4,7 +4,15 @@ import * as maplibregl from "maplibre-gl";
 // worker 404s. Naming it here statically lets Vite bundle it (it imports a shared chunk, so
 // copying the file alone is not enough) and hands back the hashed URL to point MapLibre at.
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
-import { CLASS_COLORS, CLASS_LABELS, mergeTrack, shipClass } from "./ais";
+import {
+  bearing,
+  CLASS_COLORS,
+  CLASS_LABELS,
+  interpolateAt,
+  mergeTrack,
+  shipClass,
+  splitTrack,
+} from "./ais";
 import type { BBox, Stream } from "./stream";
 
 maplibregl.setWorkerUrl(workerUrl);
@@ -27,7 +35,18 @@ export interface MapController {
    * The positions the server holds for the focused vessel. `endedAt` is the time of its last
    * point, so live positions already covered by it are not drawn a second time.
    */
-  setTrack(coords: Array<[number, number]>, endedAt?: number): void;
+  setTrack(
+    coords: Array<[number, number]>,
+    endedAt?: number,
+    times?: number[],
+  ): void;
+  /**
+   * Reveal the track as far as this moment and mark the vessel's position there. Null
+   * returns the whole track and resumes following the live positions.
+   */
+  scrubTo(at: number | null): void;
+  /** Bring the whole track into the uncovered map, for starting playback. */
+  fitTrack(): void;
   flyToVessel(mmsi: number, fallback?: [number, number]): void;
   fitBBox(bbox: BBox): void;
   onSelect(fn: (mmsi: number) => void): void;
@@ -53,7 +72,10 @@ function bboxArea(b: BBox): number {
   return Math.abs(b[2] - b[0]) * Math.abs(b[3] - b[1]);
 }
 
-export function createMap(container: HTMLElement, stream: Stream): MapController {
+export function createMap(
+  container: HTMLElement,
+  stream: Stream,
+): MapController {
   const map = new maplibregl.Map({
     container,
     style: BASEMAP,
@@ -62,7 +84,10 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
     hash: "map",
     attributionControl: false,
   });
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  map.addControl(
+    new maplibregl.NavigationControl({ showCompass: false }),
+    "top-right",
+  );
   // MapLibre's own control: permission prompt, the accuracy circle, and the follow state
   // are all handled. Nothing here needs to know where the user is.
   map.addControl(
@@ -121,7 +146,9 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
     const h = container.clientHeight;
     if (!w || !h) return;
 
-    const panels = [...document.querySelectorAll<HTMLElement>("[data-map-inset]")]
+    const panels = [
+      ...document.querySelectorAll<HTMLElement>("[data-map-inset]"),
+    ]
       .map((el) => el.getBoundingClientRect())
       .filter((r) => r.width > 0 && r.height > 0);
 
@@ -138,6 +165,16 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
     padding.left = Math.min(padding.left, w * 0.75);
     padding.bottom = Math.min(padding.bottom, h * 0.75);
     map.setPadding(padding);
+    // Anything docked over the map centres in what the panes leave, not in the viewport. This
+    // is the pane's own edge, without the camera's gap, which would shift it by that much.
+    const edge =
+      panels.length && window.matchMedia("(min-width: 768px)").matches
+        ? Math.max(...panels.map((r) => r.right))
+        : 0;
+    document.documentElement.style.setProperty(
+      "--map-left",
+      `${Math.round(edge)}px`,
+    );
   }
 
   let focus: number | undefined;
@@ -147,7 +184,8 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
 
   const viewBBox = (): BBox => {
     const b = map.getBounds();
-    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+    const clamp = (v: number, lo: number, hi: number) =>
+      Math.max(lo, Math.min(hi, v));
     return [
       clamp(b.getSouth(), -90, 90),
       clamp(b.getWest(), -180, 180),
@@ -168,12 +206,19 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
     const features: GeoJSON.Feature[] = [];
     for (const [mmsi, v] of stream.vessels) {
       if (v.lat == null || v.lon == null) continue;
-      const hdg = v.heading ?? v.cog;
-      const ageMin = (now - v.seen) / 60e3;
+      const at = mmsi === focus ? scrubPoint() : undefined;
+      // While scrubbing, the icon is the vessel at the moment being replayed, pointed along
+      // the track it was following. Its present position becomes the dot on the line.
+      const lon = at ? at.point[0] : v.lon;
+      const lat = at ? at.point[1] : v.lat;
+      const ahead = at ? history[Math.min(at.index + 1, history.length - 1)] : undefined;
+      const hdg =
+        at && ahead ? bearing(history[at.index] ?? at.point, ahead) : (v.heading ?? v.cog);
+      const ageMin = at ? 0 : (now - v.seen) / 60e3;
       features.push({
         type: "Feature",
         id: mmsi,
-        geometry: { type: "Point", coordinates: [v.lon, v.lat] },
+        geometry: { type: "Point", coordinates: [lon!, lat!] },
         properties: {
           mmsi,
           name: v.name ?? "",
@@ -183,7 +228,8 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
           focused: mmsi === focus,
           // The selected vessel never fades. A translucent icon lets the halo's fill show
           // through it, which reads as the ring being drawn over the arrow.
-          opacity: mmsi === focus ? 1 : ageMin < 3 ? 1 : ageMin < 10 ? 0.65 : 0.35,
+          opacity:
+            mmsi === focus ? 1 : ageMin < 3 ? 1 : ageMin < 10 ? 0.65 : 0.35,
         },
       });
     }
@@ -193,25 +239,71 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
   // The history the server holds, set by the route. The session's own positions extend it so
   // the line reaches the vessel's current mark between fetches.
   let history: Array<[number, number]> = [];
+  let historyTimes: number[] = [];
   let historyEnd = 0;
+
+  /** A line per stretch the vessel was actually heard, so gaps are not drawn as passages. */
+  function lines(
+    coords: Array<[number, number]>,
+    times: number[],
+  ): GeoJSON.FeatureCollection {
+    const segments = splitTrack(coords, times);
+    return {
+      type: "FeatureCollection",
+      features: segments.map((seg) => ({
+        type: "Feature",
+        geometry: { type: "LineString", coordinates: seg },
+        properties: {},
+      })),
+    };
+  }
+
+  // Set while the reader is scrubbing or replaying, as the moment being shown: the point of
+  // replay is the past, so the live tail is left off.
+  let scrubAt: number | null = null;
+
+  function scrubPoint() {
+    return scrubAt === null
+      ? undefined
+      : interpolateAt(history, historyTimes, scrubAt);
+  }
 
   function trackFeature(): GeoJSON.FeatureCollection {
     const v = focus ? stream.vessels.get(focus) : undefined;
-    const coords = mergeTrack(history, historyEnd, v?.track ?? []);
-    if (coords.length < 2) return { type: "FeatureCollection", features: [] };
-    return {
-      type: "FeatureCollection",
-      features: [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: {} }],
-    };
+    const at = scrubPoint();
+    if (at) {
+      // Extend the solid line to the interpolated point between ordinary reports, which is
+      // what makes playback glide. Never into a gap: there the vessel's course is unknown,
+      // and only the dashed line underneath may cross it.
+      const coords = history.slice(0, at.index + 1);
+      const times = historyTimes.slice(0, at.index + 1);
+      if (!at.inGap && coords.length) {
+        coords.push(at.point);
+        times.push(scrubAt!);
+      }
+      return lines(coords, times);
+    }
+    const live = (v?.track ?? []).filter(([, , t]) => t > historyEnd);
+    return lines(mergeTrack(history, historyEnd, v?.track ?? []), [
+      ...historyTimes,
+      ...live.map(([, , t]) => t),
+    ]);
   }
 
   function updateAttribution() {
     if (attribution) map.removeControl(attribution);
-    const esc = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const esc = (s: string) =>
+      s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
     const custom = [...new Set(stream.credits.values())].map((s) =>
-      esc(s).replace(/https?:\/\/[^\s)]+/g, (u) => `<a href="${u}" rel="noopener">${u}</a>`),
+      esc(s).replace(
+        /https?:\/\/[^\s)]+/g,
+        (u) => `<a href="${u}" rel="noopener">${u}</a>`,
+      ),
     );
-    attribution = new maplibregl.AttributionControl({ compact: true, customAttribution: custom });
+    attribution = new maplibregl.AttributionControl({
+      compact: true,
+      customAttribution: custom,
+    });
     map.addControl(attribution);
     // Compact mode still renders expanded on creation, which puts every source credit
     // across the bottom of the chart. Collapse to the `i`; one click still shows them all,
@@ -221,35 +313,137 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
       ?.classList.remove("maplibregl-compact-show");
   }
 
+  let trackKey = "";
+  let historyKey = "";
+
+  function renderTrack() {
+    if (!ready) return;
+    // The dashed line changes only when a new track arrives, never while scrubbing.
+    if (historyKey !== `${history.length}|${historyEnd}`) {
+      historyKey = `${history.length}|${historyEnd}`;
+      // Unsplit on purpose. The solid line above is split, so wherever the vessel went
+      // unheard only this shows through, which is the whole point: a dashed stretch says a
+      // course was never reported rather than leaving a blank the eye reads as an end.
+      (
+        map.getSource("track-all") as maplibregl.GeoJSONSource | undefined
+      )?.setData(
+        history.length > 1
+          ? {
+              type: "FeatureCollection",
+              features: [
+                {
+                  type: "Feature",
+                  geometry: { type: "LineString", coordinates: history },
+                  properties: {},
+                },
+              ],
+            }
+          : emptyFC(),
+      );
+    }
+
+    const v = focus ? stream.vessels.get(focus) : undefined;
+    const key = `${scrubAt}|${history.length}|${historyEnd}|${v?.track.length ?? 0}`;
+    if (key === trackKey) return;
+    trackKey = key;
+
+    (map.getSource("track") as maplibregl.GeoJSONSource | undefined)?.setData(
+      trackFeature(),
+    );
+    // Swapped while scrubbing: the dot is where the vessel is now, the icon is where it was.
+    const scrubbing = scrubAt !== null;
+    const live = focus ? stream.vessels.get(focus) : undefined;
+    const head: [number, number] | undefined =
+      scrubbing && live?.lon != null && live.lat != null ? [live.lon, live.lat] : undefined;
+    (
+      map.getSource("track-head") as maplibregl.GeoJSONSource | undefined
+    )?.setData(
+      head
+        ? {
+            type: "FeatureCollection",
+            features: [
+              {
+                type: "Feature",
+                geometry: { type: "Point", coordinates: head },
+                properties: {},
+              },
+            ],
+          }
+        : emptyFC(),
+    );
+  }
+
   function render() {
     if (!ready) return;
-    (map.getSource("vessels") as maplibregl.GeoJSONSource | undefined)?.setData(vesselFeatures());
-    (map.getSource("track") as maplibregl.GeoJSONSource | undefined)?.setData(trackFeature());
+    (map.getSource("vessels") as maplibregl.GeoJSONSource | undefined)?.setData(
+      vesselFeatures(),
+    );
+    renderTrack();
   }
 
   map.on("load", () => {
     map.addImage("ship", shipIcon(), { sdf: true });
 
-
     map.addSource("track", { type: "geojson", data: emptyFC() });
+    map.addSource("track-all", { type: "geojson", data: emptyFC() });
+    map.addSource("track-head", { type: "geojson", data: emptyFC() });
+    // The whole track, dashed, drawn once and never re-cut. A dash pattern starts at the
+    // line's first coordinate, so a geometry that gains a new start on every scrub step
+    // makes the dashes crawl. The solid line above covers whatever has been reached.
+    map.addLayer({
+      id: "track-all",
+      type: "line",
+      source: "track-all",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#38bdf8",
+        "line-width": 2,
+        "line-opacity": 0.3,
+        "line-dasharray": [0.5, 3],
+      },
+    });
+
     map.addLayer({
       id: "track-line",
       type: "line",
       source: "track",
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": "#38bdf8", "line-width": 2.5, "line-opacity": 0.85 },
+      paint: {
+        "line-color": "#38bdf8",
+        "line-width": 2.5,
+        "line-opacity": 0.85,
+      },
     });
 
-    map.addSource("vessels", { type: "geojson", data: emptyFC(), promoteId: "mmsi" });
+    map.addLayer({
+      id: "track-head",
+      type: "circle",
+      source: "track-head",
+      paint: {
+        "circle-radius": 6,
+        "circle-color": "#38bdf8",
+        "circle-stroke-width": 2,
+        "circle-stroke-color": "#0f172a",
+      },
+    });
+
+    map.addSource("vessels", {
+      type: "geojson",
+      data: emptyFC(),
+      promoteId: "mmsi",
+    });
     map.addLayer({
       id: "vessel-halo",
       type: "circle",
       source: "vessels",
       filter: ["get", "focused"],
+      // A dark disc, not a tint. Class colours run from green through orange to violet, and
+      // every one of them has more contrast against near-black than against a pale wash of
+      // the accent. The rim carries the selection; the disc carries the symbol.
       paint: {
         "circle-radius": 15,
-        "circle-color": "#38bdf8",
-        "circle-opacity": 0.14,
+        "circle-color": "#0b1220",
+        "circle-opacity": 0.55,
         "circle-stroke-width": 2,
         "circle-stroke-color": "#38bdf8",
       },
@@ -399,19 +593,52 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
     status() {
       if (mapError) return { state: "error" as const, detail: mapError };
       if (ready) return { state: "ready" as const, detail: "" };
-      const hidden = container.clientWidth === 0 || container.clientHeight === 0;
-      return { state: "loading" as const, detail: hidden ? "(window has no size)" : "" };
+      const hidden =
+        container.clientWidth === 0 || container.clientHeight === 0;
+      return {
+        state: "loading" as const,
+        detail: hidden ? "(window has no size)" : "",
+      };
     },
     refreshInsets: applyInsets,
-    setTrack(coords, endedAt) {
+    setTrack(coords, endedAt, times) {
       history = coords;
+      historyTimes = times ?? coords.map((_, i) => i);
       historyEnd = endedAt ?? 0;
+
+      // The track and the vessel's position come from different endpoints, so the track can
+      // end past where the icon sits: the recorded positions are current while the cached
+      // one waits on the stream. Left alone the line runs on past its own vessel. The cache
+      // keeps whichever is newer, so this is the same merge any late report gets.
+      const last = coords[coords.length - 1];
+      if (focus && last && endedAt) {
+        stream.seed({ mmsi: focus, seen: endedAt, lon: last[0], lat: last[1] });
+      }
+      render();
+    },
+    fitTrack() {
+      if (history.length < 2) return;
+      const lons = history.map((c) => c[0]);
+      const lats = history.map((c) => c[1]);
+      requestCamera(() =>
+        fit([
+          Math.min(...lats),
+          Math.min(...lons),
+          Math.max(...lats),
+          Math.max(...lons),
+        ]),
+      );
+    },
+    scrubTo(at) {
+      scrubAt = at;
       render();
     },
     setFocus(mmsi) {
       if (mmsi !== focus) {
         history = [];
+        historyTimes = [];
         historyEnd = 0;
+        scrubAt = null;
       }
       focus = mmsi;
       stream.trackOnly(mmsi);
@@ -426,7 +653,9 @@ export function createMap(container: HTMLElement, stream: Stream): MapController
       const center: [number, number] | undefined =
         v?.lat != null && v.lon != null ? [v.lon, v.lat] : fallback;
       if (!center) return;
-      requestCamera(() => map.flyTo({ center, zoom: Math.max(map.getZoom(), 12), speed: 1.4 }));
+      requestCamera(() =>
+        map.flyTo({ center, zoom: Math.max(map.getZoom(), 12), speed: 1.4 }),
+      );
     },
     fitBBox(bbox) {
       // fitBounds' own padding replaces the camera padding rather than adding to it, so the

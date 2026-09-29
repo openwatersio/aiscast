@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  bearing,
+  indexAt,
+  interpolateAt,
   mergeTrack,
   parseDestination,
   parseEta,
   parsePlace,
   parseVesselParam,
   shipClass,
+  splitTrack,
   vesselPath,
   vesselSlug,
 } from "./ais";
@@ -229,5 +233,111 @@ describe("mergeTrack", () => {
 
   it("never reorders the history it was given", () => {
     expect(mergeTrack(history, end, [])).toEqual(history);
+  });
+});
+
+describe("splitTrack", () => {
+  const coords: Array<[number, number]> = [
+    [0, 0],
+    [1, 1],
+    [2, 2],
+    [3, 3],
+  ];
+  const minute = 60_000;
+
+  it("keeps a continuous track whole", () => {
+    const times = [0, minute, 2 * minute, 3 * minute];
+    expect(splitTrack(coords, times)).toEqual([coords]);
+  });
+
+  // The case that drew a 208 km line across 14 hours of silence.
+  it("breaks where the vessel went unheard", () => {
+    const times = [0, minute, 14 * 60 * minute, 14 * 60 * minute + minute];
+    expect(splitTrack(coords, times)).toEqual([
+      [
+        [0, 0],
+        [1, 1],
+      ],
+      [
+        [2, 2],
+        [3, 3],
+      ],
+    ]);
+  });
+
+  it("drops a segment that is a single point, since a line needs two", () => {
+    const times = [0, 31 * minute, 62 * minute, 62 * minute + minute];
+    expect(splitTrack(coords, times)).toEqual([
+      [
+        [2, 2],
+        [3, 3],
+      ],
+    ]);
+  });
+
+  it("is empty for nothing to draw", () => {
+    expect(splitTrack([], [])).toEqual([]);
+    expect(splitTrack([[0, 0]], [0])).toEqual([]);
+  });
+});
+
+describe("indexAt", () => {
+  const times = [10, 20, 30, 40];
+
+  it("finds the last position at or before the time", () => {
+    expect(indexAt(times, 10)).toBe(0);
+    expect(indexAt(times, 25)).toBe(1);
+    expect(indexAt(times, 40)).toBe(3);
+    expect(indexAt(times, 99)).toBe(3);
+  });
+
+  // Scrubbing into a gap should hold the last known position, not jump ahead.
+  it("is -1 before the track starts", () => {
+    expect(indexAt(times, 9)).toBe(-1);
+    expect(indexAt([], 5)).toBe(-1);
+  });
+});
+
+describe("interpolateAt", () => {
+  const coords: Array<[number, number]> = [
+    [0, 0],
+    [10, 10],
+  ];
+
+  it("interpolates between two reports", () => {
+    const r = interpolateAt(coords, [0, 100], 50);
+    expect(r?.point).toEqual([5, 5]);
+    expect(r?.inGap).toBe(false);
+  });
+
+  // Inside a gap the position is a guess, and the caller has to show it as one.
+  it("marks a position inside a gap", () => {
+    const hour = 3_600_000;
+    const r = interpolateAt(coords, [0, 14 * hour], 7 * hour);
+    expect(r?.point).toEqual([5, 5]);
+    expect(r?.inGap).toBe(true);
+  });
+
+  it("clamps to the ends", () => {
+    expect(interpolateAt(coords, [10, 20], 5)?.point).toEqual([0, 0]);
+    expect(interpolateAt(coords, [10, 20], 99)?.point).toEqual([10, 10]);
+    expect(interpolateAt([], [], 1)).toBeUndefined();
+  });
+});
+
+describe("bearing", () => {
+  it("reads the cardinal directions", () => {
+    expect(Math.round(bearing([0, 0], [0, 1]))).toBe(0);
+    expect(Math.round(bearing([0, 0], [1, 0]))).toBe(90);
+    expect(Math.round(bearing([0, 0], [0, -1]))).toBe(180);
+    expect(Math.round(bearing([0, 0], [-1, 0]))).toBe(270);
+  });
+
+  it("stays within a single turn", () => {
+    for (const to of [[1, 1], [-1, -1], [179, 10], [-179, -10]] as Array<[number, number]>) {
+      const b = bearing([0, 0], to);
+      expect(b).toBeGreaterThanOrEqual(0);
+      expect(b).toBeLessThan(360);
+    }
   });
 });

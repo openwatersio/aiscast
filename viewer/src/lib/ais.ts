@@ -260,3 +260,100 @@ export function mergeTrack(
     .map(([lon, lat]) => [lon, lat] as [number, number]);
   return [...history, ...tail];
 }
+
+/**
+ * Gaps longer than this end a segment. A vessel reports every few seconds to a few minutes,
+ * so a longer silence means it was out of range of every receiver, not that it sailed a
+ * straight line. It matches the server's own vessel cache window.
+ */
+export const TRACK_GAP_MS = 30 * 60 * 1000;
+
+/**
+ * Splits a track wherever the vessel went unheard, so the line is drawn only where there is
+ * evidence. Joining across a gap invents a course and a speed: one real track here jumps
+ * 208 km across 14 hours of silence, which as a single line reads as a passage that was
+ * never reported.
+ */
+export function splitTrack(
+  coords: Array<[number, number]>,
+  times: number[],
+  maxGap = TRACK_GAP_MS,
+): Array<Array<[number, number]>> {
+  const segments: Array<Array<[number, number]>> = [];
+  let current: Array<[number, number]> = [];
+  for (let i = 0; i < coords.length; i++) {
+    if (i > 0 && times[i]! - times[i - 1]! > maxGap) {
+      if (current.length > 1) segments.push(current);
+      current = [];
+    }
+    current.push(coords[i]!);
+  }
+  if (current.length > 1) segments.push(current);
+  return segments;
+}
+
+/** The last position at or before this time, or -1 when the time precedes the track. */
+export function indexAt(times: number[], at: number): number {
+  let lo = 0;
+  let hi = times.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid]! <= at) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+export interface TrackPoint {
+  /** Where the vessel was, or where it must have passed when inside a gap. */
+  point: [number, number];
+  /** Last position at or before the time. */
+  index: number;
+  /** True when the time falls in a stretch the vessel was not heard. */
+  inGap: boolean;
+}
+
+/**
+ * Where a vessel was at a moment, interpolated between the two positions either side.
+ *
+ * Inside a gap this is a guess and the caller must draw it as one: the vessel was unheard,
+ * and the straight line between the two ends is the only thing available. Between ordinary
+ * reports it is close enough to right, and it is what stops playback stepping from fix to
+ * fix.
+ */
+export function interpolateAt(
+  coords: Array<[number, number]>,
+  times: number[],
+  at: number,
+  maxGap = TRACK_GAP_MS,
+): TrackPoint | undefined {
+  if (!coords.length) return undefined;
+  const index = indexAt(times, at);
+  if (index < 0) return { point: coords[0]!, index: 0, inGap: false };
+  if (index >= coords.length - 1) return { point: coords[coords.length - 1]!, index: coords.length - 1, inGap: false };
+
+  const span = times[index + 1]! - times[index]!;
+  const fraction = span > 0 ? (at - times[index]!) / span : 0;
+  const [x1, y1] = coords[index]!;
+  const [x2, y2] = coords[index + 1]!;
+  return {
+    point: [x1 + (x2 - x1) * fraction, y1 + (y2 - y1) * fraction],
+    index,
+    inGap: span > maxGap,
+  };
+}
+
+/** Initial great-circle bearing from one position to the next, in degrees from north. */
+export function bearing([lon1, lat1]: [number, number], [lon2, lat2]: [number, number]): number {
+  const rad = Math.PI / 180;
+  const y = Math.sin((lon2 - lon1) * rad) * Math.cos(lat2 * rad);
+  const x =
+    Math.cos(lat1 * rad) * Math.sin(lat2 * rad) -
+    Math.sin(lat1 * rad) * Math.cos(lat2 * rad) * Math.cos((lon2 - lon1) * rad);
+  return (Math.atan2(y, x) / rad + 360) % 360;
+}

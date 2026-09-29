@@ -148,6 +148,11 @@ const rows: Array<[string, string | undefined]> = [
     <>
       <div class="mt-4 flex items-baseline justify-between gap-2">
         <h2 class={LABEL} style="color: var(--text-muted)">Destination</h2>
+        {etaText && (
+          <span class="text-[11px] tabular-nums" style="color: var(--text-muted)">
+            ETA {etaText} UTC{eta && ` · ${relativeTime(eta)}`}
+          </span>
+        )}
       </div>
       <section class={TILE} title={p!.destination}>
         <div class="flex items-center gap-2">

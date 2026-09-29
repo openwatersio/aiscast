@@ -1,6 +1,7 @@
 ---
 import { ClientRouter } from "astro:transitions";
 import Sidebar from "../components/Sidebar.astro";
+import TrackBar from "../components/TrackBar.astro";
 import { API_PUBLIC } from "../lib/api";
 import "../styles/global.css";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -87,6 +88,8 @@ const detail = Astro.slots.has("detail");
          by a route change, and never display:none (a zero-size map never fires `load`, and
          then nothing subscribes at all). -->
     <div id="map" transition:persist="aiscast-map"></div>
+
+    <TrackBar />
 
     <div
       class="pointer-events-none fixed inset-0 flex flex-col justify-end gap-2 p-2 md:flex-row md:justify-start md:gap-3 md:p-3"
