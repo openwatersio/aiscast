@@ -269,3 +269,24 @@ func TestReplayLeadInCoversCorroboration(t *testing.T) {
 		t.Fatalf("events = %d, want the one low-trust report after -from", events)
 	}
 }
+
+// A buffered line's TAG time between maxSkew and replayAge stamps the event: falling back to the
+// receive time would compress a flushed backlog's movement into the seconds of the flush. A live
+// line the same age off the clock is still distrusted.
+func TestBufferedBacklogKeepsTagTime(t *testing.T) {
+	recv := time.Date(2026, 9, 1, 12, 0, 40, 0, time.UTC)
+	st := recv.Add(-45 * time.Second)
+	body := tagBlock(map[byte]string{'c': fmt.Sprint(st.Unix())}) + testSentence
+
+	p := testPipeline(t)
+	p.Ingest(Reception{Source: "station:boat", Station: "station:boat", RecvTime: recv, Body: body, Buffered: true})
+	if v := p.vessels[227006760]; v == nil || !v.PosAt.Equal(st) {
+		t.Fatalf("buffered backlog stamped %+v, want the TAG time %v", v, st)
+	}
+
+	p = testPipeline(t)
+	p.Ingest(Reception{Source: "station:boat", Station: "station:boat", RecvTime: recv, Body: body})
+	if v := p.vessels[227006760]; v == nil || !v.PosAt.Equal(recv) {
+		t.Fatalf("live line beyond maxSkew stamped %+v, want the receive time %v", v, recv)
+	}
+}
