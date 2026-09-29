@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,10 +34,10 @@ type lakeClient interface {
 // errLakeEmpty is a query against a table the catalog does not have yet: an empty lake, not a failure.
 var errLakeEmpty = errors.New("lake table not found")
 
-// lakeDay is one vessel's positions for one packaged day, oldest first, and the source kinds that delivered them.
+// lakeDay is one vessel's positions for one packaged day, oldest first, each with the source kind that
+// delivered it.
 type lakeDay struct {
-	points  []trackPoint
-	sources []string
+	points []trackPoint
 }
 
 // lake reads vessel-days from the lake through the cache.
@@ -157,16 +158,15 @@ func (l *lake) fetch(ctx context.Context, mmsi uint32, first, last string) (map[
 		if err := json.Unmarshal(r["source"], &source); err != nil {
 			return nil, fmt.Errorf("lake source: %w", err)
 		}
+		if source != "" {
+			pt.source = sourceKind(source)
+		}
 		d := days[day]
 		d.points = append(d.points, pt)
-		if k := sourceKind(source); source != "" && !contains(d.sources, k) {
-			d.sources = append(d.sources, k)
-		}
 		days[day] = d
 	}
 	for day, d := range days {
 		sort.Slice(d.points, func(i, j int) bool { return d.points[i].ts.Before(d.points[j].ts) })
-		sort.Strings(d.sources)
 		days[day] = d
 	}
 	return days, nil
@@ -239,35 +239,55 @@ const lakeCacheSchema = `CREATE TABLE IF NOT EXISTS lake_days (
 	mmsi    INTEGER NOT NULL,
 	day     TEXT    NOT NULL,
 	fetched INTEGER NOT NULL,  -- unix ms
-	points  BLOB    NOT NULL,  -- trackPoint records, 23 bytes each: ts ms, lat6, lon6, sog10, cog10, heading, nav status
-	sources TEXT    NOT NULL,  -- source kinds, comma-separated
+	points  BLOB    NOT NULL,  -- trackPoint records, 24 bytes each: ts ms, lat6, lon6, sog10, cog10, heading, nav status, source
+	sources TEXT    NOT NULL,  -- the source kinds a record's last byte indexes, comma-separated
 	PRIMARY KEY (mmsi, day)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS lake_days_fetched ON lake_days (fetched)`
 
-const lakePointSize = 23
+const lakePointSize = 24
 
-func encodeLakePoints(points []trackPoint) []byte {
+// noSource is a record's source byte for a position without one.
+const noSource = 0xff
+
+// encodeLakePoints returns the records and the source kinds their last byte indexes.
+func encodeLakePoints(points []trackPoint) ([]byte, string) {
+	var sources []string
 	b := make([]byte, 0, len(points)*lakePointSize)
 	for _, pt := range points {
+		src := byte(noSource)
+		if pt.source != "" {
+			i := slices.Index(sources, pt.source)
+			if i < 0 {
+				i, sources = len(sources), append(sources, pt.source)
+			}
+			if i < noSource { // ponytail: a vessel-day with 255 source kinds credits the first 255; there are a handful
+				src = byte(i)
+			}
+		}
 		b = binary.BigEndian.AppendUint64(b, uint64(pt.ts.UnixMilli()))
 		b = binary.BigEndian.AppendUint32(b, uint32(pt.lat6))
 		b = binary.BigEndian.AppendUint32(b, uint32(pt.lon6))
 		b = binary.BigEndian.AppendUint16(b, pt.sog10)
 		b = binary.BigEndian.AppendUint16(b, pt.cog10)
 		b = binary.BigEndian.AppendUint16(b, pt.heading)
-		b = append(b, pt.navStatus)
+		b = append(b, pt.navStatus, src)
 	}
-	return b
+	return b, strings.Join(sources, ",")
 }
 
-func decodeLakePoints(mmsi uint32, b []byte) []trackPoint {
+func decodeLakePoints(mmsi uint32, b []byte, sources string) []trackPoint {
+	kinds := strings.Split(sources, ",")
 	points := make([]trackPoint, 0, len(b)/lakePointSize)
 	for ; len(b) >= lakePointSize; b = b[lakePointSize:] {
-		points = append(points, trackPoint{mmsi: mmsi,
+		pt := trackPoint{mmsi: mmsi,
 			ts:   time.UnixMilli(int64(binary.BigEndian.Uint64(b))).UTC(),
 			lat6: int32(binary.BigEndian.Uint32(b[8:])), lon6: int32(binary.BigEndian.Uint32(b[12:])),
 			sog10: binary.BigEndian.Uint16(b[16:]), cog10: binary.BigEndian.Uint16(b[18:]),
-			heading: binary.BigEndian.Uint16(b[20:]), navStatus: b[22]})
+			heading: binary.BigEndian.Uint16(b[20:]), navStatus: b[22]}
+		if i := int(b[23]); i < len(kinds) {
+			pt.source = kinds[i]
+		}
+		points = append(points, pt)
 	}
 	return points
 }
@@ -295,11 +315,7 @@ func (t *trackStore) lakeCached(mmsi uint32, days []string, now time.Time) (map[
 			if (now.Sub(d) < lakeRecent || len(points) == 0) && now.Sub(time.UnixMilli(fetched)) > lakeRecentTTL {
 				continue
 			}
-			ld := lakeDay{points: decodeLakePoints(mmsi, points)}
-			if sources != "" {
-				ld.sources = strings.Split(sources, ",")
-			}
-			out[day] = ld
+			out[day] = lakeDay{points: decodeLakePoints(mmsi, points, sources)}
 		}
 		return rows.Err()
 	})
@@ -308,9 +324,9 @@ func (t *trackStore) lakeCached(mmsi uint32, days []string, now time.Time) (map[
 
 // lakeStore caches a vessel-day, and every lakeTrimEvery bytes trims the cache to lakeCacheBytes.
 func (t *trackStore) lakeStore(mmsi uint32, day string, d lakeDay, now time.Time) error {
-	b := encodeLakePoints(d.points)
+	b, sources := encodeLakePoints(d.points)
 	if _, err := t.db.Exec(`INSERT OR REPLACE INTO lake_days (mmsi, day, fetched, points, sources) VALUES (?, ?, ?, ?, ?)`,
-		mmsi, day, now.UnixMilli(), b, strings.Join(d.sources, ",")); err != nil {
+		mmsi, day, now.UnixMilli(), b, sources); err != nil {
 		return err
 	}
 	n := int64(len(b))

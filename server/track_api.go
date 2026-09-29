@@ -176,13 +176,8 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 			return nil, nil, false, err
 		}
 	}
-	for _, pt := range hot {
-		if !contains(sources, pt.source) {
-			sources = append(sources, pt.source)
-		}
-	}
 	if more || p.lake == nil || !from.Before(start) {
-		return hot, sources, more, nil
+		return hot, pointSources(hot), more, nil
 	}
 	// The lake holds whole days; keep its positions before the window, one per interval bucket, and none in
 	// the bucket the track store's first position already fills.
@@ -207,17 +202,9 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 	// A late report sits in the partition after its own day, so the positions are ordered before thinning.
 	var inRange []trackPoint
 	for _, d := range days {
-		n := len(inRange)
 		for _, pt := range d.points {
 			if !pt.ts.Before(from) && !pt.ts.After(lakeTo) {
 				inRange = append(inRange, pt)
-			}
-		}
-		if len(inRange) > n {
-			for _, s := range d.sources {
-				if !contains(sources, s) {
-					sources = append(sources, s)
-				}
 			}
 		}
 	}
@@ -235,7 +222,19 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 	if room := limit - len(hot); len(old) > room {
 		old, more = old[len(old)-room:], true
 	}
-	return append(old, hot...), sources, more, nil
+	points = append(old, hot...)
+	return points, pointSources(points), more, nil
+}
+
+// pointSources is the source kinds that delivered points, the ones a track credits.
+func pointSources(points []trackPoint) []string {
+	var sources []string
+	for _, pt := range points {
+		if pt.source != "" && !contains(sources, pt.source) {
+			sources = append(sources, pt.source)
+		}
+	}
+	return sources
 }
 
 // vesselName is the vessel's name from the cache or the record, and whether either knows the vessel.

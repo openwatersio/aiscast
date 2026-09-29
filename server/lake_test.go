@@ -93,6 +93,8 @@ func TestTrackStitchesTheLake(t *testing.T) {
 		t.Errorf("the newest positions win the limit: %+v", tr.Properties)
 	} else if first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0]); !first.Equal(old.Add(20 * time.Minute)) {
 		t.Errorf("limit kept the wrong lake positions: %v", tr.Properties.Times)
+	} else if tr.Attribution["digitraffic"] != "" || tr.Attribution["kystverket"] == "" {
+		t.Errorf("credits only the sources of the positions returned, from the cache: %v", tr.Attribution)
 	}
 }
 
@@ -206,9 +208,11 @@ func TestLakeEncodings(t *testing.T) {
 			t.Errorf("day %s: %q %v", raw, got, err)
 		}
 	}
-	pts := []trackPoint{{mmsi: 1, ts: time.UnixMilli(1788264000500).UTC(), lat6: -35000000, lon6: 108000000, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15}}
-	if got := decodeLakePoints(1, encodeLakePoints(pts)); fmt.Sprint(got) != fmt.Sprint(pts) {
-		t.Errorf("round trip: %+v", got)
+	pts := []trackPoint{{mmsi: 1, ts: time.UnixMilli(1788264000500).UTC(), lat6: -35000000, lon6: 108000000, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "digitraffic"},
+		{mmsi: 1, ts: time.UnixMilli(1788264001500).UTC(), navStatus: 15},
+		{mmsi: 1, ts: time.UnixMilli(1788264002500).UTC(), navStatus: 15, source: "aishub"}}
+	if b, sources := encodeLakePoints(pts); fmt.Sprint(decodeLakePoints(1, b, sources)) != fmt.Sprint(pts) {
+		t.Errorf("round trip: %+v", decodeLakePoints(1, b, sources))
 	}
 }
 
