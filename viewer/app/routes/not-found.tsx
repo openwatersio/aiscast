@@ -17,10 +17,8 @@ export const meta = () =>
 export default function NotFound() {
   return (
     <Panel back="/map">
-      <h1 className="text-xl font-semibold" style={{ color: "var(--text)" }}>
-        Not found
-      </h1>
-      <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+      <h1 className="text-title text-fg">Not found</h1>
+      <p className="mt-2 text-body text-fg-secondary">
         There is nothing at this address. Try the <Link to="/map">map</Link>, or search for a vessel by name or MMSI.
       </p>
     </Panel>

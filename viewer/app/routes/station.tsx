@@ -1,7 +1,11 @@
 import { useEffect } from "react";
-import { data, Link } from "react-router";
+import { data } from "react-router";
 import { Panel } from "../components/Shell";
-import { CLASS_COLORS, formatAge, shipClass, vesselPath } from "../lib/ais";
+import { Facts } from "../components/ui/Facts";
+import { ClassDot, List, ListRow } from "../components/ui/List";
+import { Section, Tile } from "../components/ui/Section";
+import { StatGrid } from "../components/ui/StatGrid";
+import { formatAge, vesselPath } from "../lib/ais";
 import { browserAuth, getStation, type ApiAuth } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
@@ -68,59 +72,49 @@ export default function Station({ loaderData }: Route.ComponentProps) {
 
   return (
     <Panel back="/stations">
-      <h1 className="text-xl font-semibold break-all" style={{ color: "var(--text)" }}>
-        {id}
-      </h1>
+      <h1 className="text-title break-all text-fg">{id}</h1>
 
       {!st ? (
-        <p className="card mt-4 text-sm" style={{ color: "var(--text-secondary)" }}>
-          No station with this id has been heard since the server started.
-        </p>
+        <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard since the server started.</Tile>
       ) : (
         <>
-          <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
+          <p className="mt-1 text-body text-fg-secondary">
             Source {st.source} · last message {formatAge(st.last_age_s)}
           </p>
 
-          <dl className="mt-4">
-            <dt>Messages 24 h</dt>
-            <dd>{n(st.events.last_24h)}</dd>
-            <dt>Messages 7 d</dt>
-            <dd>{n(st.events.last_7d)}</dd>
-            <dt>Vessels (30 min)</dt>
-            <dd>{n(st.vessels)}</dd>
-            <dt>Heard elsewhere first</dt>
-            <dd>{n(st.duplicates)}</dd>
-            {span && (
-              <>
-                <dt>Coverage span</dt>
-                <dd>{span}</dd>
-              </>
-            )}
-            <dt>First heard</dt>
-            <dd>{new Date(st.first_seen).toISOString().slice(0, 10)}</dd>
-          </dl>
+          <div className="mt-4">
+            <StatGrid
+              tiles
+              stats={[
+                { label: "Messages 24 h", value: n(st.events.last_24h) },
+                { label: "Vessels", value: n(st.vessels) },
+                { label: "Heard first elsewhere", value: n(st.duplicates) },
+              ]}
+            />
+          </div>
 
-          <h2 className="mt-6 text-sm font-semibold" style={{ color: "var(--text)" }}>
-            Latest to hear these {n(vessels.length)} vessels
-          </h2>
-          <ul className="mt-2 space-y-1">
-            {vessels.slice(0, 200).map((f) => (
-              <li key={f.properties.mmsi}>
-                <Link
+          <Facts
+            className="mt-4"
+            items={[
+              ["Messages 7 d", n(st.events.last_7d)],
+              ["Coverage span", span],
+              ["First heard", new Date(st.first_seen).toISOString().slice(0, 10)],
+            ]}
+          />
+
+          <Section label={`Latest to hear these ${n(vessels.length)} vessels`} bare>
+            <List>
+              {vessels.slice(0, 200).map((f) => (
+                <ListRow
+                  key={f.properties.mmsi}
                   to={vesselPath(f.properties.mmsi, f.properties.name)}
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm no-underline hover:bg-[var(--surface-subtle)]"
-                  style={{ color: "var(--text)" }}
-                >
-                  <span
-                    className="size-2 shrink-0 rounded-full"
-                    style={{ background: CLASS_COLORS[shipClass(f.properties.kind, f.properties.type)] }}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{f.properties.name ?? f.properties.mmsi}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
+                  leading={<ClassDot kind={f.properties.kind} type={f.properties.type} />}
+                  title={f.properties.name ?? f.properties.mmsi}
+                  subtitle={`MMSI ${f.properties.mmsi}`}
+                />
+              ))}
+            </List>
+          </Section>
         </>
       )}
     </Panel>

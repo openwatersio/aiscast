@@ -1,6 +1,9 @@
+import { History, Pause, Play } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserAuth, getTrack } from "../lib/api";
 import { useLive } from "../lib/live";
+import { IconButton } from "./ui/IconButton";
+import { Menu, MenuItem, MenuNote, MenuRadioGroup, MenuRadioItem } from "./ui/Menu";
 
 // The server keeps a rolling window and clamps anything longer, reporting what it actually
 // covered. A range past that returns the same positions as the window itself, so the menu
@@ -80,8 +83,6 @@ export function TrackBar({
   const [loaded, setLoaded] = useState<Loaded>(EMPTY);
   const [value, setValue] = useState(SLIDER_STEPS);
   const [playing, setPlaying] = useState(false);
-  const [menu, setMenu] = useState<"range" | "day" | undefined>();
-  const bar = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!live) return;
@@ -138,16 +139,6 @@ export function TrackBar({
     return () => clearInterval(t);
   }, [playing, apply]);
 
-  // Menus close on any click outside them.
-  useEffect(() => {
-    if (!menu) return;
-    const close = (e: MouseEvent) => {
-      if (!bar.current?.contains(e.target as Node)) setMenu(undefined);
-    };
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [menu]);
-
   if (loaded.coords.length < 2) return null;
 
   function togglePlay() {
@@ -158,72 +149,26 @@ export function TrackBar({
     setPlaying(true);
   }
 
-  const buttonClass = "flex size-8 shrink-0 items-center justify-center rounded-full hover:bg-[var(--surface-subtle)]";
-  const menuItem =
-    "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-[var(--surface-subtle)]";
-
   return (
-    <div
-      ref={bar}
-      className="pointer-events-auto fixed bottom-3 z-10 hidden w-[min(560px,calc(100%-var(--map-left,0px)-1.5rem))] md:block"
-      style={{ left: "var(--map-left, 0px)", right: 0, marginInline: "auto" }}
-    >
+    <div className="track-dock pointer-events-auto fixed bottom-3 z-10 hidden md:block">
       <div className="pane flex items-center gap-2 rounded-full px-2 py-1.5">
-        <div className="relative">
-          <button
-            type="button"
-            className={buttonClass}
-            style={{ color: "var(--text-secondary)" }}
-            aria-label="Choose a time range"
-            aria-haspopup="true"
-            aria-expanded={menu === "range"}
-            onClick={() => setMenu(menu === "range" ? undefined : "range")}
+        <Menu side="top" trigger={<IconButton icon={History} label="Choose a time range" />}>
+          <MenuRadioGroup
+            value={hours}
+            onChange={(h: number) => {
+              setHours(h);
+              setPlaying(false);
+            }}
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-5">
-              <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-              <path d="M3 3v5h5" />
-              <path d="M12 7v5l3 2" />
-            </svg>
-          </button>
-          {menu === "range" && (
-            <div className="pane absolute bottom-10 left-0 w-56 p-1.5" role="menu">
-              {RANGES.map((r) => {
-                const beyond = r.hours > WINDOW_HOURS;
-                return (
-                  <button
-                    key={r.hours}
-                    type="button"
-                    className={menuItem}
-                    style={{ color: r.hours === hours ? "var(--accent)" : "var(--text)", opacity: beyond ? 0.55 : 1 }}
-                    role="menuitem"
-                    onClick={() => {
-                      setHours(r.hours);
-                      setPlaying(false);
-                      setMenu(undefined);
-                    }}
-                  >
-                    <span>{r.label}</span>
-                    <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-                      {beyond ? `${WINDOW_HOURS} h available` : ""}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
+            {RANGES.map((r) => (
+              <MenuRadioItem key={r.hours} value={r.hours} hint={r.hours > WINDOW_HOURS ? `${WINDOW_HOURS} h available` : undefined}>
+                {r.label}
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+        </Menu>
 
-        <button
-          type="button"
-          className={buttonClass}
-          style={{ color: "var(--text-secondary)" }}
-          aria-label={playing ? "Pause" : "Play"}
-          onClick={togglePlay}
-        >
-          <svg viewBox="0 0 24 24" fill="currentColor" className="size-4">
-            <path d={playing ? "M6 5h4v14H6zM14 5h4v14h-4z" : "M8 5v14l11-7z"} />
-          </svg>
-        </button>
+        <IconButton icon={playing ? Pause : Play} label={playing ? "Pause" : "Play"} onClick={togglePlay} />
 
         <input
           type="range"
@@ -235,48 +180,38 @@ export function TrackBar({
             setPlaying(false);
             apply(Number(e.target.value));
           }}
-          className="h-1 min-w-0 flex-1 cursor-pointer appearance-none rounded-full"
-          style={{ backgroundColor: "var(--border)" }}
+          className="h-1 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-line"
           aria-label="Position in track"
         />
 
-        <div className="relative shrink-0">
-          <button
-            type="button"
-            className="w-[8.5rem] rounded-md px-1 py-0.5 text-right text-xs tabular-nums hover:bg-[var(--surface-subtle)]"
-            style={{ color: "var(--text-secondary)" }}
-            aria-haspopup="true"
-            aria-expanded={menu === "day"}
-            onClick={() => setMenu(menu === "day" ? undefined : "day")}
-          >
-            {formatMoment(momentAt(value))}
-          </button>
-          {/* Our own list rather than <input type="date">: the native picker anchors to its
-              input and opens downward, which from a bar pinned to the bottom lands off-screen.
-              It also offers every date in history when the server holds a rolling window. */}
-          {menu === "day" && (
-            <div className="pane absolute right-0 bottom-10 w-40 p-1.5" role="menu">
-              {windowDays(Date.now()).map((d) => (
-                <button
-                  key={d.endsAt}
-                  type="button"
-                  className={menuItem}
-                  style={{ color: "var(--text)" }}
-                  onClick={() => {
-                    setEndingAt(d.endsAt);
-                    setPlaying(false);
-                    setMenu(undefined);
-                  }}
-                >
-                  {d.label}
-                </button>
-              ))}
-              <p className="mt-1 border-t px-2 pt-1.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-                {WINDOW_HOURS} hours of history available
-              </p>
-            </div>
-          )}
-        </div>
+        {/* Our own list rather than <input type="date">: the native picker anchors to its input
+            and opens downward, which from a bar pinned to the bottom lands off-screen. It also
+            offers every date in history when the server holds a rolling window. */}
+        <Menu
+          side="top"
+          align="end"
+          trigger={
+            <button
+              type="button"
+              className="w-[8.5rem] rounded-md px-1 py-0.5 text-right text-footnote text-fg-secondary tabular-nums hover:bg-surface-subtle"
+            >
+              {formatMoment(momentAt(value))}
+            </button>
+          }
+        >
+          {windowDays(Date.now()).map((d) => (
+            <MenuItem
+              key={d.endsAt}
+              onClick={() => {
+                setEndingAt(d.endsAt);
+                setPlaying(false);
+              }}
+            >
+              {d.label}
+            </MenuItem>
+          ))}
+          <MenuNote>{WINDOW_HOURS} hours of history available</MenuNote>
+        </Menu>
       </div>
     </div>
   );

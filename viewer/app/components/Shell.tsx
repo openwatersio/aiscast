@@ -8,11 +8,11 @@ import {
   useRef,
   useState,
   ViewTransition,
-  type MouseEvent,
   type ReactNode,
 } from "react";
-import { Link, useLocation, useMatches, useNavigate, useOutlet } from "react-router";
+import { useLocation, useMatches, useNavigate, useOutlet } from "react-router";
 import { vesselPath } from "../lib/ais";
+import { cn } from "../lib/cn";
 import { createMap } from "../lib/map.client";
 import { liveInstance, LiveContext, setLiveInstance, useLive, useNow, useStreamFrame, type Live } from "../lib/live";
 import { Stream } from "../lib/stream";
@@ -20,6 +20,7 @@ import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { Sheet, type Detent } from "./Sheet";
 import { ThemeToggle } from "./ThemeToggle";
 import { TrackBar, type TrackSummary } from "./TrackBar";
+import { PanelHeader } from "./ui/PanelHeader";
 
 interface ShellState {
   query: string;
@@ -195,46 +196,13 @@ function StreamStatus() {
   return <span>{map.state === "ready" ? stream : `${stream} · map ${map.state} ${map.detail}`}</span>;
 }
 
-/**
- * The back arrow of a stack entry. Within the app it steps back through history, so it
- * returns to whatever pushed this entry, as the browser's own back does. After a direct visit
- * there is nothing to return to, and it goes to `parent` instead.
- */
-function BackButton({ parent }: { parent: string }) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  // React Router gives the entry the app loaded on the key "default"; every entry pushed
-  // since has its own, and keeps it across a reload.
-  const pushed = location.key !== "default";
-  return (
-    <Link
-      to={parent}
-      onClick={(e: MouseEvent) => {
-        if (!pushed) return;
-        e.preventDefault();
-        navigate(-1);
-      }}
-      className="inline-flex size-8 items-center justify-center rounded-full text-fg-secondary no-underline hover:bg-surface-subtle"
-      aria-label="Back"
-    >
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-5">
-        <path d="M15 18l-6-6 6-6" />
-      </svg>
-    </Link>
-  );
-}
-
 /** One entry on the panel's stack. `back` names its parent, for after a direct visit. */
 export function Panel({ back, header, children }: { back?: string; header?: ReactNode; children: ReactNode }) {
   return (
     <>
-      {back && (
-        <div className="px-3 pt-3">
-          <BackButton parent={back} />
-        </div>
-      )}
+      <PanelHeader back={back} />
       {header}
-      <div data-sheet-scroll className={`sidebar-scroll min-h-0 flex-1 pb-3 ${header ? "px-2" : "px-4"}`}>
+      <div data-sheet-scroll className={cn("sidebar-scroll min-h-0 flex-1 pb-3", header ? "px-2" : "px-4")}>
         {children}
       </div>
     </>

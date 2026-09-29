@@ -54,8 +54,8 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   const notFound = isRouteErrorResponse(error) && error.status === 404;
   return (
     <main className="p-6">
-      <h1 className="text-xl font-semibold">{notFound ? "Not found" : "Something went wrong"}</h1>
-      <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+      <h1 className="text-title text-fg">{notFound ? "Not found" : "Something went wrong"}</h1>
+      <p className="mt-2 text-body text-fg-secondary">
         {notFound ? "There is nothing at this address." : "The page could not be shown."} Try the{" "}
         <a href="/ais/map">map</a>.
       </p>

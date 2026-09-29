@@ -75,6 +75,30 @@
   --shadow: light-dark(rgba(15, 23, 42, 0.18), rgba(0, 0, 0, 0.45));
 }
 
+/* The type scale, after iOS and sized for a panel: text-large-title for a vessel's name,
+   text-title for a page's, text-headline for a row's, text-body for prose, text-subhead for a
+   row's second line, text-footnote for asides, text-caption for section labels. */
+@theme {
+  --text-large-title: 1.75rem;
+  --text-large-title--line-height: 2.125rem;
+  --text-large-title--font-weight: 700;
+  --text-title: 1.25rem;
+  --text-title--line-height: 1.625rem;
+  --text-title--font-weight: 600;
+  --text-headline: 0.9375rem;
+  --text-headline--line-height: 1.25rem;
+  --text-headline--font-weight: 500;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.375rem;
+  --text-subhead: 0.8125rem;
+  --text-subhead--line-height: 1.125rem;
+  --text-footnote: 0.75rem;
+  --text-footnote--line-height: 1rem;
+  --text-caption: 0.6875rem;
+  --text-caption--line-height: 0.875rem;
+  --text-caption--letter-spacing: 0.04em;
+}
+
 /* The tokens as utilities: bg-surface, text-fg-muted, border-line. Components use these and
    never name a variable. */
 @theme inline {
@@ -131,35 +155,6 @@
   a:hover {
     color: var(--accent-hover);
   }
-
-  dl {
-    @apply grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm;
-  }
-  dt {
-    color: var(--text-secondary);
-    @apply font-semibold;
-  }
-  dd {
-    @apply m-0 tabular-nums;
-  }
-}
-
-@utility card {
-  background-color: var(--surface-subtle);
-  border-color: var(--border-subtle);
-  @apply rounded-lg border p-4;
-}
-
-@utility btn {
-  @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 font-medium transition-colors duration-200;
-}
-
-@utility btn-primary {
-  background-color: var(--accent);
-  color: white;
-  &:hover {
-    background-color: var(--accent-hover);
-  }
 }
 
 /* Every floating pane. The blur always sits over the basemap. */
@@ -168,13 +163,6 @@
   border-color: var(--border);
   box-shadow: 0 10px 30px var(--shadow);
   @apply rounded-xl border backdrop-blur-xl;
-}
-
-/* The pane is translucent, so a tile painted with a fixed navy lands within a few percent
-   of it and disappears. A light wash plus a hairline lifts off whatever is actually behind,
-   dark chart or bright coastline. */
-@utility tile-surface {
-  background-color: var(--surface-tile);
 }
 
 @utility sidebar-scroll {
@@ -456,4 +444,13 @@ input[type="search"]::-webkit-search-cancel-button {
   ::view-transition-new(.panel-enter) {
     animation: none;
   }
+}
+
+/* The track bar centres in the map beside the panel. --map-left is the panel's right edge,
+   which the map sets as it measures the panel. */
+.track-dock {
+  left: var(--map-left, 0px);
+  right: 0;
+  margin-inline: auto;
+  width: min(560px, calc(100% - var(--map-left, 0px) - 1.5rem));
 }

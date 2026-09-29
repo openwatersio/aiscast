@@ -8,15 +8,19 @@
     "preview": "npm run build && vite preview",
     "deploy": "npm run build && wrangler deploy",
     "test": "vitest run",
-    "typecheck": "wrangler types && react-router typegen && tsc"
+    "typecheck": "wrangler types && react-router typegen && tsc",
+    "check:styles": "node scripts/check-styles.mjs"
   },
   "dependencies": {
+    "@base-ui/react": "^1.8.0",
+    "clsx": "^2.1.1",
     "isbot": "^5.2.2",
     "lucide-react": "^1.48.0",
     "maplibre-gl": "^6.11.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-router": "^8.4.0"
+    "react-router": "^8.4.0",
+    "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.62.0",
