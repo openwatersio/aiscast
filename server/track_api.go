@@ -41,15 +41,29 @@ type trackRequest struct {
 	limit    int
 }
 
-// parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. Both are
-// clamped to the window, which ends now and reaches back trackWindow. A range entirely outside the window
-// clamps to an empty one at its nearer edge, so the answer is an empty track that says where it looked.
-func parseTrackRange(fromS, toS string, now time.Time) (from, to time.Time, msg string) {
+// trackMaxSpan is the longest range one request may ask for. Reads past the window are billed by the bytes
+// they scan, so a request's reach is bounded; a longer history pages back by moving to.
+const trackMaxSpan = 7 * 24 * time.Hour
+
+// canReachArchive reports whether a tier reads positions older than the track store's window. Those reads
+// scan the lake and cost money per request, which is why history is a feeder and commercial capability.
+func canReachArchive(cl *Claims) bool {
+	return cl.Feeder || (cl.Role != "anonymous" && cl.Role != "personal")
+}
+
+const trackArchiveTierMsg = "positions older than 48 hours need a feeder or commercial token; see https://openwaters.io/ais/"
+
+// parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. With the
+// lake and archive true, a range may reach before the track store's window, at most trackMaxSpan of it.
+// Otherwise the range is clamped to the window, and with the lake a range wholly before the window is refused
+// with a 403 that names the tier which reaches it. A range after now clamps to an empty one there, so the
+// answer is an empty track that says where it looked.
+func parseTrackRange(fromS, toS string, now time.Time, archive, lakeOn bool) (from, to time.Time, status int, msg string) {
 	to = now
 	if toS != "" {
 		t, err := time.Parse(time.RFC3339, toS)
 		if err != nil {
-			return from, to, "to must be an RFC 3339 time, such as 2026-09-28T12:00:00Z"
+			return from, to, http.StatusBadRequest, "to must be an RFC 3339 time, such as 2026-09-28T12:00:00Z"
 		}
 		to = t
 	}
@@ -57,15 +71,27 @@ func parseTrackRange(fromS, toS string, now time.Time) (from, to time.Time, msg 
 	if fromS != "" {
 		t, err := time.Parse(time.RFC3339, fromS)
 		if err != nil {
-			return from, to, "from must be an RFC 3339 time, such as 2026-09-27T12:00:00Z"
+			return from, to, http.StatusBadRequest, "from must be an RFC 3339 time, such as 2026-09-27T12:00:00Z"
 		}
 		from = t
 	}
 	if !from.Before(to) {
-		return from, to, "from must be before to"
+		return from, to, http.StatusBadRequest, "from must be before to"
 	}
 	start := now.Add(-trackWindow)
-	return clampTime(from, start, now).UTC(), clampTime(to, start, now).UTC(), ""
+	if !lakeOn || !archive {
+		// A range that only overlaps the window is clamped to it, so "the last 48 hours" computed on a client
+		// a moment ahead of the server still answers. One wholly before the window is the archive's to answer.
+		if lakeOn && to.Before(start) {
+			return from, to, http.StatusForbidden, trackArchiveTierMsg
+		}
+		return clampTime(from, start, now).UTC(), clampTime(to, start, now).UTC(), 0, ""
+	}
+	to = clampTime(to, time.Time{}, now)
+	if to.Sub(from) > trackMaxSpan {
+		return from, to, http.StatusBadRequest, "a track covers at most 7 days per request; page back by moving to"
+	}
+	return clampTime(from, time.Time{}, now).UTC(), to.UTC(), 0, ""
 }
 
 func clampTime(t, lo, hi time.Time) time.Time {
@@ -78,37 +104,138 @@ func clampTime(t, lo, hi time.Time) time.Time {
 	return t
 }
 
-func parseTrackRequest(r *http.Request, cl *Claims, now time.Time) (trackRequest, string) {
+func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time) (trackRequest, int, string) {
 	var q trackRequest
 	n, err := strconv.ParseUint(r.PathValue("mmsi"), 10, 32)
 	if err != nil {
-		return q, "mmsi must be a number"
+		return q, http.StatusBadRequest, "mmsi must be a number"
 	}
 	q.mmsi = uint32(n)
 	vals := r.URL.Query()
+	var status int
 	var msg string
-	if q.from, q.to, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now); msg != "" {
-		return q, msg
-	}
-	if s := vals.Get("interval"); s != "" {
-		if secs, err := strconv.ParseUint(s, 10, 32); err == nil {
-			q.interval = time.Duration(secs) * time.Second
-		} else if d, err := time.ParseDuration(s); err == nil && d >= 0 {
-			q.interval = d
-		} else {
-			return q, "interval=<seconds> or a duration such as 5m"
-		}
+	if q.from, q.to, status, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now, canReachArchive(cl), p.lake != nil); msg != "" {
+		return q, status, msg
 	}
 	cap := trackLimit(cl)
 	q.limit = min(trackDefaultLimit, cap)
 	if s := vals.Get("limit"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 {
-			return q, "limit must be a positive number"
+			return q, http.StatusBadRequest, "limit must be a positive number"
 		}
 		q.limit = min(n, cap)
 	}
-	return q, ""
+	q.interval = defaultInterval(q.to.Sub(q.from), q.limit)
+	if s := vals.Get("interval"); s != "" {
+		if secs, err := strconv.ParseUint(s, 10, 32); err == nil {
+			q.interval = time.Duration(secs) * time.Second
+		} else if d, err := time.ParseDuration(s); err == nil && d >= 0 {
+			q.interval = d
+		} else {
+			return q, http.StatusBadRequest, "interval=<seconds> or a duration such as 5m"
+		}
+	}
+	return q, 0, ""
+}
+
+// intervalSteps are the round spacings a default interval rounds up to.
+var intervalSteps = []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute,
+	5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 3 * time.Hour,
+	6 * time.Hour, 12 * time.Hour, 24 * time.Hour}
+
+// defaultInterval spreads limit positions over span, rounded up to a round step, so a request that names no
+// interval covers its whole range. Without it a dense range would be cut to its newest positions: a vessel
+// reporting every two seconds fills a thousand positions in about half an hour. A span short enough to fit
+// at full rate, a position every few seconds, needs no thinning.
+func defaultInterval(span time.Duration, limit int) time.Duration {
+	raw := span / time.Duration(max(limit, 1))
+	if raw < 2*time.Second {
+		return 0
+	}
+	for _, step := range intervalSteps {
+		if step >= raw {
+			return step
+		}
+	}
+	return intervalSteps[len(intervalSteps)-1]
+}
+
+// trackPoints reads a vessel's positions between from and to: the lake for the part before the track store's
+// window, the track store for the rest. interval thins both with the same buckets, and when more than limit
+// match, the newest limit are kept. sources are the source kinds that delivered the positions returned.
+func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.Time, interval time.Duration, limit int, now time.Time) (points []trackPoint, sources []string, more bool, err error) {
+	start := now.Add(-trackWindow)
+	hotFrom := from
+	if hotFrom.Before(start) {
+		hotFrom = start
+	}
+	var hot []trackPoint
+	if !hotFrom.After(to) {
+		if hot, more, err = p.tracks.track(mmsi, hotFrom, to, interval, limit); err != nil {
+			return nil, nil, false, err
+		}
+	}
+	for _, pt := range hot {
+		if !contains(sources, pt.source) {
+			sources = append(sources, pt.source)
+		}
+	}
+	if more || p.lake == nil || !from.Before(start) {
+		return hot, sources, more, nil
+	}
+	// The lake holds whole days; keep its positions before the window, one per interval bucket, and none in
+	// the bucket the track store's first position already fills.
+	lakeTo := to
+	if !lakeTo.Before(start) {
+		lakeTo = start.Add(-time.Millisecond)
+	}
+	days, err := p.lake.days(ctx, mmsi, from, lakeTo, now)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	bucket := func(t time.Time) int64 {
+		if ms := interval.Milliseconds(); ms > 0 {
+			return t.UnixMilli() / ms
+		}
+		return t.UnixMilli()
+	}
+	firstHot := int64(-1)
+	if len(hot) > 0 && interval > 0 {
+		firstHot = bucket(hot[0].ts)
+	}
+	// A late report sits in the partition after its own day, so the positions are ordered before thinning.
+	var inRange []trackPoint
+	for _, d := range days {
+		n := len(inRange)
+		for _, pt := range d.points {
+			if !pt.ts.Before(from) && !pt.ts.After(lakeTo) {
+				inRange = append(inRange, pt)
+			}
+		}
+		if len(inRange) > n {
+			for _, s := range d.sources {
+				if !contains(sources, s) {
+					sources = append(sources, s)
+				}
+			}
+		}
+	}
+	sort.SliceStable(inRange, func(i, j int) bool { return inRange[i].ts.Before(inRange[j].ts) })
+	var old []trackPoint
+	last := int64(-1)
+	for _, pt := range inRange {
+		if b := bucket(pt.ts); interval > 0 && (b == last || b == firstHot) {
+			continue
+		} else {
+			last = b
+		}
+		old = append(old, pt)
+	}
+	if room := limit - len(hot); len(old) > room {
+		old, more = old[len(old)-room:], true
+	}
+	return append(old, hot...), sources, more, nil
 }
 
 // vesselName is the vessel's name from the cache or the record, and whether either knows the vessel.
@@ -143,16 +270,17 @@ func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "format=geojson or gpx", http.StatusBadRequest)
 		return
 	}
-	q, msg := parseTrackRequest(r, p.effective(cl), time.Now())
+	now := time.Now()
+	q, status, msg := p.parseTrackRequest(r, p.effective(cl), now)
 	if msg != "" {
-		http.Error(w, msg, http.StatusBadRequest)
+		http.Error(w, msg, status)
 		return
 	}
 	if p.tracks == nil {
 		http.Error(w, "tracks are not available on this server", http.StatusServiceUnavailable)
 		return
 	}
-	points, more, err := p.tracks.track(q.mmsi, q.from, q.to, q.interval, q.limit)
+	points, sources, more, err := p.trackPoints(r.Context(), q.mmsi, q.from, q.to, q.interval, q.limit, now)
 	var name string
 	var known bool
 	if err == nil {
@@ -170,8 +298,8 @@ func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attribution := map[string]string{}
-	for _, pt := range points {
-		noteAttribution(attribution, pt.source)
+	for _, s := range sources {
+		noteAttribution(attribution, s)
 	}
 	if format == "gpx" {
 		w.Header().Set("Content-Type", "application/gpx+xml")
@@ -202,6 +330,7 @@ type trackProps struct {
 	Cog       []*float64 `json:"cog"`
 	From      string     `json:"from"`
 	Heading   []*uint16  `json:"heading"`
+	Interval  int64      `json:"interval"` // seconds between positions at most; 0 is every position
 	MMSI      uint32     `json:"mmsi"`
 	Name      string     `json:"name,omitempty"`
 	NavStatus []*uint8   `json:"nav_status"`
@@ -236,7 +365,7 @@ func (pt trackPoint) motion() (sog, cog *float64, heading *uint16, nav *uint8) {
 // geometry for none.
 func trackGeoJSON(q trackRequest, name string, points []trackPoint, more bool, attribution map[string]string) trackFeature {
 	props := trackProps{MMSI: q.mmsi, Name: name, From: q.from.Format(time.RFC3339), To: q.to.Format(time.RFC3339),
-		Points: len(points), Truncated: more, Times: []string{}, Sog: []*float64{}, Cog: []*float64{},
+		Interval: int64(q.interval / time.Second), Points: len(points), Truncated: more, Times: []string{}, Sog: []*float64{}, Cog: []*float64{},
 		Heading: []*uint16{}, NavStatus: []*uint8{}}
 	coords := make([][2]float64, 0, len(points))
 	for _, pt := range points {
@@ -308,9 +437,9 @@ const mcpTrackDefaultLimit = 50
 
 type mcpTrackIn struct {
 	MMSI            uint32 `json:"mmsi" jsonschema:"the vessel's MMSI; use search_vessels_by_name first when you only have a name"`
-	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. Positions reach back 48 hours"`
+	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. Anonymous and personal calls reach back 48 hours; feeder and commercial tokens reach the archive, up to 7 days per call"`
 	To              string `json:"to,omitempty" jsonschema:"end, RFC 3339 UTC; default now"`
-	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the positions are spread evenly over the range"`
+	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the limit is spread over the range at a round spacing, reported as interval_s"`
 	Limit           int    `json:"limit,omitempty" jsonschema:"positions to return: default 50, maximum 200; when more match, the newest are kept"`
 }
 
@@ -330,6 +459,7 @@ type mcpTrack struct {
 	Name        string            `json:"name,omitempty"`
 	From        string            `json:"from" jsonschema:"start of the range covered, after clamping to the last 48 hours"`
 	To          string            `json:"to"`
+	IntervalS   int64             `json:"interval_s" jsonschema:"at most one position per this many seconds; 0 is every position heard"`
 	Positions   []mcpTrackPoint   `json:"positions" jsonschema:"oldest first"`
 	Truncated   bool              `json:"truncated" jsonschema:"true when more positions matched than were returned; the newest were kept, so set from later or raise interval_minutes"`
 	Attribution map[string]string `json:"attribution" jsonschema:"credit line per source kind in the positions, to show with the data"`
@@ -347,7 +477,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	limit = min(limit, trackLimit(cl))
 	now := time.Now()
-	from, to, msg := parseTrackRange(in.From, in.To, now)
+	from, to, _, msg := parseTrackRange(in.From, in.To, now, canReachArchive(cl), p.lake != nil)
 	if msg != "" {
 		return nil, mcpTrack{}, errors.New(msg)
 	}
@@ -358,20 +488,26 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 		return nil, mcpTrack{}, errors.New("tracks are not available on this server")
 	}
 	// An assistant asking for a day wants the whole of the vessel's day, not its last few minutes at full
-	// rate, so the limit is spread from the vessel's first position in the range to its end.
+	// rate, so the limit is spread over the range: from the vessel's first position in it when the track
+	// store holds the range, and over the whole range when it reaches into the lake.
 	interval := time.Duration(in.IntervalMinutes) * time.Minute
 	var err error
 	if interval == 0 {
-		var start time.Time
-		var ok bool
-		if start, ok, err = p.tracks.first(in.MMSI, from, to); ok {
-			interval = to.Sub(start) / time.Duration(limit)
+		span := to.Sub(from)
+		if !from.Before(now.Add(-trackWindow)) {
+			var start time.Time
+			var ok bool
+			if start, ok, err = p.tracks.first(in.MMSI, from, to); ok {
+				span = to.Sub(start)
+			}
 		}
+		interval = defaultInterval(span, limit)
 	}
 	var points []trackPoint
+	var sources []string
 	var more bool
 	if err == nil {
-		points, more, err = p.tracks.track(in.MMSI, from, to, interval, limit)
+		points, sources, more, err = p.trackPoints(ctx, in.MMSI, from, to, interval, limit, now)
 	}
 	var name string
 	var known bool
@@ -386,7 +522,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 		return nil, mcpTrack{}, fmt.Errorf("no vessel with MMSI %d has been heard", in.MMSI)
 	}
 	out := mcpTrack{MMSI: in.MMSI, Name: name, From: from.Format(time.RFC3339), To: to.Format(time.RFC3339),
-		Positions: []mcpTrackPoint{}, Truncated: more, Attribution: map[string]string{}}
+		IntervalS: int64(interval / time.Second), Positions: []mcpTrackPoint{}, Truncated: more, Attribution: map[string]string{}}
 	for _, pt := range points {
 		lat, lon := pt.latLon()
 		sog, cog, heading, nav := pt.motion()
@@ -395,7 +531,9 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 			row.NavStatusName = navStatusName(*nav)
 		}
 		out.Positions = append(out.Positions, row)
-		noteAttribution(out.Attribution, pt.source)
+	}
+	for _, s := range sources {
+		noteAttribution(out.Attribution, s)
 	}
 	return nil, out, nil
 }

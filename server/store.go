@@ -65,6 +65,7 @@ CREATE INDEX IF NOT EXISTS vessels_search ON vessels (search);
 CREATE INDEX IF NOT EXISTS vessels_cell ON vessels (cell, seen);
 CREATE INDEX IF NOT EXISTS vessels_seen ON vessels (seen);
 CREATE INDEX IF NOT EXISTS vessels_imo ON vessels (imo);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `
 
 // storeAddedCols are columns a file created by an earlier build lacks. SQLite has no ADD COLUMN IF NOT

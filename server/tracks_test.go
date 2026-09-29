@@ -101,7 +101,7 @@ func TestTrackEndpoint(t *testing.T) {
 	if tr := getTrack(t, p, base+"?interval=2h"); tr.Properties.Points >= 5 || tr.Properties.Points < 2 {
 		t.Errorf("thinned to one per two hours: %d", tr.Properties.Points)
 	}
-	tr = getTrack(t, p, base+"?limit=2")
+	tr = getTrack(t, p, base+"?limit=2&interval=0")
 	if tr.Properties.Points != 2 || !tr.Properties.Truncated {
 		t.Errorf("limit keeps the newest: %+v", tr.Properties)
 	}
@@ -148,7 +148,7 @@ func TestTrackTierCap(t *testing.T) {
 	}
 	allowAnon = false
 	t.Cleanup(func() { allowAnon = true })
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?limit=5000"); tr.Properties.Points != 200 || !tr.Properties.Truncated {
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?limit=5000&interval=0"); tr.Properties.Points != 200 || !tr.Properties.Truncated {
 		t.Errorf("anonymous cap: %d truncated %v", tr.Properties.Points, tr.Properties.Truncated)
 	}
 }
@@ -439,5 +439,52 @@ func TestTrackDespikeAnchorsAcrossTheLimit(t *testing.T) {
 	got, more, err := p.tracks.track(257000001, now.Add(-time.Hour), now, 0, 2)
 	if err != nil || !more || len(got) != 1 || got[0].lat6 != points[3].lat6 {
 		t.Errorf("the displaced fix should fall to the anchor past the limit: more=%v err=%v %+v", more, err, got)
+	}
+}
+
+func TestDefaultIntervalCoversTheRange(t *testing.T) {
+	for _, c := range []struct {
+		span  time.Duration
+		limit int
+		want  time.Duration
+	}{
+		{time.Hour, 1000, 5 * time.Second},           // 3.6 s a position, rounded up
+		{20 * time.Minute, 1000, 0},                  // fits at full rate
+		{24 * time.Hour, 1000, 2 * time.Minute},      // 86 s
+		{24 * time.Hour, 200, 10 * time.Minute},      // anonymous: 432 s
+		{7 * 24 * time.Hour, 1000, 15 * time.Minute}, // 605 s
+		{7 * 24 * time.Hour, 1, 24 * time.Hour},      // the longest step
+	} {
+		if got := defaultInterval(c.span, c.limit); got != c.want {
+			t.Errorf("%v over %d: %v, want %v", c.span, c.limit, got, c.want)
+		}
+	}
+
+	// A vessel reporting every 10 seconds for six hours: without an interval the track spans all six hours
+	// instead of the last half hour, and says what spacing it used.
+	p, _ := trackPipeline(t)
+	now := time.Now()
+	var points []trackPoint
+	v := newVessel()
+	v.Lat, v.Lon = 59.9, 10.7
+	for i := range 6 * 360 {
+		points = append(points, newTrackPoint(257000001, now.Add(-time.Duration(i)*10*time.Second), v, "kystverket"))
+	}
+	if err := p.tracks.write(points, now); err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Properties struct {
+			Interval  int64
+			Points    int
+			Truncated bool
+			Times     []string
+		}
+	}
+	w := get(t, p, "/v1/vessels/257000001/track?limit=100")
+	json.Unmarshal(w.Body.Bytes(), &raw)
+	first, _ := time.Parse(time.RFC3339, raw.Properties.Times[0])
+	if raw.Properties.Interval != 15*60 || raw.Properties.Truncated || now.Sub(first) < 5*time.Hour {
+		t.Errorf("interval %d, %d points, truncated %v, first %v", raw.Properties.Interval, raw.Properties.Points, raw.Properties.Truncated, first)
 	}
 }

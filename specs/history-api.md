@@ -4,16 +4,16 @@ Plan for [#32](https://github.com/openwatersio/aiscast/issues/32), and the serve
 
 ## What the numbers say
 
-Live volumes on 2026-09-26 from `/v1/stats`:
+Live volumes on 2026-09-28, with AISHub polled every 20 seconds, from `/v1/stats`:
 
 | Quantity | Value |
 | --- | --- |
-| Accepted events per day | 41.7 M |
-| Events per second | 380 |
+| Accepted events per day | about 60 M |
+| Events per second | about 725 at peak |
 | Vessels in the cache | 54,700 |
 | Stations | 37 |
 
-Position reports are about 85 percent of events, so `ais.positions` gains roughly 35 M rows a day. The event id is 16 random bytes and does not compress, so it is still the largest column. Expect 1 to 1.5 GB a day for positions and a similar amount for receptions, about 1 TB a year, which is about $15 a month in R2 storage. Storage is not the cost that matters. Scanning is: R2 SQL bills $2.50 per TB scanned, so the layout of the tables decides what a track query costs.
+Position reports are about 85 percent of events, so `ais.positions` gains roughly 50 M rows a day. The event id is 16 random bytes and does not compress, so it is still the largest column. Expect 1.5 to 2 GB a day for positions and a similar amount for receptions, about 1.4 TB a year, which is about $21 a month in R2 storage. Storage is not the cost that matters. Scanning is: R2 SQL bills $2.50 per TB scanned, so the layout of the tables decides what a track query costs.
 
 The raw archive starts on 2026-08-20. The normalized writer stays off in production until the rollout in [#106](https://github.com/openwatersio/aiscast/pull/106) turns it on. Replaying raw from 2026-08-20 through it and packaging the result is the backfill this plan depends on.
 
@@ -22,14 +22,24 @@ The raw archive starts on 2026-08-20. The normalized writer stays off in product
 A track request spans three places, and the handler stitches them:
 
 1. **Hot**: the last 48 hours, on the box, in SQLite. The pipeline appends every accepted position report. It survives deploys, and a merge to `main` deploys, so an in-memory ring buffer would empty several times a week.
-2. **Closed days**: `ais.positions` in R2 Data Catalog, queried from the Go server over the R2 SQL HTTP API. Closed days never change once the fingerprint settles, so results cache on disk indefinitely.
+2. **Closed days**: `ais.positions` in R2 Data Catalog, read in process by DuckDB with its iceberg extension. Closed days never change once the fingerprint settles, so results cache on disk indefinitely.
 3. **Today before the hot window**: nothing, and that is fine once the hot window is 48 hours, because the packager closes yesterday at 01:30 UTC and the hot window reaches back past midnight of the day before.
 
 The stitch rule is simple. Take archive rows for whole days up to yesterday, take hot rows from 00:00 today onward, and prefer hot rows where both exist.
 
-### No Worker
+### The engine and the lake's place
 
-#32 as written puts a Worker in front of R2 SQL. That no longer fits. `ais.openwaters.io` resolves straight to the box because UDP ingest needs it, so a Worker would live on a second hostname with a second codebase and a second deploy, and the web client and the MCP server would call across origins for the one endpoint that needs the token. The Go server can POST to `https://api.sql.cloudflarestorage.com/api/v1/accounts/{account}/r2-sql/query/{bucket}` with a bearer token exactly as a Worker would. The query backend sits behind a small interface with one method, so a DuckDB process or a Worker can replace it if R2 SQL latency or price turn out wrong.
+R2 SQL answers every query shape but takes 2 to 30 seconds a query, measured below, which no request can wait for. The server reads the lake in process through DuckDB instead, linked with cgo: DuckDB reads only the Parquet row groups a query needs, with range requests, and caches file metadata and data between queries. The catalog stays the one store every history API reads, with SQL, and no feature needs files of its own.
+
+Measured from the box, the cold read of one vessel's two days fell from 8.7 s to 1.8 s in two steps:
+
+| Layout, read from the box | Cold two-day track | Warm | One cell, one day |
+| --- | --- | --- | --- |
+| Today: Eastern North America, sorted by cell | 8.7 s | 0.7 s | 11 s |
+| Western Europe, sorted by cell | 6.5 s | 0.3 s | 13 s |
+| Western Europe, sorted by MMSI and time | 1.8 s | 0.3 s | 72 s |
+
+The box is in Helsinki, so the lake moves to a Western Europe bucket, and `ais.positions` sorts by MMSI and time within each partition, which puts one vessel's day in a row group or two. Area queries pay for it, but coverage tiles and other area work run as nightly batches, and area history is deferred; if playback needs area reads at request speed, a second table sorted by cell serves it from the same lake. The packager also writes the accepted copy's `source` on each position, so a track's credit lines come from the same rows instead of a second query against `ais.receptions`, whose sort scatters a vessel across the whole file.
 
 ### The lake layout
 
@@ -47,7 +57,20 @@ R2 SQL prunes on both. Measured on six real hours, 10 million positions, by the 
 
 So the bucket prunes a vessel to about 1 percent, and the cell sort prunes a one-cell box to about 11 percent. An id alone scans the whole id column, because a random hash has no useful statistics. Every query the server sends carries `mmsi` whenever it names an id, and `day` always. R2 SQL returns the 16-byte id as base64, so the client decodes it before comparing with the hex id on the wire.
 
-At a full day, a week's track for one vessel reads about 30 MB, and a one-cell box for one day reads about 50 MB. At $2.50 per TB scanned those are fractions of a cent, and latency, not price, is what the archive-stage spike measures next.
+At a full day, a week's track for one vessel reads about 40 MB, and a one-cell box for one day reads about 70 MB, scaling the six-hour sample to the current rate. At $2.50 per TB scanned those are fractions of a cent, and latency, not price, is what the archive-stage spike measures next.
+
+Measured against the backfilled lake on 2026-09-29, by the time R2 SQL took and the bytes it reported scanning:
+
+| Query | Rows | Scanned | Time |
+| --- | --- | --- | --- |
+| One vessel, one day, typical | 354 | 3.5 MB | 2 s |
+| One vessel, one week in one query, typical | 3,087 | 27 MB | 12.6 s |
+| One vessel, one week in one query, busiest at one report a second | 307,743 | 30 MB | 16 to 30 s |
+| Sources for one vessel's week, from `ais.receptions` | 16 to 24 | 381 MB | 2 to 11 s |
+| One cell, one day | 0 | 1.8 MB | 1.4 to 6.8 s |
+| One page of `ais.vessels`, 20,000 rows | 20,000 | 16 MB | 3 to 4 s |
+
+Time grows with the day partitions a query touches rather than the rows it returns, so the server reads one query per day, four at a time. A week then takes about as long as its slowest day: 6 to 7 s cold for both a typical and the busiest vessel, and milliseconds from the cache. The sources query is most of the bytes, since `ais.receptions` holds every copy. A full import of `ais.vessels`, 328,450 vessels, took 34 s and scanned 271 MB. R2 SQL returned 86,778 rows in one response with no cap, dates as ISO strings, timestamps as RFC 3339 strings, and 16-byte ids as base64.
 
 ## The endpoints
 
@@ -122,7 +145,7 @@ History costs money to run and the policy already says it is a metered capabilit
 | Feeder | yes | full archive | one square degree by 24 hours |
 | Commercial | yes | full archive | by arrangement |
 
-A request past the tier's reach gets a 403 with a body that says what tier reaches it and where to get a token, so the web client can show that as a normal state. Whether anonymous callers see the hot window at all is the one metering decision to make before the track ships. The recommendation above is yes: it is what makes a shared vessel link legible, and it costs a SQLite index scan. Until the archive stage lands, every tier reaches only the hot window, so a request past it is clamped to the window rather than refused, and the answer's `from` and `to` say what was covered. The 403 arrives with the archive, when a feeder can reach further than an anonymous caller.
+A request past the tier's reach gets a 403 with a body that says what tier reaches it and where to get a token, so the web client can show that as a normal state. Whether anonymous callers see the hot window at all is the one metering decision to make before the track ships. The recommendation above is yes: it is what makes a shared vessel link legible, and it costs a SQLite index scan. A server without the lake, one with no R2 SQL token, clamps a range to the hot window instead, since no tier could reach further.
 
 ## Opt-out
 
@@ -133,11 +156,11 @@ Opt-out is a separate feature, built when the first request arrives, and nothing
 | Store | Contents | Steady size |
 | --- | --- | --- |
 | SQLite `vessels` | one row per MMSI ever heard, indexed on name and cell | under 100 MB |
-| SQLite `tracks.db` | every accepted position for two to three days, one table per UTC day keyed by `(mmsi, ts)` | 70 to 105 M rows, 4 to 6 GB |
+| SQLite `tracks.db` | every accepted position for two to three days, one table per UTC day keyed by `(mmsi, ts, lat6, lon6)` | 100 to 160 M rows, 7 to 10 GB |
 | SQLite `stations` | station names | negligible |
 | Query cache | closed-day track and history results | capped at 2 GB, LRU |
 
-Writes are about 400 positions a second, batched in one transaction a second. Tracks live in their own file, because the record is the file an operator copies when replacing the box. Each UTC day is its own table, so expiry drops a table instead of deleting 35 M rows. Measured on a laptop, a flush of 400 positions takes 6 ms against a day table of 400 k rows and 22 ms against 10 M rows. Each position lands at a random MMSI and dirties its own page, so the write-ahead log sees on the order of a page per position, over a megabyte a second. If disk writes on the box turn out to matter, the alternative is a per-vessel ring in memory, about 2 GB, saved on shutdown like the vessel snapshot. `modernc.org/sqlite` keeps the build pure Go. The 160 GB NVMe has room for ten times this.
+Writes are about 600 positions a second at peak, batched in one transaction a second. Tracks live in their own file, because the record is the file an operator copies when replacing the box. Each UTC day is its own table, so expiry drops a table instead of deleting 50 M rows. Measured on a laptop, a flush of 400 positions takes 6 ms against a day table of 400 k rows and 22 ms against 10 M rows. Each position lands at a random MMSI and dirties its own page, so the write-ahead log sees on the order of a page per position, about 2.5 MB a second. If disk writes on the box turn out to matter, the alternative is a per-vessel ring in memory, about 2 GB, saved on shutdown like the vessel snapshot. `modernc.org/sqlite` keeps the build pure Go. The 160 GB NVMe has room for ten times this.
 
 ## Order of work
 
@@ -153,6 +176,11 @@ Each step is one pull request with tests, `openapi.json`, the server README, and
 2. **Recent positions and the hot track.** `tracks.db`, `GET /v1/vessels/{mmsi}/track` over the hot window with thinning and GPX, the tier gate, and `get_vessel_track` on `/mcp`. No in-memory ring.
 3. **The backfill.** `aiscast replay` over the raw archive from 2026-08-20 and a full packaging run, once #63 is deployed.
 4. **The archive stage.** The R2 SQL client, a spike that measures latency for the three query shapes and records it in the README, the disk cache, tracks stitched over closed days, and `/v1/history`. It also lands the record import: `first_ts` and the last position in `ais.vessels`, and the nightly merge that backdates `first_seen` after every packaging run. This is what closes #31's verification and #32.
+   - Landed first: the R2 SQL client, tracks stitched from the lake with the tier gate, and a cache of one entry per vessel-day in `tracks.db`. Each missing vessel-day costs two queries, one for positions and one for the sources that delivered them, since `ais.positions` carries no source. A day inside the packager's repackaging week, or with no positions, is read again after six hours, and the partition after a range's last day is read too, since the lake partitions by arrival and satellite relays arrive hours late.
+   - Also landed: the record import. `ais.vessels` carries `first_ts`, the last position, and `last_source`, the source whose copy the server accepted for that position (#119). The server merges the table daily after 03:00 UTC with the fill-only rule.
+   - The latency spike ran against the backfilled lake; its numbers are in [The lake layout](#the-lake-layout) and [The engine and the lake's place](#the-engine-and-the-lakes-place). The server reads the lake through DuckDB, and the lake moves to Western Europe, sorted by MMSI and time, with `source` on each position.
+   - Still to settle on the test bucket before the repackage: the row-group size, the number of MMSI buckets, and whether folding closed months into one file per bucket pays for itself.
+   - Still to come: `/v1/history`, when playback work starts.
 5. **Series and coverage.** `?series=hourly`, `ais.station_days`, `GET /v1/stations/{id}/history`, and the coverage tile job.
 6. **More vessel filters.** `kind`, `class` (A or B), `type` as a category such as cargo, tanker, passenger, fishing, sailing, or pleasure, mapped from the ITU ship type codes, and `flag` as a country code, on `/v1/vessels` and in the MCP search tool. Columns and parameter handling come with step 1, so this step is the category mapping, validation, tests, and the OpenAPI document.
 
@@ -168,8 +196,8 @@ What the web client needs next, with what each needs stored. Items that need no 
 | Station names ([#51](https://github.com/openwatersio/aiscast/issues/51)) | `PUT /v1/stations/{id}` signed by the station's token, `name` in the list | SQLite `stations` | negligible |
 | Heard-first per station ([#53](https://github.com/openwatersio/aiscast/issues/53)) | a field in `/v1/stations` | a counter in the existing usage file, or `ais.station_days` for the exact number | 0 |
 | A map above the area cap | `GET /v1/vessels/summary?bbox` returning vessels per one-degree cell, read straight from the spatial index the cache already keeps | in memory | 0 |
-| Recent track on the vessel page | `GET /v1/vessels/{mmsi}/track` | SQLite `tracks.db` | 4 to 6 GB |
-| Time range, GPX and GeoJSON export | same endpoint over the lake | `ais.positions` with the bucket partition | 1 to 1.5 GB a day |
+| Recent track on the vessel page | `GET /v1/vessels/{mmsi}/track` | SQLite `tracks.db` | 7 to 10 GB |
+| Time range, GPX and GeoJSON export | same endpoint over the lake | `ais.positions` with the bucket partition | 1.5 to 2 GB a day |
 | Playback over a bbox | `GET /v1/history` | `ais.positions` with the `cell` column | same table |
 | Real coverage cells ([#30](https://github.com/openwatersio/aiscast/issues/30)) | PMTiles from a public bucket | nightly over `ais.receptions` | tens of MB per build |
 | Station history beyond seven days | `GET /v1/stations/{id}/history` | `ais.station_days` | 13,000 rows a year |
@@ -181,6 +209,5 @@ Accounts for the web client add tables to the same SQLite and are the reason to 
 
 ## Decisions to make
 
-1. **Go calls R2 SQL directly**, no Worker. Recommendation: yes, for the reasons above, behind an interface.
-2. **Anonymous callers get the hot window.** Recommendation: yes, capped at 200 points.
-3. **`/v1/history` waits.** It has no consumer before the last client stage. Recommendation: tracks first, history when the tile and playback work starts.
+1. **Anonymous callers get the hot window.** Recommendation: yes, capped at 200 points.
+2. **`/v1/history` waits.** It has no consumer before the last client stage. Recommendation: tracks first, history when the tile and playback work starts.

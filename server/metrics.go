@@ -231,6 +231,28 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		metricHead(w, "aiscast_tracks_bytes", "gauge", "size of the track database and its write-ahead log")
 		fmt.Fprintf(w, "aiscast_tracks_bytes %d\n", t.bytes())
 	}
+	if l := p.lake; l != nil {
+		metricHead(w, "aiscast_lake_queries_total", "counter", "lake queries for track history and the record import")
+		fmt.Fprintf(w, "aiscast_lake_queries_total %d\n", l.queries.Load())
+		metricHead(w, "aiscast_lake_query_failures_total", "counter", "lake queries that failed")
+		fmt.Fprintf(w, "aiscast_lake_query_failures_total %d\n", l.failures.Load())
+		metricHead(w, "aiscast_lake_query_seconds_total", "counter", "time spent in lake queries")
+		fmt.Fprintf(w, "aiscast_lake_query_seconds_total %.3f\n", float64(l.queryNanos.Load())/1e9)
+		metricHead(w, "aiscast_lake_cache_hits_total", "counter", "vessel-days answered from the lake cache")
+		fmt.Fprintf(w, "aiscast_lake_cache_hits_total %d\n", l.hits.Load())
+		metricHead(w, "aiscast_lake_cache_misses_total", "counter", "vessel-days read from the lake")
+		fmt.Fprintf(w, "aiscast_lake_cache_misses_total %d\n", l.misses.Load())
+		metricHead(w, "aiscast_import_runs_total", "counter", "daily merges of the lake's vessels into the record")
+		fmt.Fprintf(w, "aiscast_import_runs_total %d\n", p.imports.runs.Load())
+		metricHead(w, "aiscast_import_failures_total", "counter", "merges of the lake's vessels that failed; the next check retries")
+		fmt.Fprintf(w, "aiscast_import_failures_total %d\n", p.imports.failures.Load())
+		metricHead(w, "aiscast_import_rows_total", "counter", "vessels merged into the record from the lake")
+		fmt.Fprintf(w, "aiscast_import_rows_total %d\n", p.imports.rows.Load())
+		if t := p.imports.lastSuccess.Load(); t > 0 {
+			metricHead(w, "aiscast_import_last_success_timestamp_seconds", "gauge", "when the lake's vessels last merged into the record")
+			fmt.Fprintf(w, "aiscast_import_last_success_timestamp_seconds %d\n", t)
+		}
+	}
 
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")
 	streams := p.streams.snapshot()

@@ -60,6 +60,10 @@ func main() {
 					log.Printf("tracks: %v; running without recent positions", err)
 				} else {
 					p.attachTracks(ts)
+					if c := duckLakeFromEnv(); c != nil {
+						p.lake = &lake{client: c, cache: ts}
+						go p.runImport()
+					}
 				}
 			}
 			go p.runStore()

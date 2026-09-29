@@ -11,7 +11,8 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The box's release: the cgo build links the runner's glibc, which must not be newer than the box's.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: server
@@ -25,7 +26,8 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
       - run: npx --yes @redocly/cli@2.56.1 lint openapi.json
-      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o aiscast-linux .
+      # cgo on: the lake reader links DuckDB. The runner is linux/amd64 like the box, so the build is native.
+      - run: go build -trimpath -o aiscast-linux .
       - uses: actions/upload-artifact@v7
         with:
           name: aiscast-linux
