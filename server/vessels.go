@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -478,6 +479,10 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	truncated := false
 	if emitted != nil {
 		recs, more, err := p.recordVessels(s, rules, deep, now)
+		if errors.Is(err, errTooManyTerms) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if err != nil {
 			log.Printf("store: %v", err)
 			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
@@ -623,6 +628,10 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 		q.since = ageCutoff(now, age)
 	}
 	recs, err := p.store.find(q)
+	if errors.Is(err, errTooManyTerms) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		log.Printf("store: %v", err)
 		http.Error(w, "vessel record unavailable", http.StatusInternalServerError)

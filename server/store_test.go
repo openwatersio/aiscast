@@ -690,36 +690,55 @@ func TestRestartKeepsAnOldFixOffTheMap(t *testing.T) {
 	}
 }
 
-// An area query past the cache's 30 minutes must seek the (cell, seen) index by cell and seen together.
-// Walking the seen index instead reads every vessel heard in the window whenever a box holds fewer than
-// the limit, which is most of the ocean.
-func TestAreaQueryUsesCellAndSeen(t *testing.T) {
+// plan is SQLite's query plan for the statement find runs for q.
+func plan(t *testing.T, p *Pipeline, q recordQuery) string {
+	t.Helper()
+	text, args, _, err := q.sql()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := p.store.db.Query("EXPLAIN QUERY PLAN "+text, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var steps []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		rows.Scan(&id, &parent, &unused, &detail)
+		steps = append(steps, detail)
+	}
+	return strings.Join(steps, "; ")
+}
+
+// An area query past the cache's 30 minutes must reach rows through the cell index. Walking the seen index
+// instead reads every vessel heard in the window whenever a box holds fewer than the limit, which is most
+// of the ocean. A name search keeps to the name index.
+func TestRecordQueryPlans(t *testing.T) {
 	p := storePipeline(t)
 	now := time.Now()
 	rules, _ := parseAgeRules(url.Values{})
 	age, vf := rules.rule(false)
-	// A square anonymous box, and the widest box a personal token's area allows: 1.1° by 360° is 396
-	// square degrees across three rows of cells.
-	for _, b := range []bbox{{30, -60, 40, -50}, {-0.05, -180, 1.05, 180}} {
-		q := recordQuery{boxes: []bbox{b}, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now}
-		clause, args, _, listed := q.whereCells()
-		if !listed {
-			t.Fatalf("box %v should list its cells", b)
-		}
-		rows, err := p.store.db.Query("EXPLAIN QUERY PLAN SELECT mmsi FROM vessels"+clause+" ORDER BY +seen DESC LIMIT 501", args...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var plan []string
-		for rows.Next() {
-			var id, parent, unused int
-			var detail string
-			rows.Scan(&id, &parent, &unused, &detail)
-			plan = append(plan, detail)
-		}
-		rows.Close()
-		if got := strings.Join(plan, "; "); !strings.Contains(got, "vessels_cell (cell=? AND seen>? AND seen<?)") {
-			t.Errorf("box %v plan: %s", b, got)
+	area := func(boxes ...bbox) recordQuery {
+		return recordQuery{boxes: boxes, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now}
+	}
+	seek := "vessels_cell (cell=? AND seen>? AND seen<?)"
+	for name, c := range map[string]struct {
+		q    recordQuery
+		want string
+	}{
+		"anonymous box":        {area(bbox{30, -60, 40, -50}), seek},
+		"widest personal":      {area(bbox{-0.05, -180, 1.05, 180}), seek}, // 396 square degrees across three rows
+		"past the budget":      {area(tileBox(3, 2, 2)), "vessels_cell (cell>? AND cell<?)"},
+		"listed and ranged":    {area(bbox{30, -60, 40, -50}, bbox{-10, -180, 10, 180}), "vessels_cell"},
+		"name search in box":   {recordQuery{prefix: "AB", boxes: []bbox{{30, -60, 40, -50}}, hasPos: true, limit: 101}, "vessels_search"},
+		"name search, max_age": {recordQuery{prefix: "CERULEAN", boxes: []bbox{{30, -60, 40, -50}}, since: now.Add(-7 * 24 * time.Hour), hasPos: true, filter: vf, now: now, limit: 101}, "vessels_search"},
+		"MMSI search, max_age": {recordQuery{prefix: "36816", boxes: []bbox{{30, -60, 40, -50}}, since: now.Add(-time.Hour), hasPos: true, filter: vf, now: now, limit: 101}, "PRIMARY KEY"},
+	} {
+		got := plan(t, p, c.q)
+		if !strings.Contains(got, c.want) || strings.Contains(got, "INDEX vessels_seen") {
+			t.Errorf("%s: %s", name, got)
 		}
 	}
 }
@@ -734,5 +753,16 @@ func TestManyBoxesStayUnderTheParameterLimit(t *testing.T) {
 	}
 	if w := get(t, p, target); w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	// More boxes than one statement can take, by parameters or by expression depth: refused as the
+	// caller's to narrow, not failed as the record's.
+	for _, n := range []int{maxBoxes + 1, 1500, 6000} {
+		many := "/v1/vessels?max_age=all" + strings.Repeat("&bbox=0,-180,0,180", n)
+		if w := get(t, p, many); w.Code != 400 {
+			t.Errorf("%d boxes: %d %s", n, w.Code, w.Body)
+		}
+		if w := get(t, p, many+"&q=ab"); w.Code != 400 {
+			t.Errorf("search with %d boxes: %d %s", n, w.Code, w.Body)
+		}
 	}
 }

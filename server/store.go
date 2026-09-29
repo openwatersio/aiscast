@@ -246,14 +246,10 @@ const maxCellRows = 60
 const maxCells = 1080
 
 // where is the WHERE clause for q and its arguments. none reports a filter that matches nothing, an
-// empty MMSI or IMO list.
-func (q recordQuery) where() (clause string, args []any, none bool) {
-	clause, args, none, _ = q.whereCells()
-	return clause, args, none
-}
-
-// whereCells is where, and whether every box listed its cells, so the (cell, seen) index answers it.
-func (q recordQuery) whereCells() (clause string, args []any, none bool, cellsListed bool) {
+// empty MMSI or IMO list. byCell reports an area query past the cache whose every box the cell index narrows, so
+// find orders on +seen: ordering on seen lets SQLite walk the seen index until the limit fills, which in
+// empty water is every row in the range.
+func (q recordQuery) where() (clause string, args []any, none, byCell bool) {
 	var where []string
 	in := func(col string, ids []uint32) {
 		ph := make([]string, len(ids))
@@ -276,7 +272,11 @@ func (q recordQuery) whereCells() (clause string, args []any, none bool, cellsLi
 	}
 	seen := "seen"
 	if len(q.boxes) > 0 {
-		cellsListed = true
+		// Listing cells serves an area reaching past the cache: before stops at its 30 minutes, and the
+		// (cell, seen) index then seeks each cell's range, skipping the vessels the cache answered for. A
+		// name or MMSI search, with or without max_age, is better served by its own index.
+		bounded := !q.before.IsZero() && q.prefix == "" && q.contains == ""
+		byCell = bounded
 		budget := maxCells
 		var ors []string
 		for _, b := range q.boxes {
@@ -284,9 +284,7 @@ func (q recordQuery) whereCells() (clause string, args []any, none bool, cellsLi
 			args = append(args, b[0], b[2], b[1], b[3])
 			r0, c0 := cellRowCol(b[0], b[1])
 			r1, c1 := cellRowCol(b[2], b[3])
-			// Each cell spelled out, so the (cell, seen) index narrows to the box and to the seen range at
-			// once, and a query for vessels heard more than 30 minutes ago skips the fresh ones.
-			if n := int(r1-r0+1) * int(c1-c0+1); n <= budget {
+			if n := int(r1-r0+1) * int(c1-c0+1); bounded && n <= budget {
 				budget -= n
 				ph := make([]string, 0, n)
 				for r := r0; r <= r1; r++ {
@@ -302,12 +300,11 @@ func (q recordQuery) whereCells() (clause string, args []any, none bool, cellsLi
 					args = append(args, r*360+c0, r*360+c1)
 				}
 				c += " AND (" + strings.Join(cells, " OR ") + ")"
-				cellsListed = false
 				// Without statistics SQLite takes the seen index for a seen range and walks every vessel
 				// heard in it, wherever it is. The unary + keeps it on the cells.
 				seen = "+seen"
 			} else {
-				cellsListed = false
+				byCell = false
 			}
 			ors = append(ors, c+")")
 		}
@@ -348,39 +345,58 @@ func (q recordQuery) whereCells() (clause string, args []any, none bool, cellsLi
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")
 	}
-	return clause, args, false, cellsListed
+	return clause, args, false, byCell
+}
+
+// bounded is where, refused with errTooManyTerms past what one SQLite statement can take: each box is a
+// level of OR, and the expression depth stops near a thousand, and each term is a bound parameter.
+func (q recordQuery) bounded() (clause string, args []any, none, byCell bool, err error) {
+	if len(q.boxes) > maxBoxes {
+		return "", nil, false, false, errTooManyTerms
+	}
+	clause, args, none, byCell = q.where()
+	if len(args) > maxParams {
+		return "", nil, false, false, errTooManyTerms
+	}
+	return clause, args, none, byCell, nil
 }
 
 // count is the number of rows q matches, ignoring its limit.
 func (s *store) count(q recordQuery) (int, error) {
-	clause, args, none := q.where()
-	if none {
-		return 0, nil
+	clause, args, none, _, err := q.bounded()
+	if err != nil || none {
+		return 0, err
 	}
 	var n int
-	err := s.db.QueryRow("SELECT count(*) FROM vessels"+clause, args...).Scan(&n)
+	err = s.db.QueryRow("SELECT count(*) FROM vessels"+clause, args...).Scan(&n)
 	return n, err
 }
 
-func (s *store) find(q recordQuery) ([]record, error) {
-	clause, args, none, cellsListed := q.whereCells()
-	if none {
-		return nil, nil
+// sql is the statement find runs for q.
+func (q recordQuery) sql() (text string, args []any, none bool, err error) {
+	clause, args, none, byCell, err := q.bounded()
+	if err != nil || none {
+		return "", nil, none, err
 	}
-	sqlText := "SELECT " + recordCols + " FROM vessels" + clause
-	if q.byName {
-		sqlText += " ORDER BY search, mmsi"
-	} else {
-		// With the cells listed, the index finds the few rows a box holds and sorting them is cheap. Left to
-		// order by the seen index, SQLite walks it until the limit fills, which in empty water is every row.
-		order := "seen"
-		if cellsListed {
-			order = "+seen"
-		}
-		sqlText += " ORDER BY " + order + " DESC"
+	text = "SELECT " + recordCols + " FROM vessels" + clause
+	switch {
+	case q.byName:
+		text += " ORDER BY search, mmsi"
+	case byCell:
+		text += " ORDER BY +seen DESC"
+	default:
+		text += " ORDER BY seen DESC"
 	}
 	if q.limit > 0 {
-		sqlText += " LIMIT " + strconv.Itoa(q.limit)
+		text += " LIMIT " + strconv.Itoa(q.limit)
+	}
+	return text, args, false, nil
+}
+
+func (s *store) find(q recordQuery) ([]record, error) {
+	sqlText, args, none, err := q.sql()
+	if err != nil || none {
+		return nil, err
 	}
 	rows, err := s.db.Query(sqlText, args...)
 	if err != nil {
@@ -610,3 +626,14 @@ func (v *vessel) merge(o *vessel) (changed bool) {
 }
 
 var errNoStore = errors.New("the vessel record is not available on this server")
+
+// maxBoxes bounds the boxes one record query takes. It is far past what a map or a region needs, and short
+// of SQLite's expression depth.
+const maxBoxes = 256
+
+// maxParams is SQLite's limit on bound parameters in one statement. bbox repeats and some tokens follow
+// any number of MMSIs, so a request can ask for more terms than one query can bind; it is refused as the
+// caller's to narrow, not failed as the record's.
+const maxParams = 32766
+
+var errTooManyTerms = errors.New("too many bbox or mmsi for one request")
