@@ -133,7 +133,6 @@ func (p *Pipeline) vesselName(mmsi uint32) (name string, known bool, err error) 
 // serveTrack: GET /v1/vessels/{mmsi}/track?from&to&interval&limit&format → the positions the network
 // heard from one vessel in the last 48 hours, as a GeoJSON Feature or, with format=gpx, a GPX track.
 func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	cl, err := p.requestClaims(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)

@@ -345,9 +345,7 @@ func mintPersonal(ip, pubkey string, bindIP bool) (token string, c Claims, errMs
 }
 
 func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == http.MethodOptions {
+	if preflight(w, r, corsHeaders) {
 		return
 	}
 	if r.Method != http.MethodPost {

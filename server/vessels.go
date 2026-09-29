@@ -440,7 +440,6 @@ const searchLimit = 50
 // followed MMSI answers with its last known position however old, unless max_age says otherwise. ?q=
 // searches instead (serveVesselSearch).
 func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	cl, err := p.requestClaims(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -665,7 +664,6 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 // completed by the record, or from the record alone for a vessel the cache no longer holds. geometry is
 // null for a vessel whose position was never heard. An unknown vessel is a 404.
 func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if _, err := p.requestClaims(r); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
