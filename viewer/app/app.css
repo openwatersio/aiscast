@@ -124,7 +124,6 @@
   }
 }
 
-/* The sidebar is the app's scroll container; the map never scrolls. */
 /* Every floating pane. Dark mode only, so the blur always sits over the basemap. */
 @utility pane {
   background-color: var(--surface-glass);
@@ -153,10 +152,6 @@
   position: fixed;
   top: 0;
   left: 0;
-  /* Sized in viewport units rather than `inset: 0`. The element carries a
-     `view-transition-name` for persistence across navigation, which makes it a containing
-     block, and `inset` then resolves against that instead of the viewport and collapses to
-     zero. Viewport units do not care. */
   width: 100vw;
   height: 100dvh;
 }
@@ -254,4 +249,21 @@
 /* The card follows the cursor, so it must never eat the click that opens the vessel. */
 #map .vessel-hovercard {
   pointer-events: none;
+}
+
+/* The track bar's scrubber. */
+[data-scrub]::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+}
+[data-scrub]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--surface);
+  border-radius: 9999px;
+  background: var(--accent);
 }

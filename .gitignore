@@ -1,7 +1,9 @@
 .wrangler/
 .env
+.dev.vars
 node_modules/
 signalk-plugin/dist/
-viewer/dist/
-viewer/.astro/
+viewer/build/
+viewer/.react-router/
+viewer/worker-configuration.d.ts
 spec

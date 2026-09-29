@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aiscast-web",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // openwaters.io is the website Worker's Custom Domain. Route Workers run in front of a
+  // Custom Domain, so these paths reach this Worker and everything else under /ais/ (the
+  // landing page, the token page, the comparisons) stays with the website.
+  "routes": [
+    { "pattern": "openwaters.io/ais/map*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/vessels/*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/stations*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/network*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/assets/*", "zone_name": "openwaters.io" },
+  ],
+  // Routes disable these by default; keep the generated URL and PR previews.
+  "workers_dev": true,
+  "preview_urls": true,
+  "vars": {
+    // Server renders fetch from here. AIS_TOKEN, a secret, lifts them off the anonymous
+    // per-address limit, which every render would otherwise share.
+    "AIS_API": "https://ais.openwaters.io",
+  },
+  "observability": { "enabled": true },
+  "upload_source_maps": true,
+}

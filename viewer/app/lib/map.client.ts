@@ -13,6 +13,7 @@ import {
   shipClass,
   splitTrack,
 } from "./ais";
+import { publicApiBase } from "./api";
 import type { BBox, Stream } from "./stream";
 
 maplibregl.setWorkerUrl(workerUrl);
@@ -20,8 +21,11 @@ maplibregl.setWorkerUrl(workerUrl);
 // Same basemap as openwaters.io/ais.
 const BASEMAP = "https://tiles.openfreemap.org/styles/fiord";
 
-/** Anonymous subscriptions cap here, so a wider viewport shows coverage instead of vessels. */
-const AREA_CAP = 100;
+/** The anonymous cap, until the stream's welcome frame says what this client may have. */
+const DEFAULT_AREA_CAP = 100;
+
+/** The server rebuilds a tile at most every 10 s, so reloading faster returns the same one. */
+const TILE_REFRESH_MS = 15_000;
 
 export interface MapController {
   map: maplibregl.Map;
@@ -49,7 +53,10 @@ export interface MapController {
   fitTrack(): void;
   flyToVessel(mmsi: number, fallback?: [number, number]): void;
   fitBBox(bbox: BBox): void;
-  onSelect(fn: (mmsi: number) => void): void;
+  /** A vessel clicked on the map, with the name its feature carries for the URL slug. */
+  onSelect(fn: (mmsi: number, name?: string) => void): void;
+  /** `overview` above the stream's area cap, where vessels come from tiles instead. */
+  mode(): "live" | "overview";
 }
 
 function shipIcon(): ImageData {
@@ -164,7 +171,12 @@ export function createMap(
     // MapLibre cannot resolve a centre when padding leaves no room for one.
     padding.left = Math.min(padding.left, w * 0.75);
     padding.bottom = Math.min(padding.bottom, h * 0.75);
-    map.setPadding(padding);
+    // Setting padding is a camera jump, which cancels a flight in progress, so only a change
+    // is applied.
+    const current = map.getPadding();
+    if (current.left !== padding.left || current.bottom !== padding.bottom || current.top || current.right) {
+      map.setPadding(padding);
+    }
     // Anything docked over the map centres in what the panes leave, not in the viewport. This
     // is the pane's own edge, without the camera's gap, which would shift it by that much.
     const edge =
@@ -179,7 +191,7 @@ export function createMap(
 
   let focus: number | undefined;
   let attribution: maplibregl.AttributionControl | undefined;
-  const selectHandlers: Array<(mmsi: number) => void> = [];
+  const selectHandlers: Array<(mmsi: number, name?: string) => void> = [];
   let ready = false;
 
   const viewBBox = (): BBox => {
@@ -201,11 +213,44 @@ export function createMap(
     CLASS_COLORS.other,
   ];
 
+  // shipClass() as an expression, for tile features, which carry kind and type but no class.
+  const type: any = ["to-number", ["get", "type"], 0];
+  const tileClassExpr: any = [
+    "case",
+    ["in", ["get", "kind"], ["literal", ["aton", "base", "sar"]]],
+    ["get", "kind"],
+    ["==", type, 30],
+    "fishing",
+    ["in", type, ["literal", [36, 37]]],
+    "pleasure",
+    ["all", [">=", type, 50], ["<=", type, 59]],
+    "special",
+    ["all", [">=", type, 60], ["<=", type, 69]],
+    "passenger",
+    ["all", [">=", type, 70], ["<=", type, 79]],
+    "cargo",
+    ["all", [">=", type, 80], ["<=", type, 89]],
+    "tanker",
+    "other",
+  ];
+  const tileColorExpr: any = [
+    "match",
+    tileClassExpr,
+    ...Object.entries(CLASS_COLORS).flat(),
+    CLASS_COLORS.other,
+  ];
+  // Tiles keep moored and anchored vessels for a week, so the fade runs longer than the
+  // stream's: an hour-old berth is still where the boat is.
+  const tileOpacityExpr: any = ["step", ["get", "age_s"], 1, 600, 0.65, 3600, 0.4];
+
   function vesselFeatures() {
     const now = Date.now();
     const features: GeoJSON.Feature[] = [];
     for (const [mmsi, v] of stream.vessels) {
       if (v.lat == null || v.lon == null) continue;
+      // In the overview the tiles draw everyone. The stream still follows the open vessel by
+      // MMSI, so it alone is drawn from here, live and haloed.
+      if (overview && mmsi !== focus) continue;
       const at = mmsi === focus ? scrubPoint() : undefined;
       // While scrubbing, the icon is the vessel at the moment being replayed, pointed along
       // the track it was following. Its present position becomes the dot on the line.
@@ -511,8 +556,25 @@ export function createMap(
     });
 
     function showHover(e: maplibregl.MapLayerMouseEvent) {
-      const mmsi = Number(e.features?.[0]?.properties?.mmsi);
-      const v = stream.vessels.get(mmsi);
+      const f = e.features?.[0];
+      const mmsi = Number(f?.properties?.mmsi);
+      const live = stream.vessels.get(mmsi);
+      // A tile feature carries its own summary; a stream feature is looked up for the latest.
+      const p = f?.properties ?? {};
+      const v = live
+        ? live
+        : f && f.geometry.type === "Point"
+          ? {
+              name: p.name as string | undefined,
+              kind: p.kind as string | undefined,
+              shipType: p.type as number | undefined,
+              sog: p.sog as number | undefined,
+              cog: p.cog as number | undefined,
+              seen: Date.now() - Number(p.age_s ?? 0) * 1000,
+              lon: f.geometry.coordinates[0],
+              lat: f.geometry.coordinates[1],
+            }
+          : undefined;
       if (!v) return;
 
       const el = document.createElement("div");
@@ -537,7 +599,7 @@ export function createMap(
       hover.setLngLat([v.lon!, v.lat!]).setDOMContent(el).addTo(map);
     }
 
-    for (const layer of ["vessel-still", "vessel-moving"]) {
+    for (const layer of ["vessel-still", "vessel-moving", "overview-still", "overview-moving"]) {
       map.on("mouseenter", layer, (e: maplibregl.MapLayerMouseEvent) => {
         map.getCanvas().style.cursor = "pointer";
         showHover(e);
@@ -548,8 +610,10 @@ export function createMap(
         hover.remove();
       });
       map.on("click", layer, (e: maplibregl.MapLayerMouseEvent) => {
-        const mmsi = e.features?.[0]?.properties?.mmsi;
-        if (mmsi) for (const fn of selectHandlers) fn(Number(mmsi));
+        const props = e.features?.[0]?.properties;
+        const mmsi = Number(props?.mmsi);
+        const name = typeof props?.name === "string" && props.name ? props.name : undefined;
+        if (mmsi) for (const fn of selectHandlers) fn(mmsi, name);
       });
     }
 
@@ -558,13 +622,111 @@ export function createMap(
     render();
     applyInsets();
     runPendingCamera();
+    void addOverview();
   });
+
+  // Above the stream's area cap, vessels come from the tile endpoint: a snapshot of every
+  // vessel's last known position, rebuilt by the server every 10 s, which no tier's cap
+  // applies to. Without it (a server that does not serve tiles) the wide view stays empty.
+  let hasTiles = false;
+  let overview = false;
+
+  async function addOverview() {
+    let tj: { tiles: string[]; minzoom?: number; maxzoom?: number; attribution?: string };
+    try {
+      const res = await fetch(`${publicApiBase()}/v1/vessels/tiles.json`);
+      if (!res.ok) return;
+      tj = await res.json();
+    } catch {
+      return;
+    }
+    // One credit linking to the per-source list, which is how the tiles are licensed to be
+    // credited. The attribution control adds it beside the stream's per-source lines.
+    map.addSource("overview", {
+      type: "vector",
+      tiles: tj.tiles,
+      minzoom: tj.minzoom ?? 0,
+      maxzoom: tj.maxzoom ?? 14,
+      attribution: tj.attribution,
+    });
+    const hidden = { visibility: "none" as const };
+    // Beneath the stream's layers, so the open vessel's halo and icon draw over its tile twin.
+    const before = "vessel-halo";
+    map.addLayer(
+      {
+        id: "overview-still",
+        type: "circle",
+        source: "overview",
+        "source-layer": "vessels",
+        filter: ["!", ["has", "hdg"]],
+        layout: hidden,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 2, 1.5, 6, 3, 9, 4],
+          "circle-color": tileColorExpr,
+          "circle-opacity": tileOpacityExpr,
+          "circle-stroke-width": ["step", ["zoom"], 0, 6, 1],
+          "circle-stroke-color": "#0f172a",
+        },
+      },
+      before,
+    );
+    map.addLayer(
+      {
+        id: "overview-moving",
+        type: "symbol",
+        source: "overview",
+        "source-layer": "vessels",
+        filter: ["has", "hdg"],
+        layout: {
+          ...hidden,
+          "icon-image": "ship",
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 2, 0.3, 6, 0.55, 9, 0.7],
+          "icon-rotate": ["get", "hdg"],
+          "icon-rotation-alignment": "map",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+        paint: {
+          "icon-color": tileColorExpr,
+          "icon-opacity": tileOpacityExpr,
+          "icon-halo-color": "#0f172a",
+          "icon-halo-width": 1,
+        },
+      },
+      before,
+    );
+    hasTiles = true;
+    setInterval(() => {
+      if (overview) map.refreshTiles("overview");
+    }, TILE_REFRESH_MS);
+    updateView();
+  }
+
+  function setOverview(on: boolean) {
+    if (on === overview) return;
+    overview = on;
+    if (hasTiles) {
+      for (const id of ["overview-still", "overview-moving"]) {
+        map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
+      }
+    }
+    render();
+  }
+
+  /** Square degrees this client may subscribe to: 0 is unlimited, below 0 is MMSI-only. */
+  function areaCap(): number {
+    const area = stream.limits?.area;
+    return typeof area === "number" ? area : DEFAULT_AREA_CAP;
+  }
 
   function updateView() {
     const bbox = viewBBox();
-    // Over the cap the server refuses the subscription, so ask for nothing and let the
-    // coverage layer carry the view rather than showing an empty ocean.
-    stream.setView(bboxArea(bbox) <= AREA_CAP ? [bbox] : []);
+    const cap = areaCap();
+    // Over the cap the server refuses the subscription, so ask for nothing and let the tiles
+    // carry the view rather than showing an empty ocean.
+    const fits = cap === 0 || (cap > 0 && bboxArea(bbox) <= cap);
+    stream.setView(fits ? [bbox] : []);
+    if (ready) setOverview(!fits && hasTiles);
   }
 
   let moveTimer: ReturnType<typeof setTimeout>;
@@ -579,7 +741,13 @@ export function createMap(
   updateView();
 
   let creditCount = 0;
+  let cap = areaCap();
   stream.subscribe(() => {
+    // The welcome frame arrives after the first subscription, and a token raises the cap.
+    if (areaCap() !== cap) {
+      cap = areaCap();
+      updateView();
+    }
     render();
     if (stream.credits.size !== creditCount) {
       creditCount = stream.credits.size;
@@ -601,6 +769,7 @@ export function createMap(
       };
     },
     refreshInsets: applyInsets,
+    mode: () => (overview ? "overview" : "live"),
     setTrack(coords, endedAt, times) {
       history = coords;
       historyTimes = times ?? coords.map((_, i) => i);

@@ -1,4 +1,4 @@
-import { API_PUBLIC, type VesselProps } from "./api";
+import { publicApiBase, storedToken, type VesselProps } from "./api";
 
 // One connection for the whole app. Anonymous clients get two concurrent streams per
 // network address, which a household or a marina shares, so a second connection here would
@@ -71,8 +71,11 @@ type Listener = () => void;
 export class Stream {
   readonly vessels = new Map<number, Vessel>();
   readonly credits = new Map<string, string>();
-  state: "connecting" | "live" | "reconnecting" | "capped" = "connecting";
+  /** `refused`: every stream this address may hold is open elsewhere, often another tab. */
+  state: "connecting" | "live" | "reconnecting" | "capped" | "refused" = "connecting";
   eventsPerSec = 0;
+  /** Bumped on every change, so React can tell a new frame from the same one. */
+  version = 0;
   limits: Record<string, number | boolean> | undefined;
 
   #ws: WebSocket | undefined;
@@ -149,40 +152,22 @@ export class Stream {
   }
 
   #emit() {
+    this.version++;
     for (const fn of this.#listeners) fn();
   }
 
-  /**
-   * The token this browser minted on the token page, if it has one. Anonymous is 2 streams,
-   * 20 messages/s and 100 square degrees; personal is 50/s and 400. The token is a bearer
-   * credential, so it goes on the URL only because WebSocket has no request headers.
-   */
-  static storedToken(): string | undefined {
-    try {
-      const raw = localStorage.getItem("aiscast.token");
-      if (!raw) return undefined;
-      const { token, claims } = JSON.parse(raw);
-      if (claims?.exp && claims.exp * 1000 <= Date.now()) return undefined;
-      return typeof token === "string" ? token : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
   #connect() {
-    const token = Stream.storedToken();
+    // The token goes on the URL only because WebSocket has no request headers. Anonymous is
+    // 20 messages/s and 100 square degrees; a personal token is 50/s and 400.
+    const token = storedToken();
     const url =
-      API_PUBLIC.replace(/^http/, "ws") +
+      publicApiBase().replace(/^http/, "ws") +
       "/v1/stream" +
       (token ? `?key=${encodeURIComponent(token)}` : "");
     this.#ws = new WebSocket(url);
-    this.#ws.onopen = () => {
-      this.state = "live";
-      this.#backoff = 1000;
-      this.#send();
-    };
+    this.#ws.onopen = () => this.#send();
     this.#ws.onclose = () => {
-      this.state = "reconnecting";
+      if (this.state !== "refused") this.state = "reconnecting";
       this.#emit();
       setTimeout(() => this.#connect(), this.#backoff);
       this.#backoff = Math.min(this.#backoff * 2, 30e3);
@@ -206,6 +191,10 @@ export class Stream {
 
   #onMessage(ev: StreamEvent & { limits?: Record<string, number | boolean> }) {
     if (ev.type === "welcome") {
+      // Not on open: the server accepts the socket before it checks the per-address stream
+      // limit, then refuses and closes it. Resetting there retried every second forever.
+      this.#backoff = 1000;
+      this.state = "live";
       this.limits = ev.limits;
       this.#emit();
       return;
@@ -214,6 +203,9 @@ export class Stream {
       // The viewport exceeds the area cap. Not a failure; the map switches to coverage.
       if (/bbox|area/i.test(ev.error ?? "")) {
         this.state = "capped";
+        this.#emit();
+      } else if (/concurrent/i.test(ev.error ?? "")) {
+        this.state = "refused";
         this.#emit();
       }
       return;
