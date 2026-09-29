@@ -364,17 +364,18 @@ def refresh_vessels(con, catalog):
               -- what that day contributed rather than keeping the old value
               SELECT mmsi, name, ts AS name_ts, callsign, ts AS callsign_ts, ship_type, ts AS ship_type_ts,
                      draught10, ts AS draught_ts, NULL AS cls, NULL::TIMESTAMP AS cls_ts, 1 AS fresh,
-                     ts AS first_ts, NULL::TIMESTAMP AS last_ts, NULL::INTEGER AS last_lat6, NULL::INTEGER AS last_lon6,
+                     NULL::TIMESTAMP AS first_ts, NULL::TIMESTAMP AS last_ts, NULL::INTEGER AS last_lat6, NULL::INTEGER AS last_lon6,
                      NULL::VARCHAR AS last_source FROM statics
               UNION ALL  -- the static's own class claim is the weakest signal: it only fills a gap
               SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, TIMESTAMP '1970-01-01', 1,
                      NULL, NULL, NULL, NULL, NULL FROM statics
               UNION ALL
               SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, ts, 1, NULL, NULL, NULL, NULL, NULL FROM evidence
-              UNION ALL  -- every event counts toward first_ts, flagged or not: a stale or implausible report
-              -- still means the vessel was heard, and stale reports are the early ones (a satellite pass relayed late)
+              UNION ALL  -- first_ts is when the network first heard the vessel: the receive time of any event,
+              -- flagged or not, since a stale or implausible report still means the vessel was heard. Not the
+              -- message's own time, which a device with a reset clock sets years in the past.
               SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
-                     min(ct), NULL, NULL, NULL, NULL FROM env WHERE k = 'event' GROUP BY mmsi
+                     min(recv), NULL, NULL, NULL, NULL FROM env WHERE k = 'event' GROUP BY mmsi
               UNION ALL  -- the day's accepted positions: the latest with coordinates is last_*
               -- with the source whose copy the server accepted, the one its credit line names
               SELECT p.mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
