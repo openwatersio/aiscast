@@ -19,6 +19,7 @@ const (
 	anonMMSIs, personalMMSIs, feederMMSIs     = 10, 50, 200  // vessels that may be followed by MMSI per subscription
 	addrMaxStreams                            = 32           // concurrent streams per address across all tokens; roomy for a shared egress (CGNAT, marina wifi)
 	httpPerMinute, keysPerMinute              = 120, 10      // per address
+	tilesPerMinute                            = 600          // per address: a map view is ~20 tiles, refreshed every 10–30 s
 	udpLinesPerMinute                         = 30000        // ≈500 sentences/s per source address
 	corroborationWindow                       = time.Hour    // a low-trust position counts as corroborated this long after a trusted source heard the vessel
 	implausibleKnots                          = 120.0        // positions implying faster than this are dropped

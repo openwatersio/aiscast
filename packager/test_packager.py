@@ -259,6 +259,77 @@ def test_write_passes_hold_whole_buckets(packaged):
     assert total == 2001, "every row, the null mmsi too, lands in exactly one pass"
 
 
+def test_a_warehouse_keeps_the_layout_it_was_created_with(tmp_path, monkeypatch):
+    """A new warehouse takes the layout settings; a run with other settings is refused, so a table never
+    mixes sort orders or bucket counts across days."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "mmsi")
+    monkeypatch.setitem(packager.ORDER, "positions", packager.POSITIONS_SORTS["mmsi"])
+    monkeypatch.setattr(packager, "MMSI_BUCKETS", 128)
+    envs = fixture_envelopes()
+    extra_day, boundary = crafted(envs)
+    root = make_tree(tmp_path, extra_day, boundary)
+    catalog = packager.get_catalog()
+    packager.process_day(DAY, sorted(glob.glob(f"{root}/**/*.gz", recursive=True)), duckdb.connect(), catalog)
+
+    tbl = catalog.load_table("ais.positions")
+    assert tbl.properties[packager.SORT_KEY] == "mmsi"
+    assert [str(f.transform) for f in tbl.spec().fields] == ["identity", "bucket[128]"]
+    for f in tbl.inspect.files().to_pylist():
+        keys = pq.read_table(f["file_path"].removeprefix("file://"), columns=["mmsi", "ts"]).to_pylist()
+        assert keys == sorted(keys, key=lambda r: (r["mmsi"], r["ts"])), f"{f['file_path']} is not in (mmsi, ts) order"
+
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "cell")
+    with pytest.raises(SystemExit, match="sorted by mmsi, not cell"):
+        packager.get_catalog()
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "mmsi")
+    monkeypatch.setattr(packager, "MMSI_BUCKETS", 32)
+    with pytest.raises(SystemExit, match="older layout"):
+        packager.get_catalog()
+
+
+def test_a_new_column_joins_an_older_table(tmp_path, monkeypatch):
+    """Schema changes are additive: a table packaged before a column existed gains it, null for its days."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    envs = fixture_envelopes()
+    extra_day, boundary = crafted(envs)
+    root = make_tree(tmp_path, extra_day, boundary)
+    files = sorted(glob.glob(f"{root}/**/*.gz", recursive=True))
+    new = packager.POSITIONS_SCHEMA
+    old = pa.schema([f for f in new if f.name != "source"])
+    monkeypatch.setattr(packager, "POSITIONS_SCHEMA", old)
+    catalog = packager.get_catalog()
+    assert "source" not in {f.name for f in catalog.load_table("ais.positions").schema().fields}
+
+    monkeypatch.setattr(packager, "POSITIONS_SCHEMA", new)
+    catalog = packager.get_catalog()
+    tbl = catalog.load_table("ais.positions")
+    assert [f.name for f in tbl.schema().fields][-1] == "source", "the column joins at the end"
+    packager.process_day(DAY, files, duckdb.connect(), catalog)
+    assert all(p["source"] for p in rows(catalog, "positions")), "days packaged after it carry it"
+
+
+def test_a_table_from_before_the_sort_was_recorded_counts_as_cell_sorted(packaged, monkeypatch):
+    """The lake packaged before the setting existed has data and no recorded sort. It must count as
+    cell-sorted, so switching the setting to mmsi is refused rather than relabeling it."""
+    _, catalog, _, _ = packaged
+    tbl = catalog.load_table("ais.positions")
+    with tbl.transaction() as tx:
+        tx.remove_properties(packager.SORT_KEY)
+    assert packager.SORT_KEY not in catalog.load_table("ais.positions").properties and tbl.current_snapshot()
+
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "mmsi")
+    with pytest.raises(SystemExit, match="sorted by cell, not mmsi"):
+        packager.get_catalog()
+    assert packager.SORT_KEY not in catalog.load_table("ais.positions").properties, "a refused run labels nothing"
+
+    monkeypatch.setattr(packager, "POSITIONS_SORT", "cell")
+    packager.get_catalog()
+    assert catalog.load_table("ais.positions").properties[packager.SORT_KEY] == "cell"
+
+
 def test_rerun_replaces_day(packaged):
     envs, catalog, con, files = packaged
     first = {(p["id"], p["ts"]) for p in rows(catalog, "positions")}
@@ -549,19 +620,27 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
     packager.HERE.mkdir()
     envs = fixture_envelopes()
     ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+    st = template(envs, "event", "ShipStaticData")
 
-    def position(id, ts, lat, lon, source, **flags):
-        e = event_at(ev, id, ts, **flags)
+    def position(id, ts, lat, lon, source, recv=None, **flags):
+        e = event_at(ev, id, ts, recv=recv, **flags)
         e["r"].update(mmsi=257999001, lat=lat, lon=lon, source=source)
-        return [e, copy_at(cp, id, ts)]
+        return [e, copy_at(cp, id, ts, recv=recv)]
+
+    def reset_clock_static(id, recv):  # a device whose clock reset stamps its reports years back
+        e = event_at(st, id, "2013-12-31T23:00:00Z", recv=recv)
+        e["r"]["mmsi"] = 257999001
+        e["r"]["message"].update(Name="", CallSign="", Type=0, MaximumStaticDraught=0)  # it carries no particulars
+        return [e]
 
     root = tmp_path / "normalized"
     days = {  # packaged in this order: the later day first
         "2026-09-02": position("f5000001", "2026-09-02T10:00:00Z", 60.5, 5.25, "barentswatch"),
-        # a satellite report from 05:00, flagged stale when it arrived after the 08:00 one: the vessel
-        # was still heard at 05:00, so it sets first_ts, though it is never the last position
+        # a satellite report from 05:00, flagged stale when it arrived at 08:30, after the 08:00 one: it
+        # counts as hearing the vessel, but first_ts is when the network heard it, 08:00
         "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5, "digitraffic")
-                      + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", stale=True),
+                      + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", recv="2026-09-01T08:30:00Z", stale=True)
+                      + reset_clock_static("f5000004", "2026-09-01T09:00:00Z"),
     }
     catalog = packager.get_catalog()
     con = duckdb.connect()
@@ -575,7 +654,10 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
 
     [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == 257999001]
     assert v["name"] is None and v["ship_type"] == 0, "a vessel with no statics still has a row, its static fields unknown"
-    assert v["first_ts"].isoformat() == "2026-09-01T05:00:00", "first_ts is the earliest report of any day, flagged ones included"
+    assert v["first_ts"].isoformat() == "2026-09-01T08:00:00", "first_ts is the earliest receive time, not a report's own clock"
     assert v["last_ts"].isoformat() == "2026-09-02T10:00:00" and (v["last_lat6"], v["last_lon6"]) == (60.5 * 600000, 5.25 * 600000), \
         "the latest position wins even when its day was packaged first"
     assert v["last_source"] == "barentswatch", "the last position carries the source that delivered it, for its credit line"
+    sources = {p["ts"].isoformat(): p["source"] for p in rows(catalog, "positions") if p["mmsi"] == 257999001}
+    assert sources == {"2026-09-02T10:00:00": "barentswatch", "2026-09-01T08:00:00": "digitraffic"}, \
+        "each position names the source of the copy the server accepted, so a track needs no second table"

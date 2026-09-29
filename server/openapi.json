@@ -27,7 +27,7 @@
         "operationId": "getVessels",
         "tags": ["Vessels and stations"],
         "summary": "Vessels",
-        "description": "Vessel positions as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.\n\nAn area answers with the vessels heard in it in the last 30 minutes. `max_age` reaches further back, to the vessels last heard in the area within that age; past 30 minutes the answer takes at most 500 of those, newest first, and sets `truncated` when there were more. A vessel named in `mmsi` answers with its last known position however long ago it was heard, unless `max_age` is given. Every feature carries `seen`, so an old position reads as where the vessel was.\n\n`q` searches instead: vessels whose name starts with it, or whose MMSI does when it is digits, most recently heard first, at most 50. `bbox`, `mmsi`, and `max_age` narrow a search, and it needs neither. A search refuses parameters it does not know, so a filter added later never changes an earlier answer.",
+        "description": "Vessel positions as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.\n\nAn area answers with last known positions: every vessel heard in it in the last 30 minutes, and those last heard up to 7 days ago whose last report was stationary, meaning moored, at anchor, aground, under 1 knot, or an aid to navigation or base station. A vessel is usually still where it stopped when its receiver goes offline or it switches AIS off at its berth, while one last heard under way has moved on. `max_age` changes the 7 days and `max_age_moving` the 30 minutes for moving vessels. Past 30 minutes the answer takes at most 500 vessels, newest first, and sets `truncated` when there were more. A vessel named in `mmsi` answers with its last known position however long ago it was heard, moving or not, unless `max_age` or `max_age_moving` is given. The vector tiles answer by the same rules. Every feature carries `seen`, so an old position reads as where the vessel was.\n\n`q` searches instead: vessels whose name starts with it, or whose MMSI does when it is digits, most recently heard first, at most 50. `bbox`, `mmsi`, and `max_age` narrow a search, and it needs neither. `kind`, `class`, `type`, `min_sog`, and `max_age_moving` filter an area, a list, or a search, as they filter the vector tiles. A search refuses parameters it does not know, so a filter added later never changes an earlier answer.",
         "security": [{}, { "token": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/bbox" },
@@ -36,7 +36,7 @@
             "name": "max_age",
             "in": "query",
             "required": false,
-            "description": "Oldest last report to include: whole seconds, a duration such as `90m` or `24h`, or `all`. Defaults to 30 minutes for an area and to `all` for vessels named in `mmsi`.",
+            "description": "Oldest last report to include: whole seconds, a duration such as `90m` or `24h`, or `all`. Defaults to 7 days for an area and to `all` for vessels named in `mmsi`.",
             "schema": { "type": "string" },
             "example": "24h"
           },
@@ -47,7 +47,12 @@
             "description": "Search: a name prefix, case-insensitive, or an MMSI prefix when all digits. At least 2 characters.",
             "schema": { "type": "string", "minLength": 2 },
             "example": "CERUL"
-          }
+          },
+          { "$ref": "#/components/parameters/kind" },
+          { "$ref": "#/components/parameters/class" },
+          { "$ref": "#/components/parameters/type" },
+          { "$ref": "#/components/parameters/min_sog" },
+          { "$ref": "#/components/parameters/max_age_moving" }
         ],
         "responses": {
           "200": {
@@ -206,6 +211,63 @@
             "description": "A server running without the track store.",
             "content": { "text/plain": { "schema": { "type": "string" } } }
           }
+        }
+      }
+    },
+    "/v1/vessels/tiles.json": {
+      "get": {
+        "operationId": "getVesselTileJSON",
+        "tags": ["Vessels and stations"],
+        "summary": "Vessel tiles for maps",
+        "description": "Live vessel positions as vector tiles, for MapLibre GL JS, OpenLayers, or any map that reads TileJSON. Point a vector source at this URL. It supplies the tile URLs, the zoom range, and the attribution. Filters and `key` added to this URL are passed on to every tile.\n\nA tile shows the same vessels as `/v1/vessels` for an area: every vessel heard in the last 30 minutes, and vessels that were stationary when last heard up to 7 days ago. In crowded areas at low zoom, a tile keeps one vessel in each few pixels.\n\nTiles are snapshots, rebuilt at most every 10 seconds. Reload them on a timer to keep the map current:\n\n```js\nmap.on(\"load\", () => {\n  map.addSource(\"vessels\", {\n    type: \"vector\",\n    url: \"https://ais.openwaters.io/v1/vessels/tiles.json\",\n  });\n  map.addLayer({\n    id: \"vessels\",\n    type: \"circle\",\n    source: \"vessels\",\n    \"source-layer\": \"vessels\",\n    paint: { \"circle-radius\": 4, \"circle-color\": \"#1565c0\" },\n  });\n  // Reload the tiles every 15 seconds. The old ones stay on screen until the new ones arrive.\n  setInterval(() => map.refreshTiles(\"vessels\"), 15000);\n});\n```\n\n#### Properties\n\nEach vessel is a point in the `vessels` layer, with its MMSI as the feature id. A property is left out when the vessel has not reported it.\n\n- `mmsi` and `name`\n- `kind`: `vessel`, `aton` (aid to navigation), `base` (base station), or `sar` (search and rescue aircraft)\n- `type`: the ITU ship and cargo type code, or for an `aton` the aid-to-navigation type\n- `sog` in knots, and `cog` and `heading` in degrees\n- `hdg`: the heading, or the course over ground when there is no heading. Use it for `icon-rotate`.\n- `nav_status`, `class` (`A` or `B`), `flag`, `length`, and `beam`\n- `age_s`: seconds since the vessel was last heard. Use it to fade old positions.\n- `source` and `station`: who heard it\n\n`/v1/vessels/{mmsi}` has the rest, such as destination and ETA.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/tileMMSI" },
+          { "$ref": "#/components/parameters/kind" },
+          { "$ref": "#/components/parameters/class" },
+          { "$ref": "#/components/parameters/type" },
+          { "$ref": "#/components/parameters/min_sog" },
+          { "$ref": "#/components/parameters/max_age_moving" },
+          { "$ref": "#/components/parameters/tileMaxAge" }
+        ],
+        "responses": {
+          "200": {
+            "description": "TileJSON.",
+            "content": { "application/json": { "schema": { "type": "object", "required": ["tilejson", "tiles", "attribution", "vector_layers"] } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/vessels/tiles/{z}/{x}/{y}": {
+      "get": {
+        "operationId": "getVesselTile",
+        "tags": ["Vessels and stations"],
+        "summary": "Vessel tile by z/x/y",
+        "description": "One vector tile, at the URL template that `/v1/vessels/tiles.json` points to. Most maps should use the TileJSON instead. Use this template directly only for a client that takes a tile URL rather than TileJSON. It takes the same parameters and returns the same `vessels` layer. Tiles have their own rate limit of 600 requests per minute per address.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "name": "z", "in": "path", "required": true, "description": "Zoom, 0–22. TileJSON advertises 14 as the maximum, and clients overzoom past it.", "schema": { "type": "integer", "minimum": 0, "maximum": 22 } },
+          { "name": "x", "in": "path", "required": true, "description": "Column, 0 to 2^z−1.", "schema": { "type": "integer", "minimum": 0 } },
+          { "name": "y", "in": "path", "required": true, "description": "Row, 0 to 2^z−1, from the north.", "schema": { "type": "integer", "minimum": 0 } },
+          { "$ref": "#/components/parameters/tileMMSI" },
+          { "$ref": "#/components/parameters/kind" },
+          { "$ref": "#/components/parameters/class" },
+          { "$ref": "#/components/parameters/type" },
+          { "$ref": "#/components/parameters/min_sog" },
+          { "$ref": "#/components/parameters/max_age_moving" },
+          { "$ref": "#/components/parameters/tileMaxAge" }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tile, gzipped when the request accepts gzip. An empty tile has an empty `vessels` layer.",
+            "content": { "application/vnd.mapbox-vector-tile": { "schema": { "type": "string", "format": "binary" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
@@ -519,7 +581,14 @@
         "description": "Comma-separated MMSIs. ORed with `bbox` when both are given. An unparseable entry is a `400`.",
         "schema": { "type": "string" },
         "example": "368168720,257090090"
-      }
+      },
+      "tileMMSI": { "name": "mmsi", "in": "query", "required": false, "description": "Comma-separated MMSIs: only these vessels. The MMSI cap applies, as on `/v1/vessels`.", "schema": { "type": "string" }, "example": "368168720,257090090" },
+      "kind": { "name": "kind", "in": "query", "required": false, "description": "Comma-separated: `vessel`, `aton` (aids to navigation), `base` (base stations), `sar` (search and rescue aircraft).", "schema": { "type": "string" }, "example": "vessel,sar" },
+      "class": { "name": "class", "in": "query", "required": false, "description": "`A` or `B`, the transponder class from the position reports. A vessel whose class is not yet known is left out.", "schema": { "type": "string", "enum": ["A", "B"] } },
+      "type": { "name": "type", "in": "query", "required": false, "description": "Comma-separated ITU ship and cargo type codes or ranges, such as `70-89` for cargo and tankers or `36,37` for sailing and pleasure craft. For an aid to navigation, the AtoN type. A vessel whose type is not yet known is type 0.", "schema": { "type": "string" }, "example": "70-89" },
+      "min_sog": { "name": "min_sog", "in": "query", "required": false, "description": "Only vessels at least this fast, in knots. A vessel with no known speed is left out.", "schema": { "type": "number", "minimum": 0 }, "example": 0.5 },
+      "tileMaxAge": { "name": "max_age", "in": "query", "required": false, "description": "Oldest last report to include: whole seconds, a duration such as `24h`, or `all`. Defaults to 7 days, or to `all` when `mmsi` is given.", "schema": { "type": "string" }, "example": "24h" },
+      "max_age_moving": { "name": "max_age_moving", "in": "query", "required": false, "description": "Oldest last report to include for a vessel whose last report was under way, that is, not stationary as `/v1/vessels` defines it: whole seconds, a duration such as `2h`, or `all`. Defaults to 30 minutes for an area and to `all` for vessels named in `mmsi`.", "schema": { "type": "string" }, "example": "all" }
     },
     "responses": {
       "BadRequest": {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -254,12 +255,12 @@ func TestVesselsMaxAgeReachesPastTheCache(t *testing.T) {
 
 	box := "/v1/vessels?bbox=59,10,60,11"
 	if got := ids(getFC(t, p, box)); len(got) != 1 || got[0] != 257000002 {
-		t.Errorf("default is the last 30 minutes: %v", got)
+		t.Errorf("moving vessels drop out after 30 minutes: %v", got)
 	}
-	if got := ids(getFC(t, p, box+"&max_age=150m")); len(got) != 2 {
+	if got := ids(getFC(t, p, box+"&max_age=150m&max_age_moving=all")); len(got) != 2 {
 		t.Errorf("max_age=150m: %v", got)
 	}
-	fc := getFC(t, p, box+"&max_age=all")
+	fc := getFC(t, p, box+"&max_age=all&max_age_moving=all")
 	if len(fc.Features) != 4 || fc.Truncated || fc.Attribution["kystverket"] == "" {
 		t.Errorf("max_age=all: %v truncated %v", ids(fc), fc.Truncated)
 	}
@@ -269,7 +270,7 @@ func TestVesselsMaxAgeReachesPastTheCache(t *testing.T) {
 
 	recordLimit = 2
 	t.Cleanup(func() { recordLimit = 500 })
-	fc = getFC(t, p, box+"&max_age=all")
+	fc = getFC(t, p, box+"&max_age=all&max_age_moving=all")
 	if len(fc.Features) != 3 || !fc.Truncated {
 		t.Errorf("capped: %v truncated %v", ids(fc), fc.Truncated)
 	}
@@ -315,7 +316,7 @@ func TestVesselSearch(t *testing.T) {
 	if got := ids(getFC(t, p, "/v1/vessels?q=nordic&max_age=150m")); len(got) != 1 || got[0] != 257000003 {
 		t.Errorf("max_age narrows: %v", got)
 	}
-	for target, want := range map[string]int{"/v1/vessels?q=n": 400, "/v1/vessels?q=nordic&type=70": 400} {
+	for target, want := range map[string]int{"/v1/vessels?q=n": 400, "/v1/vessels?q=nordic&flag=NO": 400, "/v1/vessels?q=nordic&type=9-3": 400} {
 		if w := get(t, p, target); w.Code != want {
 			t.Errorf("%s: %d %s", target, w.Code, w.Body)
 		}
@@ -686,5 +687,82 @@ func TestRestartKeepsAnOldFixOffTheMap(t *testing.T) {
 	}
 	if fc := getFC(t, next, "/v1/vessels?mmsi=257000001"); len(fc.Features) != 1 || fc.Features[0].Geometry.Coordinates[1] < 59.89 {
 		t.Errorf("a followed MMSI still answers with its last known position: %+v", fc.Features)
+	}
+}
+
+// plan is SQLite's query plan for the statement find runs for q.
+func plan(t *testing.T, p *Pipeline, q recordQuery) string {
+	t.Helper()
+	text, args, _, err := q.sql()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := p.store.db.Query("EXPLAIN QUERY PLAN "+text, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var steps []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		rows.Scan(&id, &parent, &unused, &detail)
+		steps = append(steps, detail)
+	}
+	return strings.Join(steps, "; ")
+}
+
+// An area query past the cache's 30 minutes must reach rows through the cell index. Walking the seen index
+// instead reads every vessel heard in the window whenever a box holds fewer than the limit, which is most
+// of the ocean. A name search keeps to the name index.
+func TestRecordQueryPlans(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	rules, _ := parseAgeRules(url.Values{})
+	age, vf := rules.rule(false)
+	area := func(boxes ...bbox) recordQuery {
+		return recordQuery{boxes: boxes, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now}
+	}
+	seek := "vessels_cell (cell=? AND seen>? AND seen<?)"
+	for name, c := range map[string]struct {
+		q    recordQuery
+		want string
+	}{
+		"anonymous box":        {area(bbox{30, -60, 40, -50}), seek},
+		"widest personal":      {area(bbox{-0.05, -180, 1.05, 180}), seek}, // 396 square degrees across three rows
+		"past the budget":      {area(tileBox(3, 2, 2)), "vessels_cell (cell>? AND cell<?)"},
+		"listed and ranged":    {area(bbox{30, -60, 40, -50}, bbox{-10, -180, 10, 180}), "vessels_cell"},
+		"name search in box":   {recordQuery{prefix: "AB", boxes: []bbox{{30, -60, 40, -50}}, hasPos: true, limit: 101}, "vessels_search"},
+		"name search, max_age": {recordQuery{prefix: "CERULEAN", boxes: []bbox{{30, -60, 40, -50}}, since: now.Add(-7 * 24 * time.Hour), hasPos: true, filter: vf, now: now, limit: 101}, "vessels_search"},
+		"MMSI search, max_age": {recordQuery{prefix: "36816", boxes: []bbox{{30, -60, 40, -50}}, since: now.Add(-time.Hour), hasPos: true, filter: vf, now: now, limit: 101}, "PRIMARY KEY"},
+	} {
+		got := plan(t, p, c.q)
+		if !strings.Contains(got, c.want) || strings.Contains(got, "INDEX vessels_seen") {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+}
+
+// bbox repeats, and a zero-area box costs no area, so a request can name more cells than SQLite has
+// parameters. Past the budget, boxes fall back to row ranges and the request still answers.
+func TestManyBoxesStayUnderTheParameterLimit(t *testing.T) {
+	p := storePipeline(t)
+	target := "/v1/vessels?max_age=all"
+	for range 100 {
+		target += "&bbox=0,-180,0,180"
+	}
+	if w := get(t, p, target); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	// More boxes than one statement can take, by parameters or by expression depth: refused as the
+	// caller's to narrow, not failed as the record's.
+	for _, n := range []int{maxBoxes + 1, 1500, 6000} {
+		many := "/v1/vessels?max_age=all" + strings.Repeat("&bbox=0,-180,0,180", n)
+		if w := get(t, p, many); w.Code != 400 {
+			t.Errorf("%d boxes: %d %s", n, w.Code, w.Body)
+		}
+		if w := get(t, p, many+"&q=ab"); w.Code != 400 {
+			t.Errorf("search with %d boxes: %d %s", n, w.Code, w.Body)
+		}
 	}
 }

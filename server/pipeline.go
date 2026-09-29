@@ -93,6 +93,7 @@ type Pipeline struct {
 	nextSweep  time.Time // reception time of the next vessel cache sweep; guarded by vmu
 	vessels    map[uint32]*vessel
 	cells      map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
+	tiles      tileCache                      // encoded vector tiles, shared for tileTTL (tiles.go)
 	dirty      map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
 	store      *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
 	tracks     *trackStore                    // recent positions (tracks.go); nil without a record, whose writer also writes tracks
