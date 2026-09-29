@@ -51,9 +51,10 @@
   map.addControl(new maplibregl.NavigationControl());
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
-  // ---- stats: vessels in view, counted from the loaded tiles once the map settles ----
+  // ---- stats: vessels drawn on screen, once the map settles; loaded tiles reach past the edges ----
   function renderStats() {
-    const ids = new Set(map.querySourceFeatures("ais", { sourceLayer: "vessels" }).map((f) => f.id));
+    const layers = ["ais-still", "ais-moving"].filter((id) => map.getLayer(id));
+    const ids = new Set(layers.length ? map.queryRenderedFeatures({ layers }).map((f) => f.id) : []);
     document.getElementById("stats").innerHTML = `<b>${ids.size}</b> in view` + stationHTML;
   }
 

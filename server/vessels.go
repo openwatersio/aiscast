@@ -750,6 +750,7 @@ type vesselFilter struct {
 	class     string
 	types     [][2]uint8
 	minSog    float64
+	hasMinSog bool          // min_sog=0 still asks for a known speed
 	movingAge time.Duration // a vessel last heard under way longer ago than this is left out; 0: no limit
 }
 
@@ -784,10 +785,10 @@ func parseVesselFilter(vals url.Values, movingAge time.Duration) (*vesselFilter,
 	}
 	if q := vals.Get("min_sog"); q != "" {
 		v, err := strconv.ParseFloat(q, 64)
-		if err != nil || v < 0 {
+		if err != nil || v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
 			return nil, "min_sog=<knots>"
 		}
-		f.minSog = v
+		f.minSog, f.hasMinSog = v, true
 	}
 	if q := vals.Get("max_age_moving"); q != "" {
 		age, _, msg := parseMaxAge(q)
@@ -813,7 +814,7 @@ func (f *vesselFilter) match(v *vessel, now time.Time) bool {
 	switch {
 	case f.kinds != nil && !f.kinds[v.Kind],
 		f.class != "" && v.Class != f.class,
-		f.minSog > 0 && !(v.Sog < 102.3 && v.Sog >= f.minSog),
+		f.hasMinSog && !(v.Sog < 102.3 && v.Sog >= f.minSog),
 		f.movingAge > 0 && now.Sub(v.Seen) > f.movingAge && !stationary(v):
 		return false
 	}
@@ -847,7 +848,7 @@ func (f *vesselFilter) where(now time.Time) (where []string, args []any) {
 		}
 		where = append(where, "("+strings.Join(ors, " OR ")+")")
 	}
-	if f.minSog > 0 {
+	if f.hasMinSog {
 		where, args = append(where, "sog >= ? AND sog < 102.3"), append(args, f.minSog)
 	}
 	if f.movingAge > 0 {

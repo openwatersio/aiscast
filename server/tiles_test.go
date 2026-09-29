@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -303,5 +304,27 @@ func TestVesselTileRecord(t *testing.T) {
 		if got := fcIDs("/v1/vessels?" + query); !slices.Equal(got, want) {
 			t.Errorf("/v1/vessels?%s: %v, want %v", query, got, want)
 		}
+	}
+}
+
+func TestAcceptsGzip(t *testing.T) {
+	for h, want := range map[string]bool{"gzip": true, "br, gzip;q=0.5": true, "GZIP": true, "*": true, "gzip;q=0": false, "br": false, "": false, "identity, gzip; q=0": false} {
+		if got := acceptsGzip(h); got != want {
+			t.Errorf("acceptsGzip(%q) = %v", h, got)
+		}
+	}
+}
+
+func TestMinSog(t *testing.T) {
+	for _, bad := range []string{"NaN", "Inf", "-1", "fast"} {
+		if _, msg := parseVesselFilter(url.Values{"min_sog": {bad}}, 0); msg == "" {
+			t.Errorf("min_sog=%s accepted", bad)
+		}
+	}
+	f, _ := parseVesselFilter(url.Values{"min_sog": {"0"}}, 0)
+	known, unknown := newVessel(), newVessel()
+	known.Sog = 0
+	if !f.match(known, time.Now()) || f.match(unknown, time.Now()) {
+		t.Errorf("min_sog=0 should keep a known speed of 0 and drop an unknown one")
 	}
 }

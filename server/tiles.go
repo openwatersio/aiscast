@@ -114,13 +114,29 @@ func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 	h.Set("Vary", "Accept-Encoding")
 	// Gzipped once per build and served as is. Caddy's encoder leaves a response that already has a
 	// Content-Encoding alone.
-	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
 		h.Set("Content-Encoding", "gzip")
 		w.Write(b)
 		return
 	}
 	zr, _ := gzip.NewReader(bytes.NewReader(b))
 	io.Copy(w, zr)
+}
+
+// acceptsGzip reads an Accept-Encoding header: gzip, or *, with a quality above zero.
+func acceptsGzip(header string) bool {
+	for _, part := range strings.Split(header, ",") {
+		coding, params, _ := strings.Cut(part, ";")
+		if c := strings.ToLower(strings.TrimSpace(coding)); c != "gzip" && c != "*" {
+			continue
+		}
+		q := 1.0
+		if v, ok := strings.CutPrefix(strings.TrimSpace(params), "q="); ok {
+			q, _ = strconv.ParseFloat(v, 64)
+		}
+		return q > 0
+	}
+	return false
 }
 
 func tileCoords(r *http.Request) (z, x, y int, ok bool) {
