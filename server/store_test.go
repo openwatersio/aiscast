@@ -254,12 +254,12 @@ func TestVesselsMaxAgeReachesPastTheCache(t *testing.T) {
 
 	box := "/v1/vessels?bbox=59,10,60,11"
 	if got := ids(getFC(t, p, box)); len(got) != 1 || got[0] != 257000002 {
-		t.Errorf("default is the last 30 minutes: %v", got)
+		t.Errorf("moving vessels drop out after 30 minutes: %v", got)
 	}
-	if got := ids(getFC(t, p, box+"&max_age=150m")); len(got) != 2 {
+	if got := ids(getFC(t, p, box+"&max_age=150m&max_age_moving=all")); len(got) != 2 {
 		t.Errorf("max_age=150m: %v", got)
 	}
-	fc := getFC(t, p, box+"&max_age=all")
+	fc := getFC(t, p, box+"&max_age=all&max_age_moving=all")
 	if len(fc.Features) != 4 || fc.Truncated || fc.Attribution["kystverket"] == "" {
 		t.Errorf("max_age=all: %v truncated %v", ids(fc), fc.Truncated)
 	}
@@ -269,7 +269,7 @@ func TestVesselsMaxAgeReachesPastTheCache(t *testing.T) {
 
 	recordLimit = 2
 	t.Cleanup(func() { recordLimit = 500 })
-	fc = getFC(t, p, box+"&max_age=all")
+	fc = getFC(t, p, box+"&max_age=all&max_age_moving=all")
 	if len(fc.Features) != 3 || !fc.Truncated {
 		t.Errorf("capped: %v truncated %v", ids(fc), fc.Truncated)
 	}
@@ -315,7 +315,7 @@ func TestVesselSearch(t *testing.T) {
 	if got := ids(getFC(t, p, "/v1/vessels?q=nordic&max_age=150m")); len(got) != 1 || got[0] != 257000003 {
 		t.Errorf("max_age narrows: %v", got)
 	}
-	for target, want := range map[string]int{"/v1/vessels?q=n": 400, "/v1/vessels?q=nordic&type=70": 400} {
+	for target, want := range map[string]int{"/v1/vessels?q=n": 400, "/v1/vessels?q=nordic&flag=NO": 400, "/v1/vessels?q=nordic&type=9-3": 400} {
 		if w := get(t, p, target); w.Code != want {
 			t.Errorf("%s: %d %s", target, w.Code, w.Body)
 		}

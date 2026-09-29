@@ -231,6 +231,8 @@ type recordQuery struct {
 	before   time.Time
 	hasPos   bool
 	byName   bool // order by name then MMSI, as the MCP tools page, instead of most recently heard first
+	filter   *vesselFilter
+	now      time.Time // the filter's clock
 	limit    int
 }
 
@@ -261,6 +263,7 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 		}
 		in("imo", q.imos)
 	}
+	seen := "seen"
 	if len(q.boxes) > 0 {
 		var ors []string
 		for _, b := range q.boxes {
@@ -275,6 +278,9 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 					args = append(args, r*360+c0, r*360+c1)
 				}
 				c += " AND (" + strings.Join(cells, " OR ") + ")"
+				// Without statistics SQLite takes the seen index for a seen range and walks every vessel
+				// heard in it, wherever it is. The unary + keeps it on the cells.
+				seen = "+seen"
 			}
 			ors = append(ors, c+")")
 		}
@@ -298,15 +304,19 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 		args = append(args, q.flag)
 	}
 	if !q.since.IsZero() {
-		where = append(where, "seen >= ?")
+		where = append(where, seen+" >= ?")
 		args = append(args, unixMs(q.since))
 	}
 	if !q.before.IsZero() {
-		where = append(where, "seen < ?")
+		where = append(where, seen+" < ?")
 		args = append(args, unixMs(q.before))
 	}
 	if q.hasPos {
 		where = append(where, "has_pos")
+	}
+	if q.filter != nil {
+		w, a := q.filter.where(q.now)
+		where, args = append(where, w...), append(args, a...)
 	}
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")

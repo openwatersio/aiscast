@@ -78,7 +78,8 @@ func (l *limiter) allow(key string) bool {
 
 var (
 	wsConnectLimit = newLimiter(envInt("WS_CONNECTS_PER_MIN", 20)) // per address; a working client connects once; raise for load tests
-	httpLimit      = newLimiter(httpPerMinute)                     // per address, every HTTP GET endpoint
+	httpLimit      = newLimiter(httpPerMinute)                     // per address, every HTTP GET endpoint but tiles
+	tileLimit      = newLimiter(tilesPerMinute)                    // per address, /v1/vessels/tiles
 	udpLimit       = newLimiter(udpLinesPerMinute)                 // per source address
 	publishLimit   = newLimiter(6000)                              // /v1/stream publish sentences per key per minute (a single receiver hears <75/s)
 	receiveLimit   = newLimiter(600)                               // /v1/receive posts per feeder per minute (AIS-catcher posts ~4/min)

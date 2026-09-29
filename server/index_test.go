@@ -261,7 +261,7 @@ func TestVesselsBytesUnchanged(t *testing.T) {
 	// Whole response, everything subscribed: the collection wrapper and order of fields match too. Map
 	// order differs run to run, so compare after sorting the features by id.
 	rec := httptest.NewRecorder()
-	p.serveVessels(rec, httptest.NewRequest("GET", "/v1/vessels", nil))
+	p.serveVessels(rec, httptest.NewRequest("GET", "/v1/vessels?max_age=all&max_age_moving=all", nil))
 	json.NewEncoder(&want).Encode(map[string]any{"type": "FeatureCollection", "features": features, "attribution": attribution})
 	if norm(t, rec.Body.Bytes()) != norm(t, want.Bytes()) {
 		t.Fatalf("response differs:\n got %.300s\nwant %.300s", rec.Body.Bytes(), want.Bytes())
