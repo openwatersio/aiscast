@@ -220,8 +220,9 @@ groups:
           summary: '{{ $value | printf "%.0f" }} lake queries failed in 15 minutes'
           description: Tracks past 48 hours are failing. Check the lake and duckdb lines in journalctl -u aiscast, the LAKE_CATALOG_TOKEN, and the Cloudflare status page.
       - alert: ImportStale
-        # The import runs daily after 03:00 UTC. The timestamp is absent until the first import succeeds.
-        expr: time() - aiscast_import_last_success_timestamp_seconds > 2 * 86400 or absent(aiscast_import_last_success_timestamp_seconds)
+        # The import runs daily after 03:00 UTC. The timestamp is absent until the first import succeeds, and every
+        # import metric is absent on a server without the lake, which the runs counter tells apart.
+        expr: time() - aiscast_import_last_success_timestamp_seconds > 2 * 86400 or (absent(aiscast_import_last_success_timestamp_seconds) and on() aiscast_import_runs_total)
         for: 6h
         labels: {severity: warning}
         annotations:
