@@ -698,24 +698,41 @@ func TestAreaQueryUsesCellAndSeen(t *testing.T) {
 	now := time.Now()
 	rules, _ := parseAgeRules(url.Values{})
 	age, vf := rules.rule(false)
-	q := recordQuery{boxes: []bbox{{30, -60, 40, -50}}, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now}
-	clause, args, _, listed := q.whereCells()
-	if !listed {
-		t.Fatal("a 100 square degree box should list its cells")
+	// A square anonymous box, and the widest box a personal token's area allows: 1.1° by 360° is 396
+	// square degrees across three rows of cells.
+	for _, b := range []bbox{{30, -60, 40, -50}, {-0.05, -180, 1.05, 180}} {
+		q := recordQuery{boxes: []bbox{b}, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now}
+		clause, args, _, listed := q.whereCells()
+		if !listed {
+			t.Fatalf("box %v should list its cells", b)
+		}
+		rows, err := p.store.db.Query("EXPLAIN QUERY PLAN SELECT mmsi FROM vessels"+clause+" ORDER BY +seen DESC LIMIT 501", args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			rows.Scan(&id, &parent, &unused, &detail)
+			plan = append(plan, detail)
+		}
+		rows.Close()
+		if got := strings.Join(plan, "; "); !strings.Contains(got, "vessels_cell (cell=? AND seen>? AND seen<?)") {
+			t.Errorf("box %v plan: %s", b, got)
+		}
 	}
-	rows, err := p.store.db.Query("EXPLAIN QUERY PLAN SELECT mmsi FROM vessels"+clause+" ORDER BY +seen DESC LIMIT 501", args...)
-	if err != nil {
-		t.Fatal(err)
+}
+
+// bbox repeats, and a zero-area box costs no area, so a request can name more cells than SQLite has
+// parameters. Past the budget, boxes fall back to row ranges and the request still answers.
+func TestManyBoxesStayUnderTheParameterLimit(t *testing.T) {
+	p := storePipeline(t)
+	target := "/v1/vessels?max_age=all"
+	for range 100 {
+		target += "&bbox=0,-180,0,180"
 	}
-	defer rows.Close()
-	var plan []string
-	for rows.Next() {
-		var id, parent, unused int
-		var detail string
-		rows.Scan(&id, &parent, &unused, &detail)
-		plan = append(plan, detail)
-	}
-	if got := strings.Join(plan, "; "); !strings.Contains(got, "vessels_cell (cell=? AND seen>? AND seen<?)") {
-		t.Errorf("plan: %s", got)
+	if w := get(t, p, target); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }

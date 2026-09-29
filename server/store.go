@@ -240,9 +240,10 @@ type recordQuery struct {
 // alone, which scans the table: a few hundred thousand rows, tens of milliseconds.
 const maxCellRows = 60
 
-// maxCells bounds the cells a box query lists one by one; 400 square degrees, a personal token's area,
-// fits with room to spare.
-const maxCells = 1024
+// maxCells bounds the cells a query lists one by one, across all its boxes: 1,080 is the most a single box
+// within a personal token's 400 square degrees can touch (1.1° by 360° crosses three rows). The budget is
+// shared, because bbox repeats and a zero-area box costs no area, and each cell is a bound parameter.
+const maxCells = 1080
 
 // where is the WHERE clause for q and its arguments. none reports a filter that matches nothing, an
 // empty MMSI or IMO list.
@@ -276,6 +277,7 @@ func (q recordQuery) whereCells() (clause string, args []any, none bool, cellsLi
 	seen := "seen"
 	if len(q.boxes) > 0 {
 		cellsListed = true
+		budget := maxCells
 		var ors []string
 		for _, b := range q.boxes {
 			c := "(lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?"
@@ -284,7 +286,8 @@ func (q recordQuery) whereCells() (clause string, args []any, none bool, cellsLi
 			r1, c1 := cellRowCol(b[2], b[3])
 			// Each cell spelled out, so the (cell, seen) index narrows to the box and to the seen range at
 			// once, and a query for vessels heard more than 30 minutes ago skips the fresh ones.
-			if n := int(r1-r0+1) * int(c1-c0+1); n <= maxCells {
+			if n := int(r1-r0+1) * int(c1-c0+1); n <= budget {
+				budget -= n
 				ph := make([]string, 0, n)
 				for r := r0; r <= r1; r++ {
 					for col := c0; col <= c1; col++ {
