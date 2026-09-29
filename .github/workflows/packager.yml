@@ -76,9 +76,9 @@ jobs:
     timeout-minutes: 300
     environment: lake
     strategy:
-      # five runners at a time, and a failed day cancels the days not yet done
+      # five runners at a time; a failed day does not stop the others, so rerun just the days that failed
       max-parallel: 5
-      fail-fast: true
+      fail-fast: false
       matrix:
         day: ${{ fromJSON(needs.days.outputs.days) }}
     name: package ${{ matrix.day || 'past week' }}

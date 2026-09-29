@@ -406,6 +406,15 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
         except SystemExit as e:
             return str(e)
 
+    # a week of days in one staging database outgrows a runner's disk, so each day starts empty
+    real, staged = packager.process_day, []
+
+    def process_day(day, files, con, *rest):
+        staged.append(con.execute("SELECT count(*) FROM duckdb_tables()").fetchone()[0])
+        return real(day, files, con, *rest)
+
+    monkeypatch.setattr(packager, "process_day", process_day)
+
     hour(d2, "01", tx(d2, "01", "d2000001"))
     hour(d1, "01", tx(d1, "01", "d1000001"))
     bad = copy.deepcopy(ev)
@@ -415,6 +424,7 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
     assert not (packager.HERE / "stage").exists(), "a run leaves no staging database behind"
     days = {p["day"].isoformat() for p in rows(packager.get_catalog(), "positions")}
     assert days == {d1, d2}, "the days after the bad one still package"
+    assert len(staged) == 3 and not any(staged), f"each day starts from an empty staging database: {staged}"
 
     capsys.readouterr()
     run()

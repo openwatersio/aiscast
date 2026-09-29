@@ -566,10 +566,22 @@ def main():
     days = [args.date] if args.date else [(now - timedelta(days=n)).strftime("%Y-%m-%d") for n in range(7, 0, -1)]
     packaged = retry(lambda: catalog.load_table("ais.positions")).properties
 
-    # A day's staging database is several times the day's compressed input (about 7 GB for six hours
-    # of production traffic), so it lives only for the run and is deleted however the run ends.
+    # A day's staging database is several times the day's compressed input (about 40 GB for a full
+    # day of production traffic), so each day gets its own, deleted before the next day starts and
+    # however the run ends: a week of days in one file does not fit on a runner's disk.
     stage = HERE / "stage"
     shutil.rmtree(stage, ignore_errors=True)  # a run the OS killed leaves it behind
+    try:
+        failed = package_days(days, args, all_files, today, packaged, stage, catalog)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    if failed:
+        sys.exit(f"failed: {', '.join(failed)}")
+
+
+def open_stage(stage):
+    """A fresh staging database for one day."""
+    shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
     con = duckdb.connect(str(stage / "packager.duckdb"))
     # Two threads keep a full day under the memory limit and leave the box's cores to the live server:
@@ -578,19 +590,13 @@ def main():
     # insertion order need not be kept.
     threads, memory = os.environ.get("PACKAGER_THREADS", "2"), os.environ.get("PACKAGER_MEMORY", "4GB")
     con.execute(f"SET memory_limit='{memory}'; SET threads={int(threads)}; SET preserve_insertion_order=false; SET temp_directory='{stage}/tmp'")
-    try:
-        failed = package_days(days, args, all_files, today, packaged, con, catalog)
-    finally:
-        con.close()
-        shutil.rmtree(stage, ignore_errors=True)
-    if failed:
-        sys.exit(f"failed: {', '.join(failed)}")
+    return con
 
 
-def package_days(days, args, all_files, today, packaged, con, catalog):
+def package_days(days, args, all_files, today, packaged, stage, catalog):
     failed = []
     for day in days:
-        fetched = None
+        fetched = con = None
         try:
             if day >= today:
                 sys.exit(f"{day} is not over yet")
@@ -611,11 +617,15 @@ def package_days(days, args, all_files, today, packaged, con, catalog):
             if not args.normalized:
                 fetched = HERE / "raw" / day
                 files = fetch_day(day, fetched, listing)
+            con = open_stage(stage)
             process_day(day, files, con, catalog, fp)
         except (Exception, SystemExit) as e:  # one bad day must not hold back the rest of the week
             print(f"{day}: {e}", file=sys.stderr)
             failed.append(day)
         finally:
+            if con:
+                con.close()
+                shutil.rmtree(stage, ignore_errors=True)
             if fetched:
                 shutil.rmtree(fetched, ignore_errors=True)  # re-fetchable; the bucket is the source of truth
     return failed
