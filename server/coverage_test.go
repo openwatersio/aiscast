@@ -27,7 +27,6 @@ func TestFixtureCorpusFullyCaptured(t *testing.T) {
 	before := unmappedKeys()
 
 	p := testPipeline(t)
-	st := newAishubState()
 	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	sources := map[string]string{
 		"kystverket.lines":   "kystverket",
@@ -39,7 +38,7 @@ func TestFixtureCorpusFullyCaptured(t *testing.T) {
 	}
 	for name, source := range sources {
 		for _, rec := range fixtureLines(t, name) {
-			dispatch(p, source, Reception{Source: source, Station: rec.station, RecvTime: recv, Body: rec.body}, st)
+			dispatch(p, source, Reception{Source: source, Station: rec.station, RecvTime: recv, Body: rec.body})
 		}
 	}
 

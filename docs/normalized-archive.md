@@ -17,7 +17,7 @@ The raw archive is the input log and the normalized archive is derived from it. 
 
 One merged stream holds every source. Each hour is one gzip file of line-delimited JSON at `normalized/v1/YYYY/MM/DD/HH.gz` in the `ais-archive` bucket, beside the raw archive. The server stages it locally under `NORMALIZED_DIR`, which mirrors the bucket's layout, and uploads it through the same rotation, shutdown flush, and disk sweep as raw. `NORMALIZED_BUCKET` names the bucket. The writer is off unless `NORMALIZED_BUCKET` or `NORMALIZED_DIR` is set, so an env that predates the stream never stages hours nothing uploads.
 
-An hour stays open until the newest receive time the writer has seen is five minutes past its end, then closes and uploads. Two hours interleave near a boundary: AISHub stamps every row of a snapshot with its fetch time and paces the rows over most of a minute, so a snapshot fetched just before the hour keeps writing into it while every other source writes into the next. Rotation runs on the receive clock, so replay closes hours where live did, and a reception for an hour already closed reopens it and appends.
+An hour stays open until the newest receive time the writer has seen is five minutes past its end, then closes and uploads. Receptions near a boundary can arrive a little out of receive-time order, as queued work from the end of one hour lands after the next has begun, and closing an hour on every switch would upload a file still being written. Rotation runs on the receive clock, so replay closes hours where live did, and a reception for an hour already closed reopens it and appends.
 
 The stream shares raw's bucket and access class because it is a pure function of raw and public code. Every raw key starts with a license tag, so the `normalized/` prefix never reads as a source, and replay skips it. The derived tables live in their own bucket, `ais-lake`, because R2 access control is per bucket and they are the layer most likely to open up.
 
@@ -99,7 +99,7 @@ A raw line is a serialized adapter input: receive time, station, and the body ex
 Replayed output is trustworthy for these reasons:
 
 - The normalized path takes every time from the reception, never the wall clock. The dedupe map prunes on an event-time high-water mark. A test replays one day at two wall times and requires identical output.
-- Replay runs with fan-out, the vessel snapshot, and stats disconnected.
+- Replay runs with fan-out, the vessel record, and stats disconnected.
 - A range starts with a warm-up lead-in that rebuilds dedupe, AISHub, trust, vessel, and multipart state and is not written. Its default, 90 minutes, is the longest window that state looks back over: corroboration checks a trusted report up to an hour back, on a vessel the cache keeps until it goes unheard for 30 minutes.
 - Replay stops on anything it cannot read or place: an unreadable directory, a file outside the raw layout, a truncated hour, a line with no record header, a header with no station, a Digitraffic record with no topic. History never comes out shorter than the archive.
 - Replay refuses a non-empty output tree, because hour files open for append.

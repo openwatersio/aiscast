@@ -58,7 +58,6 @@ func runReplay(args []string) {
 			failOn(r)
 		}
 	}
-	st := newAishubState()
 	var n int64
 	for h.Len() > 0 {
 		r := (*h)[0]
@@ -67,7 +66,7 @@ func runReplay(args []string) {
 			heap.Pop(h) // this source is past the range; its remaining files only get later
 			continue
 		}
-		if err := dispatch(p, r.source, rx, st); err != nil {
+		if err := dispatch(p, r.source, rx); err != nil {
 			log.Fatalf("replay: %v", err)
 		}
 		n++
@@ -95,7 +94,7 @@ func failOn(r *rawReader) {
 // and mmsi: for a UDP sender named by its own ship) and /v1 publish (v1: before station ids) only
 // ever take lines. A /v1 publish line under station: carries the published mark; an unmarked
 // station: record predates it and falls back to parsing.
-func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) error {
+func dispatch(p *Pipeline, source string, rx Reception) error {
 	switch {
 	case rx.Published:
 		// a /v1 publish line, even one whose body would parse as a catcher envelope: live fed it to
@@ -112,7 +111,7 @@ func dispatch(p *Pipeline, source string, rx Reception, st *aishubState) error {
 	case source == "aisstream":
 		p.aisstreamMessage([]byte(rx.Body), rx.RecvTime)
 	case source == "aishub":
-		if _, err := p.ingestAishub([]byte(rx.Body), rx.RecvTime, st, 0); err != nil {
+		if _, err := p.ingestAishub([]byte(rx.Body), rx.RecvTime); err != nil {
 			p.stats.parseErr.Add(1)
 		}
 	case strings.HasPrefix(source, "http:") && strings.HasPrefix(strings.TrimSpace(rx.Body), "{"):

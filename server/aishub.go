@@ -125,35 +125,10 @@ func (r aishubRow) static() ais.Packet {
 	}
 }
 
-func (r aishubRow) staticKey() string {
-	return fmt.Sprintf("%d|%s|%s|%d|%d|%d|%d|%d|%d|%s|%d", r.IMO, r.Name, r.CallSign, r.Type, r.A, r.B, r.C, r.D, r.Draught, r.Dest, r.Eta)
-}
-
-type aishubState struct {
-	lastTime   map[uint32]string // MMSI → TIME of the last position emitted
-	lastStatic map[uint32]string // MMSI → staticKey of the last static emitted
-	// staticAt: MMSI → the staticKeys already emitted at the vessel's current canonical time.
-	// AISHub's aggregate flips a vessel's static fields between stations' versions (X → Y → X)
-	// while TIME, the canonical time, stands still; re-emitting X then repeats an (id, time) the
-	// archive and stream already carry, long after the pipeline's dedupe window has been pruned
-	// past it. Keyed by the canonical time so a flip-back after the vessel's clock moves on is
-	// emitted again under its new time.
-	staticAt map[uint32]staticWindow
-}
-
-type staticWindow struct {
-	time time.Time       // the canonical time the keys below were emitted with
-	keys map[string]bool // staticKeys emitted at that time
-}
-
-func newAishubState() *aishubState {
-	return &aishubState{lastTime: map[uint32]string{}, lastStatic: map[uint32]string{}, staticAt: map[uint32]staticWindow{}}
-}
-
 // ingestAishub maps one snapshot into events: a position when TIME advanced, a static when static fields changed.
-// Rows are spread evenly over budget: emitted back to back, a ~45k-row snapshot overruns every subscriber's
-// channel (a far client drains ~3k events/s); paced under 1k/s it does not. The rows are about a minute old already.
-func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, budget time.Duration) (int, error) {
+// Every row is ingested at once, as the raw archive records the snapshot, so the vessel cache, dedupe, and the
+// normalized stream see the order replay reproduces. Live, only delivery to subscribers is paced (deliverPaced).
+func (p *Pipeline) ingestAishub(body []byte, now time.Time) (int, error) {
 	var parts []json.RawMessage
 	if err := json.Unmarshal(body, &parts); err != nil {
 		return 0, err
@@ -182,44 +157,96 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time, st *aishubState, bud
 		}
 	}
 	n := 0
-	t0 := time.Now()
-	for i, r := range rows {
-		if budget > 0 && !p.closing.Load() { // shutdown waits on this snapshot, so finish it unpaced
-			if d := time.Until(t0.Add(budget * time.Duration(i) / time.Duration(len(rows)))); d > 0 {
-				time.Sleep(d)
-			}
-		}
+	for _, r := range rows {
 		if r.MMSI == 0 {
 			continue
 		}
-		t := now
-		if secs, err := strconv.ParseInt(r.Time, 10, 64); err == nil && secs > 0 {
-			t = time.Unix(secs, 0)
-			if t.After(now) { // ingestPacket caps a future stamp to the receive time; match it here
-				t = now // so the staticAt window and the packet carry the time the event actually gets
-			}
+		// A row's own TIME is the only thing that says whether it is news, so a row without one, or one
+		// stamped in the future, is skipped. Capping a future stamp to the receive time would make the
+		// same unchanged row look newer on every snapshot. The next snapshot carries it again, by then
+		// in the past, and it goes through once with its true time.
+		secs, err := strconv.ParseInt(r.Time, 10, 64)
+		if err != nil || secs <= 0 {
+			continue
 		}
-		if st.lastTime[r.MMSI] != r.Time && r.Latitude != 0 && r.Longitude != 0 {
-			st.lastTime[r.MMSI] = r.Time
+		t := time.Unix(secs, 0)
+		if t.After(now) {
+			continue
+		}
+		// A snapshot repeats every vessel AISHub holds, most of them unchanged since the last one, so a
+		// row becomes an event only when the vessel cache says it is news. The cache survives a restart,
+		// so the first snapshot after one does not re-send what the stream already carried.
+		if r.Latitude != 0 && r.Longitude != 0 && p.positionIsNew(r.MMSI, t, now) {
 			p.ingestPacketAt("aishub", "aishub", t, now, r.position(t))
 			n++
 		}
-		if k := r.staticKey(); (r.Name != "" || r.IMO != 0) && st.lastStatic[r.MMSI] != k {
-			w := st.staticAt[r.MMSI]
-			if !w.time.Equal(t) { // t is never the zero value, so the zero window always resets
-				w = staticWindow{time: t, keys: map[string]bool{}}
-				st.staticAt[r.MMSI] = w
-			}
-			// A suppressed flip-back leaves lastStatic alone, so it is emitted again once TIME moves on.
-			if !w.keys[k] {
-				w.keys[k] = true
-				st.lastStatic[r.MMSI] = k
-				p.ingestPacketAt("aishub", "aishub", t, now, r.static())
+		if r.Name != "" || r.IMO != 0 {
+			if pkt := r.static(); p.staticIsNew(r.MMSI, t, now, p.asDecoded(pkt)) {
+				p.ingestPacketAt("aishub", "aishub", t, now, pkt)
 				n++
 			}
 		}
 	}
 	return n, nil
+}
+
+// aishubSnapshot archives and ingests one snapshot as a single reception, then hands its events to
+// paced delivery once the locks are released, so other sources never wait on delivery.
+func (p *Pipeline) aishubSnapshot(body []byte, start time.Time) (int, error) {
+	start, ok := p.admit(start)
+	if !ok {
+		return -1, nil
+	}
+	p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
+	n, err := p.ingestAishub(body, start)
+	batch := p.aishubBatch
+	p.aishubBatch = nil
+	p.release()
+	if p.aishubPace != nil && len(batch) > 0 {
+		p.aishubPace <- batch
+	}
+	return n, err
+}
+
+// startAishubPacing sets up paced delivery of AISHub snapshots. main calls it before any source
+// starts, so every emit sees it set.
+func (p *Pipeline) startAishubPacing(budget time.Duration) {
+	p.aishubPace = make(chan []*Event, 4)
+	go p.deliverPaced(p.aishubPace, budget)
+}
+
+// deliverPaced broadcasts each snapshot's events spread evenly over budget. Emitted back to back, a
+// ~22k-event snapshot overruns every subscriber's queue (a far client drains ~3k events/s) and uses up
+// a rate-limited client's per-second allowance, so fresher reports from other sources in that second
+// would be thinned; spread out, they are not. The rows are about a minute old already. Events from
+// every other source broadcast as they are ingested, so they interleave with a snapshot being
+// delivered rather than wait behind it.
+func (p *Pipeline) deliverPaced(batches <-chan []*Event, budget time.Duration) {
+	var pending []*Event
+	var gap time.Duration
+	next := time.NewTimer(0)
+	for {
+		if len(pending) == 0 {
+			pending = <-batches
+			gap = budget / time.Duration(len(pending))
+			next.Reset(0)
+		}
+		select {
+		case b := <-batches:
+			// A snapshot arriving before the last is delivered joins the backlog, and the whole backlog is
+			// re-spread over budget from now: nothing waits more than budget behind the newest snapshot,
+			// and the fetch loop never blocks on delivery.
+			pending = append(pending, b...)
+			gap = budget / time.Duration(len(pending))
+		case <-next.C:
+			p.broadcast(pending[0])
+			pending = pending[1:]
+			if p.closing.Load() { // once shutdown starts, the rest goes out at once, while the archives drain
+				gap = 0
+			}
+			next.Reset(gap)
+		}
+	}
 }
 
 // ingestPacketAt is ingestPacket for sources whose timestamps are trusted minutes back (AISHub rows carry the
@@ -230,7 +257,6 @@ func (p *Pipeline) ingestPacketAt(source, station string, t, recv time.Time, pkt
 
 func runAishub(p *Pipeline, username string, interval time.Duration) {
 	url := "https://data.aishub.net/ws.php?username=" + username + "&format=0&output=json&compress=2"
-	st := newAishubState()
 	client := &http.Client{Timeout: 50 * time.Second}
 	var lastHash [32]byte
 	for {
@@ -257,13 +283,7 @@ func runAishub(p *Pipeline, username string, interval time.Duration) {
 			} else {
 				lastHash = h
 			}
-			if !p.admit() {
-				return -1, nil
-			}
-			defer p.intake.RUnlock() // held across the paced rows: a snapshot is one reception
-			p.arch.write(Reception{Source: "aishub", Station: "aishub", RecvTime: start, Body: strings.TrimSpace(string(body))})
-			// paced independently of the poll interval: a new snapshot appears about once a minute, so ingest can outlast a poll
-			return p.ingestAishub(body, start, st, 45*time.Second)
+			return p.aishubSnapshot(body, start)
 		}()
 		switch {
 		case err != nil:

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"math/rand/v2"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -126,9 +125,9 @@ func TestSpatialIndexMatchesScan(t *testing.T) {
 }
 
 // The index follows the real pipeline: a position fold refiles the vessel, the sweep drops it, and a
-// snapshot restore files it again.
+// restore from the record files it again.
 func TestSpatialIndexFollowsTheCache(t *testing.T) {
-	p := testPipeline(t)
+	p := storePipeline(t)
 	now := time.Now()
 	pos := func(at time.Time, lat, lon float64) {
 		p.ingestPacket("kystverket", "kystverket", at, at, ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 257000001}, Valid: true,
@@ -153,14 +152,8 @@ func TestSpatialIndexFollowsTheCache(t *testing.T) {
 	}
 	checkIndex(t, p)
 
-	snapshot := filepath.Join(t.TempDir(), "vessels.json")
-	if err := p.saveSnapshot(snapshot); err != nil {
-		t.Fatal(err)
-	}
-	restored := testPipeline(t)
-	if _, err := restored.loadSnapshot(snapshot); err != nil {
-		t.Fatal(err)
-	}
+	mustFlush(t, p)
+	restored := restartedPipeline(t, p)
 	checkIndex(t, restored)
 	if len(restored.cells) != 1 {
 		t.Fatalf("restored index has %d cells, want 1", len(restored.cells))
@@ -268,7 +261,7 @@ func TestVesselsBytesUnchanged(t *testing.T) {
 	// Whole response, everything subscribed: the collection wrapper and order of fields match too. Map
 	// order differs run to run, so compare after sorting the features by id.
 	rec := httptest.NewRecorder()
-	p.serveVessels(rec, httptest.NewRequest("GET", "/v1/vessels", nil))
+	p.serveVessels(rec, httptest.NewRequest("GET", "/v1/vessels?max_age=all&max_age_moving=all", nil))
 	json.NewEncoder(&want).Encode(map[string]any{"type": "FeatureCollection", "features": features, "attribution": attribution})
 	if norm(t, rec.Body.Bytes()) != norm(t, want.Bytes()) {
 		t.Fatalf("response differs:\n got %.300s\nwant %.300s", rec.Body.Bytes(), want.Bytes())

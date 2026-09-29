@@ -74,8 +74,15 @@ type Pipeline struct {
 	// intake is the shutdown barrier. Every reception is archived raw and processed under the read
 	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
 	// recorded (raw without its normalized events, or the reverse) and none can start.
-	intake  sync.RWMutex
-	closing atomic.Bool
+	intake           sync.RWMutex
+	order            sync.Mutex // one reception at a time, in arrival order, as replay processes them (admit)
+	stampAtAdmission bool       // live only, set before any producer starts: receive times are taken at admission
+	// aishubPace hands each AISHub snapshot's events to deliverPaced, set before any source starts;
+	// nil in replay and tests, where events broadcast directly. aishubBatch collects a snapshot's
+	// events while it is ingested, under the ordering lock.
+	aishubPace  chan []*Event
+	aishubBatch []*Event
+	closing     atomic.Bool
 
 	seen     map[string]time.Time
 	seenHW   time.Time // newest event time folded into seen; prune cutoff, so replay needs no wall clock
@@ -86,6 +93,7 @@ type Pipeline struct {
 	nextSweep  time.Time // reception time of the next vessel cache sweep; guarded by vmu
 	vessels    map[uint32]*vessel
 	cells      map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
+	tiles      tileCache                      // encoded vector tiles, shared for tileTTL (tiles.go)
 	dirty      map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
 	store      *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
 	tracks     *trackStore                    // recent positions (tracks.go); nil without a record, whose writer also writes tracks
@@ -159,22 +167,39 @@ var bootTime = time.Now()
 
 // Ingest archives a reception and feeds it to the pipeline.
 func (p *Pipeline) Ingest(rx Reception) {
-	if !p.admit() {
+	var ok bool
+	if rx.RecvTime, ok = p.admit(rx.RecvTime); !ok {
 		return
 	}
-	defer p.intake.RUnlock()
+	defer p.release()
 	p.arch.write(rx)
 	p.ingestLine(rx)
 }
 
-// admit holds the intake read lock for one reception, or refuses it once shutdown has begun.
-func (p *Pipeline) admit() bool {
+// admit holds the intake read lock for one reception, or refuses it once shutdown has begun, and
+// takes order so the reception is processed whole: adapters run concurrently, and without it
+// another source's reception could land between two rows of an AISHub snapshot, which replay
+// processes as one record. It returns the reception's receive time. The live server stamps it here,
+// inside the lock, so live processing order is receive-time order, which is the order the raw
+// archive records and replay merges; a time taken before the lock (AISHub's before a fetch that
+// takes seconds) would not be. Replay and tests keep the time they pass.
+func (p *Pipeline) admit(recv time.Time) (time.Time, bool) {
 	p.intake.RLock()
 	if p.closing.Load() {
 		p.intake.RUnlock()
-		return false
+		return recv, false
 	}
-	return true
+	p.order.Lock()
+	if p.stampAtAdmission {
+		recv = time.Now()
+	}
+	return recv, true
+}
+
+// release ends a reception admitted by admit.
+func (p *Pipeline) release() {
+	p.order.Unlock()
+	p.intake.RUnlock()
 }
 
 // closeArchives stops intake, then drains both archives. Setting closing turns away receptions not
@@ -385,6 +410,10 @@ func (p *Pipeline) emit(ev *Event) {
 	p.usage.events.add(time.Now())
 	p.last.Store(time.Now().UnixNano())
 	p.touch(ev.Source)
+	if ev.Source == "aishub" && p.aishubPace != nil { // aishubPace is set before any source starts
+		p.aishubBatch = append(p.aishubBatch, ev) // delivered paced once the snapshot is ingested
+		return
+	}
 	p.broadcast(ev)
 }
 

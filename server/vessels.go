@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -50,8 +51,8 @@ type vessel struct {
 	PosAt       time.Time // time of the last position folded in (Seen also moves on static messages)
 	StaticAt    time.Time // time of the last static folded in; gates rebuilt copies of the same broadcast
 
-	// last events heard, replayed by snapshot subscriptions; unexported so the vessel snapshot file skips
-	// them — nil after a restore, and then a reconstruction is synthesized instead.
+	// last events heard, replayed by snapshot subscriptions. The record does not keep them, so they are nil
+	// for a vessel restored from it, and a reconstruction is synthesized instead.
 	lastPos    *Event
 	lastStatic *Event
 
@@ -64,12 +65,12 @@ func newVessel() *vessel {
 	return &vessel{Cog: 360, Sog: 102.3, Heading: 511, NavStatus: 15, Kind: "vessel"}
 }
 
-// updateVessel folds the event into the per-MMSI cache and stamps the event with the cached name/position,
-// so positionless messages (5, 24) can be bbox-routed and carry MetaData like aisstream.
-func (p *Pipeline) updateVessel(ev *Event) {
-	u := newVessel() // fields at sentinel = "not in this message"
-	var hasPos, isStatic bool
-	switch m := ev.Packet.(type) {
+// foldOf extracts what a message contributes to a vessel: fields at their sentinel mean "not in this
+// message". updateVessel folds it into the cache, and a source can use it to ask whether a message
+// would change what the cache already holds.
+func foldOf(pkt ais.Packet) (u *vessel, hasPos, isStatic bool) {
+	u = newVessel()
+	switch m := pkt.(type) {
 	case ais.PositionReport:
 		u.Lat, u.Lon, hasPos, u.Class = float64(m.Latitude), float64(m.Longitude), true, "A"
 		u.Cog, u.Sog, u.Heading, u.NavStatus = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.NavigationalStatus
@@ -118,6 +119,99 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if hasPos && (math.Abs(u.Lat) > 90 || math.Abs(u.Lon) > 180 || (u.Lat == 0 && u.Lon == 0)) {
 		hasPos = false
 	}
+	return u, hasPos, isStatic
+}
+
+// staleFor reports whether an event at t would be stale for v: folded for its static fields, withheld
+// from the stream. updateVessel decides with it, and a source that repeats itself asks it before
+// sending, so the two cannot disagree.
+func (v *vessel) staleFor(t time.Time, hasPos, isStatic, rebuilt bool) bool {
+	// Any event older than the vessel's newest (AISHub lags minutes behind VHF) must not drag the vessel
+	// back along its track; only static fields fold in. Whole-second source stamps make ties and
+	// sub-second skew meaningless.
+	stale := v.HasPos && t.Before(v.Seen.Add(-time.Second))
+	// Rebuilt events must moreover advance the vessel's clock, not merely match it: sources overlap
+	// (BarentsWatch and aisstream re-serve what Kystverket already delivered raw), and a rebuilt copy of
+	// the same transmission carries the same message time but never byte-matches the payload dedupe. AIS
+	// transmits at 2 s minimum spacing, so "more than a second newer" separates copies from genuinely new
+	// reports without any per-source rule, and a vessel every other source has gone silent on flows again
+	// on its next transmission. Raw receptions keep the exact test instead — identical bytes — because an
+	// equal-time raw event that survives dedupe is usually distinct data (1 Hz s:self reports, truncated
+	// TAG stamps), and withholding a reception loses data where withholding a reconstruction loses nothing.
+	if rebuilt {
+		if hasPos && v.HasPos && !t.After(v.PosAt.Add(time.Second)) {
+			stale = true
+		}
+		if isStatic && !v.StaticAt.IsZero() && !t.After(v.StaticAt.Add(time.Second)) {
+			stale = true
+		}
+	}
+	return stale
+}
+
+// positionIsNew reports whether a position at t is news to the vessel cache: inside the cache's window
+// and not stale by the rule updateVessel applies (staleFor), or for a vessel the cache does not hold. A
+// source that repeats what it already sent (AISHub's snapshots) asks this instead of keeping its own
+// state, and the cache survives a restart.
+func (p *Pipeline) positionIsNew(mmsi uint32, t, now time.Time) bool {
+	if t.Before(now.Add(-vesselTTL)) {
+		return false // older than anything the cache would keep
+	}
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	v := p.vessels[mmsi]
+	return v == nil || !v.staleFor(t, true, false, true) // AISHub rows are rebuilt reports
+}
+
+// staticIsNew reports whether a static message at t is news to the vessel cache: inside the cache's
+// window, more than a second newer than the last static folded in (staleFor's rule for rebuilt statics),
+// and carrying a particular that the vessel does not already have. A static older than the vessel's last
+// position still counts: it is withheld from the stream but folds its particulars into the cache. The
+// time gate is what stops an aggregate that flips a vessel between two stations' versions (X, Y, X)
+// under one timestamp from sending the same broadcast twice. pkt must be decoded as the pipeline decodes
+// it, so its fields compare with what the cache stored.
+func (p *Pipeline) staticIsNew(mmsi uint32, t, now time.Time, pkt ais.Packet) bool {
+	if t.Before(now.Add(-vesselTTL)) {
+		return false
+	}
+	u, _, _ := foldOf(pkt)
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	v := p.vessels[mmsi]
+	if v == nil {
+		return true
+	}
+	return (v.StaticAt.IsZero() || t.After(v.StaticAt.Add(time.Second))) && changesParticulars(v, u)
+}
+
+// changesParticulars reports whether folding u would change any of v's static particulars.
+func changesParticulars(v, u *vessel) bool {
+	return u.Name != "" && u.Name != v.Name ||
+		u.ShipType != 0 && u.ShipType != v.ShipType ||
+		u.IMO != 0 && u.IMO != v.IMO ||
+		u.CallSign != "" && u.CallSign != v.CallSign ||
+		u.Destination != "" && u.Destination != v.Destination ||
+		u.ETA.Month != 0 && u.ETA != v.ETA ||
+		u.Draught > 0 && u.Draught != v.Draught ||
+		u.Length > 0 && u.Length != v.Length ||
+		u.Beam > 0 && u.Beam != v.Beam
+}
+
+// asDecoded returns pkt as the pipeline sees it after re-encoding, which is what the cache folds in: the
+// 6-bit text alphabet and the fixed-point fields can change a value on the way through.
+func (p *Pipeline) asDecoded(pkt ais.Packet) ais.Packet {
+	if payload := p.codec.EncodePacket(pkt); payload != nil {
+		if d := p.codec.DecodePacket(payload); d != nil {
+			return d
+		}
+	}
+	return pkt
+}
+
+// updateVessel folds the event into the per-MMSI cache and stamps the event with the cached name/position,
+// so positionless messages (5, 24) can be bbox-routed and carry MetaData like aisstream.
+func (p *Pipeline) updateVessel(ev *Event) {
+	u, hasPos, isStatic := foldOf(ev.Packet)
 	p.vmu.Lock()
 	// The cache sweeps on the reception clock, not a wall-clock ticker. It decides which events are
 	// stale and gives a static its vessel's position, and both reach the archive, so replay has to
@@ -132,26 +226,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		v = newVessel()
 		p.vessels[ev.MMSI] = v
 	}
-	// Any event older than the vessel's newest (AISHub lags minutes behind VHF) must not drag the vessel
-	// back along its track; only static fields fold in. Whole-second source stamps make ties and
-	// sub-second skew meaningless.
-	stale := v.HasPos && ev.Time.Before(v.Seen.Add(-time.Second))
-	// Rebuilt events must moreover advance the vessel's clock, not merely match it: sources overlap
-	// (BarentsWatch and aisstream re-serve what Kystverket already delivered raw), and a rebuilt copy of
-	// the same transmission carries the same message time but never byte-matches the payload dedupe. AIS
-	// transmits at 2 s minimum spacing, so "more than a second newer" separates copies from genuinely new
-	// reports without any per-source rule, and a vessel every other source has gone silent on flows again
-	// on its next transmission. Raw receptions keep the exact test instead — identical bytes — because an
-	// equal-time raw event that survives dedupe is usually distinct data (1 Hz s:self reports, truncated
-	// TAG stamps), and withholding a reception loses data where withholding a reconstruction loses nothing.
-	if ev.rebuilt {
-		if hasPos && v.HasPos && !ev.Time.After(v.PosAt.Add(time.Second)) {
-			stale = true
-		}
-		if isStatic && !v.StaticAt.IsZero() && !ev.Time.After(v.StaticAt.Add(time.Second)) {
-			stale = true
-		}
-	}
+	stale := v.staleFor(ev.Time, hasPos, isStatic, ev.rebuilt)
 	ev.Stale = stale
 	// A position implying an impossible speed from the vessel's last position is dropped whatever the
 	// source: the aggregates carry bad positions of their own, and no vessel outruns implausibleKnots.
@@ -221,7 +296,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
 	if isStatic { // names don't move, so a stale static is still worth keeping
 		v.lastStatic = ev
-		if !stale {
+		// A stale static folds in too, so it advances the gate: otherwise an aggregate flipping between
+		// two versions under one old timestamp would pass the gate on every snapshot.
+		if ev.Time.After(v.StaticAt) {
 			v.StaticAt = ev.Time
 		}
 	}
@@ -243,6 +320,9 @@ func (p *Pipeline) markTrusted(mmsi uint32, t time.Time) {
 	p.vmu.Lock()
 	if v := p.vessels[mmsi]; v != nil && t.After(v.TrustedAt) {
 		v.TrustedAt = t
+		if p.dirty != nil {
+			p.dirty[mmsi] = struct{}{}
+		}
 	}
 	p.vmu.Unlock()
 }
@@ -356,12 +436,10 @@ var recordLimit = 500
 const searchLimit = 50
 
 // serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b&max_age= → GeoJSON of vessel
-// positions. The filters, the token, and the area and MMSI caps are exactly those of /v1/stream. A box
-// answers from the cache: vessels heard in the last 30 minutes, or further back when max_age asks. A
-// followed MMSI answers with its last known position however old, unless max_age says otherwise. ?q=
-// searches instead (serveVesselSearch).
+// positions. The filters, the token, and the area and MMSI caps are exactly those of /v1/stream, and the
+// age rules those of the tiles (ageRules). The cache answers for the last 30 minutes and the record for
+// what it no longer holds. ?q= searches instead (serveVesselSearch).
 func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	cl, err := p.requestClaims(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -373,20 +451,13 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s, msg := parseSub(vals, cl, true)
-	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
-	if msg == "" {
-		msg = ageMsg
-	}
-	if msg != "" {
+	rules, rulesMsg := parseAgeRules(vals)
+	if msg = cmp.Or(msg, rulesMsg); msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
 	now := time.Now()
-	var cutoff time.Time // zero: no age limit beyond what the cache holds
-	if set {
-		cutoff = ageCutoff(now, age)
-	}
-	deep := set && age > vesselTTL && (len(s.boxes) > 0 || s.everything)
+	deep := (rules.areaAge == 0 || rules.areaAge > vesselTTL) && (len(s.boxes) > 0 || s.everything)
 	var emitted map[uint32]int // each vessel the cache answered, and its index in features
 	if p.store != nil && (len(s.mmsi) > 0 || deep) {
 		emitted = map[uint32]int{}
@@ -395,7 +466,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	attribution := map[string]string{}
 	p.vmu.RLock()
 	p.eachMatch(s, func(mmsi uint32, v *vessel) {
-		if v.HasPos && !v.Seen.Before(cutoff) {
+		if v.HasPos && rules.match(s.mmsi[mmsi], v, now) {
 			features = append(features, v.featureJSON(mmsi))
 			noteAttribution(attribution, v.Source)
 			if emitted != nil {
@@ -406,7 +477,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	p.vmu.RUnlock()
 	truncated := false
 	if emitted != nil {
-		recs, more, err := p.recordVessels(s, cutoff, deep, now)
+		recs, more, err := p.recordVessels(s, rules, deep, now)
 		if err != nil {
 			log.Printf("store: %v", err)
 			http.Error(w, "vessel record unavailable", http.StatusInternalServerError)
@@ -419,20 +490,22 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			taken[rec.mmsi] = true
-			f, source, ahead := p.newest(rec)
-			if i, ok := emitted[rec.mmsi]; ok {
-				if ahead {
-					features[i] = f
-					noteAttribution(attribution, source)
-				}
+			i, ok := emitted[rec.mmsi]
+			// A vessel the cache holds with a position the cache did not answer with is outside this request:
+			// its newest position has left the boxes or the age rules leave it out.
+			if c := p.vessels[rec.mmsi]; !ok && c != nil && c.HasPos {
 				continue
 			}
-			// A vessel the cache holds with a position at least as new is the cache's to answer, and this
-			// request did not ask about where it is or how old that position is.
-			if ahead {
-				features = append(features, f)
-				noteAttribution(attribution, source)
+			f, source, merged := p.newest(rec)
+			if ok && !merged {
+				continue
 			}
+			if ok {
+				features[i] = f
+			} else {
+				features = append(features, f)
+			}
+			noteAttribution(attribution, source)
 		}
 		p.vmu.RUnlock()
 		truncated = more
@@ -444,21 +517,23 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 // recordVessels reads what the record holds for a request: every followed vessel, and, for a deep request,
 // vessels last heard inside the boxes more than 30 minutes ago. more reports that the box query stopped at
 // recordLimit.
-func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time.Time) (_ []record, more bool, _ error) {
+func (p *Pipeline) recordVessels(s *v1Sub, rules *ageRules, deep bool, now time.Time) (_ []record, more bool, _ error) {
 	var recs []record
 	if len(s.mmsi) > 0 {
 		followed := make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
 			followed = append(followed, m)
 		}
-		rs, err := p.store.find(recordQuery{mmsis: followed, since: cutoff, hasPos: true})
+		age, vf := rules.rule(true)
+		rs, err := p.store.find(recordQuery{mmsis: followed, since: since(now, age), hasPos: true, filter: vf, now: now})
 		if err != nil {
 			return nil, false, err
 		}
 		recs = append(recs, rs...)
 	}
 	if deep {
-		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: cutoff, before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1})
+		age, vf := rules.rule(false)
+		rs, err := p.store.find(recordQuery{boxes: s.boxes, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now})
 		if err != nil {
 			return nil, false, err
 		}
@@ -470,12 +545,10 @@ func (p *Pipeline) recordVessels(s *v1Sub, cutoff time.Time, deep bool, now time
 	return recs, more, nil
 }
 
-// newest is a vessel's newest state as a Feature, with the source it credits. The cache is usually ahead
-// of the record by up to a second, and then its own encoded Feature is the answer. After a restart the
-// record can be ahead instead, until the vessel next reports, because the snapshot is written every minute
-// and the record every second. Then ahead is true and the Feature is the cache merged with the record.
-// The caller holds vmu for reading.
-func (p *Pipeline) newest(rec record) (feature []byte, source string, ahead bool) {
+// newest is a vessel's newest state as a Feature, with the source it credits. When the record adds nothing
+// to the cache, the cache's own encoded Feature is the answer. Otherwise merged is true and the Feature is
+// the cache completed by the record. The caller holds vmu for reading.
+func (p *Pipeline) newest(rec record) (feature []byte, source string, merged bool) {
 	v, cached := p.newestState(rec)
 	if cached {
 		return v.featureJSON(rec.mmsi), v.Source, false
@@ -484,18 +557,18 @@ func (p *Pipeline) newest(rec record) (feature []byte, source string, ahead bool
 	return b, v.Source, true
 }
 
-// newestState is newest's vessel state: the cached vessel itself when it is at least as new as the record,
-// with cached true, else a merged copy. The caller holds vmu for reading and must not modify a cached one.
+// newestState is newest's vessel state: the cached vessel itself when the record adds nothing to it, with
+// cached true, else the cache merged with the record, or the record alone for a vessel the cache does not
+// hold. The caller holds vmu for reading and must not modify a cached one.
 func (p *Pipeline) newestState(rec record) (v *vessel, cached bool) {
 	c := p.vessels[rec.mmsi]
-	if c != nil && !rec.v.Seen.After(c.Seen) && !rec.v.PosAt.After(c.PosAt) {
-		return c, true
-	}
 	if c == nil {
 		return rec.v, false
 	}
 	v = c.state()
-	v.merge(rec.v)
+	if !v.merge(rec.v) {
+		return c, true
+	}
 	return v, false
 }
 
@@ -503,6 +576,12 @@ func (p *Pipeline) newestState(rec record) (v *vessel, cached bool) {
 // never changes an answer an older client already received. The rest of /v1/vessels ignores unknown
 // parameters, as it always has.
 var searchParams = map[string]bool{"q": true, "bbox": true, "mmsi": true, "max_age": true, "key": true}
+
+func init() {
+	for k := range vesselFilterParams {
+		searchParams[k] = true
+	}
+}
 
 // serveVesselSearch: GET /v1/vessels?q= → vessels whose name starts with q, or whose MMSI does when q is
 // digits, most recently heard first, from the record. bbox, mmsi, and max_age narrow it.
@@ -520,9 +599,8 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	}
 	s, msg := parseSub(vals, cl, false)
 	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
-	if msg == "" {
-		msg = ageMsg
-	}
+	vf, filterMsg := parseVesselFilter(vals, 0)
+	msg = cmp.Or(msg, ageMsg, filterMsg)
 	if msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
@@ -533,7 +611,8 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	}
 	// The record is ordered by the seen it stores, and the cache usually runs a second ahead of it, so read
 	// past the cap and order by each vessel's newest seen before cutting.
-	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1}
+	now := time.Now()
+	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1, filter: vf, now: now}
 	if len(s.mmsi) > 0 {
 		q.mmsis = make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
@@ -541,7 +620,7 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 		}
 	}
 	if set {
-		q.since = ageCutoff(time.Now(), age)
+		q.since = ageCutoff(now, age)
 	}
 	recs, err := p.store.find(q)
 	if err != nil {
@@ -558,6 +637,9 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	p.vmu.RLock()
 	for _, rec := range recs {
 		v, cached := p.newestState(rec)
+		if !vf.match(v, now) { // the cache can be a report ahead of the row the filter passed
+			continue
+		}
 		var f []byte
 		if cached {
 			f = v.featureJSON(rec.mmsi)
@@ -586,7 +668,6 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 // completed by the record, or from the record alone for a vessel the cache no longer holds. geometry is
 // null for a vessel whose position was never heard. An unknown vessel is a 404.
 func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if _, err := p.requestClaims(r); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -654,6 +735,179 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	noteAttribution(out.Attribution, cur.Source)
 	w.Header().Set("Content-Type", "application/geo+json")
 	json.NewEncoder(w).Encode(out)
+}
+
+// vesselFilterParams are the filters /v1/vessels, its search, and the tiles share.
+var vesselFilterParams = map[string]bool{"kind": true, "class": true, "type": true, "min_sog": true, "max_age_moving": true}
+
+var vesselKinds = map[string]bool{"vessel": true, "aton": true, "base": true, "sar": true}
+
+// vesselFilter narrows vessels by what they are and how they last reported. The zero value matches all.
+type vesselFilter struct {
+	kinds     map[string]bool
+	class     string
+	types     [][2]uint8
+	minSog    float64
+	hasMinSog bool          // min_sog=0 still asks for a known speed
+	movingAge time.Duration // a vessel last heard under way longer ago than this is left out; 0: no limit
+}
+
+// parseVesselFilter reads the shared filters. movingAge is max_age_moving's default.
+func parseVesselFilter(vals url.Values, movingAge time.Duration) (*vesselFilter, string) {
+	f := &vesselFilter{movingAge: movingAge}
+	if q := vals.Get("kind"); q != "" {
+		f.kinds = map[string]bool{}
+		for _, k := range strings.Split(q, ",") {
+			if !vesselKinds[k] {
+				return nil, "kind=vessel,aton,base,sar"
+			}
+			f.kinds[k] = true
+		}
+	}
+	if f.class = vals.Get("class"); f.class != "" && f.class != "A" && f.class != "B" {
+		return nil, "class=A or class=B"
+	}
+	if q := vals.Get("type"); q != "" {
+		for _, r := range strings.Split(q, ",") {
+			lo, hi, found := strings.Cut(r, "-")
+			if !found {
+				hi = lo
+			}
+			a, err1 := strconv.ParseUint(lo, 10, 8)
+			b, err2 := strconv.ParseUint(hi, 10, 8)
+			if err1 != nil || err2 != nil || a > b {
+				return nil, "type=<code> or <from>-<to>, comma-separated, 0-255"
+			}
+			f.types = append(f.types, [2]uint8{uint8(a), uint8(b)})
+		}
+	}
+	if q := vals.Get("min_sog"); q != "" {
+		v, err := strconv.ParseFloat(q, 64)
+		if err != nil || v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, "min_sog=<knots>"
+		}
+		f.minSog, f.hasMinSog = v, true
+	}
+	if q := vals.Get("max_age_moving"); q != "" {
+		age, _, msg := parseMaxAge(q)
+		if msg != "" {
+			return nil, "max_age_moving=<seconds>, a duration such as 2h, or all"
+		}
+		f.movingAge = age
+		if age == ageAll {
+			f.movingAge = 0
+		}
+	}
+	return f, ""
+}
+
+// stationary: the vessel's last report says it was not going anywhere. Aids to navigation and base stations
+// never move; a vessel counts when it was under a knot or reported itself moored, at anchor, or aground.
+// A vessel with neither speed nor status known counts as moving.
+func stationary(v *vessel) bool {
+	return v.Kind == "aton" || v.Kind == "base" || v.Sog < 1 || v.NavStatus == 1 || v.NavStatus == 5 || v.NavStatus == 6
+}
+
+func (f *vesselFilter) match(v *vessel, now time.Time) bool {
+	switch {
+	case f.kinds != nil && !f.kinds[v.Kind],
+		f.class != "" && v.Class != f.class,
+		f.hasMinSog && !(v.Sog < 102.3 && v.Sog >= f.minSog),
+		f.movingAge > 0 && now.Sub(v.Seen) > f.movingAge && !stationary(v):
+		return false
+	}
+	if f.types == nil {
+		return true
+	}
+	for _, t := range f.types {
+		if v.ShipType >= t[0] && v.ShipType <= t[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// where is match as SQL over the vessel record, so a limited query fills its limit with matching rows.
+func (f *vesselFilter) where(now time.Time) (where []string, args []any) {
+	if f.kinds != nil {
+		ph := make([]string, 0, len(f.kinds))
+		for k := range f.kinds {
+			ph, args = append(ph, "?"), append(args, k)
+		}
+		where = append(where, "kind IN ("+strings.Join(ph, ",")+")")
+	}
+	if f.class != "" {
+		where, args = append(where, "class = ?"), append(args, f.class)
+	}
+	if f.types != nil {
+		ors := make([]string, len(f.types))
+		for i, t := range f.types {
+			ors[i], args = "ship_type BETWEEN ? AND ?", append(args, t[0], t[1])
+		}
+		where = append(where, "("+strings.Join(ors, " OR ")+")")
+	}
+	if f.hasMinSog {
+		where, args = append(where, "sog >= ? AND sog < 102.3"), append(args, f.minSog)
+	}
+	if f.movingAge > 0 {
+		where = append(where, "(seen >= ? OR kind IN ('aton', 'base') OR sog < 1 OR nav_status IN (1, 5, 6))")
+		args = append(args, unixMs(now.Add(-f.movingAge)))
+	}
+	return where, args
+}
+
+// areaWindow is how far back an area answers. A vessel is usually still there when its receiver goes
+// offline or it switches AIS off at its mooring, so an area shows its last known position, with its age.
+const areaWindow = 7 * 24 * time.Hour
+
+// ageRules are the age limits /v1/vessels and the tiles share. An area answers with a week of last known
+// positions, and leaves out a vessel last heard under way more than 30 minutes ago, since it has moved on.
+// A named vessel, one given in mmsi, answers with its last known position however old. max_age and
+// max_age_moving set both.
+type ageRules struct {
+	areaAge, namedAge time.Duration // 0: no limit
+	area, named       vesselFilter
+}
+
+func parseAgeRules(vals url.Values) (*ageRules, string) {
+	area, msg := parseVesselFilter(vals, vesselTTL)
+	if msg != "" {
+		return nil, msg
+	}
+	named, _ := parseVesselFilter(vals, 0)
+	r := &ageRules{areaAge: areaWindow, area: *area, named: *named}
+	age, set, msg := parseMaxAge(vals.Get("max_age"))
+	if msg != "" {
+		return nil, msg
+	}
+	if set {
+		if age == ageAll {
+			age = 0
+		}
+		r.areaAge, r.namedAge = age, age
+	}
+	return r, ""
+}
+
+// rule is the age limit and filter for a named vessel or one found by area.
+func (r *ageRules) rule(named bool) (time.Duration, *vesselFilter) {
+	if named {
+		return r.namedAge, &r.named
+	}
+	return r.areaAge, &r.area
+}
+
+func (r *ageRules) match(named bool, v *vessel, now time.Time) bool {
+	age, f := r.rule(named)
+	return (age == 0 || now.Sub(v.Seen) <= age) && f.match(v, now)
+}
+
+// since is the oldest seen an age admits; zero, admitting everything, for no limit.
+func since(now time.Time, age time.Duration) time.Time {
+	if age == 0 {
+		return time.Time{}
+	}
+	return now.Add(-age)
 }
 
 // ageAll is max_age=all: no age limit at all.

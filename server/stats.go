@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -94,7 +92,7 @@ func (r *hourRing) restore(s ringState) {
 }
 
 // usageCounters are the rolling counters behind /v1/stats. Totals since start are not kept: deploys restart the
-// server, so they would measure time since the last deploy. The rings persist in a JSON file next to the vessel snapshot.
+// server, so they would measure time since the last deploy. The rings persist in a JSON file, saved every minute and on shutdown.
 type usageCounters struct {
 	events   hourRing // deduplicated events
 	dups     hourRing // duplicates dropped
@@ -145,11 +143,6 @@ type usageFile struct {
 	Sources, Stations               map[string]ringState
 }
 
-// usagePath derives the usage file from the vessel snapshot path: vessels.json → vessels-usage.json.
-func usagePath(snapshot string) string {
-	return strings.TrimSuffix(snapshot, filepath.Ext(snapshot)) + "-usage.json"
-}
-
 func (p *Pipeline) saveUsage(path string) error {
 	u := &p.usage
 	out := usageFile{Events: u.events.state(), Dups: u.dups.state(), Streams: u.streams.state(), Requests: u.requests.state(), Sources: map[string]ringState{}}
@@ -197,7 +190,9 @@ func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v0/stream", "/v1/stream", "/v1/nmea", "/health", "/metrics":
 		default:
-			p.usage.requests.add(time.Now())
+			if r.Method != http.MethodOptions { // a browser's preflight, not a use of the API
+				p.usage.requests.add(time.Now())
+			}
 		}
 		start, sw := time.Now(), &statusWriter{ResponseWriter: w}
 		h.ServeHTTP(sw, r)
@@ -210,7 +205,6 @@ func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 }
 
 func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 	now := time.Now()
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,7 +17,6 @@ var openapiJSON []byte
 
 // serveOpenAPI serves the hand-written OpenAPI document; openapi_test.go keeps it in sync with the mux.
 func serveOpenAPI(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(openapiJSON)
 }
@@ -80,7 +78,8 @@ func (l *limiter) allow(key string) bool {
 
 var (
 	wsConnectLimit = newLimiter(envInt("WS_CONNECTS_PER_MIN", 20)) // per address; a working client connects once; raise for load tests
-	httpLimit      = newLimiter(httpPerMinute)                     // per address, every HTTP GET endpoint
+	httpLimit      = newLimiter(httpPerMinute)                     // per address, every HTTP GET endpoint but tiles
+	tileLimit      = newLimiter(tilesPerMinute)                    // per address, /v1/vessels/tiles
 	udpLimit       = newLimiter(udpLinesPerMinute)                 // per source address
 	publishLimit   = newLimiter(6000)                              // /v1/stream publish sentences per key per minute (a single receiver hears <75/s)
 	receiveLimit   = newLimiter(600)                               // /v1/receive posts per feeder per minute (AIS-catcher posts ~4/min)
@@ -127,11 +126,34 @@ func connectKey(c *Claims, r *http.Request) string {
 	return clientIP(r)
 }
 
-// rateLimited wraps a public HTTP handler with the per-address request limit. CORS stays open on the 429
-// itself, so a cross-origin client sees the rate limit rather than an opaque CORS failure.
-func (p *Pipeline) rateLimited(h http.HandlerFunc) http.HandlerFunc {
+// corsHeaders are the request headers a browser may send to the JSON endpoints: the token in Authorization,
+// so a page never has to put it on the query string where it lands in logs and the address bar, and
+// Content-Type for the JSON body /mcp takes.
+const corsHeaders = "Authorization, Content-Type"
+
+// preflight opens CORS on a public endpoint and answers a browser's preflight, returning true when it did so
+// and the handler is done. allow names the request headers the preflight permits. No Allow-Methods: GET and
+// POST are safelisted, and no endpoint takes another method.
+func preflight(w http.ResponseWriter, r *http.Request, allow string) bool {
+	hd := w.Header()
+	hd.Set("Access-Control-Allow-Origin", "*")
+	hd.Set("Access-Control-Allow-Headers", allow)
+	hd.Set("Access-Control-Max-Age", "86400")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	return false
+}
+
+// api wraps a public JSON handler with open CORS and the per-address request limit. The preflight is
+// answered before the limit, so a client at the limit sees the 429 on its real request rather than an opaque
+// CORS failure, and the 429 carries the origin header for the same reason.
+func (p *Pipeline) api(allow string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if preflight(w, r, allow) {
+			return
+		}
 		if p.limited(w, httpLimit, clientIP(r)) {
 			return
 		}
@@ -146,41 +168,4 @@ func (p *Pipeline) limited(w http.ResponseWriter, l *limiter, key string) bool {
 	p.stats.rateLimited.Add(1)
 	http.Error(w, "rate limited", http.StatusTooManyRequests)
 	return true
-}
-
-// ---- vessel snapshot: restart without a blank map ----
-
-func (p *Pipeline) saveSnapshot(path string) error {
-	p.vmu.RLock()
-	b, err := json.Marshal(p.vessels)
-	p.vmu.RUnlock()
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func (p *Pipeline) loadSnapshot(path string) (int, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	var m map[uint32]*vessel
-	if err := json.Unmarshal(b, &m); err != nil {
-		return 0, err
-	}
-	cutoff := time.Now().Add(-vesselTTL)
-	p.vmu.Lock()
-	for mmsi, v := range m {
-		if v.Seen.After(cutoff) {
-			p.putVesselLocked(mmsi, v)
-		}
-	}
-	n := len(p.vessels)
-	p.vmu.Unlock()
-	return n, nil
 }

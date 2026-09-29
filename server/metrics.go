@@ -87,7 +87,7 @@ func (f *fanoutCounter) add(n int) {
 var latencyBuckets = [...]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
 
 // timedRoutes get a latency histogram: they do real work per request, and the rest are cheap or are streams.
-var timedRoutes = []string{"/v1/vessels", "/v1/vessels/{mmsi}", "/v1/vessels/{mmsi}/track", "/mcp"}
+var timedRoutes = []string{"/v1/vessels", "/v1/vessels/{mmsi}", "/v1/vessels/{mmsi}/track", "/v1/vessels/tiles/{z}/{x}/{y}", "/mcp"}
 
 type histogram struct {
 	counts [len(latencyBuckets) + 1]int64 // per bucket, not cumulative; the last is above every bound

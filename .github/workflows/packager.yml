@@ -1,0 +1,116 @@
+name: packager
+
+# Packages closed days of the normalized archive into the lake's Iceberg tables (packager/README.md).
+# Nightly it packages every closed day of the past week that is missing or has changed. By hand it
+# packages a range of days, one job per day, five at a time. Day order does not matter: ais.vessels
+# merges each field on its own time, and a day whose vessels commit races another's merges again.
+on:
+  schedule:
+    # hour files upload when the next hour's traffic rotates them (~01:00), so earlier would run
+    # before the day's last files exist in the bucket
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+    inputs:
+      from:
+        description: First UTC day (YYYY-MM-DD); empty for every closed day of the past week not yet packaged
+        required: false
+      to:
+        description: Last UTC day (YYYY-MM-DD); empty for just the first day
+        required: false
+      min_hours:
+        description: Refuse a day with fewer distinct hours (the archive's first day, 2026-08-20, has 8)
+        default: "20"
+      catalog:
+        description: Write to R2 Data Catalog (off writes a throwaway warehouse on the runner)
+        type: boolean
+        default: true
+
+# One run at a time, so a nightly run and a range never stack their parallel days.
+concurrency:
+  group: packager
+  cancel-in-progress: false
+
+jobs:
+  days:
+    runs-on: ubuntu-latest
+    outputs:
+      days: ${{ steps.days.outputs.days }}
+    steps:
+      - id: days
+        env:
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+        run: |
+          # an empty entry is the nightly past-week run
+          if [ -z "$FROM" ]; then echo 'days=[""]' >> "$GITHUB_OUTPUT"; exit 0; fi
+          TO=${TO:-$FROM}
+          for x in "$FROM" "$TO"; do
+            [ "$(date -u -d "$x" +%F 2>/dev/null)" = "$x" ] || { echo "::error::$x is not a YYYY-MM-DD day"; exit 1; }
+          done
+          [ ! "$TO" \< "$FROM" ] || { echo "::error::to ($TO) is before from ($FROM)"; exit 1; }
+          d=$FROM; days=
+          while [ ! "$TO" \< "$d" ]; do
+            days="$days\"$d\","; d=$(date -u -d "$d + 1 day" +%F)
+          done
+          echo "days=[${days%,}]" >> "$GITHUB_OUTPUT"
+
+  # Creating or upgrading the tables is not safe to race, so it happens once, before any day.
+  init:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: lake
+    env:
+      LAKE_CATALOG_URI: ${{ (github.event_name == 'schedule' || inputs.catalog) && secrets.LAKE_CATALOG_URI || '' }}
+      LAKE_WAREHOUSE: ${{ secrets.LAKE_WAREHOUSE }}
+      LAKE_CATALOG_TOKEN: ${{ secrets.LAKE_CATALOG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --script packager/packager.py --init
+
+  package:
+    needs: [days, init]
+    # the lake environment only releases its secrets to main as well; this makes the reason plain
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    environment: lake
+    strategy:
+      # five runners at a time; a failed day does not stop the others, so rerun just the days that failed
+      max-parallel: 5
+      fail-fast: false
+      matrix:
+        day: ${{ fromJSON(needs.days.outputs.days) }}
+    name: package ${{ matrix.day || 'past week' }}
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      NORMALIZED_BUCKET: ais-archive
+      # A day's staging database runs to tens of GB (38 GB for 2026-09-27); the runner has about 80 GB free.
+      PACKAGER_HOME: /mnt/packager
+      # The runner does nothing else: 4 threads and 10 GB of the runner's 16 GB, where 2026-09-27
+      # peaked at 11 GB resident with the Arrow copies of each write pass.
+      PACKAGER_THREADS: 4
+      PACKAGER_MEMORY: 10GB
+      DAY: ${{ matrix.day }}
+      MIN_HOURS: ${{ inputs.min_hours || '20' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
+      - run: sudo mkdir -p "$PACKAGER_HOME" && sudo chown "$USER" "$PACKAGER_HOME"
+      - name: Package
+        env:
+          LAKE_CATALOG_URI: ${{ (github.event_name == 'schedule' || inputs.catalog) && secrets.LAKE_CATALOG_URI || '' }}
+          LAKE_WAREHOUSE: ${{ secrets.LAKE_WAREHOUSE }}
+          LAKE_CATALOG_TOKEN: ${{ secrets.LAKE_CATALOG_TOKEN }}
+        run: |
+          # sample the staging directory and free memory every 30 s so the run reports its peaks
+          (while sleep 30; do echo "$(du -sm "$PACKAGER_HOME" | cut -f1) $(free -m | awk '/Mem:/{print $7}')"; done) > /tmp/usage.log &
+          /usr/bin/time -v uv run --script packager/packager.py ${DAY:+--date "$DAY"} --min-hours "$MIN_HOURS" 2> >(tee /tmp/time.log >&2)
+      - name: Usage
+        if: always()
+        run: |
+          grep -E "Elapsed|Maximum resident" /tmp/time.log || true
+          sort -n /tmp/usage.log | tail -1 | awk '{print "peak staging: " $1 " MB"}' || true
+          sort -k2 -n /tmp/usage.log | head -1 | awk '{print "lowest available memory: " $2 " MB"}' || true

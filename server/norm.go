@@ -150,7 +150,7 @@ func (p *Pipeline) writeMetHyd(line []byte, recv time.Time) {
 	p.normWrite(recv, normLine("methyd", recv, nil, json.RawMessage(line)))
 }
 
-// ---- dedupe window persistence: saved on clean shutdown beside the vessel snapshot, so a deploy
+// ---- dedupe window persistence: saved on clean shutdown, so a deploy
 // cannot re-accept a copy inside the window. A crash loses it; the packager collapses those. ----
 
 type dedupeState struct {

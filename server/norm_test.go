@@ -10,7 +10,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -460,5 +462,44 @@ func TestInterleavedMultipartMessagesStaySeparate(t *testing.T) {
 	want := []string{strings.Join(a, "|"), strings.Join(b, "|")}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("interleaved messages recorded\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Live stamps a reception's receive time when it is admitted, inside the ordering lock, so the order
+// receptions are processed and recorded is receive-time order: the order the raw archive keeps and
+// replay merges. Times taken before the lock, as a caller's clock or a fetch's start, would not be.
+func TestAdmissionTimeIsProcessingOrder(t *testing.T) {
+	p, dir := normPipeline(t)
+	p.stampAtAdmission = true
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				now := time.Now() // the caller's clock, as a source adapter takes it before admission
+				runtime.Gosched()
+				src := fmt.Sprintf("udp:%04d", g)
+				p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: testSentence})
+			}
+		}(g)
+	}
+	wg.Wait()
+	p.norm.shutdown()
+	var last time.Time
+	n := 0
+	for _, e := range readNorm(t, dir) {
+		recv, err := time.Parse(time.RFC3339Nano, e.T)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recv.Before(last) {
+			t.Fatalf("record %d received %s after one received %s: processing order is not receive-time order", n, recv.Format(time.RFC3339Nano), last.Format(time.RFC3339Nano))
+		}
+		last = recv
+		n++
+	}
+	if n < 1600 {
+		t.Fatalf("%d records, want every reception recorded", n)
 	}
 }

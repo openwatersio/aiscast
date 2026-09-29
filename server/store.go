@@ -1,8 +1,9 @@
 package main
 
-// The durable vessel record: one row per MMSI ever heard, in a SQLite file beside the vessel snapshot.
-// The cache forgets a vessel 30 minutes after its last report. The record keeps its last known state, so
-// a lookup by MMSI answers for a boat at its berth and a search finds vessels not heard lately.
+// The durable vessel record: one row per MMSI ever heard, in one SQLite file. The cache forgets a vessel
+// 30 minutes after its last report. The record keeps its last known state, so a lookup by MMSI answers
+// for a boat at its berth and a search finds vessels not heard lately. On boot the cache is filled from
+// the record's last 30 minutes, so the record is the one state that survives a restart.
 //
 // The fold never touches SQLite. It marks the vessel dirty under the cache lock it already holds, and
 // flushStore copies the dirty vessels once a second and upserts them in one transaction. The store
@@ -48,6 +49,8 @@ CREATE TABLE IF NOT EXISTS vessels (
 	heading     INTEGER NOT NULL DEFAULT 511,
 	nav_status  INTEGER NOT NULL DEFAULT 15,
 	pos_at      INTEGER NOT NULL DEFAULT 0,    -- unix ms of the position
+	trusted_at  INTEGER NOT NULL DEFAULT 0,    -- unix ms of the last position from a source that is not low-trust
+	static_at   INTEGER NOT NULL DEFAULT 0,    -- unix ms of the last static report
 	seen        INTEGER NOT NULL,              -- unix ms of the last message that updated the vessel
 	first_seen  INTEGER NOT NULL,              -- unix ms of the earliest report written to this row
 	source      TEXT    NOT NULL DEFAULT '',
@@ -60,14 +63,21 @@ CREATE INDEX IF NOT EXISTS vessels_seen ON vessels (seen);
 CREATE INDEX IF NOT EXISTS vessels_imo ON vessels (imo);
 `
 
+// storeAddedCols are columns a file created by an earlier build lacks. SQLite has no ADD COLUMN IF NOT
+// EXISTS, so openStore adds each and passes over the duplicate-column error from a file that has it.
+var storeAddedCols = []string{
+	"trusted_at INTEGER NOT NULL DEFAULT 0",
+	"static_at  INTEGER NOT NULL DEFAULT 0",
+}
+
 // upsertSQL merges a cache state into its row with the fold's own rules, because a vessel the cache swept
 // comes back blank: its name, particulars, and position arrive over the next minutes. A blank field keeps
 // the stored value, a position replaces the stored one only when it is newer, and seen never moves back.
 // Right-hand sides read the row as it was before the update.
 const upsertSQL = `
 INSERT INTO vessels (mmsi, name, search, kind, class, ship_type, flag, imo, callsign, destination, eta, draught,
-	length, beam, has_pos, lat, lon, cell, cog, sog, heading, nav_status, pos_at, seen, first_seen, source, station, msg_type)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	length, beam, has_pos, lat, lon, cell, cog, sog, heading, nav_status, pos_at, trusted_at, static_at, seen, first_seen, source, station, msg_type)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (mmsi) DO UPDATE SET
 	name        = iif(excluded.name != '', excluded.name, vessels.name),
 	search      = iif(excluded.name != '', excluded.search, vessels.search),
@@ -90,6 +100,8 @@ ON CONFLICT (mmsi) DO UPDATE SET
 	heading     = iif(excluded.has_pos AND excluded.pos_at >= vessels.pos_at, excluded.heading, vessels.heading),
 	pos_at      = iif(excluded.has_pos AND excluded.pos_at >= vessels.pos_at, excluded.pos_at, vessels.pos_at),
 	has_pos     = max(excluded.has_pos, vessels.has_pos),
+	trusted_at  = max(excluded.trusted_at, vessels.trusted_at),
+	static_at   = max(excluded.static_at, vessels.static_at),
 	nav_status  = iif(excluded.nav_status != 15 AND excluded.seen >= vessels.seen, excluded.nav_status, vessels.nav_status),
 	source      = iif(excluded.seen >= vessels.seen, excluded.source, vessels.source),
 	station     = iif(excluded.seen >= vessels.seen, excluded.station, vessels.station),
@@ -99,7 +111,7 @@ ON CONFLICT (mmsi) DO UPDATE SET
 `
 
 const recordCols = `mmsi, name, kind, class, ship_type, imo, callsign, destination, eta, draught, length, beam,
-	has_pos, lat, lon, cog, sog, heading, nav_status, pos_at, seen, first_seen, source, station, msg_type`
+	has_pos, lat, lon, cog, sog, heading, nav_status, pos_at, trusted_at, static_at, seen, first_seen, source, station, msg_type`
 
 // record is one vessel as the store holds it.
 type record struct {
@@ -130,6 +142,12 @@ func openStore(path string) (*store, error) {
 	if _, err := db.Exec(storeSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for _, col := range storeAddedCols {
+		if _, err := db.Exec("ALTER TABLE vessels ADD COLUMN " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	return &store{db: db, path: path}, nil
 }
@@ -194,7 +212,7 @@ func (s *store) upsert(rows []record) error {
 		if _, err := st.Exec(r.mmsi, v.Name, strings.ToUpper(strings.TrimSpace(v.Name)), v.Kind, v.Class, v.ShipType,
 			flagOf(r.mmsi), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
 			v.HasPos, v.Lat, v.Lon, cell, v.Cog, v.Sog, v.Heading, v.NavStatus, unixMs(v.PosAt),
-			seen, seen, v.Source, v.Station, v.MsgType); err != nil {
+			unixMs(v.TrustedAt), unixMs(v.StaticAt), seen, seen, v.Source, v.Station, v.MsgType); err != nil {
 			return err
 		}
 	}
@@ -213,6 +231,8 @@ type recordQuery struct {
 	before   time.Time
 	hasPos   bool
 	byName   bool // order by name then MMSI, as the MCP tools page, instead of most recently heard first
+	filter   *vesselFilter
+	now      time.Time // the filter's clock
 	limit    int
 }
 
@@ -243,6 +263,7 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 		}
 		in("imo", q.imos)
 	}
+	seen := "seen"
 	if len(q.boxes) > 0 {
 		var ors []string
 		for _, b := range q.boxes {
@@ -257,6 +278,9 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 					args = append(args, r*360+c0, r*360+c1)
 				}
 				c += " AND (" + strings.Join(cells, " OR ") + ")"
+				// Without statistics SQLite takes the seen index for a seen range and walks every vessel
+				// heard in it, wherever it is. The unary + keeps it on the cells.
+				seen = "+seen"
 			}
 			ors = append(ors, c+")")
 		}
@@ -280,15 +304,19 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 		args = append(args, q.flag)
 	}
 	if !q.since.IsZero() {
-		where = append(where, "seen >= ?")
+		where = append(where, seen+" >= ?")
 		args = append(args, unixMs(q.since))
 	}
 	if !q.before.IsZero() {
-		where = append(where, "seen < ?")
+		where = append(where, seen+" < ?")
 		args = append(args, unixMs(q.before))
 	}
 	if q.hasPos {
 		where = append(where, "has_pos")
+	}
+	if q.filter != nil {
+		w, a := q.filter.where(q.now)
+		where, args = append(where, w...), append(args, a...)
 	}
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")
@@ -329,14 +357,15 @@ func (s *store) find(q recordQuery) ([]record, error) {
 	var out []record
 	for rows.Next() {
 		var r record
-		var eta, posAt, seen, first int64
+		var eta, posAt, trustedAt, staticAt, seen, first int64
 		v := newVessel()
 		if err := rows.Scan(&r.mmsi, &v.Name, &v.Kind, &v.Class, &v.ShipType, &v.IMO, &v.CallSign, &v.Destination, &eta,
 			&v.Draught, &v.Length, &v.Beam, &v.HasPos, &v.Lat, &v.Lon, &v.Cog, &v.Sog, &v.Heading, &v.NavStatus,
-			&posAt, &seen, &first, &v.Source, &v.Station, &v.MsgType); err != nil {
+			&posAt, &trustedAt, &staticAt, &seen, &first, &v.Source, &v.Station, &v.MsgType); err != nil {
 			return nil, err
 		}
 		v.ETA, v.PosAt, v.Seen = unpackETA(eta), fromMs(posAt), fromMs(seen)
+		v.TrustedAt, v.StaticAt = fromMs(trustedAt), fromMs(staticAt)
 		r.v, r.firstSeen = v, fromMs(first)
 		out = append(out, r)
 	}
@@ -390,16 +419,35 @@ func mmsiRange(p string) (lo, hi uint32, ok bool) {
 
 // ---- the pipeline side ----
 
-// attachStore connects the record to the cache. Every vessel already cached is marked dirty, which seeds
-// an empty record from the snapshot and brings an existing one up to date after a restart.
-func (p *Pipeline) attachStore(s *store) {
+// attachStore connects the record to the cache and fills the cache with every vessel the record heard in
+// the last 30 minutes, so a restart resumes the map the last process left. A vessel the cache already
+// holds keeps its cached state, which is at least as new, and is marked for its first write.
+func (p *Pipeline) attachStore(s *store) error {
+	cutoff := time.Now().Add(-vesselTTL)
+	recs, err := s.find(recordQuery{since: cutoff})
+	if err != nil {
+		return err
+	}
 	p.vmu.Lock()
 	p.store = s
 	p.dirty = make(map[uint32]struct{}, len(p.vessels))
 	for mmsi := range p.vessels {
 		p.dirty[mmsi] = struct{}{}
 	}
+	for _, r := range recs {
+		if p.vessels[r.mmsi] != nil {
+			continue
+		}
+		// The row keeps a vessel's last fix however old. A vessel heard lately but whose position is older
+		// than the cache keeps (back from the sweep with only statics or no-fix reports) is off the map.
+		if r.v.HasPos && r.v.PosAt.Before(cutoff) {
+			r.v.HasPos, r.v.Lat, r.v.Lon, r.v.PosAt = false, 0, 0, time.Time{}
+			r.v.Cog, r.v.Sog, r.v.Heading = 360, 102.3, 511
+		}
+		p.putVesselLocked(r.mmsi, r.v)
+	}
 	p.vmu.Unlock()
+	return nil
 }
 
 // flushStore writes the vessels folded since the last flush to the record, and the positions to the track
@@ -498,53 +546,34 @@ func (v *vessel) state() *vessel {
 	}
 }
 
-// merge combines a cache state with the vessel's row by the rules upsertSQL applies. The two can each be
-// ahead of the other: the record is written every second and the snapshot every minute, so after a
-// restart the cache can hold an older state until the vessel next reports. The newer position wins, the
-// newer seen wins along with its source, and a blank field takes the stored value.
-func (v *vessel) merge(o *vessel) {
-	if v.Name == "" {
-		v.Name = o.Name
+// merge fills a cache state from the vessel's row by the rules upsertSQL applies, and reports whether the
+// row added anything. A vessel that returns after the sweep comes back blank, so until it resends its
+// static report the row still holds its name and particulars. The newer position wins, the newer seen
+// wins along with its source, and a blank field takes the stored value.
+func (v *vessel) merge(o *vessel) (changed bool) {
+	fill := func(blank, has bool, set func()) {
+		if blank && has {
+			set()
+			changed = true
+		}
 	}
-	if v.Kind == "vessel" {
-		v.Kind = o.Kind
-	}
-	if v.Class == "" {
-		v.Class = o.Class
-	}
-	if v.ShipType == 0 {
-		v.ShipType = o.ShipType
-	}
-	if v.IMO == 0 {
-		v.IMO = o.IMO
-	}
-	if v.CallSign == "" {
-		v.CallSign = o.CallSign
-	}
-	if v.Destination == "" {
-		v.Destination = o.Destination
-	}
-	if v.ETA.Month == 0 {
-		v.ETA = o.ETA
-	}
-	if v.Draught == 0 {
-		v.Draught = o.Draught
-	}
-	if v.Length == 0 {
-		v.Length = o.Length
-	}
-	if v.Beam == 0 {
-		v.Beam = o.Beam
-	}
-	if o.HasPos && (!v.HasPos || o.PosAt.After(v.PosAt)) {
+	fill(v.Name == "", o.Name != "", func() { v.Name = o.Name })
+	fill(v.Kind == "vessel", o.Kind != "vessel", func() { v.Kind = o.Kind })
+	fill(v.Class == "", o.Class != "", func() { v.Class = o.Class })
+	fill(v.ShipType == 0, o.ShipType != 0, func() { v.ShipType = o.ShipType })
+	fill(v.IMO == 0, o.IMO != 0, func() { v.IMO = o.IMO })
+	fill(v.CallSign == "", o.CallSign != "", func() { v.CallSign = o.CallSign })
+	fill(v.Destination == "", o.Destination != "", func() { v.Destination = o.Destination })
+	fill(v.ETA.Month == 0, o.ETA.Month != 0, func() { v.ETA = o.ETA })
+	fill(v.Draught == 0, o.Draught != 0, func() { v.Draught = o.Draught })
+	fill(v.Length == 0, o.Length != 0, func() { v.Length = o.Length })
+	fill(v.Beam == 0, o.Beam != 0, func() { v.Beam = o.Beam })
+	fill(!v.HasPos || o.PosAt.After(v.PosAt), o.HasPos, func() {
 		v.Lat, v.Lon, v.HasPos, v.PosAt, v.Cog, v.Sog, v.Heading = o.Lat, o.Lon, true, o.PosAt, o.Cog, o.Sog, o.Heading
-	}
-	if v.NavStatus == 15 || o.Seen.After(v.Seen) && o.NavStatus != 15 {
-		v.NavStatus = o.NavStatus
-	}
-	if o.Seen.After(v.Seen) {
-		v.Seen, v.Source, v.Station, v.MsgType = o.Seen, o.Source, o.Station, o.MsgType
-	}
+	})
+	fill(v.NavStatus == 15 || o.Seen.After(v.Seen), o.NavStatus != 15 && o.NavStatus != v.NavStatus, func() { v.NavStatus = o.NavStatus })
+	fill(o.Seen.After(v.Seen), true, func() { v.Seen, v.Source, v.Station, v.MsgType = o.Seen, o.Source, o.Station, o.MsgType })
+	return changed
 }
 
 var errNoStore = errors.New("the vessel record is not available on this server")

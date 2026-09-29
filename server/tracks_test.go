@@ -19,7 +19,9 @@ func trackPipeline(t testing.TB) (*Pipeline, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.attachStore(st)
+	if err := p.attachStore(st); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "tracks.db")
 	ts, err := openTracks(path)
 	if err != nil {
