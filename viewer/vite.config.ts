@@ -16,4 +16,21 @@ export default defineConfig({
   plugins: [cloudflare({ viteEnvironment: { name: "ssr" } }), tailwindcss(), reactRouter()],
   // MapLibre's worker is an ES module and imports a shared chunk.
   worker: { format: "es" },
+  // Bundled when the dev server starts. Vite's scan misses these, because the app's client
+  // entry is generated, so it found them on the first page load, re-bundled, and invalidated
+  // that page's copies, which failed with 504 "Outdated Optimize Dep".
+  optimizeDeps: {
+    include: [
+      "react",
+      "react-dom",
+      "react-dom/client",
+      "react-router",
+      "react-router/dom",
+      "maplibre-gl",
+      "@base-ui/react/menu",
+      "lucide-react",
+      "clsx",
+      "tailwind-merge",
+    ],
+  },
 });

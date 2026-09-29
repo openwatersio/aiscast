@@ -6,6 +6,7 @@ import { browserAuth, searchVessels, type VesselFeature } from "../lib/api";
 import { useLive, useNow, useStreamFrame } from "../lib/live";
 import { SITE } from "../lib/meta";
 import { useShell } from "./Shell";
+import { ThemeToggle } from "./ThemeToggle";
 import { ClassDot, IconBadge, List, ListRow } from "./ui/List";
 import { SearchField } from "./ui/SearchField";
 
@@ -44,17 +45,20 @@ export function SearchBox() {
   const { query, setQuery, setDetent } = useShell();
   const navigate = useNavigate();
   return (
-    <div className="p-3">
-      <SearchField
-        placeholder="Search vessels by name or MMSI"
-        value={query}
-        onChange={setQuery}
-        onSubmit={(q) => {
-          if (/^\d{7,9}$/.test(q)) navigate(`/vessels/${q}`);
-        }}
-        // Searching needs room for results, as in a maps app.
-        onFocus={() => setDetent("full")}
-      />
+    <div className="flex items-center gap-1 p-3">
+      <div className="min-w-0 flex-1">
+        <SearchField
+          placeholder="Search vessels by name or MMSI"
+          value={query}
+          onChange={setQuery}
+          onSubmit={(q) => {
+            if (/^\d{7,9}$/.test(q)) navigate(`/vessels/${q}`);
+          }}
+          // Searching needs room for results, as in a maps app.
+          onFocus={() => setDetent("full")}
+        />
+      </div>
+      <ThemeToggle />
     </div>
   );
 }

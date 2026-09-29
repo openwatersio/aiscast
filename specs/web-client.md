@@ -80,7 +80,7 @@ The app should feel like Apple Maps or Google Maps to someone who uses either: t
 
 **Design system.** Semantic tokens are Tailwind utilities (`bg-surface`, `text-fg-muted`, `border-line`), with the same names and values as openwaters.io, so no component references a CSS variable by hand. A type scale follows iOS: large title, title, headline, body, footnote, caption, in the system font with tabular figures for data. A small set of components lives in `app/components/ui/`, owned in this repo: `PanelHeader`, `List` and `ListRow` with `ClassDot` and `IconBadge`, `Section` and `Tile` in the inset-grouped style, `StatGrid`, `Facts`, `SearchField`, `IconButton` and `IconLink`, and `Menu`. Class names go through `cn()`, which knows the type scale. Base UI supplies the behaviour of menus and popovers, and `lucide-react` the icons. CI fails on a CSS variable in a `className` or `style`. Once openwaters.io uses the same tokens, they move to a package both import.
 
-On the map: a status chip saying Live or Overview in place of the footer, the controls at the bottom right above the sheet on touch devices without zoom buttons, touch targets of at least 44 px, and an action row under a vessel's name for Follow, Share, and Track.
+On the map: a status chip in the top-left corner saying Live, Overview, or why neither, in place of a footer; the controls top right, as in Apple Maps, with zoom buttons only where there is a mouse; "Not for navigation" first in the attribution; and an action row under a vessel's name. Follow keeps the vessel centred until the map is dragged, Share opens the share sheet or copies the link, and Track frames the recent track.
 
 ## Indexing
 
@@ -114,7 +114,7 @@ An unknown MMSI answers 404 with `noindex`. A vessel the record holds always ren
 - [x] One navigation stack in place of the second pane, with push and pop transitions that follow the history index.
 - [x] Scroll position restored per stack entry, and a loading bar for slow entries such as a large station's vessel list.
 - [x] A header per entry: back, a title that shows once the page's large title is out of sight (at peek, or scrolled away), and close on a vessel.
-- [ ] Map chrome: status chip, controls, action row, touch targets; browser tests for the sheet heights and the back stack.
+- [x] Map chrome: status chip, controls, attribution, and the vessel action row.
 - [x] Station list detail: source kind, messages today, vessels heard.
 - [x] Network page: vessel counts by kind.
 - [ ] Network page: `/health`.

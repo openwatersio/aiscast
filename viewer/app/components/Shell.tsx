@@ -12,11 +12,12 @@ import {
 import { useLocation, useMatches, useNavigate, useNavigation, useOutlet } from "react-router";
 import { vesselPath } from "../lib/ais";
 import { createMap } from "../lib/map.client";
-import { liveInstance, LiveContext, setLiveInstance, useLive, useNow, useStreamFrame, type Live } from "../lib/live";
+import { liveInstance, LiveContext, setLiveInstance, type Live } from "../lib/live";
 import { Stream } from "../lib/stream";
 import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { Sheet, type Detent } from "./Sheet";
-import { ThemeToggle } from "./ThemeToggle";
+import { StatusChip } from "./StatusChip";
+import { ThemeChip } from "./ThemeToggle";
 import { TrackBar, type TrackSummary } from "./TrackBar";
 import { stackStateFor } from "./ui/PanelHeader";
 
@@ -155,6 +156,9 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
             `load`, and MapLibre measures its container once. */}
         <div id="map" ref={container} />
 
+        <StatusChip />
+        <ThemeChip />
+
         {focusMmsi ? <TrackBar key={focusMmsi} mmsi={focusMmsi} onLoaded={setTrack} /> : null}
 
         <Sheet detent={detent} onDetentChange={setDetent}>
@@ -170,35 +174,8 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
           <ViewTransition key={location.pathname} enter="panel-enter" exit="panel-exit" update="none">
             <div className="flex min-h-0 flex-1 flex-col">{outlet}</div>
           </ViewTransition>
-          <footer className="flex items-center gap-2 border-t border-line py-1 pr-1.5 pl-3 text-xs text-fg-muted">
-            <span className="min-w-0 flex-1">
-              <StreamStatus /> · <a href="/ais/">Open Waters AIS</a> · not for navigation
-            </span>
-            <ThemeToggle />
-          </footer>
         </Sheet>
       </ShellContext.Provider>
     </LiveContext.Provider>
   );
-}
-
-function StreamStatus() {
-  const live = useLive();
-  useStreamFrame();
-  // The map's state and the overview change without a stream frame, and the overview has none.
-  useNow(1000);
-  if (!live) return <span>connecting</span>;
-  const { state, eventsPerSec, vessels } = live.stream;
-  const map = live.ctl.status();
-  const stream =
-    live.ctl.mode() === "overview"
-      ? "overview · zoom in for live"
-      : state === "live"
-        ? `${eventsPerSec}/s · ${vessels.size} tracked`
-        : state === "capped"
-          ? "zoom in for vessels"
-          : state === "refused"
-            ? "live stream in use in another tab"
-            : state;
-  return <span>{map.state === "ready" ? stream : `${stream} · map ${map.state} ${map.detail}`}</span>;
 }

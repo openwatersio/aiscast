@@ -23,5 +23,11 @@
     "AIS_API": "https://ais.openwaters.io",
   },
   "observability": { "enabled": true },
+  "env": {
+    // The browser tests' build, rendering against the aiscast server they start (e2e/).
+    "e2e": {
+      "vars": { "AIS_API": "http://127.0.0.1:8787" },
+    },
+  },
   "upload_source_maps": true,
 }

@@ -1,5 +1,5 @@
-import { ArrowRight, MapPin } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { ArrowRight, Check, LocateFixed, MapPin, Route, Share } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
   CLASS_LABELS,
@@ -11,11 +11,14 @@ import {
   parseEta,
   relativeTime,
   shipClass,
+  vesselPath,
 } from "../lib/ais";
 import { publicApiBase, type VesselFeature } from "../lib/api";
-import { useLive, useLiveVessel } from "../lib/live";
+import { useLive, useLiveVessel, type Live } from "../lib/live";
+import { SITE } from "../lib/meta";
 import { PageTitle } from "./Panel";
 import { useShell } from "./Shell";
+import { ActionButton, ActionRow } from "./ui/ActionButton";
 import { Facts } from "./ui/Facts";
 import { Section } from "./ui/Section";
 import { StatGrid } from "./ui/StatGrid";
@@ -138,6 +141,8 @@ export function VesselDetail({
       </p>
       <p className="mt-0.5 text-footnote text-fg-muted">{ids}</p>
 
+      <VesselActions live={live} mmsi={mmsi} name={name} hasTrack={Boolean(trackHere && trackHere.points > 1)} />
+
       {lat != null && lon != null && (
         <Section
           label="Last position"
@@ -226,5 +231,39 @@ export function VesselDetail({
         </p>
       )}
     </article>
+  );
+}
+
+/** Follow, share, and show the track: what a reader does with a vessel once it is open. */
+function VesselActions({ live, mmsi, name, hasTrack }: { live: Live | undefined; mmsi: number; name?: string; hasTrack: boolean }) {
+  const [following, setFollowing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // The map owns the state: a drag or another vessel ends following without this button.
+  useEffect(() => live?.ctl.onCameraFollow(setFollowing), [live]);
+
+  async function share() {
+    const url = `${SITE}${vesselPath(mmsi, name)}`;
+    const title = name ?? `MMSI ${mmsi}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, url });
+        return;
+      } catch (e) {
+        // Dismissing the share sheet is the reader's choice. Anything else, such as a browser
+        // that has the API but will not open a sheet, falls back to copying the link.
+        if (e instanceof DOMException && e.name === "AbortError") return;
+      }
+    }
+    await navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <ActionRow>
+      <ActionButton icon={LocateFixed} label="Follow" pressed={following} onClick={() => live?.ctl.followCamera(!following)} />
+      <ActionButton icon={copied ? Check : Share} label={copied ? "Copied" : "Share"} onClick={() => void share()} />
+      <ActionButton icon={Route} label="Track" disabled={!hasTrack} onClick={() => live?.ctl.fitTrack()} />
+    </ActionRow>
   );
 }

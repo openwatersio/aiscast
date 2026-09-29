@@ -73,6 +73,8 @@
   --accent-bg: light-dark(var(--color-ocean-50), var(--color-ocean-950));
   --accent-bg-subtle: light-dark(var(--color-ocean-100), var(--color-ocean-900));
   --shadow: light-dark(rgba(15, 23, 42, 0.18), rgba(0, 0, 0, 0.45));
+  --positive: light-dark(#16a34a, #4ade80);
+  --caution: light-dark(#d97706, #fbbf24);
 }
 
 /* The type scale, after iOS and sized for a panel: text-large-title for a vessel's name,
@@ -115,6 +117,8 @@
   --color-accent-hover: var(--accent-hover);
   --color-accent-bg: var(--accent-bg);
   --color-accent-bg-subtle: var(--accent-bg-subtle);
+  --color-positive: var(--positive);
+  --color-caution: var(--caution);
 }
 
 /* For what a colour token cannot carry, such as a filter. */
@@ -185,16 +189,64 @@
 /* MapLibre's stylesheet is imported after this one, so an equal-specificity override loses
    on source order and the controls stay white on a dark chart. The controls live inside
    #map, so prefixing with the id settles it wherever the imports end up. */
-#map .maplibregl-ctrl-group {
-  background: var(--surface);
+/* MapLibre's controls, dressed as the chips over the map (StatusChip, ThemeChip): glass,
+   fully rounded, 36px tall, 12px from the edges and 12px apart. */
+#map .maplibregl-ctrl-group,
+#map .maplibregl-ctrl-attrib.maplibregl-compact {
+  background: var(--surface-glass);
   border: 1px solid var(--border);
-  box-shadow: 0 2px 8px var(--shadow);
+  box-shadow: 0 10px 30px var(--shadow);
+  backdrop-filter: blur(24px);
+}
+#map .maplibregl-ctrl-group {
+  border-radius: 18px;
+  overflow: hidden;
+}
+#map .maplibregl-ctrl-group button {
+  width: 34px;
+  height: 34px;
 }
 #map .maplibregl-ctrl-group button + button {
-  border-top-color: var(--border);
+  border-top-color: var(--border-subtle);
 }
 #map .maplibregl-ctrl-group button:hover {
   background: var(--surface-subtle);
+}
+/* MapLibre rings a control whenever it has focus, a click included, and in a blue that the
+   dark theme's icon inversion turns orange. The ring is for the keyboard, in the accent. */
+#map .maplibregl-ctrl button:focus {
+  box-shadow: none;
+}
+#map .maplibregl-ctrl button:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* The credits toggle, a <summary> rather than a button, is itself inverted in the dark
+   theme, ring and all, so its ring is drawn on the pill around it instead. */
+#map .maplibregl-ctrl-attrib-button:focus {
+  box-shadow: none;
+}
+#map .maplibregl-ctrl-attrib:has(.maplibregl-ctrl-attrib-button:focus-visible) {
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 10px 30px var(--shadow);
+}
+/* Floated, so the margins do not collapse: each control carries the gap on one side only. */
+#map .maplibregl-ctrl-top-right .maplibregl-ctrl {
+  margin: 12px 12px 0 0;
+}
+#map .maplibregl-ctrl-bottom-right .maplibregl-ctrl {
+  margin: 0 12px 12px 0;
+}
+/* On a phone the top-right corner starts below the notch, level with the status chip. */
+#map .maplibregl-ctrl-top-right {
+  top: env(safe-area-inset-top);
+}
+/* On a wide screen it holds only the credits, 12px under the theme button, which is 36px
+   tall and 12px from the top (components/ThemeToggle.tsx). */
+@media (min-width: 768px) {
+  #map .maplibregl-ctrl-top-right {
+    top: 48px;
+  }
 }
 #map .maplibregl-ctrl-group button:not(:disabled) .maplibregl-ctrl-icon {
   /* MapLibre ships its control glyphs as dark SVG data URIs. */
@@ -242,8 +294,30 @@
   border-color: var(--surface);
 }
 #map .maplibregl-ctrl-attrib {
-  background: var(--surface-glass);
   color: var(--text-secondary);
+}
+/* The credits: a round "i" that opens into a pill of the same height. */
+#map .maplibregl-ctrl-attrib.maplibregl-compact {
+  box-sizing: content-box;
+  min-height: 34px;
+  padding: 0 34px 0 0;
+  border-radius: 18px;
+}
+#map .maplibregl-ctrl-attrib.maplibregl-compact-show {
+  padding: 0 40px 0 14px;
+}
+#map .maplibregl-ctrl-attrib-inner {
+  font-size: 0.75rem;
+  line-height: 34px;
+}
+#map .maplibregl-ctrl-attrib.maplibregl-compact .maplibregl-ctrl-attrib-button {
+  top: 0;
+  right: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  background-color: transparent;
+  background-position: center;
 }
 #map .maplibregl-ctrl-attrib a {
   color: var(--accent);
@@ -476,5 +550,17 @@ input[type="search"]::-webkit-search-cancel-button {
   .pending-bar::before {
     width: 100%;
     animation: none;
+  }
+}
+
+/* The status chip (components/StatusChip.tsx) sits in the map's top-left corner: beside the
+   panel on a wide screen, clear of the notch on a phone. */
+.status-dock {
+  top: calc(env(safe-area-inset-top) + 0.75rem);
+  left: 0.75rem;
+}
+@media (min-width: 768px) {
+  .status-dock {
+    left: calc(var(--map-left, 0px) + 0.75rem);
   }
 }

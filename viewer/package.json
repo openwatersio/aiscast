@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.62.0",
+    "@playwright/test": "^1.63.0",
     "@react-router/dev": "^8.4.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/geojson": "^7946.0.16",

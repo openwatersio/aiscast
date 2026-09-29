@@ -78,6 +78,12 @@ export interface MapController {
   fitBBox(bbox: BBox): void;
   /** A vessel clicked on the map, with the name its feature carries for the URL slug. */
   onSelect(fn: (mmsi: number, name?: string) => void): void;
+  /**
+   * Keeps the open vessel centred as it moves. Dragging the map or opening another vessel
+   * lets go; `onCameraFollow` hears every change, whichever side made it.
+   */
+  followCamera(on: boolean): void;
+  onCameraFollow(fn: (on: boolean) => void): () => void;
   /** `overview` above the stream's area cap, where vessels come from tiles instead. */
   mode(): "live" | "overview";
   /** Swaps the basemap and the colours drawn over it. */
@@ -137,12 +143,17 @@ export function createMap(
     if (map.getBearing() !== 0 || map.getPitch() !== 0) map.jumpTo({ bearing: 0, pitch: 0 });
   });
 
-  // Browser tests query what is drawn through this. Production builds leave it out.
-  if (import.meta.env.DEV) (window as { aiscastMap?: maplibregl.Map }).aiscastMap = map;
-  map.addControl(
-    new maplibregl.NavigationControl({ showCompass: false }),
-    "top-right",
-  );
+  // Browser tests query what is drawn through this. Production builds leave it out unless
+  // built for the tests.
+  if (import.meta.env.DEV || import.meta.env.VITE_E2E) (window as { aiscastMap?: maplibregl.Map }).aiscastMap = map;
+  // On a wide screen the controls sit bottom right, clear of the theme chip and the credits
+  // at the top; on a phone the sheet covers the bottom, so they go top right. Decided once:
+  // MapLibre places a control when it is added.
+  const controls = window.matchMedia("(min-width: 768px)").matches ? "bottom-right" : "top-right";
+  // Zoom buttons only with a mouse or trackpad; a touch screen pinches, as in a maps app.
+  if (window.matchMedia("(pointer: fine)").matches) {
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), controls);
+  }
   // MapLibre's own control: permission prompt, the accuracy circle, and the follow state
   // are all handled. Nothing here needs to know where the user is.
   map.addControl(
@@ -151,7 +162,7 @@ export function createMap(
       trackUserLocation: true,
       showUserLocation: true,
     }),
-    "top-right",
+    controls,
   );
 
   // A basemap that fails to load is otherwise a silent blank rectangle: MapLibre reports
@@ -462,7 +473,7 @@ export function createMap(
     if (attribution) map.removeControl(attribution);
     const esc = (s: string) =>
       s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
-    const custom = [...new Set(stream.credits.values())].map((s) =>
+    const custom = ["Not for navigation", ...new Set(stream.credits.values())].map((s) =>
       esc(s).replace(
         /https?:\/\/[^\s)]+/g,
         (u) => `<a href="${u}" rel="noopener">${u}</a>`,
@@ -472,7 +483,9 @@ export function createMap(
       compact: true,
       customAttribution: custom,
     });
-    map.addControl(attribution);
+    // Top right on every screen: at the bottom a phone's sheet would cover it, and the sources'
+    // licences need it reachable.
+    map.addControl(attribution, "top-right");
     // Compact mode still renders expanded on creation, which puts every source credit
     // across the bottom of the chart. Collapse to the `i`; one click still shows them all,
     // which is what the per-source licences require.
@@ -618,7 +631,32 @@ export function createMap(
     if (!ready) return;
     renderVessels();
     renderTrack();
+    followFocus();
   }
+
+  // Camera follow, for the open vessel. The camera eases to each new position rather than
+  // jumping, so a moving vessel slides across the chart instead of the chart lurching.
+  let cameraFollows = false;
+  let followedAt = "";
+  const followListeners = new Set<(on: boolean) => void>();
+  function setCameraFollow(on: boolean) {
+    if (on === cameraFollows) return;
+    cameraFollows = on;
+    followedAt = "";
+    for (const fn of followListeners) fn(on);
+    if (on) followFocus();
+  }
+  function followFocus() {
+    if (!cameraFollows || focus == null) return;
+    const v = stream.vessels.get(focus);
+    if (v?.lat == null || v.lon == null) return;
+    const at = `${v.lon},${v.lat}`;
+    if (at === followedAt) return;
+    followedAt = at;
+    map.easeTo({ center: [v.lon, v.lat], duration: 1000 });
+  }
+  // Only a person drags; a camera move made here does not start a drag.
+  map.on("dragstart", () => setCameraFollow(false));
 
   // Hovercard. setDOMContent rather than setHTML: a vessel name is operator-typed text
   // arriving off the air, so it never goes near an HTML parser.
@@ -938,6 +976,7 @@ export function createMap(
     },
     setFocus(mmsi) {
       if (mmsi !== focus) {
+        setCameraFollow(false);
         // Followed MMSIs count against a limit of 10, so the last vessel opened lets go.
         if (focus) stream.unfollow(focus);
         history = [];
@@ -969,6 +1008,11 @@ export function createMap(
     },
     onSelect(fn) {
       selectHandlers.push(fn);
+    },
+    followCamera: setCameraFollow,
+    onCameraFollow(fn) {
+      followListeners.add(fn);
+      return () => followListeners.delete(fn);
     },
   };
 
