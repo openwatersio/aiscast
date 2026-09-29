@@ -287,7 +287,11 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	}
 
 	t := rx.RecvTime
-	if st := tagTime(vdm.TagBlock.Time); !st.IsZero() && absDur(st.Sub(t)) <= maxSkew {
+	// A buffered line's past TAG time is taken beyond maxSkew: the replayAge check above has already
+	// vetted it, and falling back to receive time would compress a flushed backlog's last minute of
+	// movement into the seconds of the flush — positions implying hundreds of knots. Future stamps
+	// stay held to maxSkew, buffered or not.
+	if st := tagTime(vdm.TagBlock.Time); !st.IsZero() && (absDur(st.Sub(t)) <= maxSkew || rx.Buffered && st.Before(t)) {
 		t = st
 	} else if !rx.SourceTime.IsZero() && absDur(rx.SourceTime.Sub(t)) <= maxSkew {
 		t = rx.SourceTime
