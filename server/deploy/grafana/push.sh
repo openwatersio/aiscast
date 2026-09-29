@@ -1,6 +1,7 @@
 #!/bin/sh
 # Apply the alert rules, their email contact point, and the capacity dashboard to Grafana Cloud. Rerun after
-# any change in this directory; each step converges, and rules removed from rules.yaml are deleted.
+# any change in this directory; each step converges, and rules removed from rules.yaml are deleted. The sync is
+# scoped to the aiscast namespace so it leaves rules Grafana Cloud's own apps provision (knowledge-graph) alone.
 # Usage: GRAFANA_URL=https://<stack>.grafana.net GRAFANA_TOKEN=<service account token> ALERT_EMAIL=<address> server/deploy/grafana/push.sh
 # Needs curl, jq, and mimirtool. GRAFANA_PROM_UID overrides the Prometheus data source the rules query.
 set -eu
@@ -23,7 +24,7 @@ else
 fi
 
 MIMIR_ADDRESS=$url/api/convert/ MIMIR_AUTH_TOKEN=$GRAFANA_TOKEN MIMIR_TENANT_ID=1 \
-	mimirtool rules sync rules.yaml --concurrency 1 \
+	mimirtool rules sync rules.yaml --namespaces aiscast --concurrency 1 \
 	--extra-headers "X-Grafana-Alerting-Datasource-UID=$prom" \
 	--extra-headers 'X-Grafana-Alerting-Notification-Settings={"receiver":"aiscast email"}'
 
