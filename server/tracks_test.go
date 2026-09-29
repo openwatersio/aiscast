@@ -387,20 +387,33 @@ func TestTrackDespikesImpossibleSpeeds(t *testing.T) {
 	}
 }
 
-// When every position disagrees with the anchor, the anchor is the bad fix (a duplicate MMSI, a
-// stale first position): the run is capped and the track re-anchors instead of vanishing.
+// When every position disagrees with the anchor, the anchor is the bad fix (a stale or displaced
+// first position): the run is capped, the uncorroborated anchor goes with it, and the track
+// re-anchors instead of vanishing or drawing the jump.
 func TestDespikeReanchorsAfterARun(t *testing.T) {
 	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
 	pt := func(sec int, lat float64) trackPoint {
 		return trackPoint{ts: now.Add(time.Duration(sec) * time.Second), lat6: int32(lat * 600000), lon6: 6420000, sog10: 1023}
 	}
-	points := []trackPoint{pt(0, 59.0)}
-	for i := 1; i <= 6; i++ {
-		points = append(points, pt(i*30, 60+float64(i)*0.00001)) // 60 NM from the anchor, near-stationary
+	// despike compacts its input in place, so each case builds its points fresh.
+	far := func(head ...trackPoint) []trackPoint {
+		points := head
+		for i := 1; i <= 6; i++ {
+			points = append(points, pt(i*30, 60+float64(i)*0.00001)) // 60 NM from the anchor, near-stationary
+		}
+		return points
 	}
-	kept := despike(points)
-	if len(kept) != 4 || !kept[1].ts.Equal(points[4].ts) {
-		t.Errorf("want the anchor, then the fourth far point onward; got %d points starting %v", len(kept), kept)
+	at4 := pt(4*30, 0).ts // the fourth far point, where the cap re-anchors
+	kept := despike(far(pt(0, 59.0)))
+	if len(kept) != 3 || !kept[0].ts.Equal(at4) {
+		t.Errorf("want the fourth far point onward, without the lone anchor; got %d points %v", len(kept), kept)
+	}
+
+	// A corroborated anchor stays: with real positions on both sides (a duplicate MMSI), the jump
+	// is drawn once rather than either cluster being erased.
+	kept = despike(far(pt(-30, 59.00001), pt(0, 59.0)))
+	if len(kept) != 5 || kept[1].lat6 != int32(59.0*600000) || !kept[2].ts.Equal(at4) {
+		t.Errorf("want both 59° points and the fourth far point onward; got %d points %v", len(kept), kept)
 	}
 }
 

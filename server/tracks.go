@@ -326,15 +326,20 @@ func (t *trackStore) track(mmsi uint32, from, to time.Time, interval time.Durati
 	}
 	// The row past the limit says older positions match (more). It also anchors despiking: judged
 	// against it, the page's oldest row survives or falls the same way it would inside a larger
-	// request, instead of always being kept as the first point seen. despike never drops its first
-	// point, so the anchor row is points[0] afterwards, withheld from the page as before.
+	// request, instead of always being kept as the first point seen. When the anchor row itself
+	// survives the filter it is withheld from the page, as it was before despiking existed; a run
+	// can also outvote it inside despike, and then there is nothing to withhold.
 	anchored := false
 	if len(points) > limit {
 		more, anchored = true, true
 	}
 	sort.SliceStable(points, func(i, j int) bool { return points[i].ts.Before(points[j].ts) })
-	points = despike(points)
+	var anchor trackPoint
 	if anchored {
+		anchor = points[0]
+	}
+	points = despike(points)
+	if anchored && len(points) > 0 && points[0].ts.Equal(anchor.ts) && points[0].lat6 == anchor.lat6 && points[0].lon6 == anchor.lon6 {
 		points = points[1:]
 	}
 	return points, more, nil
@@ -350,17 +355,21 @@ func (t *trackStore) track(mmsi uint32, from, to time.Time, interval time.Durati
 const (
 	despikeFloorNM  = 0.03 // under ~55 m a segment cannot draw a visible kink, and jitter over a short dt implies any speed
 	despikeMinKnots = 25.0 // fastest implied speed always kept, whatever the vessel reports
-	despikeMaxRun   = 3    // consecutive drops before the anchor is judged wrong and the next point re-anchors
+	despikeMaxRun   = 3    // consecutive drops before the run outvotes the anchor and the next point re-anchors
 )
 
 // despike walks a track oldest first and drops each position implying an impossible speed from the
 // last kept one: over despikeMinKnots and more than twice either endpoint's reported speed. A run of
-// drops longer than despikeMaxRun means the kept anchor is the bad fix — a duplicate MMSI, or a
-// vessel the store last heard somewhere it left long ago — so the next position is kept as the new
-// anchor rather than erasing the rest of the track.
+// drops longer than despikeMaxRun outvotes the anchor, and the next position re-anchors rather than
+// erasing the rest of the track. An anchor with no plausible kept segment behind it — the oldest
+// point, or a prior forced keep — was never corroborated and goes with its run, so the drawn line
+// does not connect two impossible positions. A corroborated anchor stays: both sides are then real
+// reports (a duplicate MMSI transmitting from two places), a LineString cannot show a break, and one
+// straight jump is the honest rendering.
 func despike(points []trackPoint) []trackPoint {
 	kept := points[:0]
 	run := 0
+	corroborated := false // the current anchor has a plausible kept segment behind it
 	for _, pt := range points {
 		if len(kept) == 0 {
 			kept = append(kept, pt)
@@ -378,12 +387,22 @@ func despike(points []trackPoint) []trackPoint {
 		}
 		// Equal stamps are distinct reports the store keeps (see TestTrackKeepsEqualTimeReports);
 		// with no time between them there is no speed to judge.
-		if dt > 0 && d > despikeFloorNM && d/(dt/3600) > vmax && run < despikeMaxRun {
-			run++
+		if dt > 0 && d > despikeFloorNM && d/(dt/3600) > vmax {
+			if run < despikeMaxRun {
+				run++
+				continue
+			}
+			if !corroborated {
+				kept = kept[:len(kept)-1]
+			}
+			kept = append(kept, pt)
+			corroborated = false
+			run = 0
 			continue
 		}
 		run = 0
 		kept = append(kept, pt)
+		corroborated = true
 	}
 	return kept
 }
