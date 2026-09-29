@@ -148,15 +148,20 @@ jobs:
             --include "*/$prev/*.gz" --exclude "normalized/*"
           /mnt/work/aiscast replay -archive /mnt/work/raw -out /mnt/work/rep -from "$DAY" -to "$next"
           rm -rf /mnt/work/raw
-          # what the rebuild changes, against the hours the bucket holds now
-          s3 cp "s3://$NORMALIZED_BUCKET/normalized/v1/$dir/" "/mnt/work/current/normalized/v1/$dir/" --recursive
+          # What the rebuild changes, against the hours the bucket holds now. Two sample hours, a night
+          # and a day: the whole day costs twice what the replay does, and the samples show the change.
+          for h in 00 12; do
+            mkdir -p "/mnt/work/current/normalized/v1/$dir" "/mnt/work/sample/normalized/v1/$dir"
+            s3 cp "s3://$NORMALIZED_BUCKET/normalized/v1/$dir/$h.gz" "/mnt/work/current/normalized/v1/$dir/$h.gz" || true
+            cp "/mnt/work/rep/normalized/v1/$dir/$h.gz" "/mnt/work/sample/normalized/v1/$dir/" || true
+          done
           # normdiff exits 1 on any difference, which a rebuild expects; the report is for reading
-          /mnt/work/aiscast normdiff -live /mnt/work/current -replay /mnt/work/rep > /tmp/normdiff.txt 2>&1 || true
+          /mnt/work/aiscast normdiff -live /mnt/work/current -replay /mnt/work/sample > /tmp/normdiff.txt 2>&1 || true
           grep -q "^live:" /tmp/normdiff.txt || echo "::warning::normdiff produced no report: $(tail -1 /tmp/normdiff.txt)"
-          { echo "### $DAY"; echo '```'
+          { echo "### $DAY, hours 00 and 12"; echo '```'
             grep -E "^(live|replay|first|multipart|transmissions|copies|weather)" /tmp/normdiff.txt || true
             echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
-          rm -rf /mnt/work/current
+          rm -rf /mnt/work/current /mnt/work/sample
           if [ "$WRITE" = true ]; then
             s3 cp "/mnt/work/rep/normalized/v1/$dir/" "s3://$NORMALIZED_BUCKET/normalized/v1/$dir/" --recursive
             rm -rf /mnt/work/rep
