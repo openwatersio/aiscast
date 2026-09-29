@@ -134,11 +134,30 @@ export class Stream {
     this.#trackFor = mmsi;
   }
 
-  /** Replaces the whole subscription; the server treats a resubscribe as wholesale. */
+  /**
+   * Replaces the whole subscription; the server treats a resubscribe as wholesale. There is
+   * no snapshot: the tiles paint where every vessel was, and the stream says what changes.
+   */
   setView(bbox: BBox[], mmsi: Iterable<number> = this.#mmsi) {
     this.#bbox = bbox;
     this.#mmsi = new Set(mmsi);
+    this.#prune();
     this.#send();
+  }
+
+  /**
+   * Particulars from a tile or the record, for a vessel the stream has heard only positions
+   * from. A position report carries no name or type, and a static report comes every six
+   * minutes, so without this a vessel loses its label and colour when the stream takes it
+   * over. What the stream heard itself always wins.
+   */
+  adopt(mmsi: number, from: { name?: string; kind?: Vessel["kind"]; shipType?: number }) {
+    const v = this.vessels.get(mmsi);
+    if (!v) return;
+    if (!v.name && from.name) v.name = from.name;
+    if (!v.shipType && from.shipType) v.shipType = from.shipType;
+    if (v.kind === "vessel" && from.kind) v.kind = from.kind;
+    this.#dirty = true;
   }
 
   follow(mmsi: number) {
@@ -184,7 +203,6 @@ export class Stream {
         type: "subscribe",
         bbox: this.#bbox,
         mmsi: [...this.#mmsi],
-        snapshot: true,
       }),
     );
   }
@@ -283,6 +301,24 @@ export class Stream {
     if (kind && !this.credits.has(kind)) {
       this.credits.set(kind, ev.attribution ?? `AIS: ${ev.source}`);
       this.#dirty = true;
+    }
+  }
+
+  /**
+   * Forgets vessels outside the subscription. The stream stops reporting a vessel once it is
+   * out of view, so its last position here goes stale while the tile under it stays current.
+   */
+  #prune() {
+    for (const [mmsi, v] of this.vessels) {
+      if (this.#mmsi.has(mmsi)) continue;
+      const inView =
+        v.lat != null &&
+        v.lon != null &&
+        this.#bbox.some(([s, w, n, e]) => v.lat! >= s && v.lat! <= n && v.lon! >= w && v.lon! <= e);
+      if (!inView) {
+        this.vessels.delete(mmsi);
+        this.#dirty = true;
+      }
     }
   }
 

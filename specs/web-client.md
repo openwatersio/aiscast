@@ -12,7 +12,7 @@ The server work it depends on is planned in [specs/history-api.md](history-api.m
 | `GET /v1/vessels?q=` | Name or MMSI search over every vessel the record holds |
 | `GET /v1/vessels/{mmsi}/track` | The last 48 hours of positions, with GPX |
 | `GET /v1/vessels/tiles/{z}/{x}/{y}` and `tiles.json` | Vector tiles of last known positions at any zoom, rebuilt every 10 s, with no area cap |
-| `WS /v1/stream` | Live events for the viewport and followed MMSIs, with `snapshot: true` for each vessel's last position and static report |
+| `WS /v1/stream` | Live events for the viewport and followed MMSIs |
 | `GET /v1/stations`, `GET /v1/stations/{id}` | Station counters and the vessels each station was latest to hear |
 | `GET /v1/stats` | Network totals, per-source rates, delay percentiles |
 
@@ -56,9 +56,13 @@ A vessel opened from a list takes a second pane beside it, and the list stays wh
 
 The vessel URL carries the name as a slug: `/ais/vessels/368168720-cerulean`. The slug matches what people search for, which is a boat's name far more often than its MMSI. Names are neither unique nor permanent, so the MMSI stays canonical: any slug resolves, a wrong or missing one redirects once to the current form, and `<link rel="canonical">` names that form. A vessel with no known name is `/ais/vessels/368168720`. `?station=<id>` on `/ais/map` redirects to the station page, for links from the first viewer.
 
-**One stream.** Anonymous clients get two concurrent streams per network address, which a household or a marina shares. The app holds one connection and rebuilds a single `subscribe` frame from the viewport plus the followed vessel. The server accepts a socket before it checks that limit, so the client resets its backoff only on `welcome`, and says so in the footer when another tab holds the stream. Everything else goes over the HTTP budget.
+**Tiles underneath, the stream on top.** The vector tiles draw every vessel's last known position at every zoom, including moored boats for a week. Within the stream's area cap (100 square degrees anonymous, 400 with a token, read from the welcome frame) the stream draws the vessels it hears over them, live. Tiles cannot be edited, so a vessel the stream is drawing keeps its tile copy but hidden, through feature state set by MMSI, which survives a tile reload. When the stream forgets a vessel its tile copy shows again. Past the cap the stream follows only the open vessel.
 
-**Above the area cap, tiles.** The stream caps at 100 square degrees anonymous and 400 with a token, taken from the welcome frame. Past that the map draws the vector tiles and reloads them every 15 seconds. The stream then follows only the open vessel, which draws over its tile.
+Within the cap the stream speaks for every vessel in view, so the tiles reload only where it cannot: when a pan or zoom starts, since MapLibre brings back cached tiles as old as when they left the view; when the stream lets go of a vessel that is still in view, since its tile copy is only as current as the tile; and every five minutes, to clear moving vessels that went silent before the stream heard them. Past the cap there is no stream, and the tiles reload every 15 seconds. Every reload waits at least 10 seconds after the last, the server's rebuild period, and none happens while the tab is hidden.
+
+The subscription asks for no snapshot. The tiles already paint where every vessel was, and the open vessel's pane fetches its record from `/v1/vessels/{mmsi}`, so the stream only has to say what changes. A position report carries no name or type, so a vessel the stream takes over borrows them from its tile until its own static report arrives, and keeps its label and colour. Vessels that leave the viewport are forgotten, so a stale stream position never hides a current tile. Both sources share one style, and the stream layer is sent to the map as a diff of the vessels that changed each second.
+
+**One stream.** Anonymous clients get two concurrent streams per network address, which a household or a marina shares. The app holds one connection and rebuilds a single `subscribe` frame from the viewport plus the open vessel, letting go of the last one, since followed MMSIs are capped at 10. The server accepts a socket before it checks the stream limit, so the client resets its backoff only on `welcome`, and says so in the footer when another tab holds the stream. Everything else goes over the HTTP budget.
 
 **Attribution is per source.** The app credits each source from the `attribution` field of its events and shows the open vessel's own credit and licence. The tiles carry one credit that links to the per-source list.
 
@@ -78,7 +82,7 @@ An unknown MMSI answers 404 with `noindex`. A vessel the record holds always ren
 - [x] Server-rendered vessel, station, stations, and network pages with the full head, 301 slug redirects, and 404 with `noindex` for an unknown vessel or station.
 - [x] Client loaders that call the API from the browser, with the vessel pane opening from the stream's copy.
 - [x] List and detail panes, search over the record, the track bar with playback and GPX, and live values over the record in the vessel pane.
-- [x] Tiles above the area cap, with the cap read from the welcome frame.
+- [x] Tiles at every zoom with the stream drawn over them within the area cap, no snapshot, and one vessel never drawn twice.
 - [x] Stream backoff reset on `welcome`, and a footer that names a refused stream.
 - [x] CI job: typecheck, unit tests, build.
 - [ ] Deploy. Create the `aiscast-web` Worker, connect Workers Builds as the website does (build `npm run build -w viewer`, deploy from `viewer/`), and confirm the routes answer in front of the website's Custom Domain.
@@ -86,12 +90,11 @@ An unknown MMSI answers 404 with `noindex`. A vessel the record holds always ren
 - [ ] Cache vessel and station documents at the edge for a minute, so a crawler's second visit costs nothing.
 - [ ] Website: link `/ais/` to `/ais/map`, allow the app's paths in `robots.txt`, and point the status monitor at the app.
 - [ ] Retire `viewer/index.html`, `viewer/token.html`, and the Pages workflow. The Pages copy becomes a page that forwards to `openwaters.io/ais/map`, keeping `?station=`.
-- [ ] Show stationary vessels at close zoom. The tiles keep a moored boat for a week and the stream only what it hears live, so a berth empties as you zoom in. Either draw the tiles under the stream at every zoom, filtered to vessels the stream is not drawing, or seed the viewport from `/v1/vessels?bbox=`.
 - [ ] Share one stream across tabs with a `SharedWorker`, so a second tab does not spend the address's second stream.
 - [ ] Station list detail: source kind, vessels heard, duplicates. All are in `/v1/stations`.
 - [ ] Network page: vessel counts by kind and `/health`.
 - [ ] Live charts from the stream. Every event carries `station` and `source`, so events per minute needs no server change.
-- [ ] Browser tests for the flows above, run in CI against a local server.
+- [ ] Browser tests for the flows above, run in CI against a local server, including that no MMSI is drawn by both the tiles and the stream. Dev builds put the map on `window.aiscastMap` for this.
 
 ## Later stages
 
