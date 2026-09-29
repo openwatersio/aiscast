@@ -240,9 +240,19 @@ type recordQuery struct {
 // alone, which scans the table: a few hundred thousand rows, tens of milliseconds.
 const maxCellRows = 60
 
+// maxCells bounds the cells a box query lists one by one; 400 square degrees, a personal token's area,
+// fits with room to spare.
+const maxCells = 1024
+
 // where is the WHERE clause for q and its arguments. none reports a filter that matches nothing, an
 // empty MMSI or IMO list.
 func (q recordQuery) where() (clause string, args []any, none bool) {
+	clause, args, none, _ = q.whereCells()
+	return clause, args, none
+}
+
+// whereCells is where, and whether every box listed its cells, so the (cell, seen) index answers it.
+func (q recordQuery) whereCells() (clause string, args []any, none bool, cellsListed bool) {
 	var where []string
 	in := func(col string, ids []uint32) {
 		ph := make([]string, len(ids))
@@ -253,34 +263,48 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 	}
 	if q.mmsis != nil {
 		if len(q.mmsis) == 0 {
-			return "", nil, true
+			return "", nil, true, false
 		}
 		in("mmsi", q.mmsis)
 	}
 	if q.imos != nil {
 		if len(q.imos) == 0 {
-			return "", nil, true
+			return "", nil, true, false
 		}
 		in("imo", q.imos)
 	}
 	seen := "seen"
 	if len(q.boxes) > 0 {
+		cellsListed = true
 		var ors []string
 		for _, b := range q.boxes {
 			c := "(lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?"
 			args = append(args, b[0], b[2], b[1], b[3])
 			r0, c0 := cellRowCol(b[0], b[1])
 			r1, c1 := cellRowCol(b[2], b[3])
-			if r1-r0 < maxCellRows { // lets the cell index narrow the scan to the rows of cells the box covers
+			// Each cell spelled out, so the (cell, seen) index narrows to the box and to the seen range at
+			// once, and a query for vessels heard more than 30 minutes ago skips the fresh ones.
+			if n := int(r1-r0+1) * int(c1-c0+1); n <= maxCells {
+				ph := make([]string, 0, n)
+				for r := r0; r <= r1; r++ {
+					for col := c0; col <= c1; col++ {
+						ph, args = append(ph, "?"), append(args, r*360+col)
+					}
+				}
+				c += " AND cell IN (" + strings.Join(ph, ",") + ")"
+			} else if r1-r0 < maxCellRows { // lets the cell index narrow the scan to the rows of cells the box covers
 				var cells []string
 				for r := r0; r <= r1; r++ {
 					cells = append(cells, "cell BETWEEN ? AND ?")
 					args = append(args, r*360+c0, r*360+c1)
 				}
 				c += " AND (" + strings.Join(cells, " OR ") + ")"
+				cellsListed = false
 				// Without statistics SQLite takes the seen index for a seen range and walks every vessel
 				// heard in it, wherever it is. The unary + keeps it on the cells.
 				seen = "+seen"
+			} else {
+				cellsListed = false
 			}
 			ors = append(ors, c+")")
 		}
@@ -321,7 +345,7 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")
 	}
-	return clause, args, false
+	return clause, args, false, cellsListed
 }
 
 // count is the number of rows q matches, ignoring its limit.
@@ -336,7 +360,7 @@ func (s *store) count(q recordQuery) (int, error) {
 }
 
 func (s *store) find(q recordQuery) ([]record, error) {
-	clause, args, none := q.where()
+	clause, args, none, cellsListed := q.whereCells()
 	if none {
 		return nil, nil
 	}
@@ -344,7 +368,13 @@ func (s *store) find(q recordQuery) ([]record, error) {
 	if q.byName {
 		sqlText += " ORDER BY search, mmsi"
 	} else {
-		sqlText += " ORDER BY seen DESC"
+		// With the cells listed, the index finds the few rows a box holds and sorting them is cheap. Left to
+		// order by the seen index, SQLite walks it until the limit fills, which in empty water is every row.
+		order := "seen"
+		if cellsListed {
+			order = "+seen"
+		}
+		sqlText += " ORDER BY " + order + " DESC"
 	}
 	if q.limit > 0 {
 		sqlText += " LIMIT " + strconv.Itoa(q.limit)

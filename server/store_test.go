@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -686,5 +687,35 @@ func TestRestartKeepsAnOldFixOffTheMap(t *testing.T) {
 	}
 	if fc := getFC(t, next, "/v1/vessels?mmsi=257000001"); len(fc.Features) != 1 || fc.Features[0].Geometry.Coordinates[1] < 59.89 {
 		t.Errorf("a followed MMSI still answers with its last known position: %+v", fc.Features)
+	}
+}
+
+// An area query past the cache's 30 minutes must seek the (cell, seen) index by cell and seen together.
+// Walking the seen index instead reads every vessel heard in the window whenever a box holds fewer than
+// the limit, which is most of the ocean.
+func TestAreaQueryUsesCellAndSeen(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	rules, _ := parseAgeRules(url.Values{})
+	age, vf := rules.rule(false)
+	q := recordQuery{boxes: []bbox{{30, -60, 40, -50}}, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now}
+	clause, args, _, listed := q.whereCells()
+	if !listed {
+		t.Fatal("a 100 square degree box should list its cells")
+	}
+	rows, err := p.store.db.Query("EXPLAIN QUERY PLAN SELECT mmsi FROM vessels"+clause+" ORDER BY +seen DESC LIMIT 501", args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		rows.Scan(&id, &parent, &unused, &detail)
+		plan = append(plan, detail)
+	}
+	if got := strings.Join(plan, "; "); !strings.Contains(got, "vessels_cell (cell=? AND seen>? AND seen<?)") {
+		t.Errorf("plan: %s", got)
 	}
 }
