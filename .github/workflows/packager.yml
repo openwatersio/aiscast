@@ -128,13 +128,17 @@ jobs:
         run: |
           s3() { aws s3 --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" --only-show-errors "$@"; }
           dir=$(date -u -d "$DAY" +%Y/%m/%d); prev=$(date -u -d "$DAY - 1 day" +%Y/%m/%d); next=$(date -u -d "$DAY + 1 day" +%F)
-          # The live server writes a day's hours until its last one rotates into the bucket after
-          # midnight; replaying before then would overwrite hours it has not finished.
-          [ "$(date -u +%s)" -ge "$(date -u -d "$next 01:30" +%s)" ] || { echo "::error::$DAY is not closed yet"; exit 1; }
+          # Without the live salt the server makes up a random one, and UDP station ids would not match.
+          [ -n "$STATION_SALT" ] || { echo "::error::the lake environment has no STATION_SALT"; exit 1; }
+          # The live server keeps each uploaded hour on disk for two hours, and its hourly sweep uploads
+          # it again if the bucket's copy is smaller, which would put the live hour back over a replayed
+          # one. A full day after the day ends, every local file for it has been swept away.
+          [ "$(date -u +%s)" -ge "$(date -u -d "$next + 1 day" +%s)" ] || { echo "::error::$DAY ended less than a day ago"; exit 1; }
           (cd server && go build -o /mnt/work/aiscast .)
-          # the day's raw hours, and the previous day's last two for replay's 90-minute lead-in
+          # the day's raw hours, and the whole previous day for replay's lead-in (90 minutes, but it is
+          # the server's constant to change, and a short lead-in would silently weaken the replay)
           s3 sync "s3://$NORMALIZED_BUCKET" /mnt/work/raw --exclude "*" --include "*/$dir/*.gz" \
-            --include "*/$prev/22.gz" --include "*/$prev/23.gz" --exclude "normalized/*"
+            --include "*/$prev/*.gz" --exclude "normalized/*"
           /mnt/work/aiscast replay -archive /mnt/work/raw -out /mnt/work/rep -from "$DAY" -to "$next"
           rm -rf /mnt/work/raw
           # what the rebuild changes, against the hours the bucket holds now
