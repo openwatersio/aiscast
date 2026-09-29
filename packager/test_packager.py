@@ -549,19 +549,27 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
     packager.HERE.mkdir()
     envs = fixture_envelopes()
     ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+    st = template(envs, "event", "ShipStaticData")
 
-    def position(id, ts, lat, lon, source, **flags):
-        e = event_at(ev, id, ts, **flags)
+    def position(id, ts, lat, lon, source, recv=None, **flags):
+        e = event_at(ev, id, ts, recv=recv, **flags)
         e["r"].update(mmsi=257999001, lat=lat, lon=lon, source=source)
-        return [e, copy_at(cp, id, ts)]
+        return [e, copy_at(cp, id, ts, recv=recv)]
+
+    def reset_clock_static(id, recv):  # a device whose clock reset stamps its reports years back
+        e = event_at(st, id, "2013-12-31T23:00:00Z", recv=recv)
+        e["r"]["mmsi"] = 257999001
+        e["r"]["message"].update(Name="", CallSign="", Type=0, MaximumStaticDraught=0)  # it carries no particulars
+        return [e]
 
     root = tmp_path / "normalized"
     days = {  # packaged in this order: the later day first
         "2026-09-02": position("f5000001", "2026-09-02T10:00:00Z", 60.5, 5.25, "barentswatch"),
-        # a satellite report from 05:00, flagged stale when it arrived after the 08:00 one: the vessel
-        # was still heard at 05:00, so it sets first_ts, though it is never the last position
+        # a satellite report from 05:00, flagged stale when it arrived at 08:30, after the 08:00 one: it
+        # counts as hearing the vessel, but first_ts is when the network heard it, 08:00
         "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5, "digitraffic")
-                      + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", stale=True),
+                      + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", recv="2026-09-01T08:30:00Z", stale=True)
+                      + reset_clock_static("f5000004", "2026-09-01T09:00:00Z"),
     }
     catalog = packager.get_catalog()
     con = duckdb.connect()
@@ -575,7 +583,7 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
 
     [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == 257999001]
     assert v["name"] is None and v["ship_type"] == 0, "a vessel with no statics still has a row, its static fields unknown"
-    assert v["first_ts"].isoformat() == "2026-09-01T05:00:00", "first_ts is the earliest report of any day, flagged ones included"
+    assert v["first_ts"].isoformat() == "2026-09-01T08:00:00", "first_ts is the earliest receive time, not a report's own clock"
     assert v["last_ts"].isoformat() == "2026-09-02T10:00:00" and (v["last_lat6"], v["last_lon6"]) == (60.5 * 600000, 5.25 * 600000), \
         "the latest position wins even when its day was packaged first"
     assert v["last_source"] == "barentswatch", "the last position carries the source that delivered it, for its credit line"
