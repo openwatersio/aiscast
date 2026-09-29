@@ -2,8 +2,8 @@ name: packager
 
 # Packages closed days of the normalized archive into the lake's Iceberg tables (packager/README.md).
 # Nightly it packages every closed day of the past week that is missing or has changed. By hand it
-# packages a range of days, one job per day. Day order does not matter: ais.vessels merges each
-# field on its own time.
+# packages a range of days, one job per day, five at a time. Day order does not matter: ais.vessels
+# merges each field on its own time, and a day whose vessels commit races another's merges again.
 on:
   schedule:
     # hour files upload when the next hour's traffic rotates them (~01:00), so earlier would run
@@ -25,7 +25,7 @@ on:
         type: boolean
         default: true
 
-# ais.vessels is rewritten on every run, so two runs must never overlap.
+# One run at a time, so a nightly run and a range never stack their parallel days.
 concurrency:
   group: packager
   cancel-in-progress: false
@@ -54,17 +54,31 @@ jobs:
           done
           echo "days=[${days%,}]" >> "$GITHUB_OUTPUT"
 
+  # Creating or upgrading the tables is not safe to race, so it happens once, before any day.
+  init:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: lake
+    env:
+      LAKE_CATALOG_URI: ${{ (github.event_name == 'schedule' || inputs.catalog) && secrets.LAKE_CATALOG_URI || '' }}
+      LAKE_WAREHOUSE: ${{ secrets.LAKE_WAREHOUSE }}
+      LAKE_CATALOG_TOKEN: ${{ secrets.LAKE_CATALOG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --script packager/packager.py --init
+
   package:
-    needs: days
+    needs: [days, init]
     # the lake environment only releases its secrets to main as well; this makes the reason plain
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     environment: lake
     strategy:
-      # one day at a time, and a failed day cancels the days not yet run
-      max-parallel: 1
-      fail-fast: true
+      # five runners at a time; a failed day does not stop the others, so rerun just the days that failed
+      max-parallel: 5
+      fail-fast: false
       matrix:
         day: ${{ fromJSON(needs.days.outputs.days) }}
     name: package ${{ matrix.day || 'past week' }}

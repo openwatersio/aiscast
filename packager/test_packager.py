@@ -365,6 +365,17 @@ def test_weather_columns_cover_every_methyd_field():
     assert set(record) - known == set(), f"unhandled MetHyd fields: {sorted(set(record) - known)}"
 
 
+def test_init_creates_the_tables_and_packages_nothing(tmp_path, monkeypatch):
+    """--init sets up the catalog once, before a workflow packages days in parallel."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    monkeypatch.setattr(sys, "argv", ["packager", "--init"])
+    packager.main()
+    catalog = packager.get_catalog()
+    assert {t[-1] for t in catalog.list_tables("ais")} == {"positions", "receptions", "vessels", "weather"}
+    assert not catalog.load_table("ais.positions").snapshots(), "nothing was packaged"
+
+
 def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatch, capsys):
     """A day is skipped only when packaged from exactly its current hours; an hour that lands late
     repackages it. A day that fails does not stop the rest of the week, but fails the run."""
@@ -395,6 +406,15 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
         except SystemExit as e:
             return str(e)
 
+    # a week of days in one staging database outgrows a runner's disk, so each day starts empty
+    real, staged = packager.process_day, []
+
+    def process_day(day, files, con, *rest):
+        staged.append(con.execute("SELECT count(*) FROM duckdb_tables()").fetchone()[0])
+        return real(day, files, con, *rest)
+
+    monkeypatch.setattr(packager, "process_day", process_day)
+
     hour(d2, "01", tx(d2, "01", "d2000001"))
     hour(d1, "01", tx(d1, "01", "d1000001"))
     bad = copy.deepcopy(ev)
@@ -404,6 +424,7 @@ def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatc
     assert not (packager.HERE / "stage").exists(), "a run leaves no staging database behind"
     days = {p["day"].isoformat() for p in rows(packager.get_catalog(), "positions")}
     assert days == {d1, d2}, "the days after the bad one still package"
+    assert len(staged) == 3 and not any(staged), f"each day starts from an empty staging database: {staged}"
 
     capsys.readouterr()
     run()
@@ -454,6 +475,46 @@ def test_vessel_fields_merge_on_their_own_times_in_any_day_order(tmp_path):
 
     [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == mmsi]
     assert (v["name"], v["callsign"]) == ("N10", "C8"), "the callsign seen at 08:00 beats the one seen at 05:00"
+
+
+def test_days_packaged_at_once_both_reach_the_vessels(tmp_path, monkeypatch):
+    """Parallel days each rewrite ais.vessels. When another day commits between this day's read and
+    its write, the write is refused and redone from a fresh read, so neither day's fields are lost."""
+    from pyiceberg.table import Table
+
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    envs = fixture_envelopes()
+    st, cp = template(envs, "event", "ShipStaticData"), template(envs, "copy")
+    mmsi = st["r"]["mmsi"]
+
+    def day_files(day, id, ts, **fields):
+        e = event_at(st, id, ts, recv=ts)
+        e["r"]["message"].update({"Name": "", "CallSign": "", **fields})
+        d = tmp_path / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True)
+        with gzip.open(d / "08.gz", "wt") as f:
+            f.writelines(json.dumps(x) + "\n" for x in (e, copy_at(cp, id, ts, recv=ts)))
+        return sorted(glob.glob(f"{d}/*.gz"))
+
+    a = day_files("2026-09-01", "5b000001", "2026-09-01T08:00:00Z", CallSign="CA")
+    b = day_files("2026-09-02", "5b000002", "2026-09-02T08:00:00Z", Name="NB")
+    catalog = packager.get_catalog()
+    overwrite, interleaved = Table.overwrite, []
+
+    def racing_overwrite(self, *args, **kwargs):
+        if self.name()[-1] == "vessels" and not interleaved:
+            interleaved.append(True)  # day A lands after day B read the table
+            packager.process_day("2026-09-01", a, duckdb.connect(), catalog)
+        return overwrite(self, *args, **kwargs)
+
+    monkeypatch.setattr(Table, "overwrite", racing_overwrite)
+    packager.process_day("2026-09-02", b, duckdb.connect(), catalog)
+
+    assert interleaved
+    [v] = [v for v in rows(catalog, "vessels") if v["mmsi"] == mmsi]
+    assert (v["name"], v["callsign"]) == ("NB", "CA"), "the day that committed first kept its callsign"
 
 
 def test_cell_covers_the_poles_and_the_antimeridian():

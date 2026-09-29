@@ -80,6 +80,7 @@ WEATHER_SCHEMA = pa.schema(
 
 def retry(fn, attempts=4):
     """Catalog writes cross the network; transient resets must not kill a nightly run."""
+    import random
     import time
 
     for i in range(attempts):
@@ -89,7 +90,7 @@ def retry(fn, attempts=4):
             if i == attempts - 1:
                 raise
             print(f"  retrying after {type(e).__name__}: {e}", file=sys.stderr)
-            time.sleep(5 * 2**i)
+            time.sleep(5 * 2**i + random.uniform(0, 5))  # jitter, so parallel days don't collide again in step
 
 
 def hour_pattern(d, hour=r"\d{2}"):
@@ -334,82 +335,88 @@ def replace_day(con, catalog, day, name, properties=None):
 
 
 def refresh_vessels(con, catalog):
-    tbl = retry(lambda: catalog.load_table("ais.vessels"))
-    con.register("existing_vessels", retry(lambda: tbl.scan().to_arrow()))
-    merged = con.execute(
-        f"""
-        WITH evidence AS (  -- position message types are the truthful class signal; statics are not
-          SELECT mmsi, CASE WHEN bool_or(mt IN ('StandardClassBPositionReport', 'ExtendedClassBPositionReport')) THEN 'B'
-                            WHEN bool_or(mt = 'PositionReport') THEN 'A' END AS cls,
-                 max(ct) AS ts
-          FROM env WHERE k = 'event' AND mt IN {POS_TYPES}
-          GROUP BY mmsi
-        ), statics AS (  -- stale statics still carry names; nothing here rots
-          SELECT mmsi,
-                 nullif(trim(coalesce(message->>'Name', message->'ReportA'->>'Name')), '') AS name,
-                 nullif(trim(coalesce(message->>'CallSign', message->'ReportB'->>'CallSign')), '') AS callsign,
-                 CAST(coalesce(CAST(message->>'Type' AS INTEGER), CAST(message->'ReportB'->>'ShipType' AS INTEGER), 0) AS SMALLINT) AS ship_type,
-                 CAST(coalesce(round(CAST(message->>'MaximumStaticDraught' AS DOUBLE) * 10), 0) AS SMALLINT) AS draught10,
-                 CASE WHEN mt = 'StaticDataReport' THEN 'B' ELSE 'A' END AS cls,
-                 ct AS ts
-          FROM env WHERE k = 'event' AND mt IN ('ShipStaticData', 'StaticDataReport')
-        ), fields AS (
-          -- one row per observation, each field with its own time; fresh ranks this run's inputs
-          -- over the stored row on a tie, so repackaging a day with corrected inputs replaces
-          -- what that day contributed rather than keeping the old value
-          SELECT mmsi, name, ts AS name_ts, callsign, ts AS callsign_ts, ship_type, ts AS ship_type_ts,
-                 draught10, ts AS draught_ts, NULL AS cls, NULL::TIMESTAMP AS cls_ts, 1 AS fresh,
-                 ts AS first_ts, NULL::TIMESTAMP AS last_ts, NULL::INTEGER AS last_lat6, NULL::INTEGER AS last_lon6,
-                 NULL::VARCHAR AS last_source FROM statics
-          UNION ALL  -- the static's own class claim is the weakest signal: it only fills a gap
-          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, TIMESTAMP '1970-01-01', 1,
-                 NULL, NULL, NULL, NULL, NULL FROM statics
-          UNION ALL
-          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, ts, 1, NULL, NULL, NULL, NULL, NULL FROM evidence
-          UNION ALL  -- every event counts toward first_ts, flagged or not: a stale or implausible report
-          -- still means the vessel was heard, and stale reports are the early ones (a satellite pass relayed late)
-          SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
-                 min(ct), NULL, NULL, NULL, NULL FROM env WHERE k = 'event' GROUP BY mmsi
-          UNION ALL  -- the day's accepted positions: the latest with coordinates is last_*
-          -- with the source whose copy the server accepted, the one its credit line names
-          SELECT p.mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
-                 p.ts, CASE WHEN p.lat6 IS NOT NULL THEN p.ts END, p.lat6, p.lon6, e.source
-          FROM positions p
-          LEFT JOIN (SELECT DISTINCT unhex(id) AS id, ct, source FROM env WHERE k = 'event') e ON e.id = p.id AND e.ct = p.ts
-          UNION ALL
-          SELECT mmsi, name, name_ts, callsign, callsign_ts, ship_type, ship_type_ts,
-                 draught10, draught_ts, cls, cls_ts, 0, first_ts, last_ts, last_lat6, last_lon6, last_source FROM existing_vessels
-        ), merged AS (
-          -- latest-wins per field, not per row: a type 24 part B can carry a callsign and no name,
-          -- and that must not discard a name learned earlier, whatever order the days arrive in
-          SELECT mmsi,
-            arg_max(name, (name_ts, fresh)) FILTER (WHERE name IS NOT NULL) AS name,
-            max(name_ts) FILTER (WHERE name IS NOT NULL) AS name_ts,
-            arg_max(callsign, (callsign_ts, fresh)) FILTER (WHERE callsign IS NOT NULL) AS callsign,
-            max(callsign_ts) FILTER (WHERE callsign IS NOT NULL) AS callsign_ts,
-            coalesce(arg_max(ship_type, (ship_type_ts, fresh)) FILTER (WHERE ship_type > 0), 0) AS ship_type,
-            max(ship_type_ts) FILTER (WHERE ship_type > 0) AS ship_type_ts,
-            coalesce(arg_max(draught10, (draught_ts, fresh)) FILTER (WHERE draught10 > 0), 0) AS draught10,
-            max(draught_ts) FILTER (WHERE draught10 > 0) AS draught_ts,
-            arg_max(cls, (cls_ts, fresh)) FILTER (WHERE cls IS NOT NULL) AS cls,
-            max(cls_ts) FILTER (WHERE cls IS NOT NULL) AS cls_ts,
-            min(first_ts) AS first_ts,  -- the earliest report any packaged day holds; newer days never move it forward
-            max(last_ts) FILTER (WHERE last_lat6 IS NOT NULL) AS last_ts,
-            -- latitude, longitude, and source from the same report
-            arg_max(struct_pack(lat := last_lat6, lon := last_lon6, source := last_source), (last_ts, fresh))
-                FILTER (WHERE last_lat6 IS NOT NULL) AS last_pos
-          FROM fields GROUP BY mmsi
-        )
-        SELECT mmsi, name, callsign, ship_type, draught10, cls,
-               greatest(name_ts, callsign_ts, ship_type_ts, draught_ts) AS updated_ts,
-               name_ts, callsign_ts, ship_type_ts, draught_ts, cls_ts,
-               first_ts, last_ts, last_pos.lat AS last_lat6, last_pos.lon AS last_lon6, last_pos.source AS last_source
-        -- every vessel any packaged day heard, statics or not, so history can create the server's record
-        FROM merged WHERE first_ts IS NOT NULL OR coalesce(name_ts, callsign_ts, ship_type_ts, draught_ts) IS NOT NULL
-        ORDER BY mmsi
-        """
-    ).to_arrow_table()
-    retry(lambda: tbl.overwrite(merged.cast(tbl.schema().as_arrow())))
+    # Days packaged in parallel each rewrite this table. A commit made from a stale read is refused,
+    # so a retry reads the table again and merges again; the merge takes each field at its own time,
+    # so the order the days land in does not matter.
+    def go():
+        tbl = catalog.load_table("ais.vessels")
+        con.register("existing_vessels", tbl.scan().to_arrow())
+        merged = con.execute(
+            f"""
+            WITH evidence AS (  -- position message types are the truthful class signal; statics are not
+              SELECT mmsi, CASE WHEN bool_or(mt IN ('StandardClassBPositionReport', 'ExtendedClassBPositionReport')) THEN 'B'
+                                WHEN bool_or(mt = 'PositionReport') THEN 'A' END AS cls,
+                     max(ct) AS ts
+              FROM env WHERE k = 'event' AND mt IN {POS_TYPES}
+              GROUP BY mmsi
+            ), statics AS (  -- stale statics still carry names; nothing here rots
+              SELECT mmsi,
+                     nullif(trim(coalesce(message->>'Name', message->'ReportA'->>'Name')), '') AS name,
+                     nullif(trim(coalesce(message->>'CallSign', message->'ReportB'->>'CallSign')), '') AS callsign,
+                     CAST(coalesce(CAST(message->>'Type' AS INTEGER), CAST(message->'ReportB'->>'ShipType' AS INTEGER), 0) AS SMALLINT) AS ship_type,
+                     CAST(coalesce(round(CAST(message->>'MaximumStaticDraught' AS DOUBLE) * 10), 0) AS SMALLINT) AS draught10,
+                     CASE WHEN mt = 'StaticDataReport' THEN 'B' ELSE 'A' END AS cls,
+                     ct AS ts
+              FROM env WHERE k = 'event' AND mt IN ('ShipStaticData', 'StaticDataReport')
+            ), fields AS (
+              -- one row per observation, each field with its own time; fresh ranks this run's inputs
+              -- over the stored row on a tie, so repackaging a day with corrected inputs replaces
+              -- what that day contributed rather than keeping the old value
+              SELECT mmsi, name, ts AS name_ts, callsign, ts AS callsign_ts, ship_type, ts AS ship_type_ts,
+                     draught10, ts AS draught_ts, NULL AS cls, NULL::TIMESTAMP AS cls_ts, 1 AS fresh,
+                     ts AS first_ts, NULL::TIMESTAMP AS last_ts, NULL::INTEGER AS last_lat6, NULL::INTEGER AS last_lon6,
+                     NULL::VARCHAR AS last_source FROM statics
+              UNION ALL  -- the static's own class claim is the weakest signal: it only fills a gap
+              SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, TIMESTAMP '1970-01-01', 1,
+                     NULL, NULL, NULL, NULL, NULL FROM statics
+              UNION ALL
+              SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, cls, ts, 1, NULL, NULL, NULL, NULL, NULL FROM evidence
+              UNION ALL  -- every event counts toward first_ts, flagged or not: a stale or implausible report
+              -- still means the vessel was heard, and stale reports are the early ones (a satellite pass relayed late)
+              SELECT mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
+                     min(ct), NULL, NULL, NULL, NULL FROM env WHERE k = 'event' GROUP BY mmsi
+              UNION ALL  -- the day's accepted positions: the latest with coordinates is last_*
+              -- with the source whose copy the server accepted, the one its credit line names
+              SELECT p.mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
+                     p.ts, CASE WHEN p.lat6 IS NOT NULL THEN p.ts END, p.lat6, p.lon6, e.source
+              FROM positions p
+              LEFT JOIN (SELECT DISTINCT unhex(id) AS id, ct, source FROM env WHERE k = 'event') e ON e.id = p.id AND e.ct = p.ts
+              UNION ALL
+              SELECT mmsi, name, name_ts, callsign, callsign_ts, ship_type, ship_type_ts,
+                     draught10, draught_ts, cls, cls_ts, 0, first_ts, last_ts, last_lat6, last_lon6, last_source FROM existing_vessels
+            ), merged AS (
+              -- latest-wins per field, not per row: a type 24 part B can carry a callsign and no name,
+              -- and that must not discard a name learned earlier, whatever order the days arrive in
+              SELECT mmsi,
+                arg_max(name, (name_ts, fresh)) FILTER (WHERE name IS NOT NULL) AS name,
+                max(name_ts) FILTER (WHERE name IS NOT NULL) AS name_ts,
+                arg_max(callsign, (callsign_ts, fresh)) FILTER (WHERE callsign IS NOT NULL) AS callsign,
+                max(callsign_ts) FILTER (WHERE callsign IS NOT NULL) AS callsign_ts,
+                coalesce(arg_max(ship_type, (ship_type_ts, fresh)) FILTER (WHERE ship_type > 0), 0) AS ship_type,
+                max(ship_type_ts) FILTER (WHERE ship_type > 0) AS ship_type_ts,
+                coalesce(arg_max(draught10, (draught_ts, fresh)) FILTER (WHERE draught10 > 0), 0) AS draught10,
+                max(draught_ts) FILTER (WHERE draught10 > 0) AS draught_ts,
+                arg_max(cls, (cls_ts, fresh)) FILTER (WHERE cls IS NOT NULL) AS cls,
+                max(cls_ts) FILTER (WHERE cls IS NOT NULL) AS cls_ts,
+                min(first_ts) AS first_ts,  -- the earliest report any packaged day holds; newer days never move it forward
+                max(last_ts) FILTER (WHERE last_lat6 IS NOT NULL) AS last_ts,
+                -- latitude, longitude, and source from the same report
+                arg_max(struct_pack(lat := last_lat6, lon := last_lon6, source := last_source), (last_ts, fresh))
+                    FILTER (WHERE last_lat6 IS NOT NULL) AS last_pos
+              FROM fields GROUP BY mmsi
+            )
+            SELECT mmsi, name, callsign, ship_type, draught10, cls,
+                   greatest(name_ts, callsign_ts, ship_type_ts, draught_ts) AS updated_ts,
+                   name_ts, callsign_ts, ship_type_ts, draught_ts, cls_ts,
+                   first_ts, last_ts, last_pos.lat AS last_lat6, last_pos.lon AS last_lon6, last_pos.source AS last_source
+            -- every vessel any packaged day heard, statics or not, so history can create the server's record
+            FROM merged WHERE first_ts IS NOT NULL OR coalesce(name_ts, callsign_ts, ship_type_ts, draught_ts) IS NOT NULL
+            ORDER BY mmsi
+            """
+        ).to_arrow_table()
+        tbl.overwrite(merged.cast(tbl.schema().as_arrow()))
+
+    retry(go, attempts=8)
 
 
 def normalized_bucket():
@@ -547,19 +554,34 @@ def main():
     ap.add_argument("--normalized", help="local normalized tree (normalized/v1/YYYY/MM/DD/HH.gz); omit to fetch the day from the bucket")
     ap.add_argument("--date", help="UTC day YYYY-MM-DD; default: every closed day of the past week missing from the catalog")
     ap.add_argument("--min-hours", type=int, default=20, help="refuse a day with fewer distinct hours")
+    ap.add_argument("--init", action="store_true", help="create or upgrade the tables and stop; run once before packaging days in parallel")
     args = ap.parse_args()
 
     all_files = glob.glob(f"{args.normalized}/**/*.gz", recursive=True) if args.normalized else []
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     catalog = get_catalog()
+    if args.init:
+        return
     days = [args.date] if args.date else [(now - timedelta(days=n)).strftime("%Y-%m-%d") for n in range(7, 0, -1)]
     packaged = retry(lambda: catalog.load_table("ais.positions")).properties
 
-    # A day's staging database is several times the day's compressed input (about 7 GB for six hours
-    # of production traffic), so it lives only for the run and is deleted however the run ends.
+    # A day's staging database is several times the day's compressed input (about 40 GB for a full
+    # day of production traffic), so each day gets its own, deleted before the next day starts and
+    # however the run ends: a week of days in one file does not fit on a runner's disk.
     stage = HERE / "stage"
     shutil.rmtree(stage, ignore_errors=True)  # a run the OS killed leaves it behind
+    try:
+        failed = package_days(days, args, all_files, today, packaged, stage, catalog)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    if failed:
+        sys.exit(f"failed: {', '.join(failed)}")
+
+
+def open_stage(stage):
+    """A fresh staging database for one day."""
+    shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
     con = duckdb.connect(str(stage / "packager.duckdb"))
     # Two threads keep a full day under the memory limit and leave the box's cores to the live server:
@@ -568,19 +590,13 @@ def main():
     # insertion order need not be kept.
     threads, memory = os.environ.get("PACKAGER_THREADS", "2"), os.environ.get("PACKAGER_MEMORY", "4GB")
     con.execute(f"SET memory_limit='{memory}'; SET threads={int(threads)}; SET preserve_insertion_order=false; SET temp_directory='{stage}/tmp'")
-    try:
-        failed = package_days(days, args, all_files, today, packaged, con, catalog)
-    finally:
-        con.close()
-        shutil.rmtree(stage, ignore_errors=True)
-    if failed:
-        sys.exit(f"failed: {', '.join(failed)}")
+    return con
 
 
-def package_days(days, args, all_files, today, packaged, con, catalog):
+def package_days(days, args, all_files, today, packaged, stage, catalog):
     failed = []
     for day in days:
-        fetched = None
+        fetched = con = None
         try:
             if day >= today:
                 sys.exit(f"{day} is not over yet")
@@ -601,11 +617,15 @@ def package_days(days, args, all_files, today, packaged, con, catalog):
             if not args.normalized:
                 fetched = HERE / "raw" / day
                 files = fetch_day(day, fetched, listing)
+            con = open_stage(stage)
             process_day(day, files, con, catalog, fp)
         except (Exception, SystemExit) as e:  # one bad day must not hold back the rest of the week
             print(f"{day}: {e}", file=sys.stderr)
             failed.append(day)
         finally:
+            if con:
+                con.close()
+                shutil.rmtree(stage, ignore_errors=True)
             if fetched:
                 shutil.rmtree(fetched, ignore_errors=True)  # re-fetchable; the bucket is the source of truth
     return failed
