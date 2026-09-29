@@ -333,7 +333,7 @@ var tileFields = map[string]string{
 // vessels, so the source credits every license asks for live on the page it links to.
 const tileAttribution = `<a href="` + licensingURL + `">Open Waters AIS</a>`
 
-const licensingURL = "https://github.com/openwatersio/aiscast/blob/main/docs/policy.md#licensing-is-per-source"
+const licensingURL = "https://openwaters.io/ais/#license"
 
 // serveTileJSON: GET /v1/vessels/tiles.json → TileJSON for the vessel tiles. Its query string, filters and
 // key alike, is carried into the tile URL, so a map needs only this URL.
