@@ -554,12 +554,15 @@ def main():
     ap.add_argument("--normalized", help="local normalized tree (normalized/v1/YYYY/MM/DD/HH.gz); omit to fetch the day from the bucket")
     ap.add_argument("--date", help="UTC day YYYY-MM-DD; default: every closed day of the past week missing from the catalog")
     ap.add_argument("--min-hours", type=int, default=20, help="refuse a day with fewer distinct hours")
+    ap.add_argument("--init", action="store_true", help="create or upgrade the tables and stop; run once before packaging days in parallel")
     args = ap.parse_args()
 
     all_files = glob.glob(f"{args.normalized}/**/*.gz", recursive=True) if args.normalized else []
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     catalog = get_catalog()
+    if args.init:
+        return
     days = [args.date] if args.date else [(now - timedelta(days=n)).strftime("%Y-%m-%d") for n in range(7, 0, -1)]
     packaged = retry(lambda: catalog.load_table("ais.positions")).properties
 

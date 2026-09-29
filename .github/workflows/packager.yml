@@ -54,8 +54,22 @@ jobs:
           done
           echo "days=[${days%,}]" >> "$GITHUB_OUTPUT"
 
+  # Creating or upgrading the tables is not safe to race, so it happens once, before any day.
+  init:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: lake
+    env:
+      LAKE_CATALOG_URI: ${{ (github.event_name == 'schedule' || inputs.catalog) && secrets.LAKE_CATALOG_URI || '' }}
+      LAKE_WAREHOUSE: ${{ secrets.LAKE_WAREHOUSE }}
+      LAKE_CATALOG_TOKEN: ${{ secrets.LAKE_CATALOG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --script packager/packager.py --init
+
   package:
-    needs: days
+    needs: [days, init]
     # the lake environment only releases its secrets to main as well; this makes the reason plain
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

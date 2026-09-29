@@ -365,6 +365,17 @@ def test_weather_columns_cover_every_methyd_field():
     assert set(record) - known == set(), f"unhandled MetHyd fields: {sorted(set(record) - known)}"
 
 
+def test_init_creates_the_tables_and_packages_nothing(tmp_path, monkeypatch):
+    """--init sets up the catalog once, before a workflow packages days in parallel."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    monkeypatch.setattr(sys, "argv", ["packager", "--init"])
+    packager.main()
+    catalog = packager.get_catalog()
+    assert {t[-1] for t in catalog.list_tables("ais")} == {"positions", "receptions", "vessels", "weather"}
+    assert not catalog.load_table("ais.positions").snapshots(), "nothing was packaged"
+
+
 def test_main_repackages_changed_days_and_isolates_failures(tmp_path, monkeypatch, capsys):
     """A day is skipped only when packaged from exactly its current hours; an hour that lands late
     repackages it. A day that fails does not stop the rest of the week, but fails the run."""
