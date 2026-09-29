@@ -324,11 +324,20 @@ func (t *trackStore) track(mmsi uint32, from, to time.Time, interval time.Durati
 	if err != nil {
 		return nil, false, err
 	}
+	// The row past the limit says older positions match (more). It also anchors despiking: judged
+	// against it, the page's oldest row survives or falls the same way it would inside a larger
+	// request, instead of always being kept as the first point seen. despike never drops its first
+	// point, so the anchor row is points[0] afterwards, withheld from the page as before.
+	anchored := false
 	if len(points) > limit {
-		points, more = points[:limit], true
+		more, anchored = true, true
 	}
 	sort.SliceStable(points, func(i, j int) bool { return points[i].ts.Before(points[j].ts) })
-	return despike(points), more, nil
+	points = despike(points)
+	if anchored {
+		points = points[1:]
+	}
+	return points, more, nil
 }
 
 // The store keeps every accepted position, but a track drawn straight through them kinks wherever a

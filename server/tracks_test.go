@@ -403,3 +403,28 @@ func TestDespikeReanchorsAfterARun(t *testing.T) {
 		t.Errorf("want the anchor, then the fourth far point onward; got %d points starting %v", len(kept), kept)
 	}
 }
+
+// The row past the limit anchors despiking: the page's oldest row is judged the same way a larger
+// request would judge it, not kept unconditionally as the first point seen.
+func TestTrackDespikeAnchorsAcrossTheLimit(t *testing.T) {
+	p, _ := trackPipeline(t)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	mk := func(age time.Duration, lat float64) trackPoint {
+		v := newVessel()
+		v.Lat, v.Lon, v.Sog = lat, 10.7, 16
+		return newTrackPoint(257000001, now.Add(-age), v, "aishub")
+	}
+	points := []trackPoint{
+		mk(2*time.Minute, 59.0),
+		mk(90*time.Second, 59.00111),
+		mk(60*time.Second, 59.00933), // displaced 0.49 NM ahead: 59 kn against the row past the limit
+		mk(30*time.Second, 59.00333),
+	}
+	if err := p.tracks.write(points, now); err != nil {
+		t.Fatal(err)
+	}
+	got, more, err := p.tracks.track(257000001, now.Add(-time.Hour), now, 0, 2)
+	if err != nil || !more || len(got) != 1 || got[0].lat6 != points[3].lat6 {
+		t.Errorf("the displaced fix should fall to the anchor past the limit: more=%v err=%v %+v", more, err, got)
+	}
+}
