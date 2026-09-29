@@ -421,8 +421,8 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Egress, trailing 24 hours",
-      "description": "Bytes sent in the 24 hours before each point. 20 TB a month is included; the alerts fire at 4 and 7 MB/s, 346 GB and 605 GB a day.",
+      "title": "Network",
+      "description": "Bytes per second on the public interface. Sent is what Hetzner bills: 20 TB a month is included. An archive backfill shows as paired sent and received spikes, since it downloads hours from R2 and uploads results. The threshold lines at 4 MB/s and 7 MB/s are the EgressHigh alert's, and they apply to the 24-hour mean.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -440,19 +440,37 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(increase(node_network_transmit_bytes_total{device!=\"lo\"}[24h]))",
+          "expr": "sum(rate(node_network_transmit_bytes_total{device!=\"lo\"}[$__rate_interval]))",
           "legendFormat": "sent"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "sum(rate(node_network_receive_bytes_total{device!=\"lo\"}[$__rate_interval]))",
+          "legendFormat": "received"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "sum(rate(node_network_transmit_bytes_total{device!=\"lo\"}[24h]))",
+          "legendFormat": "sent, 24 h mean"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "decbytes",
+          "unit": "Bps",
           "min": 0,
           "custom": {
             "fillOpacity": 10,
             "showPoints": "never",
             "thresholdsStyle": {
-              "mode": "line"
+              "mode": "off"
             }
           },
           "thresholds": {
@@ -461,19 +479,66 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "orange",
-                "value": 345600000000.0
-              },
-              {
-                "color": "red",
-                "value": 604800000000.0
               }
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sent, 24 h mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 4000000.0
+                    },
+                    {
+                      "color": "red",
+                      "value": 7000000.0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.thresholdsStyle",
+                "value": {
+                  "mode": "line"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "received"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
