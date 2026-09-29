@@ -19,10 +19,10 @@ type fakeLake struct {
 	queries   atomic.Int64
 }
 
-func (f *fakeLake) query(_ context.Context, q string) ([]map[string]json.RawMessage, error) {
+func (f *fakeLake) query(_ context.Context, q string, each func(map[string]json.RawMessage) error) error {
 	f.queries.Add(1)
 	if f.empty {
-		return nil, errLakeEmpty
+		return errLakeEmpty
 	}
 	rows := f.positions
 	if strings.Contains(q, "ais.vessels") {
@@ -35,15 +35,16 @@ func (f *fakeLake) query(_ context.Context, q string) ([]map[string]json.RawMess
 			}
 		}
 	}
-	var out []map[string]json.RawMessage
 	for _, r := range rows {
 		m := map[string]json.RawMessage{}
 		for k, v := range r {
 			m[k], _ = json.Marshal(v)
 		}
-		out = append(out, m)
+		if err := each(m); err != nil {
+			return err
+		}
 	}
-	return out, nil
+	return nil
 }
 
 // lakePosition is a lake row for mmsi 257000001 at t, in the lake's encodings.

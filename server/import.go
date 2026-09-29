@@ -142,18 +142,18 @@ func (p *Pipeline) importVessels(ctx context.Context) (int, error) {
 	const cols = "mmsi, name, callsign, ship_type, draught10, cls, first_ts, last_ts, last_lat6, last_lon6, updated_ts, last_source"
 	total, after := 0, int64(-1)
 	for {
-		rows, err := p.lake.run(ctx, fmt.Sprintf(`SELECT %s FROM lake.ais.vessels WHERE mmsi > %d ORDER BY mmsi LIMIT %d`, cols, after, importPage))
-		if err != nil {
-			return total, err
-		}
-		batch := make([]historyRow, 0, len(rows))
-		for _, r := range rows {
+		var batch []historyRow
+		err := p.lake.run(ctx, fmt.Sprintf(`SELECT %s FROM lake.ais.vessels WHERE mmsi > %d ORDER BY mmsi LIMIT %d`, cols, after, importPage), func(r map[string]json.RawMessage) error {
 			h, err := parseHistoryRow(r)
 			if err != nil {
-				return total, err
+				return err
 			}
 			batch = append(batch, h)
 			after = int64(h.mmsi)
+			return nil
+		})
+		if err != nil {
+			return total, err
 		}
 		if err := p.store.importRows(batch); err != nil {
 			return total, err
@@ -162,7 +162,7 @@ func (p *Pipeline) importVessels(ctx context.Context) (int, error) {
 		p.imports.rows.Add(int64(len(batch)))
 		// Stop on an empty page, not a short one: a query engine that caps its rows below importPage would
 		// otherwise end the import early and still count it done.
-		if len(rows) == 0 {
+		if len(batch) == 0 {
 			return total, nil
 		}
 	}

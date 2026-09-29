@@ -105,42 +105,43 @@ func (d *duckLake) attach(ctx context.Context) (*sql.DB, error) {
 	return db, nil
 }
 
-// query returns the rows as JSON values keyed by column, the shape the lake's readers decode: dates and
-// timestamps as RFC 3339 strings, integers as numbers, bytes as base64.
-func (d *duckLake) query(ctx context.Context, q string) ([]map[string]json.RawMessage, error) {
+// query hands each row to each as JSON values keyed by column, the shape the lake's readers decode: dates and
+// timestamps as RFC 3339 strings, integers as numbers, bytes as base64. The row's map is reused.
+func (d *duckLake) query(ctx context.Context, q string, each func(map[string]json.RawMessage) error) error {
 	db, err := d.open(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
 		// Only a missing table: an object missing from R2 ("key does not exist") is a failure, not an empty day.
 		if strings.Contains(err.Error(), "Catalog Error: Table with name") {
-			return nil, errLakeEmpty
+			return errLakeEmpty
 		}
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 	cols, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	vals, ptrs := make([]any, len(cols)), make([]any, len(cols))
 	for i := range vals {
 		ptrs[i] = &vals[i]
 	}
-	var out []map[string]json.RawMessage
+	m := make(map[string]json.RawMessage, len(cols))
 	for rows.Next() {
 		if err := rows.Scan(ptrs...); err != nil {
-			return nil, err
+			return err
 		}
-		m := make(map[string]json.RawMessage, len(cols))
 		for i, c := range cols {
 			if m[c], err = json.Marshal(vals[i]); err != nil {
-				return nil, fmt.Errorf("lake %s: %w", c, err)
+				return fmt.Errorf("lake %s: %w", c, err)
 			}
 		}
-		out = append(out, m)
+		if err := each(m); err != nil {
+			return err
+		}
 	}
-	return out, rows.Err()
+	return rows.Err()
 }

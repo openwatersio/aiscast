@@ -26,9 +26,11 @@ import (
 	"time"
 )
 
-// lakeClient runs one SQL query against the lake. The interface is what tests fake.
+// lakeClient runs one SQL query against the lake and hands each row to each as it arrives, so a busy vessel's
+// day is never held as rows, only as the positions decoded from them. A row is valid only during the call.
+// The interface is what tests fake.
 type lakeClient interface {
-	query(ctx context.Context, sql string) (rows []map[string]json.RawMessage, err error)
+	query(ctx context.Context, sql string, each func(row map[string]json.RawMessage) error) error
 }
 
 // errLakeEmpty is a query against a table the catalog does not have yet: an empty lake, not a failure.
@@ -125,19 +127,15 @@ func (l *lake) days(ctx context.Context, mmsi uint32, first, last time.Time, now
 // fetch reads the positions and their sources for one vessel over a range of days.
 func (l *lake) fetch(ctx context.Context, mmsi uint32, first, last string) (map[string]lakeDay, error) {
 	days := map[string]lakeDay{}
-	rows, err := l.run(ctx, fmt.Sprintf(`SELECT day, ts, lat6, lon6, sog10, cog10, heading, navstat, source FROM lake.ais.positions
-		WHERE mmsi = %d AND day >= DATE '%s' AND day <= DATE '%s' AND lat6 IS NOT NULL`, mmsi, first, last))
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
+	err := l.run(ctx, fmt.Sprintf(`SELECT day, ts, lat6, lon6, sog10, cog10, heading, navstat, source FROM lake.ais.positions
+		WHERE mmsi = %d AND day >= DATE '%s' AND day <= DATE '%s' AND lat6 IS NOT NULL`, mmsi, first, last), func(r map[string]json.RawMessage) error {
 		day, err := lakeDate(r["day"])
 		if err != nil {
-			return nil, err
+			return err
 		}
 		ts, err := lakeTime(r["ts"])
 		if err != nil {
-			return nil, err
+			return err
 		}
 		// A null is left as the not-available value: the packager writes one when a message lacks the field.
 		pt := trackPoint{mmsi: mmsi, ts: ts, sog10: 1023, cog10: 3600, heading: 511}
@@ -147,7 +145,7 @@ func (l *lake) fetch(ctx context.Context, mmsi uint32, first, last string) (map[
 			dst any
 		}{{"lat6", &pt.lat6}, {"lon6", &pt.lon6}, {"sog10", &pt.sog10}, {"cog10", &pt.cog10}, {"heading", &pt.heading}, {"navstat", &nav}} {
 			if err := json.Unmarshal(r[f.key], f.dst); err != nil {
-				return nil, fmt.Errorf("lake %s: %w", f.key, err)
+				return fmt.Errorf("lake %s: %w", f.key, err)
 			}
 		}
 		pt.navStatus = 15 // the lake stores -1 for not available; the stream's sentinel is 15
@@ -156,7 +154,7 @@ func (l *lake) fetch(ctx context.Context, mmsi uint32, first, last string) (map[
 		}
 		var source string // null on days packaged before positions carried it
 		if err := json.Unmarshal(r["source"], &source); err != nil {
-			return nil, fmt.Errorf("lake source: %w", err)
+			return fmt.Errorf("lake source: %w", err)
 		}
 		if source != "" {
 			pt.source = sourceKind(source)
@@ -164,6 +162,10 @@ func (l *lake) fetch(ctx context.Context, mmsi uint32, first, last string) (map[
 		d := days[day]
 		d.points = append(d.points, pt)
 		days[day] = d
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	for day, d := range days {
 		sort.Slice(d.points, func(i, j int) bool { return d.points[i].ts.Before(d.points[j].ts) })
@@ -172,18 +174,19 @@ func (l *lake) fetch(ctx context.Context, mmsi uint32, first, last string) (map[
 	return days, nil
 }
 
-func (l *lake) run(ctx context.Context, q string) ([]map[string]json.RawMessage, error) {
+// run queries the lake, counting the query for /metrics. A table the lake does not have yet has no rows.
+func (l *lake) run(ctx context.Context, q string, each func(map[string]json.RawMessage) error) error {
 	start := time.Now()
-	rows, err := l.client.query(ctx, q)
+	err := l.client.query(ctx, q, each)
 	l.queryNanos.Add(int64(time.Since(start)))
 	l.queries.Add(1)
 	if errors.Is(err, errLakeEmpty) {
-		return nil, nil
+		return nil
 	}
 	if err != nil {
 		l.failures.Add(1)
 	}
-	return rows, err
+	return err
 }
 
 func contains(ss []string, s string) bool {
