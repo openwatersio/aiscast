@@ -1,5 +1,5 @@
 import { data, Link } from "react-router";
-import { Panel } from "../components/Shell";
+import { PageTitle, Panel } from "../components/Panel";
 import { pageMeta } from "../lib/meta";
 
 // Rendered inside the app rather than thrown to the root boundary, so the map stays up.
@@ -16,8 +16,8 @@ export const meta = () =>
 
 export default function NotFound() {
   return (
-    <Panel back="/map">
-      <h1 className="text-title text-fg">Not found</h1>
+    <Panel back="/map" title="Not found">
+      <PageTitle>Not found</PageTitle>
       <p className="mt-2 text-body text-fg-secondary">
         There is nothing at this address. Try the <Link to="/map">map</Link>, or search for a vessel by name or MMSI.
       </p>

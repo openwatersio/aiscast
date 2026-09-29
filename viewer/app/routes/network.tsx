@@ -1,4 +1,4 @@
-import { Panel } from "../components/Shell";
+import { PageTitle, Panel } from "../components/Panel";
 import { Facts } from "../components/ui/Facts";
 import { Section, Tile } from "../components/ui/Section";
 import { StatGrid } from "../components/ui/StatGrid";
@@ -36,8 +36,8 @@ export default function Network({ loaderData }: Route.ComponentProps) {
   const cell = "py-1.5 pl-3 text-right tabular-nums whitespace-nowrap";
   const head = "pb-1 pl-3 text-right font-medium whitespace-nowrap";
   return (
-    <Panel back="/map">
-      <h1 className="text-title text-fg">Network</h1>
+    <Panel back="/map" title="Network">
+      <PageTitle>Network</PageTitle>
 
       {!stats ? (
         <Tile className="mt-4 text-body text-fg-secondary">The status endpoint is not reachable right now.</Tile>

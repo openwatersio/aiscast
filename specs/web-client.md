@@ -112,8 +112,8 @@ An unknown MMSI answers 404 with `noindex`. A vessel the record holds always ren
 - [ ] Try the sheet on real phones, iOS Safari especially, and tune the flick projection and the peek height.
 - [x] Tokens as Tailwind utilities, the `ui/` components, and `lucide-react`; every view migrated, with the CI check that fails on a CSS variable in a component.
 - [x] One navigation stack in place of the second pane, with push and pop transitions that follow the history index.
-- [ ] Scroll position restored per stack entry, and a pending state for slow entries such as a large station's vessel list.
-- [ ] A panel header per entry that shows the title at peek height, in place of the bare back arrow.
+- [x] Scroll position restored per stack entry, and a loading bar for slow entries such as a large station's vessel list.
+- [x] A header per entry: back, a title that shows once the page's large title is out of sight (at peek, or scrolled away), and close on a vessel.
 - [ ] Map chrome: status chip, controls, action row, touch targets; browser tests for the sheet heights and the back stack.
 - [x] Station list detail: source kind, messages today, vessels heard.
 - [x] Network page: vessel counts by kind.

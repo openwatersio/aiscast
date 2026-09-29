@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 import { vesselPath } from "../lib/ais";
 import { browserAuth, searchVessels, type VesselFeature } from "../lib/api";
 import { useLive, useNow, useStreamFrame } from "../lib/live";
+import { SITE } from "../lib/meta";
 import { useShell } from "./Shell";
 import { ClassDot, IconBadge, List, ListRow } from "./ui/List";
 import { SearchField } from "./ui/SearchField";
@@ -11,8 +12,9 @@ import { SearchField } from "./ui/SearchField";
 const DESTINATIONS: Array<{ label: string; hint: string; icon: LucideIcon; to?: string; href?: string }> = [
   { to: "/stations", label: "Stations", hint: "Who is receiving, and where", icon: RadioTower },
   { to: "/network", label: "Network", hint: "Sources, rates and delay", icon: Activity },
-  // The website's page, outside this app, so a plain link rather than a route.
-  { href: "/ais/token", label: "Get a token", hint: "Feed your receiver, read the stream", icon: KeyRound },
+  // The website's page, outside this app, so a plain link rather than a route. Absolute, so a
+  // dev server or a preview deploy, which serve only this app, still reach it.
+  { href: `${SITE}/token`, label: "Get a token", hint: "Feed your receiver, read the stream", icon: KeyRound },
 ];
 
 interface Row {

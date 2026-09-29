@@ -1,6 +1,8 @@
 import { Suspense } from "react";
 import { Await, data, redirect } from "react-router";
-import { Panel } from "../components/Shell";
+import { X } from "lucide-react";
+import { Panel } from "../components/Panel";
+import { IconLink } from "../components/ui/IconButton";
 import { VesselDetail } from "../components/VesselDetail";
 import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselPath, vesselSlug } from "../lib/ais";
 import { browserAuth, getVessel, type VesselFeature } from "../lib/api";
@@ -78,11 +80,17 @@ export function meta({ loaderData }: Route.MetaArgs) {
 }
 
 export default function Vessel({ loaderData }: Route.ComponentProps) {
-  const { mmsi, feature } = loaderData;
+  const { mmsi, feature, name } = loaderData;
   const detail = (
     <Suspense fallback={<VesselDetail mmsi={mmsi} feature={undefined} loading />}>
       <Await resolve={feature}>{(f) => <VesselDetail mmsi={mmsi} feature={f} />}</Await>
     </Suspense>
   );
-  return <Panel back="/map">{detail}</Panel>;
+  // Back pops to whatever pushed this vessel; close always returns to the map, as a place
+  // card's does in a maps app.
+  return (
+    <Panel back="/map" title={name ?? `MMSI ${mmsi}`} actions={<IconLink icon={X} label="Close" to="/map" small />}>
+      {detail}
+    </Panel>
+  );
 }

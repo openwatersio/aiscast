@@ -1,6 +1,6 @@
 import { redirect } from "react-router";
 import { SearchBox, SearchResults } from "../components/Search";
-import { Panel } from "../components/Shell";
+import { Panel } from "../components/Panel";
 import { pageMeta } from "../lib/meta";
 
 // `?station=<id>` was how the first viewer opened a station, and volunteers have shared

@@ -14,6 +14,7 @@ import {
 } from "../lib/ais";
 import { publicApiBase, type VesselFeature } from "../lib/api";
 import { useLive, useLiveVessel } from "../lib/live";
+import { PageTitle } from "./Panel";
 import { useShell } from "./Shell";
 import { Facts } from "./ui/Facts";
 import { Section } from "./ui/Section";
@@ -95,7 +96,7 @@ export function VesselDetail({
   if (!feature && !heard) {
     return (
       <article>
-        <h1 className="text-large-title text-fg">MMSI {mmsi}</h1>
+        <PageTitle className="text-large-title">MMSI {mmsi}</PageTitle>
         <p className="mt-2 text-body text-fg-secondary">
           {loading ? "Loading…" : "The network has never heard this vessel."}
         </p>
@@ -130,7 +131,7 @@ export function VesselDetail({
           {flagEmoji(p!.flag)} {country}
         </p>
       )}
-      <h1 className="truncate text-large-title text-fg">{name ?? `MMSI ${mmsi}`}</h1>
+      <PageTitle className="truncate text-large-title">{name ?? `MMSI ${mmsi}`}</PageTitle>
       <p className="text-footnote text-fg-muted">
         {CLASS_LABELS[cls]}
         {type ? ` · type ${type}` : ""}

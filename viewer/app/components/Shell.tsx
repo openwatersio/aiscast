@@ -8,11 +8,9 @@ import {
   useRef,
   useState,
   ViewTransition,
-  type ReactNode,
 } from "react";
-import { useLocation, useMatches, useNavigate, useOutlet } from "react-router";
+import { useLocation, useMatches, useNavigate, useNavigation, useOutlet } from "react-router";
 import { vesselPath } from "../lib/ais";
-import { cn } from "../lib/cn";
 import { createMap } from "../lib/map.client";
 import { liveInstance, LiveContext, setLiveInstance, useLive, useNow, useStreamFrame, type Live } from "../lib/live";
 import { Stream } from "../lib/stream";
@@ -20,7 +18,7 @@ import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { Sheet, type Detent } from "./Sheet";
 import { ThemeToggle } from "./ThemeToggle";
 import { TrackBar, type TrackSummary } from "./TrackBar";
-import { PanelHeader } from "./ui/PanelHeader";
+import { stackStateFor } from "./ui/PanelHeader";
 
 interface ShellState {
   query: string;
@@ -71,6 +69,7 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   const navigate = useNavigate();
   const outlet = useOutlet();
 
+  const navigation = useNavigation();
   const vessel = matches.find((m) => m.id === "routes/vessel");
   const focusMmsi = (vessel?.loaderData as { mmsi?: number } | undefined)?.mmsi;
 
@@ -104,11 +103,12 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
     setLive(built);
   }, []);
 
-  // A vessel tapped on the map is pushed onto the stack, over whatever is showing.
+  // A vessel tapped on the map is pushed onto the stack, over whatever is showing. Over another
+  // vessel it records how far back the page beneath them is, so Back skips the vessels.
   const onSelect = useRef<(mmsi: number, name?: string) => void>(undefined);
   onSelect.current = (mmsi, name) => {
     const known = live?.stream.vessels.get(mmsi)?.name;
-    navigate(vesselPath(mmsi, known ?? name));
+    navigate(vesselPath(mmsi, known ?? name), { state: stackStateFor(location, Boolean(vessel)) });
   };
   useEffect(() => {
     if (!live) return;
@@ -158,6 +158,13 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
         {focusMmsi ? <TrackBar key={focusMmsi} mmsi={focusMmsi} onLoaded={setTrack} /> : null}
 
         <Sheet detent={detent} onDetentChange={setDetent}>
+          {/* While the next entry loads. Most navigations answer before its delay runs out,
+              so it shows only for the slow ones, such as a large station's vessel list. */}
+          <div
+            aria-hidden
+            data-active={navigation.state !== "idle" || undefined}
+            className="pending-bar pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden opacity-0 transition-opacity data-active:opacity-100 data-active:delay-150"
+          />
           {/* Keyed by route, so a navigation is this entry leaving and the next arriving. React
               runs it as a view transition because React Router navigates in transitions. */}
           <ViewTransition key={location.pathname} enter="panel-enter" exit="panel-exit" update="none">
@@ -194,17 +201,4 @@ function StreamStatus() {
             ? "live stream in use in another tab"
             : state;
   return <span>{map.state === "ready" ? stream : `${stream} · map ${map.state} ${map.detail}`}</span>;
-}
-
-/** One entry on the panel's stack. `back` names its parent, for after a direct visit. */
-export function Panel({ back, header, children }: { back?: string; header?: ReactNode; children: ReactNode }) {
-  return (
-    <>
-      <PanelHeader back={back} />
-      {header}
-      <div data-sheet-scroll className={cn("sidebar-scroll min-h-0 flex-1 pb-3", header ? "px-2" : "px-4")}>
-        {children}
-      </div>
-    </>
-  );
 }

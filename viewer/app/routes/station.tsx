@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { data } from "react-router";
-import { Panel } from "../components/Shell";
+import { PageTitle, Panel } from "../components/Panel";
 import { Facts } from "../components/ui/Facts";
 import { ClassDot, List, ListRow } from "../components/ui/List";
 import { Section, Tile } from "../components/ui/Section";
@@ -71,8 +71,8 @@ export default function Station({ loaderData }: Route.ComponentProps) {
     : undefined;
 
   return (
-    <Panel back="/stations">
-      <h1 className="text-title break-all text-fg">{id}</h1>
+    <Panel back="/stations" title={id}>
+      <PageTitle className="break-all">{id}</PageTitle>
 
       {!st ? (
         <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard since the server started.</Tile>

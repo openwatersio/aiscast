@@ -1,4 +1,4 @@
-import { Panel } from "../components/Shell";
+import { PageTitle, Panel } from "../components/Panel";
 import { List, ListRow } from "../components/ui/List";
 import { formatAge } from "../lib/ais";
 import { browserAuth, getStations, type ApiAuth } from "../lib/api";
@@ -33,8 +33,8 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
   const { stations } = loaderData;
   const active = stations?.filter((s) => s.last_age_s < 300).length ?? 0;
   return (
-    <Panel back="/map">
-      <h1 className="text-title text-fg">Stations</h1>
+    <Panel back="/map" title="Stations">
+      <PageTitle>Stations</PageTitle>
       <p className="mt-1 text-body text-fg-secondary">
         {stations ? `${n(stations.length)} heard, ${n(active)} active in the last five minutes.` : "Station list unavailable."}{" "}
         Open one to see where its traffic is now.
