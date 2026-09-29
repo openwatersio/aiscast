@@ -54,8 +54,10 @@ const (
 	// is refetched after lakeRecentTTL; an older one never is.
 	lakeRecent    = 8 * 24 * time.Hour
 	lakeRecentTTL = 6 * time.Hour
-	// lakeCacheDays bounds the cached vessel-days. Most are a few kilobytes; a busy vessel's day is under 100 KB.
-	lakeCacheDays = 200_000
+	// lakeCacheBytes bounds the cached positions. Most vessel-days are a few kilobytes; one reporting every
+	// second is about 2 MB. The cache is trimmed each time another lakeTrimEvery has been written.
+	lakeCacheBytes = 2 << 30
+	lakeTrimEvery  = 64 << 20
 	// lakeParallel is the vessel-days read from the lake at once for one request.
 	lakeParallel = 4
 )
@@ -304,15 +306,24 @@ func (t *trackStore) lakeCached(mmsi uint32, days []string, now time.Time) (map[
 	return out, err
 }
 
-// lakeStore caches a vessel-day, and every so often trims the cache to lakeCacheDays by fetch time.
+// lakeStore caches a vessel-day, and every lakeTrimEvery bytes trims the cache to lakeCacheBytes.
 func (t *trackStore) lakeStore(mmsi uint32, day string, d lakeDay, now time.Time) error {
+	b := encodeLakePoints(d.points)
 	if _, err := t.db.Exec(`INSERT OR REPLACE INTO lake_days (mmsi, day, fetched, points, sources) VALUES (?, ?, ?, ?, ?)`,
-		mmsi, day, now.UnixMilli(), encodeLakePoints(d.points), strings.Join(d.sources, ",")); err != nil {
+		mmsi, day, now.UnixMilli(), b, strings.Join(d.sources, ",")); err != nil {
 		return err
 	}
-	if t.lakeWrites.Add(1)%1000 == 0 {
-		_, err := t.db.Exec(`DELETE FROM lake_days WHERE fetched < (SELECT fetched FROM lake_days ORDER BY fetched DESC LIMIT 1 OFFSET ?)`, lakeCacheDays)
-		return err
+	n := int64(len(b))
+	if after := t.lakeBytes.Add(n); after/lakeTrimEvery != (after-n)/lakeTrimEvery {
+		return t.lakeTrim(lakeCacheBytes)
 	}
 	return nil
+}
+
+// lakeTrim drops the least recently fetched vessel-days until the positions cached total at most max bytes.
+func (t *trackStore) lakeTrim(max int64) error {
+	_, err := t.db.Exec(`DELETE FROM lake_days WHERE fetched <= (
+		SELECT fetched FROM (SELECT fetched, sum(length(points)) OVER (ORDER BY fetched DESC) AS total FROM lake_days)
+		WHERE total > ? LIMIT 1)`, max)
+	return err
 }

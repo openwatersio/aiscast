@@ -64,7 +64,7 @@ type trackStore struct {
 	sources map[string]int64 // source kind -> id in the sources table; touched only by the writer
 	days    map[string]bool  // day tables known to exist; touched only by the writer
 
-	lakeWrites atomic.Int64 // vessel-days cached from the lake; every thousandth trims the cache
+	lakeBytes atomic.Int64 // position bytes cached from the lake; each lakeTrimEvery trims the cache
 
 	// read by /metrics
 	pointsWritten, writeFailures, dropped atomic.Int64

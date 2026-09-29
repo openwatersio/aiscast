@@ -315,3 +315,31 @@ func TestImportSchedule(t *testing.T) {
 		}
 	}
 }
+
+func TestLakeCacheTrimsByBytes(t *testing.T) {
+	p, _ := trackPipeline(t)
+	now := time.Now()
+	points := make([]trackPoint, 10) // 230 bytes
+	for i, day := range []string{"2026-01-01", "2026-01-02", "2026-01-03"} {
+		if err := p.tracks.lakeStore(257000001, day, lakeDay{points: points}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.tracks.lakeTrim(500); err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	rows, err := p.tracks.db.Query(`SELECT day FROM lake_days ORDER BY day`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d string
+		rows.Scan(&d)
+		kept = append(kept, d)
+	}
+	if strings.Join(kept, ",") != "2026-01-02,2026-01-03" {
+		t.Errorf("the least recently fetched day goes first: %v", kept)
+	}
+}
