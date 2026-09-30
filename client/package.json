@@ -1,5 +1,5 @@
 {
-  "name": "@openwaters/aiscast-viewer",
+  "name": "@openwaters/aiscast-client",
   "private": true,
   "type": "module",
   "scripts": {

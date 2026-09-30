@@ -1,17 +1,17 @@
-# viewer
+# client
 
 The web client for aiscast at `openwaters.io/ais/`: a live map with vessel and station pages, search, and track playback. React Router in framework mode on a Cloudflare Worker, so `/ais/vessels/:mmsi` and `/ais/stations/:id` are server-rendered and can be shared and indexed. It is a client of the aiscast API like any other.
 
 ```sh
-npm install                      # from the repo root; viewer/ is a workspace
-npm run dev -w viewer            # http://localhost:5173/ais/map, rendering in workerd
-npm test -w viewer               # unit tests
-npm run typecheck -w viewer      # generates the Worker and route types, then tsc
-npm run build -w viewer
-npm run preview -w viewer        # the built Worker, locally
+npm install                      # from the repo root; client/ is a workspace
+npm run dev -w client            # http://localhost:5173/ais/map, rendering in workerd
+npm test -w client               # unit tests
+npm run typecheck -w client      # generates the Worker and route types, then tsc
+npm run build -w client
+npm run preview -w client        # the built Worker, locally
 ```
 
-`AIS_API` in [wrangler.jsonc](wrangler.jsonc) is the API the server renders against, and the root loader hands it to the browser, so pointing the app at a local server is one setting. Put `AIS_API=http://localhost:8080` in `viewer/.dev.vars` to override it locally. `AIS_TOKEN`, a secret set with `wrangler secret put AIS_TOKEN`, is a partner token that gives server renders its limits, such as the longer track. The API limits HTTP requests per network address whatever the token, so renders share the allowance of the Worker's egress addresses.
+`AIS_API` in [wrangler.jsonc](wrangler.jsonc) is the API the server renders against, and the root loader hands it to the browser, so pointing the app at a local server is one setting. Put `AIS_API=http://localhost:8080` in `client/.dev.vars` to override it locally. `AIS_TOKEN`, a secret set with `wrangler secret put AIS_TOKEN`, is a partner token that gives server renders its limits, such as the longer track. The API limits HTTP requests per network address whatever the token, so renders share the allowance of the Worker's egress addresses.
 
 ## Routes
 
@@ -41,6 +41,6 @@ Search asks `/v1/vessels?q=` and shows what the stream holds until the server an
 
 ## Deploy
 
-Cloudflare Workers Builds deploys the `aiscast-web` Worker from `main` and uploads a preview version for every other branch, with a preview URL on the pull request. It builds from the repo root, where the workspace's lockfile is, with `npm run build -w viewer`, then runs `npx wrangler deploy --cwd viewer`, or `npx wrangler versions upload --cwd viewer` for a branch. The build writes the Worker's generated config, which wrangler finds from `viewer/`. Only changes under `viewer/` trigger a build. `npm run deploy` in `viewer/` does the same by hand.
+Cloudflare Workers Builds deploys the `aiscast-web` Worker from `main` and uploads a preview version for every other branch, with a preview URL on the pull request. It builds from the repo root, where the workspace's lockfile is, with `npm run build -w client`, then runs `npx wrangler deploy --cwd client`, or `npx wrangler versions upload --cwd client` for a branch. The build writes the Worker's generated config, which wrangler finds from `client/`. Only changes under `client/` trigger a build. `npm run deploy` in `client/` does the same by hand.
 
 [index.html](index.html) and [token.html](token.html) are the single-page viewer that GitHub Pages serves at [openwatersio.github.io/aiscast](https://openwatersio.github.io/aiscast/) until the website links to the app.

@@ -3,7 +3,7 @@
   "private": true,
   "workspaces": [
     "signalk-plugin",
-    "viewer"
+    "client"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

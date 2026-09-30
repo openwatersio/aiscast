@@ -3,7 +3,7 @@
 .dev.vars
 node_modules/
 signalk-plugin/dist/
-viewer/build/
-viewer/.react-router/
-viewer/worker-configuration.d.ts
+client/build/
+client/.react-router/
+client/worker-configuration.d.ts
 spec
