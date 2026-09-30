@@ -18,8 +18,9 @@
   "workers_dev": true,
   "preview_urls": true,
   "vars": {
-    // Server renders fetch from here. AIS_TOKEN, a secret, lifts them off the anonymous
-    // per-address limit, which every render would otherwise share.
+    // Server renders fetch from here. AIS_TOKEN, a secret, gives them a partner token's
+    // limits, such as the longer track. The API limits HTTP requests per address whatever the
+    // token, so renders still share the Worker's egress addresses' allowance.
     "AIS_API": "https://ais.openwaters.io",
   },
   "observability": { "enabled": true },
