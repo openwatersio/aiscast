@@ -150,8 +150,9 @@ func preflight(w http.ResponseWriter, r *http.Request, allow string) bool {
 }
 
 // api wraps a public JSON handler with open CORS and the request limit: per address, or per token sub when
-// the token carries its own rpm. The preflight is answered before the limit, so a client at the limit sees the
-// 429 on its real request rather than an opaque CORS failure, and the 429 carries the origin header for the
+// the token carries its own rpm. A token that does not verify is charged to its address and then refused, so
+// no endpoint answers it as anonymous. The preflight is answered before the limit, so a client at the limit sees
+// the 429 on its real request rather than an opaque CORS failure, and the 429 carries the origin header for the
 // same reason.
 func (p *Pipeline) api(allow string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +167,11 @@ func (p *Pipeline) api(allow string, h http.HandlerFunc) http.HandlerFunc {
 		} else if p.limited(w, httpLimit, clientIP(r)) {
 			return
 		}
-		h(w, withVerified(r, cl, err))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		h(w, withVerified(r, cl))
 	}
 }
 

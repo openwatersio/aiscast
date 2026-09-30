@@ -89,7 +89,8 @@ func TestPreflightAllowsAuthorization(t *testing.T) {
 }
 
 // A token's rpm claim moves its requests off the per-address limit: 0 lifts it, a positive value counts per sub.
-// A token without the claim, or one that does not verify, still counts against the address.
+// A token without the claim, or one that does not verify, still counts against the address, and one that does
+// not verify is refused even by endpoints that never read the token.
 func TestTokenRequestLimit(t *testing.T) {
 	p := testPipeline(t)
 	allowAnon = false
@@ -126,8 +127,11 @@ func TestTokenRequestLimit(t *testing.T) {
 		return ok
 	}
 
-	if ok := count("/v1/stats", "", 5); ok != 3 {
-		t.Errorf("anonymous: %d of 5 allowed, want 3", ok)
+	if s := get("/v1/stats", "ak1.nope.nope"); s != 401 {
+		t.Errorf("bad token on a fresh address: %d want 401", s)
+	}
+	if ok := count("/v1/stats", "", 5); ok != 2 {
+		t.Errorf("anonymous after a bad token: %d of 5 allowed, want 2", ok)
 	}
 	if ok := count("/v1/stats", unlimited, 10); ok != 10 {
 		t.Errorf("rpm 0: %d of 10 allowed, want 10", ok)
