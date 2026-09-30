@@ -11,20 +11,36 @@ npm run build -w viewer
 npm run preview -w viewer        # the built Worker, locally
 ```
 
-`AIS_API` in [wrangler.jsonc](wrangler.jsonc) is the API the server renders against, and the root loader hands it to the browser, so pointing the app at a local server is one setting. Put `AIS_API=http://localhost:8080` in `viewer/.dev.vars` to override it locally. `AIS_TOKEN`, a secret set with `wrangler secret put AIS_TOKEN`, gives server renders their own rate limit; without it they share the anonymous one.
+`AIS_API` in [wrangler.jsonc](wrangler.jsonc) is the API the server renders against, and the root loader hands it to the browser, so pointing the app at a local server is one setting. Put `AIS_API=http://localhost:8080` in `viewer/.dev.vars` to override it locally. `AIS_TOKEN`, a secret set with `wrangler secret put AIS_TOKEN`, is a partner token that gives server renders its limits, such as the longer track. The API limits HTTP requests per network address whatever the token, so renders share the allowance of the Worker's egress addresses.
 
 ## Routes
 
 `/ais/map` is the map and search, `/ais/vessels/:mmsi-:name` a vessel, `/ais/stations` the station list, `/ais/stations/:id` a station, and `/ais/network` what the network is receiving. The MMSI is canonical in a vessel URL and the name slug is cosmetic, so a wrong or missing slug redirects to the canonical form. `?station=<id>` on `/ais/map` redirects to the station page. The token page is the website's, at `/ais/token`, and the app reads the token it stores.
 
-[wrangler.jsonc](wrangler.jsonc) lists the same top-level paths as the Worker's routes on `openwaters.io`. The website Worker answers everything else under `/ais/`. A new top-level route needs a line in both [app/routes.ts](app/routes.ts) and `wrangler.jsonc`. Built assets are written to `ais/assets/` so the assets binding serves them at the path they are linked from.
+[wrangler.jsonc](wrangler.jsonc) lists the same top-level paths as the Worker's routes on `openwaters.io`. The website Worker answers everything else under `/ais/`. A new top-level route needs a line in both [app/routes.ts](app/routes.ts) and `wrangler.jsonc`. Built assets are written to `ais/assets/` so the assets binding serves them at the path they are linked from. The whole route manifest ships with the first page, because lazy route discovery would ask `/ais/__manifest`, a path the website owns.
 
 ## How it works
 
 Each route has a server `loader` for a document request and a `clientLoader` for navigation inside the app. The client loader calls the API from the browser with the visitor's token, so after the first page the Worker is not involved. A vessel the stream has already heard opens from the stream's copy while the record loads.
 
-The map, the stream, and the vessel cache are built once in [components/Shell.tsx](app/components/Shell.tsx) and outlive every navigation, because the stream is capped at two connections per network address and remounting would spend that budget. The panels float over the map, and camera padding is measured from them, so a selected vessel centres in the part of the map you can see. A vessel opened from a list takes a second pane and leaves the list in place.
+The map, the stream, and the vessel cache are built once in [components/Shell.tsx](app/components/Shell.tsx) and outlive every navigation, because the stream is capped at two connections per network address and remounting would spend that budget. One panel floats over the map, a bottom sheet on a phone, and camera padding is measured from it, so a selected vessel centres in the part of the map you can see. The panel is one navigation stack. Back from vessels opened one after another on the map returns to the page they were opened over, while the browser's own back steps through each.
 
 [lib/map.client.ts](app/lib/map.client.ts) is browser-only, which keeps MapLibre out of the Worker. The vector tiles from `/v1/vessels/tiles` draw every vessel's last known position at every zoom. They reload when a pan starts, when the stream lets go of a vessel still in view, and every five minutes, or every 15 seconds past the stream's area cap, where nothing else updates them. Within the stream's area cap, `/v1/stream` draws the vessels it hears on top, and each one's tile copy is hidden with feature state so no vessel is drawn twice. The subscription asks for no snapshot: the tiles paint the starting picture and the stream says what changes. Triangles point along heading, falling back to course; colour is ship-type class; opacity fades with age, the same for both sources. The viewer extrapolates nothing: it draws a vessel where that vessel last reported. In dev builds the map is on `window.aiscastMap` for browser tests.
 
-[index.html](index.html) and [token.html](token.html) are the single-page viewer that GitHub Pages serves at [openwatersio.github.io/aiscast](https://openwatersio.github.io/aiscast/) until the app is deployed.
+The design system is Tailwind utilities over the tokens in [app.css](app/app.css), and the shared components in [components/ui/](app/components/ui/). A component never names a CSS variable, and `npm run check:styles` fails CI if one does.
+
+## Vessel pages
+
+`/ais/vessels/media/:key` answers a vessel's photos and particulars as JSON, from [lib/media.server.ts](app/lib/media.server.ts). The key is a 7-digit IMO, checked against its check digit, or for a vessel without one a ship's 9-digit MMSI. Photos are the newest eight in Wikimedia Commons' `Category:IMO <n>` and its first ship-name subcategories, or `Category:MMSI <n>`. Particulars come from the Wikidata item with that IMO (P458). The Worker asks Wikimedia with a User-Agent naming a contact, as its API policy requires, and caches the answer at the edge for a week, a day when there is nothing, and 15 minutes after an upstream failure. The browser hotlinks the 960px thumbnail the API returns, or the 120px one in search results; both are standard Wikimedia widths, which render freely. Every photo shows its credit, `© artist · licence`, linking to the file page and the licence. A document render uses the first photo as `og:image` when it comes within a second.
+
+The drawing in [components/ui/ShipDiagram.tsx](app/components/ui/ShipDiagram.tsx) is a silhouette for the vessel's ITU type, stretched to its length and beam with the drawn ratio kept between 2:1 and 6:1. The antenna's offsets are read by ITU-R M.1371's rules in `vesselDimensions()` in [lib/ais.ts](app/lib/ais.ts): 511 and 63 mean "that many metres or more", so the size is unknown and nothing is drawn; a zero offset means the reference point is not available, so the hull is drawn without the antenna. The offsets come from the API's `to_bow`, `to_stern`, `to_port` and `to_starboard`, or from the stream's static data.
+
+## Search
+
+Search asks `/v1/vessels?q=` and shows what the stream holds until the server answers. The Type and Heard chips add `type=` and `max_age=` from [lib/searchFilters.ts](app/lib/searchFilters.ts): Heard's windows start at local midnight, the start of the week in the reader's locale, the month, or the year, sent as seconds to now, rounded to the minute. The same predicates filter the stream's results, so the list does not change shape when the answer arrives. Result rows ask for photos only once they have been on screen.
+
+## Deploy
+
+Cloudflare Workers Builds deploys the `aiscast-web` Worker from `main` and uploads a preview version for every other branch, with a preview URL on the pull request. It builds from the repo root, where the workspace's lockfile is, with `npm run build -w viewer`, then runs `npx wrangler deploy --cwd viewer`, or `npx wrangler versions upload --cwd viewer` for a branch. The build writes the Worker's generated config, which wrangler finds from `viewer/`. Only changes under `viewer/` trigger a build. `npm run deploy` in `viewer/` does the same by hand.
+
+[index.html](index.html) and [token.html](token.html) are the single-page viewer that GitHub Pages serves at [openwatersio.github.io/aiscast](https://openwatersio.github.io/aiscast/) until the website links to the app.

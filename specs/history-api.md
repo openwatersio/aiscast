@@ -149,8 +149,8 @@ Each step is one pull request with tests, `openapi.json`, the server README, and
 - Alert rules go in [server/deploy/grafana/rules.yaml](../server/deploy/grafana/rules.yaml) with panels on the capacity dashboard. Bytes scanned per day gets a budget alert, because it is the one line on the bill that grows with traffic.
 
 
-1. **The store and the durable vessel record.** SQLite behind an interface, the `vessels` table fed from the fold, `GET /v1/vessels/{mmsi}`, the `mmsi=` fallback and `max_age` on `/v1/vessels`, `GET /v1/vessels?q=`, and the matching MCP tool changes. This is Stage 2 of the web-client spec and unblocks indexable vessel pages and the sitemap.
-2. **Recent positions and the hot track.** `tracks.db`, `GET /v1/vessels/{mmsi}/track` over the hot window with thinning and GPX, the tier gate, and `get_vessel_track` on `/mcp`. Stage 3 of the web-client spec, without an in-memory ring.
+1. **The store and the durable vessel record.** SQLite behind an interface, the `vessels` table fed from the fold, `GET /v1/vessels/{mmsi}`, the `mmsi=` fallback and `max_age` on `/v1/vessels`, `GET /v1/vessels?q=`, and the matching MCP tool changes. This unblocks indexable vessel pages and the sitemap.
+2. **Recent positions and the hot track.** `tracks.db`, `GET /v1/vessels/{mmsi}/track` over the hot window with thinning and GPX, the tier gate, and `get_vessel_track` on `/mcp`. No in-memory ring.
 3. **The backfill.** `aiscast replay` over the raw archive from 2026-08-20 and a full packaging run, once #63 is deployed.
 4. **The archive stage.** The R2 SQL client, a spike that measures latency for the three query shapes and records it in the README, the disk cache, tracks stitched over closed days, and `/v1/history`. It also lands the record import: `first_ts` and the last position in `ais.vessels`, and the nightly merge that backdates `first_seen` after every packaging run. This is what closes #31's verification and #32.
 5. **Series and coverage.** `?series=hourly`, `ais.station_days`, `GET /v1/stations/{id}/history`, and the coverage tile job.
@@ -158,7 +158,7 @@ Each step is one pull request with tests, `openapi.json`, the server README, and
 
 ## What the web client still needs from the server
 
-The unchecked items in #88 and the later stages of [specs/web-client.md](web-client.md) on that branch, with what each needs stored. Items that need no server change are listed at the end.
+What the web client needs next, with what each needs stored. Items that need no server change are listed at the end.
 
 | Client need | Endpoint | Storage | Size |
 | --- | --- | --- | --- |
@@ -177,7 +177,7 @@ The unchecked items in #88 and the later stages of [specs/web-client.md](web-cli
 
 No server work: the deploy of Astro beside the Go binary, retiring `viewer/index.html` and `viewer/token.html`, the coverage fallback above the area cap, live charts from the stream, the network page's vessel counts and `/health` (both exist), and the station list's source kind, vessels heard, and duplicates (all in `/v1/stations` already).
 
-Stage 5 of the web-client spec, accounts, adds tables to the same SQLite and is the reason to introduce it in step 1 rather than later.
+Accounts for the web client add tables to the same SQLite and is the reason to introduce it in step 1 rather than later.
 
 ## Decisions to make
 
