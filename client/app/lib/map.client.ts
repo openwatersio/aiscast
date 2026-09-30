@@ -166,11 +166,18 @@ export function createMap(
   );
 
   // A basemap that fails to load is otherwise a silent blank rectangle: MapLibre reports
-  // style, tile and worker failures here and nowhere else.
+  // style, tile and worker failures here and nowhere else. Only a failure before the style
+  // loads leaves no map, so only that one is reported; after it, an error is one tile or
+  // glyph, and the map goes on rendering around it.
   let mapError = "";
+  let styleLoaded = false;
   map.on("error", (e) => {
-    mapError = e.error?.message ?? "basemap failed to load";
     console.error("[map]", e.error ?? e);
+    if (!styleLoaded) mapError = e.error?.message ?? "basemap failed to load";
+  });
+  map.on("style.load", () => {
+    styleLoaded = true;
+    mapError = "";
   });
 
   // A map built while its container has no size stays broken after the container gains one:
