@@ -107,6 +107,8 @@ export function Sheet({
 
     const start = (e: TouchEvent) => {
       if (!phone.matches || e.touches.length !== 1) return;
+      // Content that takes a drag for itself, such as the track chart's scrubber.
+      if ((e.target as Element).closest("[data-sheet-ignore]")) return;
       const y = e.touches[0]!.clientY;
       const offset = offsetNow();
       gesture = { startY: y, startOffset: offset, lastY: y, lastT: e.timeStamp, velocity: 0, offset };

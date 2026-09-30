@@ -141,12 +141,13 @@ export interface Track {
 export async function getTrack(
   auth: ApiAuth,
   mmsi: number,
-  range: { from: number; to: number; limit?: number },
+  range: { from: number; to: number; limit?: number; intervalSeconds?: number },
 ): Promise<Track | undefined> {
   const from = new Date(range.from).toISOString();
   const to = new Date(range.to).toISOString();
   const limit = range.limit ? `&limit=${range.limit}` : "";
-  return get<Track>(auth, `/v1/vessels/${mmsi}/track?from=${from}&to=${to}${limit}`);
+  const interval = range.intervalSeconds ? `&interval=${range.intervalSeconds}` : "";
+  return get<Track>(auth, `/v1/vessels/${mmsi}/track?from=${from}&to=${to}${limit}${interval}`);
 }
 
 export async function getStations(auth: ApiAuth): Promise<Station[] | undefined> {

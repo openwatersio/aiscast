@@ -97,7 +97,8 @@ An unknown MMSI answers 404 with `noindex`. A vessel the record holds always ren
 - [x] Persistent map across navigation: one canvas, one WebSocket, and one document load through search, stations, a station, a vessel, and back.
 - [x] Server-rendered vessel, station, stations, and network pages with the full head, 301 slug redirects, and 404 with `noindex` for an unknown vessel or station.
 - [x] Client loaders that call the API from the browser, with the vessel pane opening from the stream's copy.
-- [x] List and detail panes, search over the record, the track bar with playback and GPX, and live values over the record in the vessel pane.
+- [x] Search over the record, and live values over the record in the vessel pane.
+- [x] The vessel's track as a speed chart over a chosen range, up to the server's 48 hours, which is also the scrubber: pointing at a moment puts the vessel where it was then, panning to keep it in view, and letting go returns to live. Replay and GPX download sit with it. The range is fetched with an interval sized to the tier's limit, so the whole range comes back rather than its last few hours.
 - [x] Tiles at every zoom with the stream drawn over them within the area cap, no snapshot, and one vessel never drawn twice.
 - [x] Stream backoff reset on `welcome`, and a footer that names a refused stream.
 - [x] CI job: typecheck, unit tests, build.

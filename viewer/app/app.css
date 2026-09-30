@@ -357,22 +357,6 @@
   pointer-events: none;
 }
 
-/* The track bar's scrubber. */
-[data-scrub]::-webkit-slider-thumb {
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 9999px;
-  background: var(--accent);
-  border: 2px solid var(--surface);
-}
-[data-scrub]::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--surface);
-  border-radius: 9999px;
-  background: var(--accent);
-}
 
 /* The panel (components/Sheet.tsx). On a phone, a bottom sheet the full height of the screen
    less a strip of map, pushed down to one of three detents. The detent is an attribute the
@@ -520,14 +504,6 @@ input[type="search"]::-webkit-search-cancel-button {
   }
 }
 
-/* The track bar centres in the map beside the panel. --map-left is the panel's right edge,
-   which the map sets as it measures the panel. */
-.track-dock {
-  left: var(--map-left, 0px);
-  right: 0;
-  margin-inline: auto;
-  width: min(560px, calc(100% - var(--map-left, 0px) - 1.5rem));
-}
 
 /* The panel's loading bar (components/Shell.tsx): a short stripe running across it. */
 .pending-bar::before {

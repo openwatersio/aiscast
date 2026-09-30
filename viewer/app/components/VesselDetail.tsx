@@ -13,15 +13,16 @@ import {
   shipClass,
   vesselPath,
 } from "../lib/ais";
-import { publicApiBase, type VesselFeature } from "../lib/api";
+import type { VesselFeature } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
 import { SITE } from "../lib/meta";
+import { useTrack } from "../lib/useTrack";
 import { PageTitle } from "./Panel";
-import { useShell } from "./Shell";
 import { ActionButton, ActionRow } from "./ui/ActionButton";
 import { Facts } from "./ui/Facts";
 import { Section } from "./ui/Section";
 import { StatGrid } from "./ui/StatGrid";
+import { VesselTrack } from "./VesselTrack";
 
 /**
  * One vessel. `feature` is the record the API holds, which carries the particulars; the
@@ -39,7 +40,8 @@ export function VesselDetail({
 }) {
   const live = useLive();
   const heard = useLiveVessel(mmsi);
-  const { track } = useShell();
+  const [trackHours, setTrackHours] = useState(24);
+  const { track, loading: trackLoading } = useTrack(mmsi, trackHours);
 
   const p = feature?.properties;
   const recordSeen = p ? Date.parse(p.seen) : 0;
@@ -124,7 +126,6 @@ export function VesselDetail({
     .filter(Boolean)
     .join(" · ");
 
-  const trackHere = track?.mmsi === mmsi ? track : undefined;
   const attribution = heard?.attribution;
 
   return (
@@ -141,7 +142,7 @@ export function VesselDetail({
       </p>
       <p className="mt-0.5 text-footnote text-fg-muted">{ids}</p>
 
-      <VesselActions live={live} mmsi={mmsi} name={name} hasTrack={Boolean(trackHere && trackHere.points > 1)} />
+      <VesselActions live={live} mmsi={mmsi} name={name} hasTrack={(track?.coords.length ?? 0) > 1} />
 
       {lat != null && lon != null && (
         <Section
@@ -185,23 +186,7 @@ export function VesselDetail({
         </Section>
       )}
 
-      {trackHere && trackHere.points > 1 && (
-        <Section
-          label="Track"
-          aside={
-            <a href={`${publicApiBase()}/v1/vessels/${mmsi}/track?format=gpx`} download={`${mmsi}.gpx`}>
-              Download GPX
-            </a>
-          }
-        >
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-body text-fg">{trackHere.points.toLocaleString("en-US")} positions</span>
-            <span className="text-footnote text-fg-muted">
-              {trackHere.from ? `since ${relativeTime(new Date(trackHere.from))}` : ""}
-            </span>
-          </div>
-        </Section>
-      )}
+      <VesselTrack mmsi={mmsi} track={track} loading={trackLoading} hours={trackHours} onHoursChange={setTrackHours} />
 
       {/* Shown even when absent: a blank under "Speed" says the vessel is not reporting it,
           where an omitted row says nothing at all. */}

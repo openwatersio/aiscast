@@ -971,8 +971,12 @@ export function createMap(
       );
     },
     scrubTo(at) {
+      if (at === scrubAt) return;
       scrubAt = at;
       render();
+      // Back to live brings the map back to where the vessel is now.
+      const live = focus != null ? stream.vessels.get(focus) : undefined;
+      keepInView(at !== null ? scrubPoint()?.point : live?.lon != null && live.lat != null ? [live.lon, live.lat] : undefined);
     },
     setFocus(mmsi) {
       if (mmsi !== focus) {
@@ -1015,6 +1019,28 @@ export function createMap(
       return () => followListeners.delete(fn);
     },
   };
+
+  /**
+   * Pans just enough to bring a point back into the part of the map the panels leave
+   * showing, when it has left it. Scrubbing a track moves the vessel to where it was, which
+   * can be well off-screen; refitting on every move would jerk the map about instead.
+   */
+  function keepInView(point: [number, number] | undefined) {
+    // A camera move under way, such as framing the track, already decides the view, and a
+    // pan now would cancel it.
+    if (!point || !ready || map.isMoving()) return;
+    const p = map.project(point);
+    const pad = map.getPadding();
+    const margin = 40;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    const inside =
+      p.x >= (pad.left ?? 0) + margin &&
+      p.x <= w - (pad.right ?? 0) - margin &&
+      p.y >= (pad.top ?? 0) + margin &&
+      p.y <= h - (pad.bottom ?? 0) - margin;
+    if (!inside) map.panTo(point, { duration: 300 });
+  }
 
   function fit(bbox: BBox) {
     const p = map.getPadding();

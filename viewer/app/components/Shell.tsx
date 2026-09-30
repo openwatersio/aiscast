@@ -18,13 +18,11 @@ import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { Sheet, type Detent } from "./Sheet";
 import { StatusChip } from "./StatusChip";
 import { ThemeChip } from "./ThemeToggle";
-import { TrackBar, type TrackSummary } from "./TrackBar";
 import { stackStateFor } from "./ui/PanelHeader";
 
 interface ShellState {
   query: string;
   setQuery(q: string): void;
-  track: TrackSummary | undefined;
   theme: ThemeChoice;
   setTheme(choice: ThemeChoice): void;
   /** The sheet's height on a phone. On a wider screen the panel ignores it. */
@@ -34,7 +32,6 @@ interface ShellState {
 const ShellContext = createContext<ShellState>({
   query: "",
   setQuery: () => undefined,
-  track: undefined,
   theme: "dark",
   setTheme: () => undefined,
   setDetent: () => undefined,
@@ -72,7 +69,6 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
   const navigation = useNavigation();
   const vessel = matches.find((m) => m.id === "routes/vessel");
-  const focusMmsi = (vessel?.loaderData as { mmsi?: number } | undefined)?.mmsi;
 
   // Set while rendering the new route rather than in an effect, so the sheet has moved in the
   // same commit and a route's camera move is aimed above where the sheet is going.
@@ -91,7 +87,6 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
     else sessionStorage.removeItem(SAVED_QUERY);
   }, []);
 
-  const [track, setTrack] = useState<TrackSummary>();
   const { choice, theme, setChoice } = useTheme(initialTheme);
 
   useEffect(() => {
@@ -145,8 +140,8 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   }, [live, theme]);
 
   const state = useMemo(
-    () => ({ query, setQuery, track, theme: choice, setTheme: setChoice, setDetent }),
-    [query, setQuery, track, choice, setChoice],
+    () => ({ query, setQuery, theme: choice, setTheme: setChoice, setDetent }),
+    [query, setQuery, choice, setChoice],
   );
 
   return (
@@ -158,8 +153,6 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
         <StatusChip />
         <ThemeChip />
-
-        {focusMmsi ? <TrackBar key={focusMmsi} mmsi={focusMmsi} onLoaded={setTrack} /> : null}
 
         <Sheet detent={detent} onDetentChange={setDetent}>
           {/* While the next entry loads. Most navigations answer before its delay runs out,
