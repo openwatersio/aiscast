@@ -14,6 +14,7 @@ import {
   splitTrack,
   vesselPath,
   vesselDimensions,
+  viewBoxes,
   vesselSlug,
 } from "./ais";
 
@@ -408,5 +409,25 @@ describe("speedAt", () => {
     expect(speedAt(track, 80 * min)).toBe(12);
     expect(speedAt(track, 101 * min)).toBeUndefined();
     expect(speedAt(track, -1)).toBeUndefined();
+  });
+});
+
+describe("viewBoxes", () => {
+  it("keeps a view inside the world as one box", () => {
+    expect(viewBoxes(50, 2, 60, 12)).toEqual([[50, 2, 60, 12]]);
+  });
+  it("splits a view across the antimeridian into a box either side", () => {
+    expect(viewBoxes(-20, 170, -10, 188)).toEqual([
+      [-20, 170, -10, 180],
+      [-20, -180, -10, -172],
+    ]);
+    expect(viewBoxes(-20, -190, -10, -170)).toEqual([
+      [-20, 170, -10, 180],
+      [-20, -180, -10, -170],
+    ]);
+  });
+  it("takes a view wider than the world, or a wrapped copy of it, as the world or its place in it", () => {
+    expect(viewBoxes(-80, -300, 80, 300)).toEqual([[-80, -180, 80, 180]]);
+    expect(viewBoxes(50, 362, 60, 372)).toEqual([[50, 2, 60, 12]]);
   });
 });

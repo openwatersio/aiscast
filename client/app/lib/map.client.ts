@@ -12,6 +12,7 @@ import {
   mergeTrack,
   shipClass,
   splitTrack,
+  viewBoxes,
 } from "./ais";
 import { publicApiBase } from "./api";
 import type { BBox, Stream } from "./stream";
@@ -266,16 +267,9 @@ export function createMap(
   const selectHandlers: Array<(mmsi: number, name?: string) => void> = [];
   let ready = false;
 
-  const viewBBox = (): BBox => {
+  const viewBBoxes = (): BBox[] => {
     const b = map.getBounds();
-    const clamp = (v: number, lo: number, hi: number) =>
-      Math.max(lo, Math.min(hi, v));
-    return [
-      clamp(b.getSouth(), -90, 90),
-      clamp(b.getWest(), -180, 180),
-      clamp(b.getNorth(), -90, 90),
-      clamp(b.getEast(), -180, 180),
-    ];
+    return viewBoxes(b.getSouth(), b.getWest(), b.getNorth(), b.getEast());
   };
 
   // One style for both sources, so a vessel looks the same whether its tile or the stream is
@@ -889,12 +883,13 @@ export function createMap(
   }
 
   function updateView() {
-    const bbox = viewBBox();
+    const boxes = viewBBoxes();
     const cap = areaCap();
     // Over the cap the server refuses the subscription, so ask for nothing and let the tiles
-    // carry the view rather than showing an empty ocean.
-    const fits = cap === 0 || (cap > 0 && bboxArea(bbox) <= cap);
-    stream.setView(fits ? [bbox] : []);
+    // carry the view rather than showing an empty ocean. The cap is on the boxes' total.
+    const area = boxes.reduce((sum, b) => sum + bboxArea(b), 0);
+    const fits = cap === 0 || (cap > 0 && area <= cap);
+    stream.setView(fits ? boxes : []);
     if (overview !== !fits) {
       overview = !fits;
       render();

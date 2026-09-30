@@ -420,3 +420,17 @@ export function vesselDimensions(
   }
   return length && length >= 2 && beam ? { length, beam } : undefined;
 }
+
+/**
+ * A map view as [south, west, north, east] boxes the stream can take. MapLibre's longitudes
+ * run past ±180 when the view crosses the antimeridian, so such a view is two boxes, one
+ * either side of it, and a view wider than the world is the whole of it.
+ */
+export function viewBoxes(south: number, west: number, north: number, east: number): Array<[number, number, number, number]> {
+  const s = Math.max(-90, south);
+  const n = Math.min(90, north);
+  if (east - west >= 360) return [[s, -180, n, 180]];
+  const w = ((((west + 180) % 360) + 360) % 360) - 180;
+  const e = w + (east - west);
+  return e <= 180 ? [[s, w, n, e]] : [[s, w, n, 180], [s, -180, n, e - 360]];
+}
