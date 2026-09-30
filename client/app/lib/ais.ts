@@ -309,6 +309,25 @@ export function indexAt(times: number[], at: number): number {
   return found;
 }
 
+/**
+ * Speed at a moment, between the reports either side. A report's own moment has its speed;
+ * inside a gap longer than TRACK_GAP_MS, or that long after the last report, the vessel
+ * went unheard and there is none, as the chart's broken line shows.
+ */
+export function speedAt(track: { times: number[]; sog: Array<number | null | undefined> }, at: number): number | undefined {
+  const i = indexAt(track.times, at);
+  if (i < 0) return undefined;
+  const a = track.sog[i] ?? undefined;
+  const t = track.times[i]!;
+  if (a === undefined || at === t) return a;
+  if (i + 1 >= track.times.length) return at - t <= TRACK_GAP_MS ? a : undefined;
+  const span = track.times[i + 1]! - t;
+  if (span > TRACK_GAP_MS) return undefined;
+  const b = track.sog[i + 1];
+  if (b == null || span <= 0) return a;
+  return a + (b - a) * ((at - t) / span);
+}
+
 export interface TrackPoint {
   /** Where the vessel was, or where it must have passed when inside a gap. */
   point: [number, number];

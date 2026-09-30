@@ -10,6 +10,7 @@ import {
   parsePlace,
   parseVesselParam,
   shipClass,
+  speedAt,
   splitTrack,
   vesselPath,
   vesselDimensions,
@@ -387,5 +388,25 @@ describe("vesselDimensions", () => {
     expect(vesselDimensions(at(100, 20, 63, 10))).toBeUndefined();
     expect(vesselDimensions(undefined, 1, 1)).toBeUndefined();
     expect(vesselDimensions(undefined, 90, 0)).toBeUndefined();
+  });
+});
+
+describe("speedAt", () => {
+  const min = 60_000;
+  // Reports at 0 and 10 minutes, then silence for an hour, then one at 70 minutes.
+  const track = { times: [0, 10 * min, 70 * min], sog: [4, 8, 12] };
+
+  it("interpolates between close reports and keeps each report's own speed", () => {
+    expect(speedAt(track, 0)).toBe(4);
+    expect(speedAt(track, 5 * min)).toBe(6);
+    expect(speedAt(track, 10 * min)).toBe(8);
+    expect(speedAt(track, 70 * min)).toBe(12);
+  });
+  it("has no speed inside a gap, or long after the last report", () => {
+    expect(speedAt(track, 11 * min)).toBeUndefined();
+    expect(speedAt(track, 69 * min)).toBeUndefined();
+    expect(speedAt(track, 80 * min)).toBe(12);
+    expect(speedAt(track, 101 * min)).toBeUndefined();
+    expect(speedAt(track, -1)).toBeUndefined();
   });
 });

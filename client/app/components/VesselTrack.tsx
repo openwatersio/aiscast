@@ -1,6 +1,6 @@
 import { ChevronDown, Pause, Play } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { indexAt, TRACK_GAP_MS } from "../lib/ais";
+import { speedAt, TRACK_GAP_MS } from "../lib/ais";
 import { publicApiBase } from "../lib/api";
 import { useLive } from "../lib/live";
 import { TRACK_WINDOW_HOURS, type LoadedTrack } from "../lib/useTrack";
@@ -15,20 +15,6 @@ const PLAY_STEPS = 240;
 const PLAY_TICK_MS = 90;
 
 const utcTime = (t: number) => new Date(t).toISOString().slice(11, 16);
-
-/** Speed at a moment, between the reports either side; none inside a stretch it went unheard. */
-function speedAt(track: LoadedTrack, at: number): number | undefined {
-  const i = indexAt(track.times, at);
-  if (i < 0) return undefined;
-  const a = track.sog[i];
-  if (a == null) return undefined;
-  const next = i + 1 < track.times.length ? i + 1 : undefined;
-  if (next === undefined) return a;
-  const span = track.times[next]! - track.times[i]!;
-  const b = track.sog[next];
-  if (span > TRACK_GAP_MS || b == null || span <= 0) return a;
-  return a + (b - a) * ((at - track.times[i]!) / span);
-}
 
 /**
  * The Track section: the vessel's speed over a chosen range, which is also how its past
