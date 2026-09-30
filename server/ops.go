@@ -56,7 +56,10 @@ type window struct {
 
 func newLimiter(perMinute int) *limiter { return &limiter{max: perMinute, seen: map[string]*window{}} }
 
-func (l *limiter) allow(key string) bool {
+func (l *limiter) allow(key string) bool { return l.allowMax(key, l.max) }
+
+// allowMax is allow with a per-key max, for a token that carries its own limit.
+func (l *limiter) allowMax(key string, max int) bool {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -73,7 +76,7 @@ func (l *limiter) allow(key string) bool {
 		return true
 	}
 	w.n++
-	return w.n <= l.max
+	return w.n <= max
 }
 
 var (
@@ -146,23 +149,42 @@ func preflight(w http.ResponseWriter, r *http.Request, allow string) bool {
 	return false
 }
 
-// api wraps a public JSON handler with open CORS and the per-address request limit. The preflight is
-// answered before the limit, so a client at the limit sees the 429 on its real request rather than an opaque
-// CORS failure, and the 429 carries the origin header for the same reason.
+// api wraps a public JSON handler with open CORS and the request limit: per address, or per token sub when
+// the token carries its own rpm. The preflight is answered before the limit, so a client at the limit sees the
+// 429 on its real request rather than an opaque CORS failure, and the 429 carries the origin header for the
+// same reason.
 func (p *Pipeline) api(allow string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if preflight(w, r, allow) {
 			return
 		}
-		if p.limited(w, httpLimit, clientIP(r)) {
+		if sub, rpm, ok := p.ownLimit(r); ok {
+			if rpm > 0 && p.limitedMax(w, httpLimit, sub, rpm) {
+				return
+			}
+		} else if p.limited(w, httpLimit, clientIP(r)) {
 			return
 		}
 		h(w, r)
 	}
 }
 
+// ownLimit returns the rpm claim of the request's token, when the token verifies and carries one. A token that
+// does not verify counts against its address, and the handler then refuses it.
+func (p *Pipeline) ownLimit(r *http.Request) (sub string, rpm int, ok bool) {
+	c, err := p.socketClaims(r)
+	if err != nil || c == nil || c.RPM == nil {
+		return "", 0, false
+	}
+	return c.Sub, *c.RPM, true
+}
+
 func (p *Pipeline) limited(w http.ResponseWriter, l *limiter, key string) bool {
-	if l.allow(key) {
+	return p.limitedMax(w, l, key, l.max)
+}
+
+func (p *Pipeline) limitedMax(w http.ResponseWriter, l *limiter, key string, max int) bool {
+	if l.allowMax(key, max) {
 		return false
 	}
 	p.stats.rateLimited.Add(1)

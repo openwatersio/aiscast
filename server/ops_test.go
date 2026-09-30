@@ -87,3 +87,69 @@ func TestPreflightAllowsAuthorization(t *testing.T) {
 		t.Errorf("bad Authorization header: %d want 401", s)
 	}
 }
+
+// A token's rpm claim moves its requests off the per-address limit: 0 lifts it, a positive value counts per sub.
+// A token without the claim, or one that does not verify, still counts against the address.
+func TestTokenRequestLimit(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	httpLimit, tileLimit = newLimiter(3), newLimiter(2)
+	defer func() { httpLimit, tileLimit = newLimiter(httpPerMinute), newLimiter(tilesPerMinute) }()
+	kid, priv := testIssuer(t, p)
+	exp := time.Now().Add(time.Hour).Unix()
+	zero, five := 0, 5
+	unlimited, _ := signToken(priv, Claims{Kid: kid, Sub: "web", Role: "partner", Exp: exp, RPM: &zero})
+	own, _ := signToken(priv, Claims{Kid: kid, Sub: "app", Role: "partner", Exp: exp, RPM: &five})
+	personal, _ := signToken(priv, personalClaims(kid, "ed25519:x", time.Now()))
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	get := func(path, tok string) int {
+		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	count := func(path, tok string, n int) (ok int) {
+		for range n {
+			if get(path, tok) == 200 {
+				ok++
+			}
+		}
+		return ok
+	}
+
+	if ok := count("/v1/stats", "", 5); ok != 3 {
+		t.Errorf("anonymous: %d of 5 allowed, want 3", ok)
+	}
+	if ok := count("/v1/stats", unlimited, 10); ok != 10 {
+		t.Errorf("rpm 0: %d of 10 allowed, want 10", ok)
+	}
+	if ok := count("/v1/stats", own, 7); ok != 5 {
+		t.Errorf("rpm 5: %d of 7 allowed, want 5", ok)
+	}
+	if s := get("/v1/stats", personal); s != 429 {
+		t.Errorf("personal token on a spent address: %d want 429", s)
+	}
+	if s := get("/v1/stats", "ak1.nope.nope"); s != 429 {
+		t.Errorf("bad token on a spent address: %d want 429", s)
+	}
+
+	const tile = "/v1/vessels/tiles/0/0/0"
+	if ok := count(tile, "", 3); ok != 2 {
+		t.Errorf("anonymous tiles: %d of 3 allowed, want 2", ok)
+	}
+	if ok := count(tile, unlimited, 5); ok != 5 {
+		t.Errorf("rpm 0 tiles: %d of 5 allowed, want 5", ok)
+	}
+	if s := get(tile, own); s != 429 {
+		t.Errorf("rpm 5 tile on a spent address: %d want 429", s)
+	}
+}

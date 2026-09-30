@@ -1,7 +1,7 @@
 // aiscast-key mints and inspects aiscast access tokens. The issuer private key never goes near the server.
 //
 //	aiscast-key issuer                       # new issuer keypair: prints kid, public key (for ISSUER_PUBKEYS), seed
-//	aiscast-key new -seed <seed> -kid <kid> -sub station-42 -role feeder [-exp 8760h] [-bbox s,w,n,e]... [-cidr 203.0.113.0/24]... [-conns 2] [-rate 50] [-area 400|-1] [-mmsis 50]
+//	aiscast-key new -seed <seed> -kid <kid> -sub station-42 -role feeder [-exp 8760h] [-bbox s,w,n,e]... [-cidr 203.0.113.0/24]... [-conns 2] [-rate 50] [-area 400|-1] [-mmsis 50] [-rpm 600|0]
 //	aiscast-key inspect <token>              # claims without verification
 package main
 
@@ -30,6 +30,7 @@ type claims struct {
 	Rate  int      `json:"rate,omitempty"`
 	Area  float64  `json:"area,omitempty"`
 	MMSIs int      `json:"mmsis,omitempty"`
+	RPM   *int     `json:"rpm,omitempty"`
 }
 
 type multi []string
@@ -58,6 +59,7 @@ func main() {
 		rate := fs.Int("rate", 0, "max messages per second per connection, excess thinned (0 = unlimited)")
 		area := fs.Float64("area", 0, "max total subscribed bbox area in square degrees (0 = unlimited, -1 = MMSI subscriptions only)")
 		mmsis := fs.Int("mmsis", 0, "max vessels followed by MMSI per subscription (0 = unlimited)")
+		rpm := fs.Int("rpm", 0, "HTTP requests per minute, counted per sub (0 = unlimited; omit for the per-address default)")
 		var boxes, cidrs multi
 		fs.Var(&boxes, "bbox", "allowed bbox minLat,minLon,maxLat,maxLon (repeatable)")
 		fs.Var(&cidrs, "cidr", "allowed source CIDR or IP (repeatable)")
@@ -68,6 +70,11 @@ func main() {
 			os.Exit(2)
 		}
 		c := claims{Kid: *kid, Sub: *sub, Role: *role, Iat: time.Now().Unix(), CIDR: cidrs, Conns: *conns, Rate: *rate, Area: *area, MMSIs: *mmsis}
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "rpm" {
+				c.RPM = rpm
+			}
+		})
 		if *exp != 0 {
 			c.Exp = time.Now().Add(*exp).Unix()
 		}
