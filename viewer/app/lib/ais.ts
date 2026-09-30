@@ -370,3 +370,34 @@ export function isValidImo(imo: number | undefined): imo is number {
   const sum = digits.slice(0, 6).reduce((acc, d, i) => acc + d * (7 - i), 0);
   return sum % 10 === digits[6];
 }
+
+/** Where a vessel's AIS antenna sits, in meters from its bow, stern, port and starboard sides. */
+export interface Offsets {
+  toBow: number;
+  toStern: number;
+  toPort: number;
+  toStarboard: number;
+}
+
+/**
+ * What a vessel's reported dimensions can draw, read by ITU-R M.1371's rules for them: the
+ * hull's length and beam, and the antenna when the vessel says where it is. `length` and
+ * `beam` stand in when there are no usable offsets. Undefined when there is nothing to draw.
+ */
+export function vesselDimensions(
+  offsets: Offsets | undefined,
+  length?: number,
+  beam?: number,
+): { length: number; beam: number; antenna?: Offsets } | undefined {
+  if (offsets) {
+    const { toBow: a, toStern: b, toPort: c, toStarboard: d } = offsets;
+    // 511 and 63 are the most the fields hold, meaning "that or more": the size is unknown.
+    if (a >= 511 || b >= 511 || c >= 63 || d >= 63) return undefined;
+    // A and C both zero is the encoding for a reference point that is not available, and some
+    // transponders zero only A, sending the length as B. An antenna on the hull's very edge is
+    // that, not a position, so the dot needs all four.
+    const known = a > 0 && b > 0 && c > 0 && d > 0;
+    if (a + b >= 2 && c + d > 0) return { length: a + b, beam: c + d, antenna: known ? offsets : undefined };
+  }
+  return length && length >= 2 && beam ? { length, beam } : undefined;
+}

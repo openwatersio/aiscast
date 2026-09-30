@@ -12,6 +12,7 @@ import {
   shipClass,
   splitTrack,
   vesselPath,
+  vesselDimensions,
   vesselSlug,
 } from "./ais";
 
@@ -359,5 +360,32 @@ describe("isValidImo", () => {
     expect(isValidImo(0)).toBe(false);
     expect(isValidImo(955197)).toBe(false);
     expect(isValidImo(95519730)).toBe(false);
+  });
+});
+
+describe("vesselDimensions", () => {
+  const at = (toBow: number, toStern: number, toPort: number, toStarboard: number) => ({ toBow, toStern, toPort, toStarboard });
+
+  it("draws the hull and antenna from full offsets", () => {
+    expect(vesselDimensions(at(150, 50, 12, 20))).toEqual({ length: 200, beam: 32, antenna: at(150, 50, 12, 20) });
+  });
+  it("draws no antenna when A and C are zero, the reference point being unavailable", () => {
+    expect(vesselDimensions(at(0, 200, 0, 32))).toEqual({ length: 200, beam: 32, antenna: undefined });
+    expect(vesselDimensions(at(0, 200, 12, 20))).toEqual({ length: 200, beam: 32, antenna: undefined });
+  });
+  it("falls back to length and beam when a pair of offsets is absent", () => {
+    expect(vesselDimensions(at(150, 50, 0, 0), 200, undefined)).toBeUndefined();
+    expect(vesselDimensions(at(0, 0, 12, 20), 200, 32)).toEqual({ length: 200, beam: 32 });
+  });
+  it("falls back to length and beam without offsets", () => {
+    expect(vesselDimensions(undefined, 90, 14)).toEqual({ length: 90, beam: 14 });
+    expect(vesselDimensions(at(0, 0, 0, 0), 90, 14)).toEqual({ length: 90, beam: 14 });
+  });
+  it("draws nothing for all zeros, saturated fields, or absurd sizes", () => {
+    expect(vesselDimensions(at(0, 0, 0, 0))).toBeUndefined();
+    expect(vesselDimensions(at(511, 20, 10, 10), 531, 20)).toBeUndefined();
+    expect(vesselDimensions(at(100, 20, 63, 10))).toBeUndefined();
+    expect(vesselDimensions(undefined, 1, 1)).toBeUndefined();
+    expect(vesselDimensions(undefined, 90, 0)).toBeUndefined();
   });
 });

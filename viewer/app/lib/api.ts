@@ -56,6 +56,11 @@ export interface VesselProps {
   draught?: number;
   length?: number;
   beam?: number;
+  /** Where the AIS antenna sits, in meters, as the vessel reports it. */
+  to_bow?: number;
+  to_stern?: number;
+  to_port?: number;
+  to_starboard?: number;
   first_seen?: string;
   seen: string;
   source: string;

@@ -11,6 +11,7 @@ import {
   parseEta,
   relativeTime,
   shipClass,
+  vesselDimensions,
   vesselPath,
 } from "../lib/ais";
 import type { VesselFeature } from "../lib/api";
@@ -24,6 +25,7 @@ import { PageTitle } from "./Panel";
 import { ActionButton, ActionRow } from "./ui/ActionButton";
 import { Facts } from "./ui/Facts";
 import { Section } from "./ui/Section";
+import { ShipDiagram } from "./ui/ShipDiagram";
 import { StatGrid } from "./ui/StatGrid";
 import { VesselPhotos } from "./VesselPhotos";
 import { VesselTrack } from "./VesselTrack";
@@ -66,6 +68,18 @@ export function VesselDetail({
   const station = fresher?.station ?? p?.station ?? heard?.station;
   const country = flagName(p?.flag);
   const imo = p?.imo ?? heard?.imo;
+  const dimensions = vesselDimensions(
+    p?.to_bow != null
+      ? { toBow: p.to_bow, toStern: p.to_stern ?? 0, toPort: p.to_port ?? 0, toStarboard: p.to_starboard ?? 0 }
+      : heard?.dimension && {
+          toBow: heard.dimension.A,
+          toStern: heard.dimension.B,
+          toPort: heard.dimension.C,
+          toStarboard: heard.dimension.D,
+        },
+    p?.length,
+    p?.beam,
+  );
   const media = useMedia(feature || heard ? mediaKey(imo, mmsi) : undefined);
 
   // Draw, follow, and frame the vessel. The record's position seeds the stream, so the map
@@ -208,11 +222,21 @@ export function VesselDetail({
         />
       </Section>
 
+      {(dimensions || p?.draught) && (
+        <Section label="Dimensions">
+          {dimensions && <ShipDiagram {...dimensions} />}
+          {p?.draught ? (
+            <p className={cn("flex items-baseline gap-2", dimensions && "mt-2")}>
+              <span className="text-caption text-fg-muted">Draught</span>
+              <span className="text-subhead text-fg-secondary tabular-nums">{p.draught.toFixed(1)} m</span>
+            </p>
+          ) : null}
+        </Section>
+      )}
+
       <Facts
         className="mt-5"
         items={[
-          ["Draught", p?.draught ? `${p.draught.toFixed(1)} m` : undefined],
-          ["Size", p?.length ? `${p.length} × ${p.beam ?? "?"} m` : undefined],
           ["Station", station ? <Link to={`/stations/${station}`}>{station}</Link> : undefined],
         ]}
       />
