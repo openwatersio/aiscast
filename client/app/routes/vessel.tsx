@@ -44,14 +44,23 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
  * Navigation inside the app. When the stream has heard the vessel, the pane opens at once
  * from that and the record fills in when the API answers, which is the difference between a
  * map app and a page load. When it has not, there is nothing to show yet, so this waits for
- * the record rather than opening an empty pane under a bare MMSI.
+ * the record rather than opening an empty pane under a bare MMSI. Either way the address is
+ * corrected to the canonical slug before the pane renders, as a document request's is: from
+ * the stream's name on the fast path, from the record's otherwise.
  */
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
-  const { mmsi } = parse(params.param);
+  const { mmsi, slug } = parse(params.param);
   const heard = liveInstance()?.stream.vessels.get(mmsi);
   const record = getVessel(browserAuth(), mmsi);
-  const feature: VesselRecord = heard?.name ? record : await record;
-  return { mmsi, name: heard?.name ?? (feature instanceof Promise ? undefined : feature?.properties.name), feature };
+  if (heard?.name) {
+    if (slug !== vesselSlug(heard.name)) throw redirect(vesselPath(mmsi, heard.name));
+    const feature: VesselRecord = record;
+    return { mmsi, name: heard.name, feature };
+  }
+  const feature = await record;
+  const name = feature?.properties.name;
+  if (feature && slug !== vesselSlug(name)) throw redirect(vesselPath(mmsi, name));
+  return { mmsi, name, feature: feature as VesselRecord };
 }
 
 export function meta({ loaderData }: Route.MetaArgs) {
