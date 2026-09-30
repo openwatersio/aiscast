@@ -354,7 +354,8 @@ func TestMCPCoverage(t *testing.T) {
 }
 
 func TestMCPCoverageFreshness(t *testing.T) {
-	cs := mcpClient(t, recordSeed(t))
+	p := recordSeed(t)
+	cs := mcpClient(t, p)
 	oslo := map[string]any{"min_lat": 59, "min_lon": 10, "max_lat": 60, "max_lon": 11}
 	var out mcpCoverage
 	if msg := mcpCall(t, cs, "get_coverage", map[string]any{"bbox": oslo}, &out); msg != "" {
@@ -374,6 +375,12 @@ func TestMCPCoverageFreshness(t *testing.T) {
 	}
 	if v := out.Vessels; v.Heard == nil || *v.Heard != 5 || v.New != nil || out.Area.Vessels != 3 {
 		t.Errorf("all: %+v %+v", v, out.Area)
+	}
+	// heard since the writer's last flush: in the cache, not yet in the record
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000006, 59.8, 10.8))
+	if msg := mcpCall(t, cs, "get_coverage", map[string]any{"bbox": oslo, "max_age": "30m"}, &out); msg != "" || out.Area.Vessels != 2 || *out.Vessels.Heard != 2 {
+		t.Errorf("unflushed vessel counted: %q %+v %+v", msg, out.Vessels, out.Area)
 	}
 	if msg := mcpCall(t, cs, "get_coverage", map[string]any{"max_age": "soon"}, &out); !strings.Contains(msg, "max_age") {
 		t.Errorf("bad max_age: %q", msg)

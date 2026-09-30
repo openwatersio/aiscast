@@ -912,6 +912,11 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 // mcpCountWithin counts from the record the vessels heard within age, network-wide and in box, and those
 // first heard within it. For all, heard is every vessel, and new is left out.
 func (p *Pipeline) mcpCountWithin(out *mcpCoverage, box *bbox, now time.Time, age time.Duration) error {
+	// The writer flushes once a second. Flushing first writes the vessels the cache heard since, so a wider
+	// max_age never counts fewer vessels than the default.
+	if err := p.flushStore(); err != nil {
+		return err
+	}
 	cut := ageCutoff(now, age)
 	heard := out.Vessels.Total
 	if age != ageAll {
