@@ -419,6 +419,9 @@ export function createMap(
   // The history the server holds, set by the route. The session's own positions extend it so
   // the line reaches the vessel's current mark between fetches.
   let history: Array<[number, number]> = [];
+  // Bumped whenever the track is replaced, so the dashed line redraws for any new one: two
+  // ranges thinned to the same point count and ending at the same report look alike otherwise.
+  let historyRevision = 0;
   let historyTimes: number[] = [];
   let historyEnd = 0;
 
@@ -496,13 +499,13 @@ export function createMap(
   }
 
   let trackKey = "";
-  let historyKey = "";
+  let drawnHistory = -1;
 
   function renderTrack() {
     if (!ready) return;
     // The dashed line changes only when a new track arrives, never while scrubbing.
-    if (historyKey !== `${history.length}|${historyEnd}`) {
-      historyKey = `${history.length}|${historyEnd}`;
+    if (drawnHistory !== historyRevision) {
+      drawnHistory = historyRevision;
       // Unsplit on purpose. The solid line above is split, so wherever the vessel went
       // unheard only this shows through, which is the whole point: a dashed stretch says a
       // course was never reported rather than leaving a blank the eye reads as an end.
@@ -807,7 +810,7 @@ export function createMap(
     // What the map held went with the old style, so everything is sent again.
     drawn.clear();
     hiddenInTiles.clear();
-    historyKey = "";
+    drawnHistory = -1;
     trackKey = "";
     hasTiles = false;
     if (tileJSON) addTileLayers();
@@ -946,6 +949,7 @@ export function createMap(
     },
     setTrack(coords, endedAt, times) {
       history = coords;
+      historyRevision++;
       historyTimes = times ?? coords.map((_, i) => i);
       historyEnd = endedAt ?? 0;
 
@@ -986,6 +990,7 @@ export function createMap(
         // Followed MMSIs count against a limit of 10, so the last vessel opened lets go.
         if (focus) stream.unfollow(focus);
         history = [];
+        historyRevision++;
         historyTimes = [];
         historyEnd = 0;
         scrubAt = null;
