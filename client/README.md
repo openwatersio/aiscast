@@ -11,7 +11,7 @@ npm run build -w client
 npm run preview -w client        # the built Worker, locally
 ```
 
-`AIS_API` in [wrangler.jsonc](wrangler.jsonc) is the API the server renders against, and the root loader hands it to the browser, so pointing the app at a local server is one setting. Put `AIS_API=http://localhost:8080` in `client/.dev.vars` to override it locally. `AIS_TOKEN`, a secret set with `wrangler secret put AIS_TOKEN`, is a partner token that gives server renders its limits, such as the longer track. The API limits HTTP requests per network address whatever the token, so renders share the allowance of the Worker's egress addresses.
+`AIS_API` in [wrangler.jsonc](wrangler.jsonc) is the API the server renders against, and the root loader hands it to the browser, so pointing the app at a local server is one setting. Put `AIS_API=http://localhost:8080` in `client/.dev.vars` to override it locally. `AIS_TOKEN`, a secret set with `wrangler secret put AIS_TOKEN`, is a partner token that gives server renders its limits, such as the longer track. Minted with an `rpm` claim (`aiscast-key new … -rpm <n>`), it also gives them their own HTTP request budget; without one, renders share the per-address limit of the Worker's egress addresses.
 
 ## Routes
 
