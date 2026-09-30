@@ -58,11 +58,15 @@
   --surface: light-dark(#ffffff, var(--color-navy-900));
   --surface-subtle: light-dark(var(--color-navy-100), var(--color-navy-800));
   /* The panes float over the map, so they are glass rather than opaque: the chart reads
-     through them and the app stops feeling like a sidebar bolted onto a map. */
-  --surface-glass: light-dark(rgba(255, 255, 255, 0.72), rgba(5, 7, 14, 0.4));
-  /* A grouped tile inside a pane. A fixed navy lands within a few percent of the dark glass
-     and disappears, so this is a wash that lifts off whatever is behind. */
-  --surface-tile: light-dark(rgba(15, 23, 42, 0.05), rgba(4, 8, 12, 0.2));
+     through them and the app stops feeling like a sidebar bolted onto a map. Clear enough
+     that the map tints them, as Apple Maps' panels are. */
+  --surface-glass: light-dark(rgba(244, 246, 249, 0.55), rgba(5, 18, 42, 0.55));
+  /* A grouped tile inside a pane: a white wash, so what it holds reads on a card against the
+     glass rather than on the map. */
+  --surface-tile: light-dark(
+    rgba(255, 255, 255, 0.5),
+    rgba(255, 255, 255, 0.05)
+  );
   --text: light-dark(var(--color-navy-900), var(--color-navy-100));
   --text-secondary: light-dark(var(--color-navy-600), var(--color-navy-300));
   --text-muted: light-dark(var(--color-navy-500), var(--color-navy-400));
@@ -71,7 +75,10 @@
   --accent: light-dark(var(--color-ocean-600), var(--color-ocean-400));
   --accent-hover: light-dark(var(--color-ocean-700), var(--color-ocean-300));
   --accent-bg: light-dark(var(--color-ocean-50), var(--color-ocean-950));
-  --accent-bg-subtle: light-dark(var(--color-ocean-100), var(--color-ocean-900));
+  --accent-bg-subtle: light-dark(
+    var(--color-ocean-100),
+    var(--color-ocean-900)
+  );
   --shadow: light-dark(rgba(15, 23, 42, 0.18), rgba(0, 0, 0, 0.45));
   --positive: light-dark(#16a34a, #4ade80);
   --caution: light-dark(#d97706, #fbbf24);
@@ -186,6 +193,31 @@
   @apply overflow-y-auto overscroll-contain;
 }
 
+/* The header (components/Header.tsx) is a bar across the top edge, glass like the panel, so
+   the map shows through it. Everything else placed over the map starts one --gap under
+   --header-bottom, its lower edge. --gap is the one spacing over the map: between the header,
+   the panel, the chips and the map's buttons, and from each to the screen's edge. */
+:root {
+  --gap: 12px;
+  --header-h: 48px;
+  --header-bottom: var(--header-h);
+}
+@media (min-width: 768px) {
+  :root {
+    --gap: 24px;
+    --header-h: 56px;
+  }
+}
+.site-header {
+  top: 0;
+  inset-inline: 0;
+  height: var(--header-h);
+  border-width: 0 0 1px;
+  border-radius: 0;
+  /* Shorter than a floating pane's, which would reach the chips a gap below. */
+  box-shadow: 0 2px 8px var(--shadow);
+}
+
 /* MapLibre puts `position: relative` on its own container and its stylesheet loads after
    this one, so an equal-specificity `fixed` utility loses on source order and the map
    collapses to zero height behind the panels. The id selector settles it. */
@@ -200,8 +232,8 @@
 /* MapLibre's stylesheet is imported after this one, so an equal-specificity override loses
    on source order and the controls stay white on a dark chart. The controls live inside
    #map, so prefixing with the id settles it wherever the imports end up. */
-/* MapLibre's controls, dressed as the chips over the map (StatusChip, ThemeChip): glass,
-   fully rounded, 36px tall, 12px from the edges and 12px apart. */
+/* MapLibre's controls, dressed as the chips over the map (StatusChip): glass,
+   fully rounded, 36px tall, a --gap from the edges and apart. */
 #map .maplibregl-ctrl-group,
 #map .maplibregl-ctrl-attrib.maplibregl-compact {
   background: var(--surface-glass);
@@ -241,23 +273,16 @@
     0 0 0 2px var(--accent),
     0 10px 30px var(--shadow);
 }
+/* The top-right corner starts under the header, which floats over the map. */
+#map .maplibregl-ctrl-top-right {
+  top: var(--header-bottom);
+}
 /* Floated, so the margins do not collapse: each control carries the gap on one side only. */
 #map .maplibregl-ctrl-top-right .maplibregl-ctrl {
-  margin: 12px 12px 0 0;
+  margin: var(--gap) var(--gap) 0 0;
 }
 #map .maplibregl-ctrl-bottom-right .maplibregl-ctrl {
-  margin: 0 12px 12px 0;
-}
-/* On a phone the top-right corner starts below the notch, level with the status chip. */
-#map .maplibregl-ctrl-top-right {
-  top: env(safe-area-inset-top);
-}
-/* On a wide screen it holds only the credits, 12px under the theme button, which is 36px
-   tall and 12px from the top (components/ThemeToggle.tsx). */
-@media (min-width: 768px) {
-  #map .maplibregl-ctrl-top-right {
-    top: 48px;
-  }
+  margin: 0 var(--gap) var(--gap) 0;
 }
 #map .maplibregl-ctrl-group button:not(:disabled) .maplibregl-ctrl-icon {
   /* MapLibre ships its control glyphs as dark SVG data URIs. */
@@ -368,14 +393,17 @@
   pointer-events: none;
 }
 
-
 /* The panel (components/Sheet.tsx). On a phone, a bottom sheet the full height of the screen
-   less a strip of map, pushed down to one of three detents. The detent is an attribute the
+   less the header, pushed down to one of three detents. The detent is an attribute the
    server renders, so the first paint is right before any script runs. A drag sets
    --sheet-drag, which wins over the detent until the finger lifts. The numbers match
    GAP and PEEK in Sheet.tsx. */
 .sheet {
-  --sheet-gap: 48px;
+  /* Level with the status chip and after it in the page, so a raised sheet covers the chip
+     rather than the chip floating over the search field. Both sit above the header's shadow. */
+  z-index: 10;
+  /* Under the header, a gap clear of it: GAP in Sheet.tsx, on a phone. */
+  --sheet-gap: calc(var(--header-bottom) + var(--gap));
   --sheet-peek: calc(76px + env(safe-area-inset-bottom));
   position: fixed;
   inset-inline: 0;
@@ -434,11 +462,13 @@
 
 @media (min-width: 768px) {
   .sheet {
-    inset: 0.75rem auto 0.75rem 0.75rem;
-    width: 380px;
+    /* As tall as what it holds, up to the room under the header, then its content scrolls. */
+    inset: calc(var(--header-bottom) + var(--gap)) auto auto var(--gap);
+    width: 408px;
     height: auto;
+    max-height: calc(100dvh - var(--header-bottom) - 2 * var(--gap));
     border-bottom-width: 1px;
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-2xl);
     transform: none;
     transition: none;
     touch-action: auto;
@@ -518,7 +548,6 @@ input[type="search"]::-webkit-search-cancel-button {
   }
 }
 
-
 /* The panel's loading bar (components/Shell.tsx): a short stripe running across it. */
 .pending-bar::before {
   content: "";
@@ -543,14 +572,14 @@ input[type="search"]::-webkit-search-cancel-button {
   }
 }
 
-/* The status chip (components/StatusChip.tsx) sits in the map's top-left corner: beside the
-   panel on a wide screen, clear of the notch on a phone. */
+/* The status chip (components/StatusChip.tsx) sits in the map's top-left corner, under the
+   header: beside the panel on a wide screen. */
 .status-dock {
-  top: calc(env(safe-area-inset-top) + 0.75rem);
-  left: 0.75rem;
+  top: calc(var(--header-bottom) + var(--gap));
+  left: var(--gap);
 }
 @media (min-width: 768px) {
   .status-dock {
-    left: calc(var(--map-left, 0px) + 0.75rem);
+    left: calc(var(--map-left, 0px) + var(--gap));
   }
 }

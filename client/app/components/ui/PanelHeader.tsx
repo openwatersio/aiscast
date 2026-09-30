@@ -34,34 +34,33 @@ export function stackStateFor(current: { state: unknown }, currentIsVessel: bool
 
 /**
  * The bar at the top of a stack entry: the way back, the entry's title, and whatever acts on
- * the entry. The title shows only while the page's own large title is out of sight, scrolled
- * away or below a lowered sheet, as a navigation bar's does in iOS.
+ * the entry. It floats over the top of the page, which scrolls under it. The title shows only
+ * while the page's own large title is out of sight, scrolled away or below a lowered sheet, as
+ * a navigation bar's does in iOS, and the bar's ground fades in with it.
  */
 export function PanelHeader({
   back,
   title,
   showTitle,
   actions,
-  overlay,
+  overPhoto,
 }: {
   back?: string;
   title?: string;
   showTitle: boolean;
   actions?: ReactNode;
-  /** Floats over the top of the page, a photo, until the title shows and it needs a ground. */
-  overlay?: boolean;
+  /** The page opens with a photo under the bar, whose buttons then need a scrim of their own. */
+  overPhoto?: boolean;
 }) {
   if (!back && !title && !actions) return null;
   return (
     <div
-      data-over-photo={(overlay && !showTitle) || undefined}
+      data-over-photo={(overPhoto && !showTitle) || undefined}
       className={cn(
-        "flex items-center gap-1 px-3 pt-3",
         // Its ground, once the title shows, is the surface fading out downward, so what scrolls
         // under the bar disappears into it rather than behind a band.
-        overlay &&
-        "pointer-events-none absolute inset-x-0 top-0 z-10 pb-6 *:pointer-events-auto before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-linear-to-b before:from-surface before:from-45% before:to-transparent before:opacity-0 before:transition-opacity before:duration-300",
-        overlay && showTitle && "before:opacity-100",
+        "pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-1 px-3 pt-3 pb-6 *:pointer-events-auto before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-linear-to-b before:from-surface before:from-45% before:to-transparent before:opacity-0 before:transition-opacity before:duration-300",
+        showTitle && "before:opacity-100",
         // Over a photo the buttons need their own scrim, as the photo's credit has.
         "data-over-photo:*:[a]:bg-black/45 data-over-photo:*:[a]:text-white data-over-photo:*:[a]:backdrop-blur-sm data-over-photo:*:[a]:hover:bg-black/60",
       )}

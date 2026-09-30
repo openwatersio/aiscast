@@ -36,7 +36,7 @@ export function SearchField({
         autoComplete="off"
         placeholder={placeholder}
         // 16px on phones: iOS Safari zooms the page into any field set smaller when it takes focus.
-        className="w-full rounded-full border border-line bg-surface-subtle py-2.5 pr-9 pl-9 text-base text-fg outline-none placeholder:text-fg-muted focus:border-accent md:text-body"
+        className="w-full rounded-full border border-transparent bg-surface-tile py-2.5 pr-9 pl-9 text-base text-fg outline-none placeholder:text-fg-muted focus:border-accent md:text-body"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onFocus={onFocus}

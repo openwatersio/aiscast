@@ -1,11 +1,12 @@
-import { Activity, KeyRound, RadioTower, type LucideIcon } from "lucide-react";
+import { Antenna } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { flagEmoji, flagName, vesselPath } from "../lib/ais";
 import { browserAuth, searchVessels, type VesselFeature } from "../lib/api";
 import { useLive, useNow, useStreamFrame } from "../lib/live";
 import { mediaKey, smallThumb } from "../lib/media";
-import { SITE } from "../lib/meta";
+import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
+import { BROWSE } from "../lib/nav";
 import {
   filterParams,
   filterTest,
@@ -19,18 +20,10 @@ import {
 import { useMedia } from "../lib/useMedia";
 import { cn } from "../lib/cn";
 import { useShell } from "./Shell";
-import { ThemeToggle } from "./ThemeToggle";
 import { ChipRow, MenuChip } from "./ui/Chip";
 import { ClassDot, IconBadge, List, ListRow } from "./ui/List";
+import { Prompt } from "./ui/Prompt";
 import { SearchField } from "./ui/SearchField";
-
-const DESTINATIONS: Array<{ label: string; hint: string; icon: LucideIcon; to?: string; href?: string }> = [
-  { to: "/stations", label: "Stations", hint: "Who is receiving, and where", icon: RadioTower },
-  { to: "/network", label: "Network", hint: "Sources, rates and delay", icon: Activity },
-  // The website's page, outside this app, so a plain link rather than a route. Absolute, so a
-  // dev server or a preview deploy, which serve only this app, still reach it.
-  { href: `${SITE}/token`, label: "Get a token", hint: "Feed your receiver, read the stream", icon: KeyRound },
-];
 
 interface Row {
   mmsi: number;
@@ -66,7 +59,10 @@ function shortAge(seconds: number): string {
 // the seconds it becomes, which change every minute.
 const results = new Map<string, Row[]>();
 
-/** The search box that heads the home panel, and the filters under it. */
+/**
+ * The search box that heads the home panel, and the filters under it once there is something
+ * to filter. Clearing the search clears them, so none is ever set while they are hidden.
+ */
 export function SearchBox() {
   const { query, setQuery, setDetent } = useShell();
   const navigate = useNavigate();
@@ -85,9 +81,8 @@ export function SearchBox() {
             onFocus={() => setDetent("full")}
           />
         </div>
-        <ThemeToggle />
       </div>
-      <SearchChips />
+      {query.trim() && <SearchChips />}
     </div>
   );
 }
@@ -97,10 +92,7 @@ const TYPE_OPTIONS = [
   ...SHIP_TYPES.map((t) => ({ value: t.label, label: t.label, chip: t.label })),
 ];
 
-/**
- * Filters for the search, as chips. They apply once there is a query to search, and wait,
- * selected, until then.
- */
+/** Filters for the search, as chips. */
 function SearchChips() {
   const { filters, setFilters } = useShell();
   const set = (change: Partial<SearchFilters>) => setFilters({ ...filters, ...change });
@@ -119,12 +111,13 @@ export function SearchResults() {
   return q ? <Results q={q} /> : <Destinations />;
 }
 
+/** What there is to browse besides vessels. */
 function Destinations() {
   return (
-    <nav>
+    <nav aria-label="Browse">
       <List>
-        {DESTINATIONS.map((d) => (
-          <ListRow key={d.label} to={d.to} href={d.href} leading={<IconBadge icon={d.icon} />} title={d.label} subtitle={d.hint} />
+        {BROWSE.map((d) => (
+          <ListRow key={d.label} to={d.to} leading={<IconBadge icon={d.icon} />} title={d.label} subtitle={d.hint} />
         ))}
       </List>
     </nav>
@@ -180,9 +173,16 @@ function Results({ q }: { q: string }) {
       );
     }
     return (
-      <p className="px-2 py-3 text-body text-fg-muted">
-        {hits ? "No vessel matches that name or MMSI." : q.length < 2 ? "Keep typing." : "Searching…"}
-      </p>
+      <>
+        <p className="px-2 py-3 text-body text-fg-muted">
+          {hits ? "No vessel matches that name or MMSI." : q.length < 2 ? "Keep typing." : "Searching…"}
+        </p>
+        {hits && (
+          <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mx-2">
+            The network only knows vessels its receivers have heard.
+          </Prompt>
+        )}
+      </>
     );
   }
 

@@ -241,13 +241,17 @@ export function createMap(
         padding.bottom = h - Math.min(...panels.map((r) => r.top)) + GAP;
       }
     }
+    // The header floats across the top on every screen.
+    const header = document.querySelector<HTMLElement>("[data-map-inset-top]")?.getBoundingClientRect();
+    if (header?.height) padding.top = header.bottom + GAP;
     // MapLibre cannot resolve a centre when padding leaves no room for one.
     padding.left = Math.min(padding.left, w * 0.75);
     padding.bottom = Math.min(padding.bottom, h * 0.75);
+    padding.top = Math.min(padding.top, h * 0.25);
     // Setting padding is a camera jump, which cancels a flight in progress, so only a change
     // is applied.
     const current = map.getPadding();
-    if (current.left !== padding.left || current.bottom !== padding.bottom || current.top || current.right) {
+    if (current.left !== padding.left || current.bottom !== padding.bottom || current.top !== padding.top || current.right) {
       map.setPadding(padding);
     }
     // Anything docked over the map centres in what the panes leave, not in the viewport. This

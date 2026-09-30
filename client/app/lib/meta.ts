@@ -1,4 +1,5 @@
 import type { MetaDescriptor } from "react-router";
+import { DEFAULT_SHARE_IMAGE } from "./links";
 
 /** Where the app is served. Canonical URLs are absolute, so they name it. */
 export const SITE = "https://openwaters.io/ais";
@@ -12,7 +13,7 @@ export function pageMeta({
   description,
   path,
   noindex = false,
-  image,
+  image = DEFAULT_SHARE_IMAGE,
   jsonLd,
 }: {
   title: string;
@@ -20,7 +21,7 @@ export function pageMeta({
   /** Path within the app, which is also the canonical URL's. */
   path: string;
   noindex?: boolean;
-  /** An absolute URL, for link previews. */
+  /** An absolute URL, for link previews. Pages without one share the network's card. */
   image?: string;
   jsonLd?: Record<string, unknown>;
 }): MetaDescriptor[] {
@@ -38,7 +39,8 @@ export function pageMeta({
     { name: "twitter:card", content: "summary_large_image" },
     { name: "twitter:title", content: title },
     { name: "twitter:description", content: description },
-    ...(image ? [{ property: "og:image", content: image }, { name: "twitter:image", content: image }] : []),
+    { property: "og:image", content: image },
+    { name: "twitter:image", content: image },
     ...(jsonLd ? [{ "script:ld+json": jsonLd }] : []),
   ];
 }

@@ -1,5 +1,6 @@
 import { Menu as BaseMenu } from "@base-ui/react/menu";
 import type { ReactElement, ReactNode } from "react";
+import { cn } from "../../lib/cn";
 
 const ITEM =
   "flex w-full cursor-default items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-body text-fg outline-none select-none data-highlighted:bg-surface-subtle data-disabled:opacity-50";
@@ -24,16 +25,38 @@ export function Menu({
       <BaseMenu.Trigger render={trigger} />
       <BaseMenu.Portal>
         <BaseMenu.Positioner side={side} align={align} sideOffset={8} className="z-50">
-          <BaseMenu.Popup className="pane min-w-40 p-1.5 outline-none">{children}</BaseMenu.Popup>
+          {/* Base UI measures the room left on screen, so a long menu on a short phone scrolls. */}
+          <BaseMenu.Popup className="pane max-h-(--available-height) min-w-40 overflow-y-auto p-1.5 outline-none">{children}</BaseMenu.Popup>
         </BaseMenu.Positioner>
       </BaseMenu.Portal>
     </BaseMenu.Root>
   );
 }
 
-export function MenuItem({ onClick, children }: { onClick(): void; children: ReactNode }) {
+export function MenuItem({
+  onClick,
+  closeOnClick = true,
+  label,
+  className,
+  children,
+}: {
+  onClick(): void;
+  /** Off for an item that answers in place, such as one that says it copied a link. */
+  closeOnClick?: boolean;
+  /** The accessible name, for an item that is only an icon. */
+  label?: string;
+  className?: string;
+  children: ReactNode;
+}) {
   return (
-    <BaseMenu.Item className={ITEM} onClick={onClick}>
+    <BaseMenu.Item
+      className={cn(ITEM, className)}
+      onClick={onClick}
+      closeOnClick={closeOnClick}
+      aria-label={label}
+      title={label}
+      label={label}
+    >
       {children}
     </BaseMenu.Item>
   );
@@ -54,6 +77,33 @@ export function MenuRadioItem({ value, children, hint }: { value: unknown; child
       <span>{children}</span>
       {hint != null && <span className="text-caption text-fg-muted">{hint}</span>}
     </BaseMenu.RadioItem>
+  );
+}
+
+/** A link to a page outside the app, such as the website's. */
+export function MenuLinkItem({
+  href,
+  label,
+  className,
+  children,
+}: {
+  href: string;
+  /** The accessible name, for a link that is only an icon. */
+  label?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <BaseMenu.LinkItem
+      href={href}
+      closeOnClick
+      aria-label={label}
+      title={label}
+      label={label}
+      className={cn(ITEM, "no-underline", className)}
+    >
+      {children}
+    </BaseMenu.LinkItem>
   );
 }
 

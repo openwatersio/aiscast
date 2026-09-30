@@ -33,3 +33,24 @@ export function ActionButton({
     </button>
   );
 }
+
+/** An action that opens a page outside the app, drawn as an ActionButton. */
+export function ActionLink({
+  icon: Icon,
+  label,
+  className,
+  ...props
+}: { icon: LucideIcon; label: string } & Omit<ComponentProps<"a">, "children">) {
+  return (
+    <a
+      className={cn(
+        "flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg bg-surface-tile px-2 py-2 text-caption font-medium text-accent no-underline transition-colors hover:bg-surface-subtle",
+        className,
+      )}
+      {...props}
+    >
+      <Icon className="size-5" aria-hidden />
+      <span className="truncate">{label}</span>
+    </a>
+  );
+}

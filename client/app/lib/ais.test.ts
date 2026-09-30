@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bearing,
   isValidImo,
+  isVolunteer,
   indexAt,
   interpolateAt,
   mergeTrack,
@@ -429,5 +430,17 @@ describe("viewBoxes", () => {
   it("takes a view wider than the world, or a wrapped copy of it, as the world or its place in it", () => {
     expect(viewBoxes(-80, -300, 80, 300)).toEqual([[-80, -180, 80, 180]]);
     expect(viewBoxes(50, 362, 60, 372)).toEqual([[50, 2, 60, 12]]);
+  });
+});
+
+describe("isVolunteer", () => {
+  it("counts the kinds people run", () => {
+    for (const s of ["udp:24dfc99708ff", "station:ed25519:abc", "http:ed25519:abc", "v1:abc", "mmsi:367430440"]) {
+      expect(isVolunteer(s)).toBe(true);
+    }
+  });
+  it("leaves out feeds and aggregates", () => {
+    for (const s of ["aishub", "aisstream", "kystverket", "barentswatch", "digitraffic"]) expect(isVolunteer(s)).toBe(false);
+    expect(isVolunteer(undefined)).toBe(false);
   });
 });
