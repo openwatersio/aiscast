@@ -604,8 +604,14 @@ export function createMap(
   }
 
   // MMSIs already looked up in the tiles, so one missing from them is not asked for every
-  // frame. Cleared when the tiles reload.
+  // frame. The tiles are often still loading when the stream first hears a vessel, so each
+  // time they finish loading, the ones still without particulars are asked again.
   const askedTiles = new Set<number>();
+  map.on("sourcedata", (e) => {
+    if (e.sourceId !== "tiles" || !e.isSourceLoaded) return;
+    askedTiles.clear();
+    adoptFromTiles();
+  });
 
   /** Gives the stream the particulars the tiles already hold for vessels it has only positions for. */
   function adoptFromTiles() {
@@ -875,7 +881,6 @@ export function createMap(
     // A hidden tab would fetch tiles nobody sees. The next visible tick catches up.
     if (!hasTiles || document.hidden || Date.now() - lastRefresh < TILE_FRESH_MS) return;
     lastRefresh = Date.now();
-    askedTiles.clear();
     map.refreshTiles("tiles");
   }
 
