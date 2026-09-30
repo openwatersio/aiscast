@@ -115,7 +115,8 @@ type Pipeline struct {
 	probeLast    atomic.Int64 // unix time of the last event the loopback probe received; 0 = probe not running
 	rate         rateSample   // events/s over the last logStats interval; /v1/stats
 	usage        usageCounters
-	lastBySource sync.Map // source → time.Time of last event; /metrics reads it
+	recordCounts atomic.Pointer[recordCounts] // the vessel record's counts, refreshed each minute; nil without a record
+	lastBySource sync.Map                     // source → time.Time of last event; /metrics reads it
 	delays       delayStats
 	mcp          *mcpService // /mcp: the cache as tools for AI assistants
 	streams      streamGauge // open streams by protocol and tier; /metrics

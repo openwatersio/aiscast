@@ -69,6 +69,7 @@ func main() {
 				}
 			}
 			go p.runStore()
+			go p.runRecordCounts()
 		}
 	}
 	dedupe := env("DEDUPE", "dedupe.json")

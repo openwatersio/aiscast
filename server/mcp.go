@@ -13,6 +13,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +22,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.6.0"
+const mcpVersion = "0.7.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -93,7 +94,7 @@ func newMCPService(p *Pipeline) *mcpService {
 		Description: "The positions heard from one vessel over a time range, oldest first, with speed, course, and navigational status. Positions implying an impossible speed for the vessel are left out. Use for where a ship was yesterday, when it left port, or its route today. Anonymous and personal calls reach the last 48 hours; feeder and commercial tokens reach further, 7 days per call. By default the positions are spread evenly over the range; interval_minutes sets the spacing."},
 		p.mcpGetVesselTrack)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_coverage", Title: "Coverage and sources", Annotations: ro("Coverage and sources"),
-		Description: "Where Open Waters AIS is hearing AIS right now: sources with their current delay, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Call this before saying a region has no traffic."},
+		Description: "Where Open Waters AIS is hearing AIS right now: sources with their current delay, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Vessel counts cover the last 30 minutes; max_age widens them, to 7d for the last week or all for every vessel the network has heard. Call this before saying a region has no traffic."},
 		p.mcpGetCoverage)
 	return &mcpService{srv: s, http: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
 		Stateless:           true, // no session state, and the mode the 2026-07-28 protocol revision requires
@@ -715,6 +716,7 @@ var errMCPRecord = errors.New("the vessel record is unavailable; try again short
 type mcpCoverageIn struct {
 	BBox    *mcpBox `json:"bbox,omitempty" jsonschema:"report the stations covering this box and the vessels currently in it"`
 	Station string  `json:"station,omitempty" jsonschema:"a station id from an earlier result, for that station's numbers"`
+	MaxAge  string  `json:"max_age,omitempty" jsonschema:"count vessels heard within this long, network-wide and in bbox, instead of the last 30 minutes: a duration such as 6h, 24h, or 7d, or all for every vessel the network has heard"`
 }
 
 type mcpSource struct {
@@ -749,13 +751,16 @@ type mcpStationCounts struct {
 }
 
 type mcpVesselCounts struct {
-	Total        int `json:"total" jsonschema:"vessels heard in the last 30 minutes"`
-	WithPosition int `json:"with_position"`
+	Total        int  `json:"total" jsonschema:"every vessel the network has heard"`
+	Active       int  `json:"active" jsonschema:"vessels heard in the last 30 minutes"`
+	WithPosition int  `json:"with_position" jsonschema:"of the active vessels, those with a position"`
+	Heard        *int `json:"heard,omitempty" jsonschema:"vessels heard within max_age; present when max_age is given"`
+	New          *int `json:"new,omitempty" jsonschema:"vessels first heard within max_age; present when max_age is a duration"`
 }
 
 type mcpArea struct {
 	BBox     mcpBox       `json:"bbox"`
-	Vessels  int          `json:"vessels" jsonschema:"vessels with a position inside the box"`
+	Vessels  int          `json:"vessels" jsonschema:"vessels whose last known position is inside the box, heard in the last 30 minutes or within max_age"`
 	Stations []mcpStation `json:"stations" jsonschema:"stations whose heard extent overlaps the box"`
 }
 
@@ -793,6 +798,16 @@ func mcpStationRow(r stationRow) mcpStation {
 
 func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in mcpCoverageIn) (*mcp.CallToolResult, mcpCoverage, error) {
 	now := time.Now()
+	var maxAge time.Duration
+	if in.MaxAge != "" {
+		var err error
+		if maxAge, err = mcpMaxAge(in.MaxAge); err != nil {
+			return nil, mcpCoverage{}, err
+		}
+		if p.store == nil {
+			return nil, mcpCoverage{}, errors.New("max_age needs the vessel record, which this server is running without")
+		}
+	}
 	rows := p.stations.rows(now)
 	out := mcpCoverage{Time: now.UTC().Format(time.RFC3339), Stations: mcpStationCounts{Total: len(rows)}}
 
@@ -846,7 +861,7 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 		}
 	}
 	p.vmu.RLock()
-	out.Vessels.Total = len(p.vessels)
+	out.Vessels.Active = len(p.vessels)
 	for _, v := range p.vessels {
 		if v.HasPos {
 			out.Vessels.WithPosition++
@@ -856,6 +871,13 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 		}
 	}
 	p.vmu.RUnlock()
+	out.Vessels.Total = p.vesselTotal(out.Vessels.Active)
+	if in.MaxAge != "" {
+		if err := p.mcpCountWithin(&out, box, now, maxAge); err != nil {
+			log.Printf("store: %v", err)
+			return nil, mcpCoverage{}, errMCPRecord
+		}
+	}
 
 	if in.Station != "" {
 		for _, r := range rows {
@@ -871,12 +893,65 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 	p.rate.mu.Lock()
 	out.EventsPerSecond = math.Round(p.rate.perSec*10) / 10
 	p.rate.mu.Unlock()
-	out.Summary = fmt.Sprintf("%d vessels with a position, heard by %d active stations across %d sources, %.0f messages/s",
-		out.Vessels.WithPosition, out.Stations.Active, len(out.Sources), out.EventsPerSecond)
+	out.Summary = fmt.Sprintf("%d vessels with a position, heard by %d active stations across %d sources, %.0f messages/s; %d vessels heard in all",
+		out.Vessels.WithPosition, out.Stations.Active, len(out.Sources), out.EventsPerSecond, out.Vessels.Total)
+	within := ""
+	if out.Vessels.Heard != nil {
+		within = " heard within " + in.MaxAge
+		out.Summary += fmt.Sprintf("; %d vessels%s", *out.Vessels.Heard, within)
+		if out.Vessels.New != nil {
+			out.Summary += fmt.Sprintf(", %d of them heard for the first time", *out.Vessels.New)
+		}
+	}
 	if out.Area != nil {
-		out.Summary += fmt.Sprintf("; %d vessels and %d stations in the requested box", out.Area.Vessels, len(out.Area.Stations))
+		out.Summary += fmt.Sprintf("; %d vessels%s and %d stations in the requested box", out.Area.Vessels, within, len(out.Area.Stations))
 	}
 	return nil, out, nil
+}
+
+// mcpCountWithin counts from the record the vessels heard within age, network-wide and in box, and those
+// first heard within it. For all, heard is every vessel, and new is left out.
+func (p *Pipeline) mcpCountWithin(out *mcpCoverage, box *bbox, now time.Time, age time.Duration) error {
+	// The writer flushes once a second. Flushing first writes the vessels the cache heard since, so a wider
+	// max_age never counts fewer vessels than the default.
+	if err := p.flushStore(); err != nil {
+		return err
+	}
+	cut := ageCutoff(now, age)
+	heard := out.Vessels.Total
+	if age != ageAll {
+		var err error
+		if heard, err = p.store.count(recordQuery{since: cut}); err != nil {
+			return err
+		}
+		fresh, err := p.store.countFirstSeen(cut)
+		if err != nil {
+			return err
+		}
+		out.Vessels.New = &fresh
+	}
+	out.Vessels.Heard = &heard
+	if box != nil {
+		n, err := p.store.count(recordQuery{boxes: []bbox{*box}, since: cut, hasPos: true})
+		if err != nil {
+			return err
+		}
+		out.Area.Vessels = n
+	}
+	return nil
+}
+
+// mcpMaxAge reads get_coverage's max_age: what /v1/vessels takes for max_age, and whole days such as 7d.
+func mcpMaxAge(s string) (time.Duration, error) {
+	if d, ok := strings.CutSuffix(s, "d"); ok {
+		if n, err := strconv.ParseUint(d, 10, 16); err == nil && n > 0 {
+			return time.Duration(n) * 24 * time.Hour, nil
+		}
+	}
+	if age, _, msg := parseMaxAge(s); msg == "" {
+		return age, nil
+	}
+	return 0, errors.New("max_age: a duration such as 6h, 24h, or 7d, or all")
 }
 
 // ---- labels, so a reader never has to decode ITU tables ----

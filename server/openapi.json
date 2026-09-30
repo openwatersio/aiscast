@@ -364,7 +364,7 @@
         "operationId": "getStats",
         "tags": ["Status"],
         "summary": "Stats",
-        "description": "A summary for status pages and growth tracking: stations, vessels, event rates, client counts, and a breakdown by source kind. Counts are rolling 24-hour and 7-day windows that survive restarts, never since-start totals.",
+        "description": "A summary for status pages and growth tracking: stations, vessels, event rates, client counts, and a breakdown by source kind. Vessel counts come from the vessel record, which holds every vessel any archive has heard. The other counts are rolling 24-hour and 7-day windows that survive restarts, never since-start totals.",
         "security": [],
         "responses": {
           "200": {
@@ -375,7 +375,7 @@
                 "example": {
                   "time": "2026-08-21T13:40:12Z",
                   "stations": { "total": 14, "active": 11, "by_source": { "kystverket": 1, "digitraffic": 1, "station": 5, "udp": 7 } },
-                  "vessels": { "total": 4812, "with_position": 4790, "by_kind": { "vessel": 4701, "aton": 88, "base": 19, "sar": 4 } },
+                  "vessels": { "total": 332255, "active": 4812, "with_position": 4790, "by_kind": { "vessel": 4701, "aton": 88, "base": 19, "sar": 4 }, "last_24h": 96267, "last_7d": 176687, "last_30d": 312480, "new": { "last_24h": 2115, "last_7d": 19485, "last_30d": 101240 } },
                   "events": { "per_second": 212.4, "last_24h": 18230411, "last_7d": 121004312, "duplicates": { "last_24h": 2210560, "last_7d": 15320011 } },
                   "clients": { "streams": 9, "streams_opened": { "last_24h": 410, "last_7d": 2822 }, "requests": { "last_24h": 28310, "last_7d": 190412 } },
                   "sources": {
@@ -730,11 +730,24 @@
           },
           "vessels": {
             "type": "object",
-            "description": "The 30-minute vessel cache.",
+            "description": "`total` and the windows count the vessel record, refreshed once a minute. `active`, `with_position`, and `by_kind` describe the vessels heard in the last 30 minutes. A server running without the record reports `total` as `active` and leaves out the windows.",
             "properties": {
-              "total": { "type": "integer" },
-              "with_position": { "type": "integer" },
-              "by_kind": { "type": "object", "additionalProperties": { "type": "integer" } }
+              "total": { "type": "integer", "description": "Every vessel the network has heard." },
+              "active": { "type": "integer", "description": "Vessels heard in the last 30 minutes." },
+              "with_position": { "type": "integer", "description": "Active vessels with a position." },
+              "by_kind": { "type": "object", "description": "Active vessels by kind.", "additionalProperties": { "type": "integer" } },
+              "last_24h": { "type": "integer", "description": "Vessels heard in the last 24 hours." },
+              "last_7d": { "type": "integer", "description": "Vessels heard in the last 7 days." },
+              "last_30d": { "type": "integer", "description": "Vessels heard in the last 30 days." },
+              "new": {
+                "type": "object",
+                "description": "Vessels first heard in each window.",
+                "properties": {
+                  "last_24h": { "type": "integer" },
+                  "last_7d": { "type": "integer" },
+                  "last_30d": { "type": "integer" }
+                }
+              }
             }
           },
           "events": {

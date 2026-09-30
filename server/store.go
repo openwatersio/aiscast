@@ -65,6 +65,7 @@ CREATE INDEX IF NOT EXISTS vessels_search ON vessels (search);
 CREATE INDEX IF NOT EXISTS vessels_cell ON vessels (cell, seen);
 CREATE INDEX IF NOT EXISTS vessels_seen ON vessels (seen);
 CREATE INDEX IF NOT EXISTS vessels_imo ON vessels (imo);
+CREATE INDEX IF NOT EXISTS vessels_first_seen ON vessels (first_seen);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `
 
@@ -386,6 +387,34 @@ func (s *store) count(q recordQuery) (int, error) {
 	}
 	var n int
 	err = s.db.QueryRow("SELECT count(*) FROM vessels"+clause, args...).Scan(&n)
+	return n, err
+}
+
+// counts counts every vessel in the record, and those heard and first heard within each window. Each
+// window is a range on its own index.
+func (s *store) counts(now time.Time) (*recordCounts, error) {
+	c := &recordCounts{Heard: map[string]int{}, New: map[string]int{}}
+	if err := s.db.QueryRow("SELECT count(*) FROM vessels").Scan(&c.Total); err != nil {
+		return nil, err
+	}
+	for _, w := range recordWindows {
+		cut := unixMs(now.Add(-w.age))
+		var heard, fresh int
+		if err := s.db.QueryRow("SELECT count(*) FROM vessels WHERE seen >= ?", cut).Scan(&heard); err != nil {
+			return nil, err
+		}
+		if err := s.db.QueryRow("SELECT count(*) FROM vessels WHERE first_seen >= ?", cut).Scan(&fresh); err != nil {
+			return nil, err
+		}
+		c.Heard[w.key], c.New[w.key] = heard, fresh
+	}
+	return c, nil
+}
+
+// countFirstSeen is the number of vessels first heard at or after since.
+func (s *store) countFirstSeen(since time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow("SELECT count(*) FROM vessels WHERE first_seen >= ?", unixMs(since)).Scan(&n)
 	return n, err
 }
 
