@@ -215,10 +215,12 @@ func legacyFeature(v *vessel, mmsi uint32) map[string]any {
 	}
 	if v.Beam > 0 {
 		props["beam"] = v.Beam
-		props["to_port"], props["to_starboard"] = v.Dim.C, v.Dim.D
 	}
-	if v.Length > 0 {
+	if v.Length > 0 && v.Dim.A+v.Dim.B == v.Length { // a pair is served when it adds up to its total
 		props["to_bow"], props["to_stern"] = v.Dim.A, v.Dim.B
+	}
+	if v.Beam > 0 && uint16(v.Dim.C)+uint16(v.Dim.D) == v.Beam {
+		props["to_port"], props["to_starboard"] = v.Dim.C, v.Dim.D
 	}
 	return map[string]any{
 		"type": "Feature", "id": mmsi,
@@ -243,6 +245,9 @@ func TestVesselsBytesUnchanged(t *testing.T) {
 			v.Name, v.ShipType, v.IMO, v.CallSign, v.Destination = "A&B <TEST>", 70, 9319466, "LAJB7", "NO OSL"
 			v.ETA, v.Draught, v.Length, v.Beam = ais.FieldETA{Month: 9, Day: 19, Hour: 24, Minute: 60}, 5.2, 150, 22
 			v.Dim = ais.FieldDimension{A: 0, B: 150, C: 10, D: 12} // a zero offset is a real value
+			if i%9 == 0 {
+				v.Dim = ais.FieldDimension{} // a record row from before the offsets: totals, no offsets
+			}
 		}
 		mmsi := []uint32{257000000, 230000000, 111000000, 970000000}[i%4] + i
 		p.putVesselLocked(mmsi, v)

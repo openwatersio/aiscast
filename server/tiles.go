@@ -169,15 +169,16 @@ func tileBox(z, x, y int) bbox {
 
 // tilePoint is what a tile shows of a vessel, copied out under the read lock so encoding does not hold it.
 type tilePoint struct {
-	mmsi                  uint32
-	x, y                  int32
-	seen                  time.Time
-	name, kind, class     string
-	source, station       string
-	shipType, navStatus   uint8
-	cog, sog              float64
-	heading, length, beam uint16
-	dim                   ais.FieldDimension
+	mmsi                       uint32
+	x, y                       int32
+	seen                       time.Time
+	name, kind, class          string
+	source, station            string
+	shipType, navStatus        uint8
+	cog, sog                   float64
+	heading, length, beam      uint16
+	dim                        ais.FieldDimension
+	lengthOffsets, beamOffsets bool
 }
 
 // vesselTile encodes the vessels in a tile that match f.
@@ -212,7 +213,8 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		}
 		pts = append(pts, tilePoint{mmsi: mmsi, x: int32(math.Round(px)), y: int32(math.Round(py)), seen: v.Seen,
 			name: v.Name, kind: v.Kind, class: v.Class, source: sourceKind(v.Source), station: v.Station, shipType: v.ShipType,
-			navStatus: v.NavStatus, cog: v.Cog, sog: v.Sog, heading: v.Heading, length: v.Length, beam: v.Beam, dim: v.Dim})
+			navStatus: v.NavStatus, cog: v.Cog, sog: v.Sog, heading: v.Heading, length: v.Length, beam: v.Beam, dim: v.Dim,
+			lengthOffsets: v.hasLengthOffsets(), beamOffsets: v.hasBeamOffsets()})
 	}
 	p.vmu.RLock()
 	p.vesselsIn([]bbox{box}, add)
@@ -265,11 +267,17 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.navStatus != 15 {
 			props = append(props, mvtProp{"nav_status", uint64(pt.navStatus)})
 		}
-		if pt.length > 0 { // with the total known, a zero offset is information, so the pair goes together
-			props = append(props, mvtProp{"length", uint64(pt.length)}, mvtProp{"to_bow", uint64(pt.dim.A)}, mvtProp{"to_stern", uint64(pt.dim.B)})
+		if pt.length > 0 {
+			props = append(props, mvtProp{"length", uint64(pt.length)})
+		}
+		if pt.lengthOffsets { // served whole, as the Feature serves them (hasLengthOffsets)
+			props = append(props, mvtProp{"to_bow", uint64(pt.dim.A)}, mvtProp{"to_stern", uint64(pt.dim.B)})
 		}
 		if pt.beam > 0 {
-			props = append(props, mvtProp{"beam", uint64(pt.beam)}, mvtProp{"to_port", uint64(pt.dim.C)}, mvtProp{"to_starboard", uint64(pt.dim.D)})
+			props = append(props, mvtProp{"beam", uint64(pt.beam)})
+		}
+		if pt.beamOffsets {
+			props = append(props, mvtProp{"to_port", uint64(pt.dim.C)}, mvtProp{"to_starboard", uint64(pt.dim.D)})
 		}
 		if pt.sog < 102.3 {
 			props = append(props, mvtProp{"sog", pt.sog})

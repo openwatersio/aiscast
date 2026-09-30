@@ -401,12 +401,10 @@ func (v *vessel) feature(mmsi uint32) vesselFeature {
 		Name: v.Name, Type: v.ShipType, Flag: flagOf(mmsi), IMO: v.IMO, CallSign: v.CallSign,
 		Destination: v.Destination, ETA: etaString(v.ETA), Draught: v.Draught, Length: v.Length, Beam: v.Beam,
 	}
-	// With the total known, a zero offset is information (a reference point on the bow, or AIS's "reference
-	// point unknown" of 0 to bow and the length to stern), so the pair is present or absent together.
-	if d := v.Dim; v.Length > 0 { // a copy, so the feature does not point into the live vessel
+	if d := v.Dim; v.hasLengthOffsets() { // a copy, so the feature does not point into the live vessel
 		props.ToBow, props.ToStern = &d.A, &d.B
 	}
-	if d := v.Dim; v.Beam > 0 {
+	if d := v.Dim; v.hasBeamOffsets() {
 		props.ToPort, props.ToStarboard = &d.C, &d.D
 	}
 	if v.Cog < 360 {
@@ -1060,6 +1058,15 @@ func (v *vessel) synthStatic(mmsi uint32) *Event {
 func (v *vessel) synthEvent(mmsi uint32, pkt ais.Packet, t time.Time) *Event {
 	return &Event{Time: t, Source: v.Source, Station: v.Station, Packet: pkt, Type: typeName(pkt),
 		MMSI: mmsi, Name: v.Name, Lat: v.Lat, Lon: v.Lon, HasPos: v.HasPos, Synthesized: true}
+}
+
+// hasLengthOffsets and hasBeamOffsets report whether a pair of antenna offsets is known: it adds up to its
+// known total. A zero offset is then information (a reference point on the bow, or AIS's "reference point
+// unknown" of 0 to bow and the length to stern), so the pair is served whole. A record row from before the
+// offsets were kept holds a total with 0 and 0, which adds up to nothing, until the next static fills it.
+func (v *vessel) hasLengthOffsets() bool { return v.Length > 0 && v.Dim.A+v.Dim.B == v.Length }
+func (v *vessel) hasBeamOffsets() bool {
+	return v.Beam > 0 && uint16(v.Dim.C)+uint16(v.Dim.D) == v.Beam
 }
 
 // dimensions turns the AIS reference-point distances into overall length and beam, 0 when not sent, and

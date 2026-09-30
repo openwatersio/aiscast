@@ -686,8 +686,13 @@ func TestOpenStoreAddsMissingColumns(t *testing.T) {
 		if rec, ok, err := st.get(257000001); err != nil || !ok || rec.v.TrustedAt.IsZero() || rec.v.Dim != v.Dim {
 			t.Fatalf("%v %v %+v", err, ok, rec.v)
 		}
-		if rec, ok, err := st.get(257000002); err != nil || !ok || rec.v.Length != 160 || rec.v.Dim != (ais.FieldDimension{}) {
+		rec, ok, err := st.get(257000002)
+		if err != nil || !ok || rec.v.Length != 160 || rec.v.Dim != (ais.FieldDimension{}) {
 			t.Fatalf("row from the older build: %v %v %+v", err, ok, rec.v)
+		}
+		// its 0 and 0 do not add up to its length, so it serves no offsets rather than a hull of nothing
+		if p := rec.v.feature(257000002).Properties; p.ToBow != nil || p.ToPort != nil || p.Length != 160 {
+			t.Fatalf("older row's feature: %+v", p)
 		}
 		st.close()
 	}
