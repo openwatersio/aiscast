@@ -78,19 +78,21 @@ func (f *tileFilter) match(mmsi uint32, v *vessel, now time.Time) bool {
 }
 
 // serveVesselTile: GET /v1/vessels/tiles/{z}/{x}/{y} → the vessels in one tile, gzipped. The area
-// cap does not apply: a tile bounds its own cost by thinning, and the tile rate limit bounds how many.
+// cap does not apply: a tile bounds its own cost by thinning, and the tile rate limit bounds how many. A token
+// with rpm 0 skips that limit; any other token keeps the per-address tile limit.
 func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 	if preflight(w, r, corsHeaders) {
 		return
 	}
-	if p.limited(w, tileLimit, clientIP(r)) {
+	cl, err := p.socketClaims(r)
+	if rpm, ok := ownRPM(cl, err); !(ok && rpm == 0) && p.limited(w, tileLimit, clientIP(r)) {
 		return
 	}
-	cl, err := p.requestClaims(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
+	cl = orAnonymous(cl, r)
 	z, x, y, ok := tileCoords(r)
 	if !ok {
 		http.Error(w, "tile out of range", http.StatusBadRequest)
