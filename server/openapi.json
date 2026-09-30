@@ -103,7 +103,7 @@
         "operationId": "getVessel",
         "tags": ["Vessels and stations"],
         "summary": "One vessel",
-        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is when the vessel record first held it. `attribution` carries the credit line for the source of its last message.",
+        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is the earliest report of the vessel the network holds, from live traffic or its archive. `attribution` carries the credit line for the source of its last message.",
         "security": [{}, { "token": [] }],
         "parameters": [
           {
@@ -154,13 +154,13 @@
         "operationId": "getVesselTrack",
         "tags": ["Vessels and stations"],
         "summary": "Where a vessel has been",
-        "description": "The positions the network heard from one vessel over the last 48 hours, as a GeoJSON Feature or a GPX 1.1 track. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. When more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. A range reaching past 48 hours is clamped to it, and `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
+        "description": "The positions the network heard from one vessel, as a GeoJSON Feature or a GPX 1.1 track. Anonymous and personal requests reach the last 48 hours; feeder and commercial tokens reach packaged history before that, up to 7 days per request, and for the other tiers a range that overlaps the last 48 hours is clamped to them, while one wholly before them is a `403`. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. When more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
         "security": [{}, { "token": [] }],
         "parameters": [
           { "name": "mmsi", "in": "path", "required": true, "description": "The vessel's MMSI.", "schema": { "type": "integer" }, "example": 368168720 },
-          { "name": "from", "in": "query", "required": false, "description": "Start, RFC 3339. Defaults to 24 hours before `to`.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "from", "in": "query", "required": false, "description": "Start, RFC 3339. Defaults to 24 hours before `to`. At most 7 days before `to`.", "schema": { "type": "string", "format": "date-time" } },
           { "name": "to", "in": "query", "required": false, "description": "End, RFC 3339. Defaults to now.", "schema": { "type": "string", "format": "date-time" } },
-          { "name": "interval", "in": "query", "required": false, "description": "At most one position per interval, the first in each: whole seconds or a duration such as `5m`. Defaults to every position heard.", "schema": { "type": "string" }, "example": "5m" },
+          { "name": "interval", "in": "query", "required": false, "description": "At most one position per interval, the first in each: whole seconds or a duration such as `5m`, or `0` for every position heard. Defaults to the round step, from 5 seconds to a day, that spreads `limit` positions over the whole range, so a dense range is thinned rather than cut to its newest positions. The answer reports the interval used.", "schema": { "type": "string" }, "example": "5m" },
           { "name": "limit", "in": "query", "required": false, "description": "Most positions to return. Defaults to 1,000 and is capped by tier: 200 anonymous, 1,000 with a personal token, 5,000 for feeder and above.", "schema": { "type": "integer", "minimum": 1 } },
           { "name": "format", "in": "query", "required": false, "description": "`geojson`, the default, or `gpx`.", "schema": { "type": "string", "enum": ["geojson", "gpx"] } }
         ],
@@ -178,12 +178,13 @@
                     "geometry": { "type": ["object", "null"], "description": "`LineString` of `[longitude, latitude]` positions, oldest first; `Point` for one position; `null` for none." },
                     "properties": {
                       "type": "object",
-                      "required": ["mmsi", "from", "to", "points", "truncated", "times", "sog", "cog", "heading", "nav_status"],
+                      "required": ["mmsi", "from", "to", "interval", "points", "truncated", "times", "sog", "cog", "heading", "nav_status"],
                       "properties": {
                         "mmsi": { "type": "integer" },
                         "name": { "type": "string", "description": "Present when known." },
                         "from": { "type": "string", "format": "date-time", "description": "Start of the range covered, after clamping." },
                         "to": { "type": "string", "format": "date-time", "description": "End of the range covered." },
+                        "interval": { "type": "integer", "description": "Seconds between positions at most, as requested or chosen by default; `0` is every position heard." },
                         "points": { "type": "integer" },
                         "truncated": { "type": "boolean", "description": "More positions matched than `limit`; the newest were kept." },
                         "times": { "type": "array", "items": { "type": "string", "format": "date-time" } },
@@ -205,6 +206,10 @@
           "404": {
             "description": "No vessel with this MMSI has been heard.",
             "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
+          },
+          "403": {
+            "description": "The range ends more than 48 hours ago and the token's tier does not reach the archive.",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
           },
           "429": { "$ref": "#/components/responses/RateLimited" },
           "503": {
@@ -666,7 +671,7 @@
               "to_stern": { "type": "integer", "description": "Metres from the AIS antenna to the stern; 511 means 511 or more. Present together with `to_bow`." },
               "to_port": { "type": "integer", "description": "Metres from the AIS antenna to the port side; 63 means 63 or more. `to_port` and `to_starboard` add up to `beam` and are present together once known; a vessel that does not know where its antenna sits sends 0 to port and its beam to starboard." },
               "to_starboard": { "type": "integer", "description": "Metres from the AIS antenna to the starboard side; 63 means 63 or more. Present together with `to_port`." },
-              "first_seen": { "type": "string", "format": "date-time", "description": "When the vessel record first held the vessel. On `/v1/vessels/{mmsi}` only." },
+              "first_seen": { "type": "string", "format": "date-time", "description": "The earliest report of the vessel the network holds, from live traffic or its archive. On `/v1/vessels/{mmsi}` only." },
               "seen": { "type": "string", "format": "date-time", "description": "Time of the last message that updated the vessel." },
               "source": { "type": "string", "description": "Source of that message: an upstream name, `station:<sub>` for an authenticated contributor (whatever transport it fed over), `udp:<hash>`, or `mmsi:<n>`." },
               "station": { "type": "string", "description": "Station that delivered that message." },

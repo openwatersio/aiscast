@@ -990,6 +990,80 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Track history from the lake",
+      "description": "Time the server spends reading the lake for tracks past 48 hours, and the share of vessel-days answered from the cache.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "rate(aiscast_lake_query_seconds_total[5m])",
+          "legendFormat": "seconds querying per second"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "rate(aiscast_lake_cache_hits_total[1h]) / (rate(aiscast_lake_cache_hits_total[1h]) + rate(aiscast_lake_cache_misses_total[1h]))",
+          "legendFormat": "cache hit share"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ]
 }

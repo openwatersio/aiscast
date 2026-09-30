@@ -97,6 +97,8 @@ type Pipeline struct {
 	dirty      map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
 	store      *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
 	tracks     *trackStore                    // recent positions (tracks.go); nil without a record, whose writer also writes tracks
+	lake       *lake                          // packaged history for tracks past the window (lake.go); nil without LAKE_CATALOG_TOKEN or tracks
+	imports    importStats                    // the daily merge of the lake's vessels into the record (import.go)
 	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's

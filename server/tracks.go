@@ -25,9 +25,10 @@ import (
 // trackWindow is how far back a track reaches. Day tables are kept until the window has left them.
 const trackWindow = 48 * time.Hour
 
-// maxPending bounds the positions held for the track writer, about eight minutes of traffic. Past it the
-// disk has stalled, and dropping new positions keeps memory flat; the drops are counted.
-const maxPending = 200_000
+// maxPending bounds the positions held for the track writer, about eight minutes of traffic at the 600 or so
+// positions a second the network carries at peak, around 20 MB. Past it the disk has stalled, and dropping new
+// positions keeps memory flat; the drops are counted.
+const maxPending = 300_000
 
 // trackPoint is one accepted position report. Positions and motion are held in the lake's integer
 // encodings: 1/600000 degree, 0.1 knot (1023 not available), 0.1 degree (3600 not available).
@@ -62,6 +63,8 @@ type trackStore struct {
 
 	sources map[string]int64 // source kind -> id in the sources table; touched only by the writer
 	days    map[string]bool  // day tables known to exist; touched only by the writer
+
+	lakeBytes atomic.Int64 // position bytes cached from the lake; each lakeTrimEvery trims the cache
 
 	// read by /metrics
 	pointsWritten, writeFailures, dropped atomic.Int64
@@ -98,6 +101,9 @@ func openTracks(path string) (*trackStore, error) {
 
 func (t *trackStore) load() error {
 	if _, err := t.db.Exec(`CREATE TABLE IF NOT EXISTS sources (id INTEGER PRIMARY KEY, kind TEXT NOT NULL UNIQUE)`); err != nil {
+		return err
+	}
+	if _, err := t.db.Exec(lakeCacheSchema); err != nil {
 		return err
 	}
 	rows, err := t.db.Query(`SELECT id, kind FROM sources`)

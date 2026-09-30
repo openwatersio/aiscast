@@ -19,7 +19,7 @@ ALLOW_ANON=1 go run .   # Kystverket + Digitraffic in, WebSocket on :8080, UDP N
 
 `ALLOW_ANON=1` disables tokens; never set it on a public host. Kystverket allows one TCP connection per source IP, so if another server is already running on your network set `KYSTVERKET=0`. Then put `AIS_API=http://localhost:8080` in `client/.dev.vars`, run `npm run dev -w client`, and open http://localhost:5173/ais/vessels, or point any aisstream.io client at `ws://localhost:8080/v0/stream` with any non-empty `APIKey`.
 
-Go 1.27 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the authoritative Go version). `go test ./...` runs unit tests, the aisstream golden envelope, and the GPSD/libais public fixtures in `server/testdata/`. `go run ./cmd/loadtest -clients 1000 -duration 30s` against a server started with `WS_CONNECTS_PER_MIN=100000` measures fan-out. `go run ./cmd/aiscast-key` mints and inspects access tokens.
+Go 1.27 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the authoritative Go version). `go test ./...` runs unit tests, the aisstream golden envelope, and the GPSD/libais public fixtures in `server/testdata/`. `go run ./cmd/loadtest -clients 1000 -duration 30s` against a server started with `WS_CONNECTS_PER_MIN=100000` measures fan-out. `go run ./cmd/aiscast-key` mints and inspects access tokens. The server reads the lake through DuckDB, linked with cgo, so building it needs a C toolchain: the Xcode command line tools on macOS, `build-essential` on Linux. `server/deploy/deploy.sh` builds the Linux binary in the Go container when run from macOS.
 
 ## Changes
 
