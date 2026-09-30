@@ -388,8 +388,9 @@ def refresh_vessels(con, catalog):
                      min(recv), NULL, NULL, NULL, NULL FROM env WHERE k = 'event' GROUP BY mmsi
               UNION ALL  -- the day's accepted positions: the latest with coordinates is last_*
               -- with the source whose copy the server accepted, the one its credit line names
+              -- (first_ts comes from the receive times above: a position's own time can be years off too)
               SELECT p.mmsi, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
-                     p.ts, CASE WHEN p.lat6 IS NOT NULL THEN p.ts END, p.lat6, p.lon6, e.source
+                     NULL, CASE WHEN p.lat6 IS NOT NULL THEN p.ts END, p.lat6, p.lon6, e.source
               FROM positions p
               LEFT JOIN (SELECT DISTINCT unhex(id) AS id, ct, source FROM env WHERE k = 'event') e ON e.id = p.id AND e.ct = p.ts
               UNION ALL

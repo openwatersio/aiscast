@@ -662,7 +662,10 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
         # counts as hearing the vessel, but first_ts is when the network heard it, 08:00
         "2026-09-01": position("f5000002", "2026-09-01T08:00:00Z", 59.0, 10.5, "digitraffic")
                       + position("f5000003", "2026-09-01T05:00:00Z", 58.0, 11.0, "barentswatch", recv="2026-09-01T08:30:00Z", stale=True)
-                      + reset_clock_static("f5000004", "2026-09-01T09:00:00Z"),
+                      + reset_clock_static("f5000004", "2026-09-01T09:00:00Z")
+                      # an accepted position from a reset clock: it lands in positions, and first_ts still
+                      # takes its receive time
+                      + position("f5000005", "2013-12-31T23:00:00Z", 58.5, 10.0, "barentswatch", recv="2026-09-01T09:30:00Z"),
     }
     catalog = packager.get_catalog()
     con = duckdb.connect()
@@ -681,5 +684,5 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
         "the latest position wins even when its day was packaged first"
     assert v["last_source"] == "barentswatch", "the last position carries the source that delivered it, for its credit line"
     sources = {p["ts"].isoformat(): p["source"] for p in rows(catalog, "positions") if p["mmsi"] == 257999001}
-    assert sources == {"2026-09-02T10:00:00": "barentswatch", "2026-09-01T08:00:00": "digitraffic"}, \
+    assert sources == {"2026-09-02T10:00:00": "barentswatch", "2026-09-01T08:00:00": "digitraffic", "2013-12-31T23:00:00": "barentswatch"}, \
         "each position names the source of the copy the server accepted, so a track needs no second table"
