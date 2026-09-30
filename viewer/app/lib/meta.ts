@@ -12,6 +12,7 @@ export function pageMeta({
   description,
   path,
   noindex = false,
+  image,
   jsonLd,
 }: {
   title: string;
@@ -19,6 +20,8 @@ export function pageMeta({
   /** Path within the app, which is also the canonical URL's. */
   path: string;
   noindex?: boolean;
+  /** An absolute URL, for link previews. */
+  image?: string;
   jsonLd?: Record<string, unknown>;
 }): MetaDescriptor[] {
   const url = `${SITE}${path}`;
@@ -35,6 +38,7 @@ export function pageMeta({
     { name: "twitter:card", content: "summary_large_image" },
     { name: "twitter:title", content: title },
     { name: "twitter:description", content: description },
+    ...(image ? [{ property: "og:image", content: image }, { name: "twitter:image", content: image }] : []),
     ...(jsonLd ? [{ "script:ld+json": jsonLd }] : []),
   ];
 }

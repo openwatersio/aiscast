@@ -14,12 +14,30 @@ export interface Photo {
   description?: string;
 }
 
+/**
+ * A vessel as registered, from its Wikidata item. Dimensions are in meters. These differ a
+ * little from what AIS reports, which is what the crew entered into the transponder.
+ */
+export interface Particulars {
+  /** Year the vessel entered service. */
+  entered?: number;
+  builder?: string;
+  yardNumber?: string;
+  length?: number;
+  beam?: number;
+  draught?: number;
+  grossTonnage?: number;
+  callsign?: string;
+  registry?: string;
+  operator?: string;
+  owner?: string;
+}
+
 /** What the media route answers for one vessel. */
 export interface VesselMedia {
   photos: Photo[];
-  /** Wikidata particulars, a later phase. */
-  particulars: null;
-  links: { commonsCategory?: string };
+  particulars: Particulars | null;
+  links: { commonsCategory?: string; wikipedia?: string; wikidata?: string };
 }
 
 export const NO_MEDIA: VesselMedia = { photos: [], particulars: null, links: {} };

@@ -8,6 +8,8 @@ import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselPath, vessel
 import { browserAuth, getVessel, type VesselFeature } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { liveInstance } from "../lib/live";
+import { mediaKey } from "../lib/media";
+import { firstPhoto } from "../lib/media.server";
 import { pageMeta } from "../lib/meta";
 import type { Route } from "./+types/vessel";
 
@@ -22,9 +24,10 @@ function parse(param: string) {
 
 /**
  * A direct visit, a crawler, or an unfurl bot. The record is awaited so the head names the
- * vessel and the facts are in the first response.
+ * vessel and the facts are in the first response, and so is its photo if one comes quickly,
+ * so a shared link unfurls with the ship.
  */
-export async function loader({ params, context }: Route.LoaderArgs) {
+export async function loader({ params, context, request }: Route.LoaderArgs) {
   const { mmsi, slug } = parse(params.param);
   const feature = await getVessel(context.get(serverEnv), mmsi);
   const name = feature?.properties.name;
@@ -32,7 +35,8 @@ export async function loader({ params, context }: Route.LoaderArgs) {
   // with one permanent redirect rather than served as a second URL for the same vessel.
   if (feature && slug !== vesselSlug(name)) throw redirect(vesselPath(mmsi, name), 301);
   const record: VesselRecord = feature;
-  return data({ mmsi, name, feature: record }, feature ? undefined : { status: 404 });
+  const photo = feature ? await firstPhoto(mediaKey(feature.properties.imo, mmsi), request.url) : undefined;
+  return data({ mmsi, name, feature: record, photo }, feature ? undefined : { status: 404 });
 }
 
 /**
@@ -67,6 +71,7 @@ export function meta({ loaderData }: Route.MetaArgs) {
     description,
     path: vesselPath(mmsi, name),
     noindex: !feature && !loading,
+    image: "photo" in loaderData ? loaderData.photo : undefined,
     jsonLd: feature
       ? {
           "@context": "https://schema.org",

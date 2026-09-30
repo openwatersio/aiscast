@@ -1,16 +1,25 @@
 import { ImagePlus } from "lucide-react";
 import { isValidImo } from "../lib/ais";
-import { mediaKey } from "../lib/media";
-import { useMedia } from "../lib/useMedia";
+import type { VesselMedia } from "../lib/media";
 import { PhotoCarousel } from "./ui/PhotoCarousel";
 
 /**
  * The top of a vessel's page: its photographs from Wikimedia Commons, full width. The frame
  * is there whether or not the vessel has any, so the page does not jump when they arrive, and
- * without any it asks for one. `mmsi` is undefined while the vessel itself is loading.
+ * without any it asks for one. `media` is undefined until the lookup answers, and `mmsi`
+ * while the vessel itself is loading.
  */
-export function VesselPhotos({ mmsi, imo, name }: { mmsi?: number; imo?: number; name: string }) {
-  const media = useMedia(mmsi == null ? undefined : mediaKey(imo, mmsi));
+export function VesselPhotos({
+  media,
+  mmsi,
+  imo,
+  name,
+}: {
+  media?: VesselMedia;
+  mmsi?: number;
+  imo?: number;
+  name: string;
+}) {
   return (
     // Bleeds past the panel's padding to its edges.
     <div className="relative -mx-4 mb-3 aspect-video bg-surface-tile">

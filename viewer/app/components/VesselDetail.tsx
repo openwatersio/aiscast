@@ -1,5 +1,5 @@
 import { ArrowRight, Check, LocateFixed, MapPin, Route, Share } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
   CLASS_LABELS,
@@ -16,6 +16,9 @@ import {
 import type { VesselFeature } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
 import { SITE } from "../lib/meta";
+import { cn } from "../lib/cn";
+import { mediaKey, type VesselMedia } from "../lib/media";
+import { useMedia } from "../lib/useMedia";
 import { useTrack } from "../lib/useTrack";
 import { PageTitle } from "./Panel";
 import { ActionButton, ActionRow } from "./ui/ActionButton";
@@ -62,6 +65,8 @@ export function VesselDetail({
   const navStatusCode = fresher?.navStatus ?? p?.nav_status ?? heard?.navStatus;
   const station = fresher?.station ?? p?.station ?? heard?.station;
   const country = flagName(p?.flag);
+  const imo = p?.imo ?? heard?.imo;
+  const media = useMedia(feature || heard ? mediaKey(imo, mmsi) : undefined);
 
   // Draw, follow, and frame the vessel. The record's position seeds the stream, so the map
   // shows the vessel even when the stream is refused, which happens per address.
@@ -132,7 +137,7 @@ export function VesselDetail({
 
   return (
     <article>
-      <VesselPhotos mmsi={mmsi} imo={p?.imo ?? heard?.imo} name={name ?? `MMSI ${mmsi}`} />
+      <VesselPhotos media={media} mmsi={mmsi} imo={imo} name={name ?? `MMSI ${mmsi}`} />
       {country && (
         <p className="text-subhead text-fg-muted">
           {flagEmoji(p!.flag)} {country}
@@ -212,6 +217,8 @@ export function VesselDetail({
         ]}
       />
 
+      {media && <VesselParticulars media={media} />}
+
       {/* The credit that came with this vessel's own last message, which only the stream carries. */}
       {attribution && (
         <p className="mt-5 text-footnote text-fg-muted">
@@ -219,6 +226,54 @@ export function VesselDetail({
         </p>
       )}
     </article>
+  );
+}
+
+/**
+ * The vessel as registered, from Wikidata, and where to read more about it. Absent for most
+ * vessels: only ships with an IMO have an item, and not all of them.
+ */
+function VesselParticulars({ media: { particulars: p, links } }: { media: VesselMedia }) {
+  const sources: Array<[string, string | undefined]> = [
+    ["Wikipedia", links.wikipedia],
+    ["Wikidata", links.wikidata],
+    ["Wikimedia Commons", links.commonsCategory],
+  ];
+  const linked = sources.filter((s): s is [string, string] => !!s[1]);
+  if (!p && !linked.length) return null;
+  const m = (n: number | undefined) => (n != null ? `${n.toLocaleString("en-US")} m` : undefined);
+  return (
+    <Section label="Particulars" bare={!p}>
+      {p && (
+        <Facts
+          items={[
+            ["In service", p.entered],
+            ["Builder", p.builder],
+            ["Yard number", p.yardNumber],
+            ["Length", m(p.length)],
+            ["Beam", m(p.beam)],
+            ["Draught", m(p.draught)],
+            ["Gross tonnage", p.grossTonnage?.toLocaleString("en-US")],
+            ["Call sign", p.callsign],
+            ["Registry", p.registry],
+            ["Operator", p.operator],
+            ["Owner", p.owner],
+          ]}
+        />
+      )}
+      {linked.length > 0 && (
+        <p className={cn("text-footnote text-fg-muted", p && "mt-3")}>
+          {linked.map(([label, href], i) => (
+            <Fragment key={label}>
+              {i > 0 && " · "}
+              <a href={href} target="_blank" rel="noopener">
+                {label}
+              </a>
+            </Fragment>
+          ))}
+        </p>
+      )}
+    </Section>
   );
 }
 
