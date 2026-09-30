@@ -169,6 +169,14 @@
   @apply rounded-xl border backdrop-blur-xl;
 }
 
+/* Scrollable without a scrollbar, for content moved by swiping and buttons (PhotoCarousel). */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 @utility sidebar-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
@@ -402,6 +410,9 @@
 }
 /* The handle's bar is small; the button around it is a thumb-sized target. */
 .sheet-grabber {
+  /* Above a page's hero photo, which starts under it. */
+  position: relative;
+  z-index: 20;
   flex-shrink: 0;
   align-self: center;
   width: 4rem;

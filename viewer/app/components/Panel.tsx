@@ -17,6 +17,7 @@ export function Panel({
   title,
   actions,
   header,
+  hero,
   children,
 }: {
   back?: string;
@@ -24,6 +25,8 @@ export function Panel({
   actions?: ReactNode;
   /** Stays put above the scrolling content, as the search field does. */
   header?: ReactNode;
+  /** The page opens with a full-width image, such as a vessel's photo, and the bar floats over it. */
+  hero?: boolean;
   children: ReactNode;
 }) {
   const { key } = useLocation();
@@ -49,15 +52,18 @@ export function Panel({
 
   return (
     <TitleContext.Provider value={observeTitle}>
-      <PanelHeader back={back} title={title} showTitle={!largeTitleVisible} actions={actions} />
-      {header}
-      <div
-        ref={scroller}
-        data-sheet-scroll
-        onScroll={(e) => scrolled.set(key, e.currentTarget.scrollTop)}
-        className={cn("sidebar-scroll min-h-0 flex-1 pb-3", header ? "px-2" : "px-4")}
-      >
-        {children}
+      {/* A hero starts at the top edge of the sheet, under its grabber on a phone. */}
+      <div className={cn("relative flex min-h-0 flex-1 flex-col", hero && "max-md:-mt-3")}>
+        <PanelHeader back={back} title={title} showTitle={!largeTitleVisible} actions={actions} overlay={hero} />
+        {header}
+        <div
+          ref={scroller}
+          data-sheet-scroll
+          onScroll={(e) => scrolled.set(key, e.currentTarget.scrollTop)}
+          className={cn("sidebar-scroll min-h-0 flex-1 pb-3", header ? "px-2" : "px-4")}
+        >
+          {children}
+        </div>
       </div>
     </TitleContext.Provider>
   );

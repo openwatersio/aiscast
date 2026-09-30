@@ -89,7 +89,7 @@ export default function Vessel({ loaderData }: Route.ComponentProps) {
   // Back pops to whatever pushed this vessel; close always returns to the map, as a place
   // card's does in a maps app.
   return (
-    <Panel back="/map" title={name ?? `MMSI ${mmsi}`} actions={<IconLink icon={X} label="Close" to="/map" small />}>
+    <Panel back="/map" title={name ?? `MMSI ${mmsi}`} hero actions={<IconLink icon={X} label="Close" to="/map" small />}>
       {detail}
     </Panel>
   );

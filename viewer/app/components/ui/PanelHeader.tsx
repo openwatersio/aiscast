@@ -42,15 +42,27 @@ export function PanelHeader({
   title,
   showTitle,
   actions,
+  overlay,
 }: {
   back?: string;
   title?: string;
   showTitle: boolean;
   actions?: ReactNode;
+  /** Floats over the top of the page, a photo, until the title shows and it needs a ground. */
+  overlay?: boolean;
 }) {
   if (!back && !title && !actions) return null;
   return (
-    <div className="flex items-center gap-1 px-3 pt-3">
+    <div
+      data-over-photo={(overlay && !showTitle) || undefined}
+      className={cn(
+        "flex items-center gap-1 px-3 pt-3",
+        overlay && "absolute inset-x-0 top-0 z-10 pb-2 transition-colors duration-150",
+        overlay && showTitle && "bg-surface-glass backdrop-blur-xl",
+        // Over a photo the buttons need their own scrim, as the photo's credit has.
+        "data-over-photo:*:[a]:bg-black/45 data-over-photo:*:[a]:text-white data-over-photo:*:[a]:backdrop-blur-sm data-over-photo:*:[a]:hover:bg-black/60",
+      )}
+    >
       {back && <BackButton parent={back} />}
       <span
         className={cn(

@@ -357,3 +357,16 @@ export function bearing([lon1, lat1]: [number, number], [lon2, lat2]: [number, n
     Math.sin(lat1 * rad) * Math.cos(lat2 * rad) * Math.cos((lon2 - lon1) * rad);
   return (Math.atan2(y, x) / rad + 360) % 360;
 }
+
+/**
+ * Whether a number passes the IMO check: the seventh digit is the sum of the first six
+ * weighted 7 down to 2, mod 10. AIS static data carries a fair share of mistyped IMOs, and
+ * looking one up finds another ship or nothing. Numbers starting with 1 are the yacht series
+ * and valid.
+ */
+export function isValidImo(imo: number | undefined): imo is number {
+  if (imo == null || !Number.isInteger(imo) || imo < 1_000_000 || imo > 9_999_999) return false;
+  const digits = String(imo).split("").map(Number);
+  const sum = digits.slice(0, 6).reduce((acc, d, i) => acc + d * (7 - i), 0);
+  return sum % 10 === digits[6];
+}

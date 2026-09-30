@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bearing,
+  isValidImo,
   indexAt,
   interpolateAt,
   mergeTrack,
@@ -339,5 +340,24 @@ describe("bearing", () => {
       expect(b).toBeGreaterThanOrEqual(0);
       expect(b).toBeLessThan(360);
     }
+  });
+});
+
+describe("isValidImo", () => {
+  it("accepts numbers whose seventh digit is the weighted check", () => {
+    expect(isValidImo(9551973)).toBe(true); // Happy Dynamic
+    expect(isValidImo(9074729)).toBe(true);
+  });
+
+  it("rejects a wrong check digit and a transposition that breaks it", () => {
+    expect(isValidImo(9551974)).toBe(false);
+    expect(isValidImo(9559173)).toBe(false);
+  });
+
+  it("rejects anything that is not seven digits", () => {
+    expect(isValidImo(undefined)).toBe(false);
+    expect(isValidImo(0)).toBe(false);
+    expect(isValidImo(955197)).toBe(false);
+    expect(isValidImo(95519730)).toBe(false);
   });
 });

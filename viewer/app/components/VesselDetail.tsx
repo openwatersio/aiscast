@@ -22,6 +22,7 @@ import { ActionButton, ActionRow } from "./ui/ActionButton";
 import { Facts } from "./ui/Facts";
 import { Section } from "./ui/Section";
 import { StatGrid } from "./ui/StatGrid";
+import { VesselPhotos } from "./VesselPhotos";
 import { VesselTrack } from "./VesselTrack";
 
 /**
@@ -101,6 +102,7 @@ export function VesselDetail({
   if (!feature && !heard) {
     return (
       <article>
+        <VesselPhotos name={`MMSI ${mmsi}`} />
         <PageTitle className="text-large-title">MMSI {mmsi}</PageTitle>
         <p className="mt-2 text-body text-fg-secondary">
           {loading ? "Loading…" : "The network has never heard this vessel."}
@@ -130,6 +132,7 @@ export function VesselDetail({
 
   return (
     <article>
+      <VesselPhotos mmsi={mmsi} imo={p?.imo ?? heard?.imo} name={name ?? `MMSI ${mmsi}`} />
       {country && (
         <p className="text-subhead text-fg-muted">
           {flagEmoji(p!.flag)} {country}
