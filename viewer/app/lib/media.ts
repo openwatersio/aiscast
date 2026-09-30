@@ -45,7 +45,17 @@ export const NO_MEDIA: VesselMedia = { photos: [], particulars: null, links: {} 
 /**
  * The key a vessel's media is looked up by: its IMO when it has a valid one, since Commons
  * files ships by hull number, and otherwise its MMSI, which a few Commons categories use.
+ * Undefined when neither is worth asking about: only a ship's MMSI starts with a 2 to 7.
  */
-export function mediaKey(imo: number | undefined, mmsi: number): string {
-  return isValidImo(imo) ? String(imo) : String(mmsi);
+export function mediaKey(imo: number | undefined, mmsi: number): string | undefined {
+  if (isValidImo(imo)) return String(imo);
+  return mmsi >= 200_000_000 && mmsi < 800_000_000 ? String(mmsi) : undefined;
+}
+
+/**
+ * A photo's thumbnail at 120px, for a list row. The media route gives the 960px one; both
+ * are standard Wikimedia widths, which render freely, so the width in its path is swapped.
+ */
+export function smallThumb(photo: Photo): string {
+  return photo.thumb.replace("/960px-", "/120px-");
 }

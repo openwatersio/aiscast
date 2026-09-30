@@ -121,8 +121,9 @@ export async function getVessel(auth: ApiAuth, mmsi: number): Promise<VesselFeat
 }
 
 /** Name prefix, or MMSI prefix when the query is all digits. The server caps this at 50. */
-export async function searchVessels(auth: ApiAuth, q: string): Promise<VesselFeature[]> {
-  const fc = await get<FeatureCollection>(auth, `/v1/vessels?q=${encodeURIComponent(q)}`);
+/** `filters` are further `/v1/vessels` parameters, as `filterParams` writes them. */
+export async function searchVessels(auth: ApiAuth, q: string, filters = ""): Promise<VesselFeature[]> {
+  const fc = await get<FeatureCollection>(auth, `/v1/vessels?q=${encodeURIComponent(q)}${filters && `&${filters}`}`);
   return fc?.features ?? [];
 }
 

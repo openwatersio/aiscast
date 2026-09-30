@@ -35,7 +35,8 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
   // with one permanent redirect rather than served as a second URL for the same vessel.
   if (feature && slug !== vesselSlug(name)) throw redirect(vesselPath(mmsi, name), 301);
   const record: VesselRecord = feature;
-  const photo = feature ? await firstPhoto(mediaKey(feature.properties.imo, mmsi), request.url) : undefined;
+  const key = feature && mediaKey(feature.properties.imo, mmsi);
+  const photo = key ? await firstPhoto(key, request.url) : undefined;
   return data({ mmsi, name, feature: record, photo }, feature ? undefined : { status: 404 });
 }
 

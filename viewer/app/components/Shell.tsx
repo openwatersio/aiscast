@@ -13,6 +13,7 @@ import { useLocation, useMatches, useNavigate, useNavigation, useOutlet } from "
 import { vesselPath } from "../lib/ais";
 import { createMap } from "../lib/map.client";
 import { liveInstance, LiveContext, setLiveInstance, type Live } from "../lib/live";
+import { NO_FILTERS, type SearchFilters } from "../lib/searchFilters";
 import { Stream } from "../lib/stream";
 import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { Sheet, type Detent } from "./Sheet";
@@ -23,6 +24,9 @@ import { stackStateFor } from "./ui/PanelHeader";
 interface ShellState {
   query: string;
   setQuery(q: string): void;
+  /** The search's filter chips. Clearing the search clears them. */
+  filters: SearchFilters;
+  setFilters(filters: SearchFilters): void;
   theme: ThemeChoice;
   setTheme(choice: ThemeChoice): void;
   /** The sheet's height on a phone. On a wider screen the panel ignores it. */
@@ -32,6 +36,8 @@ interface ShellState {
 const ShellContext = createContext<ShellState>({
   query: "",
   setQuery: () => undefined,
+  filters: NO_FILTERS,
+  setFilters: () => undefined,
   theme: "dark",
   setTheme: () => undefined,
   setDetent: () => undefined,
@@ -80,11 +86,15 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   }
 
   const [query, setQueryState] = useState("");
+  const [filters, setFilters] = useState(NO_FILTERS);
   useEffect(() => setQueryState(sessionStorage.getItem(SAVED_QUERY) ?? ""), []);
   const setQuery = useCallback((q: string) => {
     setQueryState(q);
     if (q) sessionStorage.setItem(SAVED_QUERY, q);
-    else sessionStorage.removeItem(SAVED_QUERY);
+    else {
+      sessionStorage.removeItem(SAVED_QUERY);
+      setFilters(NO_FILTERS);
+    }
   }, []);
 
   const { choice, theme, setChoice } = useTheme(initialTheme);
@@ -140,8 +150,8 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   }, [live, theme]);
 
   const state = useMemo(
-    () => ({ query, setQuery, theme: choice, setTheme: setChoice, setDetent }),
-    [query, setQuery, choice, setChoice],
+    () => ({ query, setQuery, filters, setFilters, theme: choice, setTheme: setChoice, setDetent }),
+    [query, setQuery, filters, choice, setChoice],
   );
 
   return (
