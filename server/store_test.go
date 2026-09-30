@@ -109,6 +109,7 @@ func TestStoreMergeKeepsWhatAReturningVesselHasNotResent(t *testing.T) {
 	t1 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	full := newVessel()
 	full.Name, full.IMO, full.CallSign, full.ShipType, full.Class, full.Draught = "NORDIC STAR", 9319466, "LAJB7", 70, "A", 5.2
+	full.Length, full.Beam, full.Dim = 160, 22, ais.FieldDimension{A: 120, B: 40, C: 10, D: 12}
 	full.Lat, full.Lon, full.HasPos, full.PosAt, full.Seen, full.Source, full.NavStatus = 59.9, 10.7, true, t1, t1, "kystverket", 0
 	if err := st.upsert([]record{{mmsi: 257000001, v: full}}); err != nil {
 		t.Fatal(err)
@@ -125,8 +126,22 @@ func TestStoreMergeKeepsWhatAReturningVesselHasNotResent(t *testing.T) {
 		t.Fatal(ok, err)
 	}
 	v := rec.v
-	if v.Name != "NORDIC STAR" || v.IMO != 9319466 || v.CallSign != "LAJB7" || v.ShipType != 70 || v.Class != "A" || v.Draught != 5.2 {
+	if v.Name != "NORDIC STAR" || v.IMO != 9319466 || v.CallSign != "LAJB7" || v.ShipType != 70 || v.Class != "A" || v.Draught != 5.2 ||
+		v.Dim != full.Dim {
 		t.Errorf("particulars lost: %+v", v)
+	}
+	// the antenna offsets travel with their totals: a length alone moves bow and stern, not the sides
+	cached := back.state()
+	if !cached.merge(v) || cached.Dim != full.Dim {
+		t.Errorf("merge from the record lost the offsets: %+v", cached.Dim)
+	}
+	moved := newVessel()
+	moved.Seen, moved.Length, moved.Dim = t1.Add(time.Hour), 160, ais.FieldDimension{A: 100, B: 60}
+	if err := st.upsert([]record{{mmsi: 257000001, v: moved}}); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _, _ := st.get(257000001); rec.v.Dim != (ais.FieldDimension{A: 100, B: 60, C: 10, D: 12}) {
+		t.Errorf("a length-only report: %+v", rec.v.Dim)
 	}
 	if !v.HasPos || v.Lat != 59.9 || !v.PosAt.Equal(t1) || v.NavStatus != 0 {
 		t.Errorf("position lost: %+v", v)
@@ -645,11 +660,15 @@ func TestOpenStoreAddsMissingColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	schema := storeSchema
-	for _, col := range []string{"trusted_at", "static_at"} {
-		i := strings.Index(schema, "\t"+col)
+	for _, col := range []string{"trusted_at", "static_at", "to_bow", "to_stern", "to_port", "to_starboard"} {
+		i := strings.Index(schema, "\t"+col+" ")
 		schema = schema[:i] + schema[i+strings.Index(schema[i:], "\n")+1:]
 	}
 	if _, err := old.Exec(schema); err != nil {
+		t.Fatal(err)
+	}
+	// a row the older build wrote: its length survives, and its offsets read 0, not available
+	if _, err := old.Exec("INSERT INTO vessels (mmsi, length, beam, seen, first_seen) VALUES (257000002, 160, 22, 1, 1)"); err != nil {
 		t.Fatal(err)
 	}
 	old.Close()
@@ -660,11 +679,20 @@ func TestOpenStoreAddsMissingColumns(t *testing.T) {
 		}
 		v := newVessel()
 		v.Seen, v.TrustedAt = time.Now(), time.Now()
+		v.Length, v.Beam, v.Dim = 160, 22, ais.FieldDimension{A: 120, B: 40, C: 10, D: 12}
 		if err := st.upsert([]record{{mmsi: 257000001, v: v}}); err != nil {
 			t.Fatal(err)
 		}
-		if rec, ok, err := st.get(257000001); err != nil || !ok || rec.v.TrustedAt.IsZero() {
+		if rec, ok, err := st.get(257000001); err != nil || !ok || rec.v.TrustedAt.IsZero() || rec.v.Dim != v.Dim {
 			t.Fatalf("%v %v %+v", err, ok, rec.v)
+		}
+		rec, ok, err := st.get(257000002)
+		if err != nil || !ok || rec.v.Length != 160 || rec.v.Dim != (ais.FieldDimension{}) {
+			t.Fatalf("row from the older build: %v %v %+v", err, ok, rec.v)
+		}
+		// its 0 and 0 do not add up to its length, so it serves no offsets rather than a hull of nothing
+		if p := rec.v.feature(257000002).Properties; p.ToBow != nil || p.ToPort != nil || p.Length != 160 {
+			t.Fatalf("older row's feature: %+v", p)
 		}
 		st.close()
 	}

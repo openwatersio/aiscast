@@ -36,14 +36,16 @@ type vessel struct {
 	Kind      string // vessel | aton | base | sar
 	Class     string // A or B from the position report types, the truthful class signal; empty until one is heard
 	// Static particulars from type 5 and 24 messages, zero or empty until heard. Length and beam come
-	// from the dimension fields (reference point to bow plus to stern, port plus starboard).
+	// from the dimension fields (reference point to bow plus to stern, port plus starboard), and Dim keeps
+	// those four distances, where the reference point is the AIS antenna.
 	IMO         uint32
 	CallSign    string
-	Destination string       // as typed by the crew: a port name, a UN/LOCODE, or nothing useful
-	ETA         ais.FieldETA // month, day, hour, minute UTC as sent; AIS carries no year
-	Draught     float64      // metres
-	Length      uint16       // metres
-	Beam        uint16       // metres
+	Destination string             // as typed by the crew: a port name, a UN/LOCODE, or nothing useful
+	ETA         ais.FieldETA       // month, day, hour, minute UTC as sent; AIS carries no year
+	Draught     float64            // metres
+	Length      uint16             // metres
+	Beam        uint16             // metres
+	Dim         ais.FieldDimension // metres from the antenna to bow (A), stern (B), port (C), starboard (D)
 	Seen        time.Time
 	Source      string
 	Station     string
@@ -81,7 +83,7 @@ func foldOf(pkt ais.Packet) (u *vessel, hasPos, isStatic bool) {
 	case ais.ExtendedClassBPositionReport:
 		u.Lat, u.Lon, hasPos, u.Name, u.Class = float64(m.Latitude), float64(m.Longitude), true, m.Name, "B"
 		u.Cog, u.Sog, u.Heading, u.ShipType = float64(m.Cog), float64(m.Sog), m.TrueHeading, m.Type
-		u.Length, u.Beam = dimensions(m.Dimension)
+		u.Length, u.Beam, u.Dim = dimensions(m.Dimension)
 	case ais.LongRangeAisBroadcastMessage:
 		u.Lat, u.Lon, hasPos = float64(m.Latitude), float64(m.Longitude), true
 		u.Cog, u.Sog, u.NavStatus = float64(m.Cog), float64(m.Sog), m.NavigationalStatus
@@ -101,7 +103,7 @@ func foldOf(pkt ais.Packet) (u *vessel, hasPos, isStatic bool) {
 	case ais.ShipStaticData:
 		u.Name, u.ShipType, isStatic = m.Name, m.Type, true
 		u.IMO, u.CallSign, u.Destination, u.Draught = m.ImoNumber, m.CallSign, m.Destination, float64(m.MaximumStaticDraught)
-		u.Length, u.Beam = dimensions(m.Dimension)
+		u.Length, u.Beam, u.Dim = dimensions(m.Dimension)
 		if m.Eta.Month >= 1 && m.Eta.Month <= 12 && m.Eta.Day >= 1 && m.Eta.Day <= 31 { // 0 is "not available"
 			u.ETA = m.Eta
 		}
@@ -111,7 +113,7 @@ func foldOf(pkt ais.Packet) (u *vessel, hasPos, isStatic bool) {
 		}
 		if m.ReportB.Valid {
 			u.ShipType, u.CallSign = m.ReportB.ShipType, m.ReportB.CallSign
-			u.Length, u.Beam = dimensions(m.ReportB.Dimension)
+			u.Length, u.Beam, u.Dim = dimensions(m.ReportB.Dimension)
 		}
 	}
 	// 91/181 are the "not available" sentinels. (0,0) is a valid coordinate, so it passes the range test,
@@ -194,8 +196,8 @@ func changesParticulars(v, u *vessel) bool {
 		u.Destination != "" && u.Destination != v.Destination ||
 		u.ETA.Month != 0 && u.ETA != v.ETA ||
 		u.Draught > 0 && u.Draught != v.Draught ||
-		u.Length > 0 && u.Length != v.Length ||
-		u.Beam > 0 && u.Beam != v.Beam
+		u.Length > 0 && (u.Dim.A != v.Dim.A || u.Dim.B != v.Dim.B) ||
+		u.Beam > 0 && (u.Dim.C != v.Dim.C || u.Dim.D != v.Dim.D)
 }
 
 // asDecoded returns pkt as the pipeline sees it after re-encoding, which is what the cache folds in: the
@@ -287,11 +289,13 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	if u.Draught > 0 {
 		v.Draught = u.Draught
 	}
+	// the offsets travel with the total they add up to, so a report with a length but no beam keeps the
+	// port and starboard offsets as well as the beam
 	if u.Length > 0 {
-		v.Length = u.Length
+		v.Length, v.Dim.A, v.Dim.B = u.Length, u.Dim.A, u.Dim.B
 	}
 	if u.Beam > 0 {
-		v.Beam = u.Beam
+		v.Beam, v.Dim.C, v.Dim.D = u.Beam, u.Dim.C, u.Dim.D
 	}
 	// Type 24 halves (name in A, ship type in B) are not retained: replaying only the latest half would
 	// drop the other cached field, so those vessels get a synthesized type 5 carrying both instead.
@@ -383,6 +387,10 @@ type vesselProps struct {
 	Sog         *float64 `json:"sog,omitempty"`
 	Source      string   `json:"source"`
 	Station     string   `json:"station"`
+	ToBow       *uint16  `json:"to_bow,omitempty"`
+	ToPort      *uint8   `json:"to_port,omitempty"`
+	ToStarboard *uint8   `json:"to_starboard,omitempty"`
+	ToStern     *uint16  `json:"to_stern,omitempty"`
 	Type        uint8    `json:"type,omitempty"`
 }
 
@@ -392,6 +400,12 @@ func (v *vessel) feature(mmsi uint32) vesselFeature {
 		Source: v.Source, Station: v.Station, MsgType: v.MsgType,
 		Name: v.Name, Type: v.ShipType, Flag: flagOf(mmsi), IMO: v.IMO, CallSign: v.CallSign,
 		Destination: v.Destination, ETA: etaString(v.ETA), Draught: v.Draught, Length: v.Length, Beam: v.Beam,
+	}
+	if d := v.Dim; v.hasLengthOffsets() { // a copy, so the feature does not point into the live vessel
+		props.ToBow, props.ToStern = &d.A, &d.B
+	}
+	if d := v.Dim; v.hasBeamOffsets() {
+		props.ToPort, props.ToStarboard = &d.C, &d.D
 	}
 	if v.Cog < 360 {
 		cog := v.Cog
@@ -1046,9 +1060,19 @@ func (v *vessel) synthEvent(mmsi uint32, pkt ais.Packet, t time.Time) *Event {
 		MMSI: mmsi, Name: v.Name, Lat: v.Lat, Lon: v.Lon, HasPos: v.HasPos, Synthesized: true}
 }
 
-// dimensions turns the AIS reference-point distances into overall length and beam, 0 when not sent.
-func dimensions(d ais.FieldDimension) (length, beam uint16) {
-	return d.A + d.B, uint16(d.C) + uint16(d.D)
+// hasLengthOffsets and hasBeamOffsets report whether a pair of antenna offsets is known: it adds up to its
+// known total. A zero offset is then information (a reference point on the bow, or AIS's "reference point
+// unknown" of 0 to bow and the length to stern), so the pair is served whole. A record row from before the
+// offsets were kept holds a total with 0 and 0, which adds up to nothing, until the next static fills it.
+func (v *vessel) hasLengthOffsets() bool { return v.Length > 0 && v.Dim.A+v.Dim.B == v.Length }
+func (v *vessel) hasBeamOffsets() bool {
+	return v.Beam > 0 && uint16(v.Dim.C)+uint16(v.Dim.D) == v.Beam
+}
+
+// dimensions turns the AIS reference-point distances into overall length and beam, 0 when not sent, and
+// returns the distances themselves.
+func dimensions(d ais.FieldDimension) (length, beam uint16, dim ais.FieldDimension) {
+	return d.A + d.B, uint16(d.C) + uint16(d.D), d
 }
 
 // etaString renders an ETA as "MM-DD HH:MM" UTC, "MM-DD" when the time is not available, "" when unset.

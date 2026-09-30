@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BertoldVdb/go-ais"
 )
 
 type pbField struct {
@@ -134,7 +136,10 @@ func TestVesselTile(t *testing.T) {
 		}
 		p.putVesselLocked(mmsi, v)
 	}
-	put(257000001, 59.5, 10.6, func(v *vessel) { v.Name, v.Cog, v.Sog, v.Class, v.ShipType = "CARGO", 90, 12.5, "A", 70 })
+	put(257000001, 59.5, 10.6, func(v *vessel) {
+		v.Name, v.Cog, v.Sog, v.Class, v.ShipType = "CARGO", 90, 12.5, "A", 70
+		v.Length, v.Beam, v.Dim = 160, 22, ais.FieldDimension{A: 0, B: 160, C: 10, D: 12}
+	})
 	put(257000002, 59.51, 10.61, func(v *vessel) { v.Kind, v.Name = "aton", "BUOY" })
 	put(257000003, 59.5, 10.6, func(v *vessel) { v.Seen = now.Add(-20 * time.Minute) })
 	put(257000004, 10, 10, nil) // another tile entirely
@@ -160,6 +165,13 @@ func TestVesselTile(t *testing.T) {
 	}
 	if _, ok := c.props["heading"]; ok {
 		t.Fatalf("heading 511 encoded: %v", c.props)
+	}
+	// the antenna offsets draw the hull around the reported point; a zero one is still sent
+	if c.props["to_bow"] != uint64(0) || c.props["to_stern"] != uint64(160) || c.props["to_port"] != uint64(10) || c.props["to_starboard"] != uint64(12) {
+		t.Fatalf("offsets %v", c.props)
+	}
+	if _, ok := fs[257000002].props["to_bow"]; ok {
+		t.Fatalf("offsets sent for a vessel with no dimensions: %v", fs[257000002].props)
 	}
 	if c.x < 0 || c.x >= tileExtent || c.y < 0 || c.y >= tileExtent {
 		t.Fatalf("point %d,%d outside the tile", c.x, c.y)

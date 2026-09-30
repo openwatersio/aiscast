@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,13 +177,22 @@ func TestStaticParticulars(t *testing.T) {
 	// a later message with a length but no beam keeps the beam, and the reverse keeps the length
 	p.ingestPacket("kystverket", "kystverket", now.Add(3*time.Second), now.Add(3*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
 		Name: "STATIC STAR", Type: 70, Dimension: ais.FieldDimension{A: 120, B: 40}})
-	if v := p.vessels[257000009]; v.Length != 160 || v.Beam != 22 {
-		t.Errorf("partial dimensions wiped a value: length %d beam %d", v.Length, v.Beam)
+	if v := p.vessels[257000009]; v.Length != 160 || v.Beam != 22 || v.Dim.A != 120 || v.Dim.B != 40 || v.Dim.C+v.Dim.D != 22 {
+		t.Errorf("partial dimensions wiped a value: length %d beam %d dim %+v", v.Length, v.Beam, v.Dim)
 	}
 	p.ingestPacket("kystverket", "kystverket", now.Add(4*time.Second), now.Add(4*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
 		Name: "STATIC STAR", Type: 70, Dimension: ais.FieldDimension{C: 11, D: 12}})
-	if v := p.vessels[257000009]; v.Length != 160 || v.Beam != 23 {
-		t.Errorf("partial dimensions wiped a value: length %d beam %d", v.Length, v.Beam)
+	if v := p.vessels[257000009]; v.Length != 160 || v.Beam != 23 || v.Dim != (ais.FieldDimension{A: 120, B: 40, C: 11, D: 12}) {
+		t.Errorf("partial dimensions wiped a value: length %d beam %d dim %+v", v.Length, v.Beam, v.Dim)
+	}
+	// the feature carries the four offsets, a zero one included once its total is known
+	p.ingestPacket("kystverket", "kystverket", now.Add(5*time.Second), now.Add(5*time.Second), ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true,
+		Name: "STATIC STAR", Type: 70, Dimension: ais.FieldDimension{A: 0, B: 160}})
+	b, _ := json.Marshal(p.vessels[257000009].feature(257000009).Properties)
+	for _, want := range []string{`"to_bow":0`, `"to_stern":160`, `"to_port":11`, `"to_starboard":12`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("feature lacks %s: %s", want, b)
+		}
 	}
 	// type 24 part B carries the call sign and dimensions of a class B vessel
 	p.ingestPacket("kystverket", "kystverket", now, now, ais.StaticDataReport{Header: ais.Header{MessageID: 24, UserID: 257000010}, Valid: true, PartNumber: true,
