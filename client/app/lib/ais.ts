@@ -434,3 +434,13 @@ export function viewBoxes(south: number, west: number, north: number, east: numb
   const e = w + (east - west);
   return e <= 180 ? [[s, w, n, e]] : [[s, w, n, 180], [s, -180, n, e - 360]];
 }
+
+// The source kinds people run: a receiver sending over UDP, HTTP or the stream with a token,
+// or identified by its own vessel's MMSI. Everything else is a government feed or a partner
+// aggregate, named by its upstream.
+const VOLUNTEER_KINDS = new Set(["udp", "http", "v1", "mmsi", "station"]);
+
+/** Whether a `source`, such as `udp:24dfc99708ff` or `aishub`, is a volunteer's receiver. */
+export function isVolunteer(source: string | undefined): boolean {
+  return source != null && VOLUNTEER_KINDS.has(source.split(":")[0]!);
+}

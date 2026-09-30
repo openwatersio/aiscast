@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 export type Detent = "peek" | "half" | "full";
 
 // Kept in step with .sheet in app.css, which positions the sheet before any script runs.
-const GAP = 48; // map left showing above a full sheet
+const GAP = 60; // the header and the space under it, above a full sheet: --sheet-gap in app.css
 const PEEK = 76; // the grabber and the search field, above the home indicator
 
 const PHONE = "(max-width: 767px)";
@@ -173,7 +173,7 @@ export function Sheet({
   }, []);
 
   return (
-    <section ref={ref} data-map-inset data-detent={detent} aria-label="Panel" className="sheet pane flex flex-col overflow-hidden">
+    <section ref={ref} data-map-inset data-detent={detent} aria-label="Panel" className="sheet pane flex flex-col overflow-hidden rounded-2xl">
       {/* Tapping the handle steps up through the heights and wraps back to the lowest. */}
       <button
         type="button"

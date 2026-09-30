@@ -17,8 +17,8 @@ import { NO_FILTERS, type SearchFilters } from "../lib/searchFilters";
 import { Stream } from "../lib/stream";
 import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { Sheet, type Detent } from "./Sheet";
+import { Header } from "./Header";
 import { StatusChip } from "./StatusChip";
-import { ThemeChip } from "./ThemeToggle";
 import { stackStateFor } from "./ui/PanelHeader";
 
 interface ShellState {
@@ -161,8 +161,8 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
             `load`, and MapLibre measures its container once. */}
         <div id="map" ref={container} />
 
+        <Header />
         <StatusChip />
-        <ThemeChip />
 
         <Sheet detent={detent} onDetentChange={setDetent}>
           {/* While the next entry loads. Most navigations answer before its delay runs out,

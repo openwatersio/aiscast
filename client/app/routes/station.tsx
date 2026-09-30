@@ -1,16 +1,21 @@
-import { useEffect } from "react";
+import { Antenna, Check, Share } from "lucide-react";
+import { useEffect, useState } from "react";
 import { data } from "react-router";
 import { PageTitle, Panel } from "../components/Panel";
 import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { Facts } from "../components/ui/Facts";
+import { IconButton } from "../components/ui/IconButton";
+import { Prompt } from "../components/ui/Prompt";
 import { ClassDot, List, ListRow } from "../components/ui/List";
 import { Section, Tile } from "../components/ui/Section";
 import { StatGrid } from "../components/ui/StatGrid";
-import { formatAge, vesselPath } from "../lib/ais";
+import { formatAge, isVolunteer, vesselPath } from "../lib/ais";
 import { browserAuth, getStation, orUnavailable, type ApiAuth } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
-import { pageMeta } from "../lib/meta";
+import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
+import { pageMeta, SITE } from "../lib/meta";
+import { shareLink } from "../lib/share";
 import type { BBox } from "../lib/stream";
 import type { Route } from "./+types/station";
 
@@ -75,7 +80,7 @@ export default function Station({ loaderData }: Route.ComponentProps) {
     : undefined;
 
   return (
-    <Panel back="/stations" title={id}>
+    <Panel back="/stations" title={id} actions={<ShareStation id={id} />}>
       <PageTitle className="break-all">{id}</PageTitle>
 
       {!st ? (
@@ -106,6 +111,12 @@ export default function Station({ loaderData }: Route.ComponentProps) {
             ]}
           />
 
+          <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-5">
+            {isVolunteer(st.source)
+              ? "Someone runs this receiver and shares what it hears. You can run one too."
+              : "Volunteer receivers fill in where feeds like this one do not reach."}
+          </Prompt>
+
           <Section label={`Latest to hear these ${n(vessels.length)} vessels`} bare>
             <List>
               {vessels.slice(0, 200).map((f) => (
@@ -123,6 +134,18 @@ export default function Station({ loaderData }: Route.ComponentProps) {
       )}
     </Panel>
   );
+}
+
+/** The station's link, for its operator to pass around. */
+function ShareStation({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  async function share() {
+    const done = await shareLink({ title: `${id} receiving station`, text: "A receiver in the open AIS network", url: `${SITE}/stations/${id}` });
+    if (done !== "copied") return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+  return <IconButton icon={copied ? Check : Share} label={copied ? "Link copied" : "Share"} small onClick={() => void share()} />;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

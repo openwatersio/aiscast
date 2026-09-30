@@ -1,10 +1,13 @@
+import { Antenna, CodeXml } from "lucide-react";
 import { PageTitle, Panel } from "../components/Panel";
 import { Facts } from "../components/ui/Facts";
+import { Prompt } from "../components/ui/Prompt";
 import { Section, Tile } from "../components/ui/Section";
 import { StatGrid } from "../components/ui/StatGrid";
-import { formatAge } from "../lib/ais";
-import { browserAuth, getStats } from "../lib/api";
+import { formatAge, isVolunteer } from "../lib/ais";
+import { browserAuth, getStats, publicApiBase } from "../lib/api";
 import { serverEnv } from "../lib/context";
+import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS } from "../lib/links";
 import { pageMeta } from "../lib/meta";
 import type { Route } from "./+types/network";
 
@@ -33,6 +36,9 @@ const KINDS: Record<string, string> = { vessel: "Vessels", aton: "Aids to naviga
 export default function Network({ loaderData }: Route.ComponentProps) {
   const { stats } = loaderData;
   const sources = Object.entries(stats?.sources ?? {}).sort((a, b) => b[1].events.last_24h - a[1].events.last_24h);
+  const volunteers = Object.entries(stats?.stations.by_source ?? {})
+    .filter(([kind]) => isVolunteer(kind))
+    .reduce((sum, [, count]) => sum + count, 0);
   const cell = "py-1.5 pl-3 text-right tabular-nums whitespace-nowrap";
   const head = "pb-1 pl-3 text-right font-medium whitespace-nowrap";
   const v = stats?.vessels;
@@ -74,6 +80,12 @@ export default function Network({ loaderData }: Route.ComponentProps) {
               ]}
             />
           </div>
+
+          <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-3">
+            {volunteers === 0
+              ? "Volunteer receivers add coverage where the feeds do not reach."
+              : `${volunteers === 1 ? "One station is" : `${n(volunteers)} stations are`} run by volunteers, sharing what their receivers hear.`}
+          </Prompt>
 
           <Section label="Vessels">
             <table className="w-full text-subhead">
@@ -142,6 +154,14 @@ export default function Network({ loaderData }: Route.ComponentProps) {
                 .map(([kind, count]): [string, string] => [KINDS[kind] ?? kind, n(count)])}
             />
           </Section>
+
+          <Prompt icon={CodeXml} href={DEVELOPERS} action="Developers" className="mt-5">
+            Everything on this page is at{" "}
+            <a href={`${publicApiBase()}/v1/stats`} className="font-mono">
+              /v1/stats
+            </a>
+            , and every vessel in it is on the stream.
+          </Prompt>
         </>
       )}
     </Panel>

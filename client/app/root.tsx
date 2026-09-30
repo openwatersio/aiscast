@@ -9,6 +9,11 @@ import { themeFromCookie } from "./lib/theme";
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://tiles.openfreemap.org", crossOrigin: "anonymous" },
+  // The logo's rings, as the header draws them. From public/ais/assets, unhashed, because the
+  // manifest names the icons by path.
+  { rel: "icon", type: "image/svg+xml", href: "/ais/assets/icon.svg" },
+  { rel: "apple-touch-icon", href: "/ais/assets/icon-180.png" },
+  { rel: "manifest", href: "/ais/assets/manifest.webmanifest" },
 ];
 
 /**
@@ -33,6 +38,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="apple-mobile-web-app-title" content="Open Waters AIS" />
         <Meta />
         <Links />
       </head>

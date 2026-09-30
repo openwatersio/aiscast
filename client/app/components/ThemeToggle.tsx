@@ -2,6 +2,7 @@ import { Moon, Sun, SunMoon } from "lucide-react";
 import type { ThemeChoice } from "../lib/theme";
 import { useShell } from "./Shell";
 import { IconButton } from "./ui/IconButton";
+import { MenuItem } from "./ui/Menu";
 
 const NEXT: Record<ThemeChoice, ThemeChoice> = { dark: "light", light: "system", system: "dark" };
 const ICON = { dark: Moon, light: Sun, system: SunMoon };
@@ -16,25 +17,19 @@ function useThemeCycle() {
   };
 }
 
-/** One button that steps through the theme choices, showing the current one. Phones only. */
-export function ThemeToggle() {
+/** One button that steps through the theme choices, showing the current one, in the header. */
+export function ThemeButton() {
   const { theme, label, next } = useThemeCycle();
-  return <IconButton icon={ICON[theme]} label={label} onClick={next} className="md:hidden" />;
+  return <IconButton icon={ICON[theme]} label={label} onClick={next} className="max-md:hidden" />;
 }
 
-/** The same, as a round button over the map's top-right corner. Wide screens only. */
-export function ThemeChip() {
+/** The same, as an icon in the header's menu, for a phone's header with no room for it. */
+export function ThemeMenuItem({ className }: { className?: string }) {
   const { theme, label, next } = useThemeCycle();
   const Icon = ICON[theme];
   return (
-    <button
-      type="button"
-      onClick={next}
-      aria-label={label}
-      title={label}
-      className="pane pointer-events-auto fixed top-3 right-3 z-10 hidden size-9 items-center justify-center rounded-full text-fg transition-colors hover:bg-surface-subtle md:flex"
-    >
-      <Icon className="size-4" aria-hidden />
-    </button>
+    <MenuItem onClick={next} closeOnClick={false} label={label} className={className}>
+      <Icon className="size-4 text-fg-secondary" aria-hidden />
+    </MenuItem>
   );
 }
