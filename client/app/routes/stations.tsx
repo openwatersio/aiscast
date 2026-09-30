@@ -33,7 +33,7 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
   const { stations } = loaderData;
   const active = stations?.filter((s) => s.last_age_s < 300).length ?? 0;
   return (
-    <Panel back="/map" title="Stations">
+    <Panel back="/vessels" title="Stations">
       <PageTitle>Stations</PageTitle>
       <p className="mt-1 text-body text-fg-secondary">
         {stations ? `${n(stations.length)} heard, ${n(active)} active in the last five minutes.` : "Station list unavailable."}{" "}

@@ -9,7 +9,7 @@
   // landing page, the token page, the comparisons) stays with the website.
   "routes": [
     { "pattern": "openwaters.io/ais/map*", "zone_name": "openwaters.io" },
-    { "pattern": "openwaters.io/ais/vessels/*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/vessels*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/stations*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/network*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/assets/*", "zone_name": "openwaters.io" },

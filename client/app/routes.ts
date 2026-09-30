@@ -4,7 +4,9 @@ import { index, route, type RouteConfig } from "@react-router/dev/routes";
 // prefixes, so adding a top-level path here means adding it there too.
 export default [
   index("routes/index.tsx"),
-  route("map", "routes/home.tsx"),
+  route("vessels", "routes/home.tsx"),
+  // Where the map was first published, kept as a permanent redirect for links to it.
+  route("map", "routes/map.ts"),
   route("vessels/:param", "routes/vessel.tsx"),
   // JSON for the vessel page's photos, served by the Worker (lib/media.server.ts).
   route("vessels/media/:key", "routes/vessel-media.ts"),

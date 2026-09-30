@@ -38,7 +38,7 @@ const ShellContext = createContext<ShellState>({
   setQuery: () => undefined,
   filters: NO_FILTERS,
   setFilters: () => undefined,
-  theme: "dark",
+  theme: "system",
   setTheme: () => undefined,
   setDetent: () => undefined,
 });
@@ -56,7 +56,7 @@ const SAVED_QUERY = "aiscast.query";
  * for anything that has content to read while the map still shows where it is.
  */
 function routeDetent(pathname: string): Detent {
-  return pathname === "/map" ? "peek" : "half";
+  return pathname === "/vessels" ? "peek" : "half";
 }
 
 /**

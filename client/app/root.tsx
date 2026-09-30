@@ -29,7 +29,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const data = useRouteLoaderData<typeof loader>("root");
   return (
     // The theme switcher writes data-theme directly, after hydration.
-    <html lang="en" data-theme={data?.theme ?? "dark"} suppressHydrationWarning>
+    <html lang="en" data-theme={data?.theme ?? "system"} suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -57,7 +57,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
       <h1 className="text-title text-fg">{notFound ? "Not found" : "Something went wrong"}</h1>
       <p className="mt-2 text-body text-fg-secondary">
         {notFound ? "There is nothing at this address." : "The page could not be shown."} Try the{" "}
-        <a href="/ais/map">map</a>.
+        <a href="/ais/vessels">map</a>.
       </p>
       {import.meta.env.DEV && error instanceof Error && <pre className="mt-4 text-xs">{error.stack}</pre>}
     </main>

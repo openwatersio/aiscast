@@ -9,11 +9,11 @@ export const THEME_CHOICES: ThemeChoice[] = ["dark", "light", "system"];
 // first response, so the page never paints in the wrong scheme and then flips.
 const COOKIE = "aiscast-theme";
 
-/** The stored choice from a Cookie header. Dark when there is none. */
+/** The stored choice from a Cookie header. System when there is none. */
 export function themeFromCookie(header: string | null): ThemeChoice {
   const m = header?.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([a-z]+)`));
   const value = m?.[1];
-  return THEME_CHOICES.includes(value as ThemeChoice) ? (value as ThemeChoice) : "dark";
+  return THEME_CHOICES.includes(value as ThemeChoice) ? (value as ThemeChoice) : "system";
 }
 
 const LIGHT_QUERY = "(prefers-color-scheme: light)";
@@ -32,7 +32,7 @@ export function resolveTheme(choice: ThemeChoice): Theme {
 
 /**
  * The visitor's theme choice and what it resolves to. The server render only knows the
- * cookie, so System renders dark there and resolves on the device.
+ * cookie; System's colours follow the device's scheme in CSS, and the map resolves it here.
  */
 export function useTheme(initial: ThemeChoice) {
   const [choice, setChoiceState] = useState(initial);

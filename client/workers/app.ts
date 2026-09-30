@@ -15,6 +15,10 @@ const handler = createRequestHandler(
 
 export default {
   fetch(request, env) {
+    // On openwaters.io the Worker's routes send it only paths under /ais/. A workers.dev
+    // address, such as a preview version's, sends it everything, and the app is at /ais/.
+    const url = new URL(request.url);
+    if (!url.pathname.startsWith("/ais/")) return Response.redirect(new URL("/ais/vessels", url), 302);
     const context = new RouterContextProvider();
     context.set(serverEnv, { api: env.AIS_API, token: env.AIS_TOKEN || undefined });
     return handler(request, context);

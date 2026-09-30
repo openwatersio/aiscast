@@ -12,14 +12,14 @@ export function clientLoader() {
 }
 
 export const meta = () =>
-  pageMeta({ title: "Not found | Open Waters AIS", description: "No page at this address.", path: "/map", noindex: true });
+  pageMeta({ title: "Not found | Open Waters AIS", description: "No page at this address.", path: "/vessels", noindex: true });
 
 export default function NotFound() {
   return (
-    <Panel back="/map" title="Not found">
+    <Panel back="/vessels" title="Not found">
       <PageTitle>Not found</PageTitle>
       <p className="mt-2 text-body text-fg-secondary">
-        There is nothing at this address. Try the <Link to="/map">map</Link>, or search for a vessel by name or MMSI.
+        There is nothing at this address. Try the <Link to="/vessels">map</Link>, or search for a vessel by name or MMSI.
       </p>
     </Panel>
   );

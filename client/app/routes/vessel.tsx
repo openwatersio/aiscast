@@ -55,7 +55,7 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
 }
 
 export function meta({ loaderData }: Route.MetaArgs) {
-  if (!loaderData) return pageMeta({ title: "Not found | Open Waters AIS", description: "No vessel at this address.", path: "/map", noindex: true });
+  if (!loaderData) return pageMeta({ title: "Not found | Open Waters AIS", description: "No vessel at this address.", path: "/vessels", noindex: true });
   const { mmsi } = loaderData;
   const feature = loaderData.feature instanceof Promise ? undefined : loaderData.feature;
   const props = feature?.properties;
@@ -95,7 +95,7 @@ export default function Vessel({ loaderData }: Route.ComponentProps) {
   // Back pops to whatever pushed this vessel; close always returns to the map, as a place
   // card's does in a maps app.
   return (
-    <Panel back="/map" title={name ?? `MMSI ${mmsi}`} hero actions={<IconLink icon={X} label="Close" to="/map" small />}>
+    <Panel back="/vessels" title={name ?? `MMSI ${mmsi}`} hero actions={<IconLink icon={X} label="Close" to="/vessels" small />}>
       {detail}
     </Panel>
   );

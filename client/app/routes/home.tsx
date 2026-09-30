@@ -24,7 +24,7 @@ export const meta = () =>
     title: "Live AIS vessel traffic | Open Waters AIS",
     description:
       "Live AIS vessel positions from open government feeds and volunteer receivers. Free, open, no account.",
-    path: "/map",
+    path: "/vessels",
   });
 
 export default function Home() {

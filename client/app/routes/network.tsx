@@ -36,7 +36,7 @@ export default function Network({ loaderData }: Route.ComponentProps) {
   const cell = "py-1.5 pl-3 text-right tabular-nums whitespace-nowrap";
   const head = "pb-1 pl-3 text-right font-medium whitespace-nowrap";
   return (
-    <Panel back="/map" title="Network">
+    <Panel back="/vessels" title="Network">
       <PageTitle>Network</PageTitle>
 
       {!stats ? (
