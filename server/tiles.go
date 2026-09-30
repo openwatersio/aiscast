@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BertoldVdb/go-ais"
 )
 
 // Vector tiles of vessel positions: GET /v1/vessels/tiles/{z}/{x}/{y} answers a Mapbox Vector Tile with one
@@ -76,19 +78,21 @@ func (f *tileFilter) match(mmsi uint32, v *vessel, now time.Time) bool {
 }
 
 // serveVesselTile: GET /v1/vessels/tiles/{z}/{x}/{y} → the vessels in one tile, gzipped. The area
-// cap does not apply: a tile bounds its own cost by thinning, and the tile rate limit bounds how many.
+// cap does not apply: a tile bounds its own cost by thinning, and the tile rate limit bounds how many. A token
+// with rpm 0 skips that limit; any other token keeps the per-address tile limit.
 func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 	if preflight(w, r, corsHeaders) {
 		return
 	}
-	if p.limited(w, tileLimit, clientIP(r)) {
+	cl, err := p.socketClaims(r)
+	if rpm, ok := ownRPM(cl, err); !(ok && rpm == 0) && p.limited(w, tileLimit, clientIP(r)) {
 		return
 	}
-	cl, err := p.requestClaims(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
+	cl = orAnonymous(cl, r)
 	z, x, y, ok := tileCoords(r)
 	if !ok {
 		http.Error(w, "tile out of range", http.StatusBadRequest)
@@ -167,14 +171,16 @@ func tileBox(z, x, y int) bbox {
 
 // tilePoint is what a tile shows of a vessel, copied out under the read lock so encoding does not hold it.
 type tilePoint struct {
-	mmsi                  uint32
-	x, y                  int32
-	seen                  time.Time
-	name, kind, class     string
-	source, station       string
-	shipType, navStatus   uint8
-	cog, sog              float64
-	heading, length, beam uint16
+	mmsi                       uint32
+	x, y                       int32
+	seen                       time.Time
+	name, kind, class          string
+	source, station            string
+	shipType, navStatus        uint8
+	cog, sog                   float64
+	heading, length, beam      uint16
+	dim                        ais.FieldDimension
+	lengthOffsets, beamOffsets bool
 }
 
 // vesselTile encodes the vessels in a tile that match f.
@@ -209,7 +215,8 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		}
 		pts = append(pts, tilePoint{mmsi: mmsi, x: int32(math.Round(px)), y: int32(math.Round(py)), seen: v.Seen,
 			name: v.Name, kind: v.Kind, class: v.Class, source: sourceKind(v.Source), station: v.Station, shipType: v.ShipType,
-			navStatus: v.NavStatus, cog: v.Cog, sog: v.Sog, heading: v.Heading, length: v.Length, beam: v.Beam})
+			navStatus: v.NavStatus, cog: v.Cog, sog: v.Sog, heading: v.Heading, length: v.Length, beam: v.Beam, dim: v.Dim,
+			lengthOffsets: v.hasLengthOffsets(), beamOffsets: v.hasBeamOffsets()})
 	}
 	p.vmu.RLock()
 	p.vesselsIn([]bbox{box}, add)
@@ -265,8 +272,14 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.length > 0 {
 			props = append(props, mvtProp{"length", uint64(pt.length)})
 		}
+		if pt.lengthOffsets { // served whole, as the Feature serves them (hasLengthOffsets)
+			props = append(props, mvtProp{"to_bow", uint64(pt.dim.A)}, mvtProp{"to_stern", uint64(pt.dim.B)})
+		}
 		if pt.beam > 0 {
 			props = append(props, mvtProp{"beam", uint64(pt.beam)})
+		}
+		if pt.beamOffsets {
+			props = append(props, mvtProp{"to_port", uint64(pt.dim.C)}, mvtProp{"to_starboard", uint64(pt.dim.D)})
 		}
 		if pt.sog < 102.3 {
 			props = append(props, mvtProp{"sog", pt.sog})
@@ -344,7 +357,9 @@ var tileFields = map[string]string{
 	"type": "Number: ITU ship and cargo type; the AtoN type for an aid to navigation", "flag": "String: ISO 3166 alpha-2 from the MMSI",
 	"nav_status": "Number", "sog": "Number: knots", "cog": "Number: degrees", "heading": "Number: degrees",
 	"hdg": "Number: heading, else course over ground, the angle to rotate an icon by", "length": "Number: metres",
-	"beam": "Number: metres", "source": "String: source kind", "station": "String: the station that heard the last message", "age_s": "Number: seconds since the last report when the tile was built",
+	"beam": "Number: metres", "to_bow": "Number: metres from the AIS antenna to the bow",
+	"to_stern": "Number: metres from the AIS antenna to the stern", "to_port": "Number: metres from the AIS antenna to port",
+	"to_starboard": "Number: metres from the AIS antenna to starboard", "source": "String: source kind", "station": "String: the station that heard the last message", "age_s": "Number: seconds since the last report when the tile was built",
 }
 
 // tileAttribution is one linked credit, the web-map convention: a tile holds whichever sources heard its

@@ -282,7 +282,7 @@ func (t *trackStore) first(mmsi uint32, from, to time.Time) (first time.Time, ok
 
 // track reads one vessel's positions between from and to, oldest first. interval thins the track to the
 // first position in each interval. When more than limit match, the newest limit are returned and more is
-// true.
+// true. Positions whose implied speed from their neighbors is impossible are dropped (despike).
 func (t *trackStore) track(mmsi uint32, from, to time.Time, interval time.Duration, limit int) (points []trackPoint, more bool, err error) {
 	err = t.read(func(tx *sql.Tx) error {
 		tables, err := dayTables(tx, from, to)
@@ -324,11 +324,87 @@ func (t *trackStore) track(mmsi uint32, from, to time.Time, interval time.Durati
 	if err != nil {
 		return nil, false, err
 	}
+	// The row past the limit says older positions match (more). It also anchors despiking: judged
+	// against it, the page's oldest row survives or falls the same way it would inside a larger
+	// request, instead of always being kept as the first point seen. When the anchor row itself
+	// survives the filter it is withheld from the page, as it was before despiking existed; a run
+	// can also outvote it inside despike, and then there is nothing to withhold.
+	anchored := false
 	if len(points) > limit {
-		points, more = points[:limit], true
+		more, anchored = true, true
 	}
 	sort.SliceStable(points, func(i, j int) bool { return points[i].ts.Before(points[j].ts) })
+	var anchor trackPoint
+	if anchored {
+		anchor = points[0]
+	}
+	points = despike(points)
+	if anchored && len(points) > 0 && points[0].ts.Equal(anchor.ts) && points[0].lat6 == anchor.lat6 && points[0].lon6 == anchor.lon6 {
+		points = points[1:]
+	}
 	return points, more, nil
+}
+
+// The store keeps every accepted position, but a track drawn straight through them kinks wherever a
+// report's stamp disagrees with its fix: AISHub's snapshot stamps run tens of seconds off the
+// positions they carry, and a few vessels broadcast broken fixes outright. Those errors are metres
+// to a few hundred metres — far under the ingest gate's 10 NM teleport floor — so they are only
+// visible here, as segments implying two to forty times the vessel's speed. Serving is the one
+// place that can judge them: the fix time never arrives to correct the stamp, and dropping a point
+// from a drawn line loses nothing the store does not still hold.
+const (
+	despikeFloorNM  = 0.03 // under ~55 m a segment cannot draw a visible kink, and jitter over a short dt implies any speed
+	despikeMinKnots = 25.0 // fastest implied speed always kept, whatever the vessel reports
+	despikeMaxRun   = 3    // consecutive drops before the run outvotes the anchor and the next point re-anchors
+)
+
+// despike walks a track oldest first and drops each position implying an impossible speed from the
+// last kept one: over despikeMinKnots and more than twice either endpoint's reported speed. A run of
+// drops longer than despikeMaxRun outvotes the anchor, and the next position re-anchors rather than
+// erasing the rest of the track. An anchor with no plausible kept segment behind it — the oldest
+// point, or a prior forced keep — was never corroborated and goes with its run, so the drawn line
+// does not connect two impossible positions. A corroborated anchor stays: both sides are then real
+// reports (a duplicate MMSI transmitting from two places), a LineString cannot show a break, and one
+// straight jump is the honest rendering.
+func despike(points []trackPoint) []trackPoint {
+	kept := points[:0]
+	run := 0
+	corroborated := false // the current anchor has a plausible kept segment behind it
+	for _, pt := range points {
+		if len(kept) == 0 {
+			kept = append(kept, pt)
+			continue
+		}
+		a := kept[len(kept)-1]
+		dt := pt.ts.Sub(a.ts).Seconds()
+		d := nm(float64(a.lat6)/600000, float64(a.lon6)/600000, float64(pt.lat6)/600000, float64(pt.lon6)/600000)
+		vmax := despikeMinKnots
+		if a.sog10 != 1023 {
+			vmax = max(vmax, 2*float64(a.sog10)/10)
+		}
+		if pt.sog10 != 1023 {
+			vmax = max(vmax, 2*float64(pt.sog10)/10)
+		}
+		// Equal stamps are distinct reports the store keeps (see TestTrackKeepsEqualTimeReports);
+		// with no time between them there is no speed to judge.
+		if dt > 0 && d > despikeFloorNM && d/(dt/3600) > vmax {
+			if run < despikeMaxRun {
+				run++
+				continue
+			}
+			if !corroborated {
+				kept = kept[:len(kept)-1]
+			}
+			kept = append(kept, pt)
+			corroborated = false
+			run = 0
+			continue
+		}
+		run = 0
+		kept = append(kept, pt)
+		corroborated = true
+	}
+	return kept
 }
 
 // ---- the pipeline side ----

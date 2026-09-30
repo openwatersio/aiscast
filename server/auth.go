@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -20,13 +21,14 @@ import (
 // can mint broad tokens; the CLI (cmd/aiscast-key) does. Format: "ak1.<b64url claims JSON>.<b64url signature>".
 //
 //	{"kid":"2026-08","sub":"station-42","role":"feeder","exp":1787000000,"iat":...,
-//	 "bbox":[[s,w,n,e]],"cidr":["203.0.113.0/24"],"conns":2,"rate":50,"area":400}
+//	 "bbox":[[s,w,n,e]],"cidr":["203.0.113.0/24"],"conns":2,"rate":50,"area":400,"rpm":600}
 //
 // Roles: personal (subscribe, small limits), feeder (publish/receive), peer (publish+subscribe), partner
 // (subscribe, negotiated limits), admin (everything). bbox limits what may be subscribed; cidr limits where
 // from; conns caps concurrent WebSockets per sub; rate thins each connection to n msg/s; area caps the total
 // subscribed bbox area in square degrees (negative = no bbox subscriptions at all, only MMSI lists). Unset claims
-// are unlimited; personal tokens get 2/50/400.
+// are unlimited; personal tokens get 2/50/400. rpm is the exception: unset leaves the token's HTTP requests on the
+// per-address limit, a positive value counts them per sub at that many a minute, and 0 lifts the limit.
 
 const tokenPrefix = "ak1."
 
@@ -42,6 +44,7 @@ type Claims struct {
 	Rate  int      `json:"rate,omitempty"`  // messages per second per connection; excess is thinned, not disconnected
 	Area  float64  `json:"area,omitempty"`  // max total subscribed bbox area, square degrees; 0 = unlimited, <0 = MMSI-only
 	MMSIs int      `json:"mmsis,omitempty"` // max vessels followed by MMSI per subscription (0 = unlimited)
+	RPM   *int     `json:"rpm,omitempty"`   // HTTP requests per minute per sub (nil = per-address default, 0 = unlimited)
 
 	Feeder bool `json:"-"` // earned for this connection: the token's station is feeding (see tiers.go)
 }
@@ -261,9 +264,20 @@ func (p *Pipeline) authorizeToken(tok, ip, action string) (*Claims, error) {
 	return c, nil
 }
 
+// verifiedKey holds the claims api() already verified for a request, nil for a tokenless one, so the handler
+// it wraps does not verify the same token again. api() refuses a token that did not verify, so no error is kept.
+type verifiedKey struct{}
+
+func withVerified(r *http.Request, c *Claims) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), verifiedKey{}, c))
+}
+
 // socketClaims verifies the token on a WebSocket request. No token → anonymous (nil, nil). A token that is
 // present but invalid, or not valid from this address, is an error: it must never degrade to anonymous access.
 func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
+	if c, ok := r.Context().Value(verifiedKey{}).(*Claims); ok {
+		return c, nil
+	}
 	tok := requestToken(r)
 	if tok == "" {
 		return nil, nil

@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS vessels (
 	draught     REAL    NOT NULL DEFAULT 0,
 	length      INTEGER NOT NULL DEFAULT 0,
 	beam        INTEGER NOT NULL DEFAULT 0,
+	to_bow      INTEGER NOT NULL DEFAULT 0,    -- metres from the AIS antenna; each pair goes with its total
+	to_stern    INTEGER NOT NULL DEFAULT 0,
+	to_port     INTEGER NOT NULL DEFAULT 0,
+	to_starboard INTEGER NOT NULL DEFAULT 0,
 	has_pos     INTEGER NOT NULL DEFAULT 0,
 	lat         REAL    NOT NULL DEFAULT 0,
 	lon         REAL    NOT NULL DEFAULT 0,
@@ -68,6 +72,11 @@ CREATE INDEX IF NOT EXISTS vessels_imo ON vessels (imo);
 var storeAddedCols = []string{
 	"trusted_at INTEGER NOT NULL DEFAULT 0",
 	"static_at  INTEGER NOT NULL DEFAULT 0",
+	// the antenna offsets; a row from before them reads 0, not available, until the vessel's next static
+	"to_bow INTEGER NOT NULL DEFAULT 0",
+	"to_stern INTEGER NOT NULL DEFAULT 0",
+	"to_port INTEGER NOT NULL DEFAULT 0",
+	"to_starboard INTEGER NOT NULL DEFAULT 0",
 }
 
 // upsertSQL merges a cache state into its row with the fold's own rules, because a vessel the cache swept
@@ -76,8 +85,9 @@ var storeAddedCols = []string{
 // Right-hand sides read the row as it was before the update.
 const upsertSQL = `
 INSERT INTO vessels (mmsi, name, search, kind, class, ship_type, flag, imo, callsign, destination, eta, draught,
-	length, beam, has_pos, lat, lon, cell, cog, sog, heading, nav_status, pos_at, trusted_at, static_at, seen, first_seen, source, station, msg_type)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	length, beam, to_bow, to_stern, to_port, to_starboard, has_pos, lat, lon, cell, cog, sog, heading, nav_status, pos_at,
+	trusted_at, static_at, seen, first_seen, source, station, msg_type)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (mmsi) DO UPDATE SET
 	name        = iif(excluded.name != '', excluded.name, vessels.name),
 	search      = iif(excluded.name != '', excluded.search, vessels.search),
@@ -92,6 +102,10 @@ ON CONFLICT (mmsi) DO UPDATE SET
 	draught     = iif(excluded.draught > 0, excluded.draught, vessels.draught),
 	length      = iif(excluded.length > 0, excluded.length, vessels.length),
 	beam        = iif(excluded.beam > 0, excluded.beam, vessels.beam),
+	to_bow      = iif(excluded.length > 0, excluded.to_bow, vessels.to_bow),
+	to_stern    = iif(excluded.length > 0, excluded.to_stern, vessels.to_stern),
+	to_port     = iif(excluded.beam > 0, excluded.to_port, vessels.to_port),
+	to_starboard = iif(excluded.beam > 0, excluded.to_starboard, vessels.to_starboard),
 	lat         = iif(excluded.has_pos AND excluded.pos_at >= vessels.pos_at, excluded.lat, vessels.lat),
 	lon         = iif(excluded.has_pos AND excluded.pos_at >= vessels.pos_at, excluded.lon, vessels.lon),
 	cell        = iif(excluded.has_pos AND excluded.pos_at >= vessels.pos_at, excluded.cell, vessels.cell),
@@ -111,6 +125,7 @@ ON CONFLICT (mmsi) DO UPDATE SET
 `
 
 const recordCols = `mmsi, name, kind, class, ship_type, imo, callsign, destination, eta, draught, length, beam,
+	to_bow, to_stern, to_port, to_starboard,
 	has_pos, lat, lon, cog, sog, heading, nav_status, pos_at, trusted_at, static_at, seen, first_seen, source, station, msg_type`
 
 // record is one vessel as the store holds it.
@@ -211,6 +226,7 @@ func (s *store) upsert(rows []record) error {
 		seen := unixMs(v.Seen)
 		if _, err := st.Exec(r.mmsi, v.Name, strings.ToUpper(strings.TrimSpace(v.Name)), v.Kind, v.Class, v.ShipType,
 			flagOf(r.mmsi), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
+			v.Dim.A, v.Dim.B, v.Dim.C, v.Dim.D,
 			v.HasPos, v.Lat, v.Lon, cell, v.Cog, v.Sog, v.Heading, v.NavStatus, unixMs(v.PosAt),
 			unixMs(v.TrustedAt), unixMs(v.StaticAt), seen, seen, v.Source, v.Station, v.MsgType); err != nil {
 			return err
@@ -240,9 +256,16 @@ type recordQuery struct {
 // alone, which scans the table: a few hundred thousand rows, tens of milliseconds.
 const maxCellRows = 60
 
+// maxCells bounds the cells a query lists one by one, across all its boxes: 1,080 is the most a single box
+// within a personal token's 400 square degrees can touch (1.1° by 360° crosses three rows). The budget is
+// shared, because bbox repeats and a zero-area box costs no area, and each cell is a bound parameter.
+const maxCells = 1080
+
 // where is the WHERE clause for q and its arguments. none reports a filter that matches nothing, an
-// empty MMSI or IMO list.
-func (q recordQuery) where() (clause string, args []any, none bool) {
+// empty MMSI or IMO list. byCell reports an area query past the cache whose every box the cell index narrows, so
+// find orders on +seen: ordering on seen lets SQLite walk the seen index until the limit fills, which in
+// empty water is every row in the range.
+func (q recordQuery) where() (clause string, args []any, none, byCell bool) {
 	var where []string
 	in := func(col string, ids []uint32) {
 		ph := make([]string, len(ids))
@@ -253,25 +276,40 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 	}
 	if q.mmsis != nil {
 		if len(q.mmsis) == 0 {
-			return "", nil, true
+			return "", nil, true, false
 		}
 		in("mmsi", q.mmsis)
 	}
 	if q.imos != nil {
 		if len(q.imos) == 0 {
-			return "", nil, true
+			return "", nil, true, false
 		}
 		in("imo", q.imos)
 	}
 	seen := "seen"
 	if len(q.boxes) > 0 {
+		// Listing cells serves an area reaching past the cache: before stops at its 30 minutes, and the
+		// (cell, seen) index then seeks each cell's range, skipping the vessels the cache answered for. A
+		// name or MMSI search, with or without max_age, is better served by its own index.
+		bounded := !q.before.IsZero() && q.prefix == "" && q.contains == ""
+		byCell = bounded
+		budget := maxCells
 		var ors []string
 		for _, b := range q.boxes {
 			c := "(lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?"
 			args = append(args, b[0], b[2], b[1], b[3])
 			r0, c0 := cellRowCol(b[0], b[1])
 			r1, c1 := cellRowCol(b[2], b[3])
-			if r1-r0 < maxCellRows { // lets the cell index narrow the scan to the rows of cells the box covers
+			if n := int(r1-r0+1) * int(c1-c0+1); bounded && n <= budget {
+				budget -= n
+				ph := make([]string, 0, n)
+				for r := r0; r <= r1; r++ {
+					for col := c0; col <= c1; col++ {
+						ph, args = append(ph, "?"), append(args, r*360+col)
+					}
+				}
+				c += " AND cell IN (" + strings.Join(ph, ",") + ")"
+			} else if r1-r0 < maxCellRows { // lets the cell index narrow the scan to the rows of cells the box covers
 				var cells []string
 				for r := r0; r <= r1; r++ {
 					cells = append(cells, "cell BETWEEN ? AND ?")
@@ -281,6 +319,8 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 				// Without statistics SQLite takes the seen index for a seen range and walks every vessel
 				// heard in it, wherever it is. The unary + keeps it on the cells.
 				seen = "+seen"
+			} else {
+				byCell = false
 			}
 			ors = append(ors, c+")")
 		}
@@ -321,33 +361,58 @@ func (q recordQuery) where() (clause string, args []any, none bool) {
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")
 	}
-	return clause, args, false
+	return clause, args, false, byCell
+}
+
+// bounded is where, refused with errTooManyTerms past what one SQLite statement can take: each box is a
+// level of OR, and the expression depth stops near a thousand, and each term is a bound parameter.
+func (q recordQuery) bounded() (clause string, args []any, none, byCell bool, err error) {
+	if len(q.boxes) > maxBoxes {
+		return "", nil, false, false, errTooManyTerms
+	}
+	clause, args, none, byCell = q.where()
+	if len(args) > maxParams {
+		return "", nil, false, false, errTooManyTerms
+	}
+	return clause, args, none, byCell, nil
 }
 
 // count is the number of rows q matches, ignoring its limit.
 func (s *store) count(q recordQuery) (int, error) {
-	clause, args, none := q.where()
-	if none {
-		return 0, nil
+	clause, args, none, _, err := q.bounded()
+	if err != nil || none {
+		return 0, err
 	}
 	var n int
-	err := s.db.QueryRow("SELECT count(*) FROM vessels"+clause, args...).Scan(&n)
+	err = s.db.QueryRow("SELECT count(*) FROM vessels"+clause, args...).Scan(&n)
 	return n, err
 }
 
-func (s *store) find(q recordQuery) ([]record, error) {
-	clause, args, none := q.where()
-	if none {
-		return nil, nil
+// sql is the statement find runs for q.
+func (q recordQuery) sql() (text string, args []any, none bool, err error) {
+	clause, args, none, byCell, err := q.bounded()
+	if err != nil || none {
+		return "", nil, none, err
 	}
-	sqlText := "SELECT " + recordCols + " FROM vessels" + clause
-	if q.byName {
-		sqlText += " ORDER BY search, mmsi"
-	} else {
-		sqlText += " ORDER BY seen DESC"
+	text = "SELECT " + recordCols + " FROM vessels" + clause
+	switch {
+	case q.byName:
+		text += " ORDER BY search, mmsi"
+	case byCell:
+		text += " ORDER BY +seen DESC"
+	default:
+		text += " ORDER BY seen DESC"
 	}
 	if q.limit > 0 {
-		sqlText += " LIMIT " + strconv.Itoa(q.limit)
+		text += " LIMIT " + strconv.Itoa(q.limit)
+	}
+	return text, args, false, nil
+}
+
+func (s *store) find(q recordQuery) ([]record, error) {
+	sqlText, args, none, err := q.sql()
+	if err != nil || none {
+		return nil, err
 	}
 	rows, err := s.db.Query(sqlText, args...)
 	if err != nil {
@@ -360,7 +425,7 @@ func (s *store) find(q recordQuery) ([]record, error) {
 		var eta, posAt, trustedAt, staticAt, seen, first int64
 		v := newVessel()
 		if err := rows.Scan(&r.mmsi, &v.Name, &v.Kind, &v.Class, &v.ShipType, &v.IMO, &v.CallSign, &v.Destination, &eta,
-			&v.Draught, &v.Length, &v.Beam, &v.HasPos, &v.Lat, &v.Lon, &v.Cog, &v.Sog, &v.Heading, &v.NavStatus,
+			&v.Draught, &v.Length, &v.Beam, &v.Dim.A, &v.Dim.B, &v.Dim.C, &v.Dim.D, &v.HasPos, &v.Lat, &v.Lon, &v.Cog, &v.Sog, &v.Heading, &v.NavStatus,
 			&posAt, &trustedAt, &staticAt, &seen, &first, &v.Source, &v.Station, &v.MsgType); err != nil {
 			return nil, err
 		}
@@ -541,7 +606,7 @@ func (v *vessel) state() *vessel {
 	return &vessel{
 		Name: v.Name, Lat: v.Lat, Lon: v.Lon, HasPos: v.HasPos, Cog: v.Cog, Sog: v.Sog, Heading: v.Heading,
 		NavStatus: v.NavStatus, ShipType: v.ShipType, Kind: v.Kind, Class: v.Class, IMO: v.IMO, CallSign: v.CallSign,
-		Destination: v.Destination, ETA: v.ETA, Draught: v.Draught, Length: v.Length, Beam: v.Beam, Seen: v.Seen,
+		Destination: v.Destination, ETA: v.ETA, Draught: v.Draught, Length: v.Length, Beam: v.Beam, Dim: v.Dim, Seen: v.Seen,
 		Source: v.Source, Station: v.Station, MsgType: v.MsgType, TrustedAt: v.TrustedAt, PosAt: v.PosAt, StaticAt: v.StaticAt,
 	}
 }
@@ -566,8 +631,8 @@ func (v *vessel) merge(o *vessel) (changed bool) {
 	fill(v.Destination == "", o.Destination != "", func() { v.Destination = o.Destination })
 	fill(v.ETA.Month == 0, o.ETA.Month != 0, func() { v.ETA = o.ETA })
 	fill(v.Draught == 0, o.Draught != 0, func() { v.Draught = o.Draught })
-	fill(v.Length == 0, o.Length != 0, func() { v.Length = o.Length })
-	fill(v.Beam == 0, o.Beam != 0, func() { v.Beam = o.Beam })
+	fill(v.Length == 0, o.Length != 0, func() { v.Length, v.Dim.A, v.Dim.B = o.Length, o.Dim.A, o.Dim.B })
+	fill(v.Beam == 0, o.Beam != 0, func() { v.Beam, v.Dim.C, v.Dim.D = o.Beam, o.Dim.C, o.Dim.D })
 	fill(!v.HasPos || o.PosAt.After(v.PosAt), o.HasPos, func() {
 		v.Lat, v.Lon, v.HasPos, v.PosAt, v.Cog, v.Sog, v.Heading = o.Lat, o.Lon, true, o.PosAt, o.Cog, o.Sog, o.Heading
 	})
@@ -577,3 +642,14 @@ func (v *vessel) merge(o *vessel) (changed bool) {
 }
 
 var errNoStore = errors.New("the vessel record is not available on this server")
+
+// maxBoxes bounds the boxes one record query takes. It is far past what a map or a region needs, and short
+// of SQLite's expression depth.
+const maxBoxes = 256
+
+// maxParams is SQLite's limit on bound parameters in one statement. bbox repeats and some tokens follow
+// any number of MMSIs, so a request can ask for more terms than one query can bind; it is refused as the
+// caller's to narrow, not failed as the record's.
+const maxParams = 32766
+
+var errTooManyTerms = errors.New("too many bbox or mmsi for one request")

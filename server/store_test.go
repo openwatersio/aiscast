@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,6 +109,7 @@ func TestStoreMergeKeepsWhatAReturningVesselHasNotResent(t *testing.T) {
 	t1 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	full := newVessel()
 	full.Name, full.IMO, full.CallSign, full.ShipType, full.Class, full.Draught = "NORDIC STAR", 9319466, "LAJB7", 70, "A", 5.2
+	full.Length, full.Beam, full.Dim = 160, 22, ais.FieldDimension{A: 120, B: 40, C: 10, D: 12}
 	full.Lat, full.Lon, full.HasPos, full.PosAt, full.Seen, full.Source, full.NavStatus = 59.9, 10.7, true, t1, t1, "kystverket", 0
 	if err := st.upsert([]record{{mmsi: 257000001, v: full}}); err != nil {
 		t.Fatal(err)
@@ -124,8 +126,22 @@ func TestStoreMergeKeepsWhatAReturningVesselHasNotResent(t *testing.T) {
 		t.Fatal(ok, err)
 	}
 	v := rec.v
-	if v.Name != "NORDIC STAR" || v.IMO != 9319466 || v.CallSign != "LAJB7" || v.ShipType != 70 || v.Class != "A" || v.Draught != 5.2 {
+	if v.Name != "NORDIC STAR" || v.IMO != 9319466 || v.CallSign != "LAJB7" || v.ShipType != 70 || v.Class != "A" || v.Draught != 5.2 ||
+		v.Dim != full.Dim {
 		t.Errorf("particulars lost: %+v", v)
+	}
+	// the antenna offsets travel with their totals: a length alone moves bow and stern, not the sides
+	cached := back.state()
+	if !cached.merge(v) || cached.Dim != full.Dim {
+		t.Errorf("merge from the record lost the offsets: %+v", cached.Dim)
+	}
+	moved := newVessel()
+	moved.Seen, moved.Length, moved.Dim = t1.Add(time.Hour), 160, ais.FieldDimension{A: 100, B: 60}
+	if err := st.upsert([]record{{mmsi: 257000001, v: moved}}); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _, _ := st.get(257000001); rec.v.Dim != (ais.FieldDimension{A: 100, B: 60, C: 10, D: 12}) {
+		t.Errorf("a length-only report: %+v", rec.v.Dim)
 	}
 	if !v.HasPos || v.Lat != 59.9 || !v.PosAt.Equal(t1) || v.NavStatus != 0 {
 		t.Errorf("position lost: %+v", v)
@@ -644,11 +660,15 @@ func TestOpenStoreAddsMissingColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	schema := storeSchema
-	for _, col := range []string{"trusted_at", "static_at"} {
-		i := strings.Index(schema, "\t"+col)
+	for _, col := range []string{"trusted_at", "static_at", "to_bow", "to_stern", "to_port", "to_starboard"} {
+		i := strings.Index(schema, "\t"+col+" ")
 		schema = schema[:i] + schema[i+strings.Index(schema[i:], "\n")+1:]
 	}
 	if _, err := old.Exec(schema); err != nil {
+		t.Fatal(err)
+	}
+	// a row the older build wrote: its length survives, and its offsets read 0, not available
+	if _, err := old.Exec("INSERT INTO vessels (mmsi, length, beam, seen, first_seen) VALUES (257000002, 160, 22, 1, 1)"); err != nil {
 		t.Fatal(err)
 	}
 	old.Close()
@@ -659,11 +679,20 @@ func TestOpenStoreAddsMissingColumns(t *testing.T) {
 		}
 		v := newVessel()
 		v.Seen, v.TrustedAt = time.Now(), time.Now()
+		v.Length, v.Beam, v.Dim = 160, 22, ais.FieldDimension{A: 120, B: 40, C: 10, D: 12}
 		if err := st.upsert([]record{{mmsi: 257000001, v: v}}); err != nil {
 			t.Fatal(err)
 		}
-		if rec, ok, err := st.get(257000001); err != nil || !ok || rec.v.TrustedAt.IsZero() {
+		if rec, ok, err := st.get(257000001); err != nil || !ok || rec.v.TrustedAt.IsZero() || rec.v.Dim != v.Dim {
 			t.Fatalf("%v %v %+v", err, ok, rec.v)
+		}
+		rec, ok, err := st.get(257000002)
+		if err != nil || !ok || rec.v.Length != 160 || rec.v.Dim != (ais.FieldDimension{}) {
+			t.Fatalf("row from the older build: %v %v %+v", err, ok, rec.v)
+		}
+		// its 0 and 0 do not add up to its length, so it serves no offsets rather than a hull of nothing
+		if p := rec.v.feature(257000002).Properties; p.ToBow != nil || p.ToPort != nil || p.Length != 160 {
+			t.Fatalf("older row's feature: %+v", p)
 		}
 		st.close()
 	}
@@ -686,5 +715,82 @@ func TestRestartKeepsAnOldFixOffTheMap(t *testing.T) {
 	}
 	if fc := getFC(t, next, "/v1/vessels?mmsi=257000001"); len(fc.Features) != 1 || fc.Features[0].Geometry.Coordinates[1] < 59.89 {
 		t.Errorf("a followed MMSI still answers with its last known position: %+v", fc.Features)
+	}
+}
+
+// plan is SQLite's query plan for the statement find runs for q.
+func plan(t *testing.T, p *Pipeline, q recordQuery) string {
+	t.Helper()
+	text, args, _, err := q.sql()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := p.store.db.Query("EXPLAIN QUERY PLAN "+text, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var steps []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		rows.Scan(&id, &parent, &unused, &detail)
+		steps = append(steps, detail)
+	}
+	return strings.Join(steps, "; ")
+}
+
+// An area query past the cache's 30 minutes must reach rows through the cell index. Walking the seen index
+// instead reads every vessel heard in the window whenever a box holds fewer than the limit, which is most
+// of the ocean. A name search keeps to the name index.
+func TestRecordQueryPlans(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	rules, _ := parseAgeRules(url.Values{})
+	age, vf := rules.rule(false)
+	area := func(boxes ...bbox) recordQuery {
+		return recordQuery{boxes: boxes, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, limit: recordLimit + 1, filter: vf, now: now}
+	}
+	seek := "vessels_cell (cell=? AND seen>? AND seen<?)"
+	for name, c := range map[string]struct {
+		q    recordQuery
+		want string
+	}{
+		"anonymous box":        {area(bbox{30, -60, 40, -50}), seek},
+		"widest personal":      {area(bbox{-0.05, -180, 1.05, 180}), seek}, // 396 square degrees across three rows
+		"past the budget":      {area(tileBox(3, 2, 2)), "vessels_cell (cell>? AND cell<?)"},
+		"listed and ranged":    {area(bbox{30, -60, 40, -50}, bbox{-10, -180, 10, 180}), "vessels_cell"},
+		"name search in box":   {recordQuery{prefix: "AB", boxes: []bbox{{30, -60, 40, -50}}, hasPos: true, limit: 101}, "vessels_search"},
+		"name search, max_age": {recordQuery{prefix: "CERULEAN", boxes: []bbox{{30, -60, 40, -50}}, since: now.Add(-7 * 24 * time.Hour), hasPos: true, filter: vf, now: now, limit: 101}, "vessels_search"},
+		"MMSI search, max_age": {recordQuery{prefix: "36816", boxes: []bbox{{30, -60, 40, -50}}, since: now.Add(-time.Hour), hasPos: true, filter: vf, now: now, limit: 101}, "PRIMARY KEY"},
+	} {
+		got := plan(t, p, c.q)
+		if !strings.Contains(got, c.want) || strings.Contains(got, "INDEX vessels_seen") {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+}
+
+// bbox repeats, and a zero-area box costs no area, so a request can name more cells than SQLite has
+// parameters. Past the budget, boxes fall back to row ranges and the request still answers.
+func TestManyBoxesStayUnderTheParameterLimit(t *testing.T) {
+	p := storePipeline(t)
+	target := "/v1/vessels?max_age=all"
+	for range 100 {
+		target += "&bbox=0,-180,0,180"
+	}
+	if w := get(t, p, target); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	// More boxes than one statement can take, by parameters or by expression depth: refused as the
+	// caller's to narrow, not failed as the record's.
+	for _, n := range []int{maxBoxes + 1, 1500, 6000} {
+		many := "/v1/vessels?max_age=all" + strings.Repeat("&bbox=0,-180,0,180", n)
+		if w := get(t, p, many); w.Code != 400 {
+			t.Errorf("%d boxes: %d %s", n, w.Code, w.Body)
+		}
+		if w := get(t, p, many+"&q=ab"); w.Code != 400 {
+			t.Errorf("search with %d boxes: %d %s", n, w.Code, w.Body)
+		}
 	}
 }
