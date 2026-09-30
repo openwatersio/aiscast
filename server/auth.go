@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -263,9 +264,25 @@ func (p *Pipeline) authorizeToken(tok, ip, action string) (*Claims, error) {
 	return c, nil
 }
 
+// verifiedKey holds the answer socketClaims already gave for a request, so the handler api() wraps does not
+// verify the same token again. The error travels with the claims, so a token that did not verify stays refused.
+type verifiedKey struct{}
+
+type verified struct {
+	c   *Claims
+	err error
+}
+
+func withVerified(r *http.Request, c *Claims, err error) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), verifiedKey{}, verified{c, err}))
+}
+
 // socketClaims verifies the token on a WebSocket request. No token → anonymous (nil, nil). A token that is
 // present but invalid, or not valid from this address, is an error: it must never degrade to anonymous access.
 func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
+	if v, ok := r.Context().Value(verifiedKey{}).(verified); ok {
+		return v.c, v.err
+	}
 	tok := requestToken(r)
 	if tok == "" {
 		return nil, nil

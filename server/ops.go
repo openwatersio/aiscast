@@ -158,25 +158,25 @@ func (p *Pipeline) api(allow string, h http.HandlerFunc) http.HandlerFunc {
 		if preflight(w, r, allow) {
 			return
 		}
-		if sub, rpm, ok := p.ownLimit(r); ok {
-			if rpm > 0 && p.limitedMax(w, httpLimit, sub, rpm) {
+		cl, err := p.socketClaims(r)
+		if rpm, ok := ownRPM(cl, err); ok {
+			if rpm > 0 && p.limitedMax(w, httpLimit, cl.Sub, rpm) {
 				return
 			}
 		} else if p.limited(w, httpLimit, clientIP(r)) {
 			return
 		}
-		h(w, r)
+		h(w, withVerified(r, cl, err))
 	}
 }
 
-// ownLimit returns the rpm claim of the request's token, when the token verifies and carries one. A token that
-// does not verify counts against its address, and the handler then refuses it.
-func (p *Pipeline) ownLimit(r *http.Request) (sub string, rpm int, ok bool) {
-	c, err := p.socketClaims(r)
+// ownRPM is the rpm claim of a token that verified, when it carries one. A token that did not verify has none,
+// so it counts against its address and the handler then refuses it.
+func ownRPM(c *Claims, err error) (int, bool) {
 	if err != nil || c == nil || c.RPM == nil {
-		return "", 0, false
+		return 0, false
 	}
-	return c.Sub, *c.RPM, true
+	return *c.RPM, true
 }
 
 func (p *Pipeline) limited(w http.ResponseWriter, l *limiter, key string) bool {

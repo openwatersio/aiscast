@@ -84,14 +84,15 @@ func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 	if preflight(w, r, corsHeaders) {
 		return
 	}
-	if _, rpm, ok := p.ownLimit(r); !(ok && rpm == 0) && p.limited(w, tileLimit, clientIP(r)) {
+	cl, err := p.socketClaims(r)
+	if rpm, ok := ownRPM(cl, err); !(ok && rpm == 0) && p.limited(w, tileLimit, clientIP(r)) {
 		return
 	}
-	cl, err := p.requestClaims(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
+	cl = orAnonymous(cl, r)
 	z, x, y, ok := tileCoords(r)
 	if !ok {
 		http.Error(w, "tile out of range", http.StatusBadRequest)

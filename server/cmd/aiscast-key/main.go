@@ -69,6 +69,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "need -seed, -kid, -sub, -role")
 			os.Exit(2)
 		}
+		if *rpm < 0 {
+			fmt.Fprintln(os.Stderr, "rpm must be 0 (unlimited) or more")
+			os.Exit(2)
+		}
 		c := claims{Kid: *kid, Sub: *sub, Role: *role, Iat: time.Now().Unix(), CIDR: cidrs, Conns: *conns, Rate: *rate, Area: *area, MMSIs: *mmsis}
 		fs.Visit(func(f *flag.Flag) {
 			if f.Name == "rpm" {
