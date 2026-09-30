@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -62,6 +63,7 @@ func main() {
 					p.attachTracks(ts)
 					if c := duckLakeFromEnv(); c != nil {
 						p.lake = &lake{client: c, cache: ts}
+						go c.open(context.Background()) // attach and load the lake's metadata before a request needs it
 						go p.runImport()
 					}
 				}

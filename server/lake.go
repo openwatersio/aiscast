@@ -21,7 +21,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -61,8 +60,8 @@ const (
 	// second is about 2 MB. The cache is trimmed each time another lakeTrimEvery has been written.
 	lakeCacheBytes = 2 << 30
 	lakeTrimEvery  = 64 << 20
-	// lakeParallel is the vessel-days read from the lake at once for one request.
-	lakeParallel = 4
+	// lakeConns is the lake queries run at once across all requests.
+	lakeConns = 4
 )
 
 // days returns the vessel's positions in each lake partition that can hold a position timed between first and
@@ -90,45 +89,39 @@ func (l *lake) days(ctx context.Context, mmsi uint32, first, last time.Time, now
 	}
 	l.hits.Add(int64(len(want) - len(missing)))
 	l.misses.Add(int64(len(missing)))
-	// One query per day, a few at a time, so a week takes about as long as its slowest day and each day lands
-	// in the cache on its own.
-	fetched := make([]map[string]lakeDay, len(missing))
-	errs := make([]error, len(missing))
-	sem := make(chan struct{}, lakeParallel)
-	var wg sync.WaitGroup
-	for i, d := range missing {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			fetched[i], errs[i] = l.fetch(ctx, mmsi, d, d)
-		}()
+	if len(missing) == 0 {
+		return lakeOrder(want, cached), nil
 	}
-	wg.Wait()
-	if err := errors.Join(errs...); err != nil {
+	// One query for every missing day: each query costs a catalog round trip of about a third of a second
+	// before it reads anything, and a week's files are read in parallel within the one query.
+	fetched, err := l.fetch(ctx, mmsi, missing)
+	if err != nil {
 		return nil, err
 	}
-	for i, d := range missing {
-		// fetch keys days by the partition a row came from, which is the day asked for.
-		day := fetched[i][d]
+	for _, d := range missing {
+		// fetch keys days by the partition a row came from.
+		day := fetched[d]
 		cached[d] = day
 		if err := l.cache.lakeStore(mmsi, d, day, now); err != nil {
 			return nil, err
 		}
 	}
-	out := make([]lakeDay, 0, len(want))
-	for _, d := range want {
-		out = append(out, cached[d])
-	}
-	return out, nil
+	return lakeOrder(want, cached), nil
 }
 
-// fetch reads the positions and their sources for one vessel over a range of days.
-func (l *lake) fetch(ctx context.Context, mmsi uint32, first, last string) (map[string]lakeDay, error) {
+func lakeOrder(want []string, days map[string]lakeDay) []lakeDay {
+	out := make([]lakeDay, 0, len(want))
+	for _, d := range want {
+		out = append(out, days[d])
+	}
+	return out
+}
+
+// fetch reads the positions and their sources for one vessel in the given days.
+func (l *lake) fetch(ctx context.Context, mmsi uint32, want []string) (map[string]lakeDay, error) {
 	days := map[string]lakeDay{}
 	err := l.run(ctx, fmt.Sprintf(`SELECT day, ts, lat6, lon6, sog10, cog10, heading, navstat, source FROM lake.ais.positions
-		WHERE mmsi = %d AND day >= DATE '%s' AND day <= DATE '%s' AND lat6 IS NOT NULL`, mmsi, first, last), func(r map[string]json.RawMessage) error {
+		WHERE mmsi = %d AND day IN (DATE '%s') AND lat6 IS NOT NULL`, mmsi, strings.Join(want, "', DATE '")), func(r map[string]json.RawMessage) error {
 		day, err := lakeDate(r["day"])
 		if err != nil {
 			return err

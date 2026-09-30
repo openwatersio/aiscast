@@ -78,7 +78,7 @@ func (d *duckLake) attach(ctx context.Context) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(2 * lakeParallel)
+	db.SetMaxOpenConns(lakeConns)
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 	stmts := []string{
 		"SET GLOBAL home_directory = " + quote(dir),
@@ -102,6 +102,10 @@ func (d *duckLake) attach(ctx context.Context) (*sql.DB, error) {
 			return nil, fmt.Errorf("duckdb %s: %w", s, err)
 		}
 	}
+	// The first query of a table reads every manifest, several seconds for a lake of a few months, and later
+	// queries reuse them. A query that matches nothing pays that here instead of in a request. A lake without
+	// the table yet has nothing to load.
+	db.ExecContext(ctx, `SELECT 1 FROM lake.ais.positions WHERE day = DATE '1970-01-01' LIMIT 0`)
 	return db, nil
 }
 

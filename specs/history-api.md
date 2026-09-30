@@ -39,6 +39,19 @@ Measured from the box, the cold read of one vessel's two days fell from 8.7 s to
 | Western Europe, sorted by cell | 6.5 s | 0.3 s | 13 s |
 | Western Europe, sorted by MMSI and time | 1.8 s | 0.3 s | 72 s |
 
+Measured from the box through DuckDB against the rebuilt `ais-lake-weur`, 40 days packaged, on 2026-09-30:
+
+| Query | Time |
+| --- | --- |
+| First query after attaching, which reads all 164 manifests | 7 to 8 s |
+| Any later query, before it reads data | 0.34 s |
+| One vessel's week in one query, not yet read | 1.5 to 4.7 s |
+| The same week again | 0.36 s |
+| The busiest vessel's week, 595,452 positions | 10.9 s |
+| One page of `ais.vessels`, 20,000 rows | 1.2 s |
+
+The fixed cost per query is why the server reads all of a request's missing days in one query, and why it attaches and loads the manifests at startup. More DuckDB threads did not help reliably. Fewer manifests would shorten the first query.
+
 The box is in Helsinki, so the lake moves to a Western Europe bucket, and `ais.positions` sorts by MMSI and time within each partition, which puts one vessel's day in a row group or two. Area queries pay for it, but coverage tiles and other area work run as nightly batches, and area history is deferred; if playback needs area reads at request speed, a second table sorted by cell serves it from the same lake. The packager also writes the accepted copy's `source` on each position, so a track's credit lines come from the same rows instead of a second query against `ais.receptions`, whose sort scatters a vessel across the whole file.
 
 ### The lake layout
@@ -70,7 +83,7 @@ Measured against the backfilled lake on 2026-09-29, by the time R2 SQL took and 
 | One cell, one day | 0 | 1.8 MB | 1.4 to 6.8 s |
 | One page of `ais.vessels`, 20,000 rows | 20,000 | 16 MB | 3 to 4 s |
 
-Time grows with the day partitions a query touches rather than the rows it returns, so the server reads one query per day, four at a time. A week then takes about as long as its slowest day: 6 to 7 s cold for both a typical and the busiest vessel, and milliseconds from the cache. The sources query is most of the bytes, since `ais.receptions` holds every copy. A full import of `ais.vessels`, 328,450 vessels, took 34 s and scanned 271 MB. R2 SQL returned 86,778 rows in one response with no cap, dates as ISO strings, timestamps as RFC 3339 strings, and 16-byte ids as base64.
+Under R2 SQL, time grows with the day partitions a query touches rather than the rows it returns. One query per day, four at a time, took 6 to 7 s cold for a week of a typical or the busiest vessel. The sources query is most of the bytes, since `ais.receptions` holds every copy. A full import of `ais.vessels`, 328,450 vessels, took 34 s and scanned 271 MB. R2 SQL returned 86,778 rows in one response with no cap, dates as ISO strings, timestamps as RFC 3339 strings, and 16-byte ids as base64.
 
 ## The endpoints
 
@@ -176,10 +189,10 @@ Each step is one pull request with tests, `openapi.json`, the server README, and
 2. **Recent positions and the hot track.** `tracks.db`, `GET /v1/vessels/{mmsi}/track` over the hot window with thinning and GPX, the tier gate, and `get_vessel_track` on `/mcp`. No in-memory ring.
 3. **The backfill.** `aiscast replay` over the raw archive from 2026-08-20 and a full packaging run, once #63 is deployed.
 4. **The archive stage.** The R2 SQL client, a spike that measures latency for the three query shapes and records it in the README, the disk cache, tracks stitched over closed days, and `/v1/history`. It also lands the record import: `first_ts` and the last position in `ais.vessels`, and the nightly merge that backdates `first_seen` after every packaging run. This is what closes #31's verification and #32.
-   - Landed first: the R2 SQL client, tracks stitched from the lake with the tier gate, and a cache of one entry per vessel-day in `tracks.db`. Each missing vessel-day costs two queries, one for positions and one for the sources that delivered them, since `ais.positions` carries no source. A day inside the packager's repackaging week, or with no positions, is read again after six hours, and the partition after a range's last day is read too, since the lake partitions by arrival and satellite relays arrive hours late.
+   - Landed: DuckDB in process, tracks stitched from the lake with the tier gate, and a cache of one entry per vessel-day in `tracks.db`. A request's missing vessel-days cost one query, and each position carries its source. A day inside the packager's repackaging week, or with no positions, is read again after six hours, and the partition after a range's last day is read too, since the lake partitions by arrival and satellite relays arrive hours late.
    - Also landed: the record import. `ais.vessels` carries `first_ts`, the last position, and `last_source`, the source whose copy the server accepted for that position (#119). The server merges the table daily after 03:00 UTC with the fill-only rule.
    - The latency spike ran against the backfilled lake; its numbers are in [The lake layout](#the-lake-layout) and [The engine and the lake's place](#the-engine-and-the-lakes-place). The server reads the lake through DuckDB, and the lake moves to Western Europe, sorted by MMSI and time, with `source` on each position.
-   - Still to settle on the test bucket before the repackage: the row-group size, the number of MMSI buckets, and whether folding closed months into one file per bucket pays for itself.
+   - Settled on the test bucket: 32 MMSI buckets and 32,768-row groups. More buckets or larger row groups read slower. Folding closed months into one file per bucket is unmeasured and waits for a need.
    - Still to come: `/v1/history`, when playback work starts.
 5. **Series and coverage.** `?series=hourly`, `ais.station_days`, `GET /v1/stations/{id}/history`, and the coverage tile job.
 6. **More vessel filters.** `kind`, `class` (A or B), `type` as a category such as cargo, tanker, passenger, fishing, sailing, or pleasure, mapped from the ITU ship type codes, and `flag` as a country code, on `/v1/vessels` and in the MCP search tool. Columns and parameter handling come with step 1, so this step is the category mapping, validation, tests, and the OpenAPI document.
