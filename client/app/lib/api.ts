@@ -207,7 +207,16 @@ export async function getStation(
 export interface Stats {
   time: string;
   stations: { total: number; active: number; by_source: Record<string, number> };
-  vessels: { total: number; with_position: number; by_kind: Record<string, number> };
+  vessels: {
+    total: number; // every vessel the network has heard
+    active: number; // heard in the last 30 minutes; with_position and by_kind describe these
+    with_position: number;
+    by_kind: Record<string, number>;
+    last_24h?: number; // the windows are absent on a server running without the vessel record
+    last_7d?: number;
+    last_30d?: number;
+    new?: { last_24h: number; last_7d: number; last_30d: number };
+  };
   events: { per_second: number; last_24h: number; last_7d: number };
   sources: Record<
     string,

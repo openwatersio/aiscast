@@ -48,7 +48,7 @@ export default function Network({ loaderData }: Route.ComponentProps) {
               tiles
               stats={[
                 { label: "Messages/s", value: Math.round(stats.events.per_second).toString() },
-                { label: "Vessels", value: n(stats.vessels.total) },
+                { label: "Vessels", value: n(stats.vessels.active) },
                 { label: "Stations", value: `${stats.stations.active}/${stats.stations.total}` },
               ]}
             />
