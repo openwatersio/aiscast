@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS vessels (
 	draught     REAL    NOT NULL DEFAULT 0,
 	length      INTEGER NOT NULL DEFAULT 0,
 	beam        INTEGER NOT NULL DEFAULT 0,
+	to_bow      INTEGER NOT NULL DEFAULT 0,    -- metres from the AIS antenna; each pair goes with its total
+	to_stern    INTEGER NOT NULL DEFAULT 0,
+	to_port     INTEGER NOT NULL DEFAULT 0,
+	to_starboard INTEGER NOT NULL DEFAULT 0,
 	has_pos     INTEGER NOT NULL DEFAULT 0,
 	lat         REAL    NOT NULL DEFAULT 0,
 	lon         REAL    NOT NULL DEFAULT 0,
@@ -68,6 +72,11 @@ CREATE INDEX IF NOT EXISTS vessels_imo ON vessels (imo);
 var storeAddedCols = []string{
 	"trusted_at INTEGER NOT NULL DEFAULT 0",
 	"static_at  INTEGER NOT NULL DEFAULT 0",
+	// the antenna offsets; a row from before them reads 0, not available, until the vessel's next static
+	"to_bow INTEGER NOT NULL DEFAULT 0",
+	"to_stern INTEGER NOT NULL DEFAULT 0",
+	"to_port INTEGER NOT NULL DEFAULT 0",
+	"to_starboard INTEGER NOT NULL DEFAULT 0",
 }
 
 // upsertSQL merges a cache state into its row with the fold's own rules, because a vessel the cache swept
@@ -76,8 +85,9 @@ var storeAddedCols = []string{
 // Right-hand sides read the row as it was before the update.
 const upsertSQL = `
 INSERT INTO vessels (mmsi, name, search, kind, class, ship_type, flag, imo, callsign, destination, eta, draught,
-	length, beam, has_pos, lat, lon, cell, cog, sog, heading, nav_status, pos_at, trusted_at, static_at, seen, first_seen, source, station, msg_type)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	length, beam, to_bow, to_stern, to_port, to_starboard, has_pos, lat, lon, cell, cog, sog, heading, nav_status, pos_at,
+	trusted_at, static_at, seen, first_seen, source, station, msg_type)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (mmsi) DO UPDATE SET
 	name        = iif(excluded.name != '', excluded.name, vessels.name),
 	search      = iif(excluded.name != '', excluded.search, vessels.search),
@@ -92,6 +102,10 @@ ON CONFLICT (mmsi) DO UPDATE SET
 	draught     = iif(excluded.draught > 0, excluded.draught, vessels.draught),
 	length      = iif(excluded.length > 0, excluded.length, vessels.length),
 	beam        = iif(excluded.beam > 0, excluded.beam, vessels.beam),
+	to_bow      = iif(excluded.length > 0, excluded.to_bow, vessels.to_bow),
+	to_stern    = iif(excluded.length > 0, excluded.to_stern, vessels.to_stern),
+	to_port     = iif(excluded.beam > 0, excluded.to_port, vessels.to_port),
+	to_starboard = iif(excluded.beam > 0, excluded.to_starboard, vessels.to_starboard),
 	lat         = iif(excluded.has_pos AND excluded.pos_at >= vessels.pos_at, excluded.lat, vessels.lat),
 	lon         = iif(excluded.has_pos AND excluded.pos_at >= vessels.pos_at, excluded.lon, vessels.lon),
 	cell        = iif(excluded.has_pos AND excluded.pos_at >= vessels.pos_at, excluded.cell, vessels.cell),
@@ -111,6 +125,7 @@ ON CONFLICT (mmsi) DO UPDATE SET
 `
 
 const recordCols = `mmsi, name, kind, class, ship_type, imo, callsign, destination, eta, draught, length, beam,
+	to_bow, to_stern, to_port, to_starboard,
 	has_pos, lat, lon, cog, sog, heading, nav_status, pos_at, trusted_at, static_at, seen, first_seen, source, station, msg_type`
 
 // record is one vessel as the store holds it.
@@ -211,6 +226,7 @@ func (s *store) upsert(rows []record) error {
 		seen := unixMs(v.Seen)
 		if _, err := st.Exec(r.mmsi, v.Name, strings.ToUpper(strings.TrimSpace(v.Name)), v.Kind, v.Class, v.ShipType,
 			flagOf(r.mmsi), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
+			v.Dim.A, v.Dim.B, v.Dim.C, v.Dim.D,
 			v.HasPos, v.Lat, v.Lon, cell, v.Cog, v.Sog, v.Heading, v.NavStatus, unixMs(v.PosAt),
 			unixMs(v.TrustedAt), unixMs(v.StaticAt), seen, seen, v.Source, v.Station, v.MsgType); err != nil {
 			return err
@@ -409,7 +425,7 @@ func (s *store) find(q recordQuery) ([]record, error) {
 		var eta, posAt, trustedAt, staticAt, seen, first int64
 		v := newVessel()
 		if err := rows.Scan(&r.mmsi, &v.Name, &v.Kind, &v.Class, &v.ShipType, &v.IMO, &v.CallSign, &v.Destination, &eta,
-			&v.Draught, &v.Length, &v.Beam, &v.HasPos, &v.Lat, &v.Lon, &v.Cog, &v.Sog, &v.Heading, &v.NavStatus,
+			&v.Draught, &v.Length, &v.Beam, &v.Dim.A, &v.Dim.B, &v.Dim.C, &v.Dim.D, &v.HasPos, &v.Lat, &v.Lon, &v.Cog, &v.Sog, &v.Heading, &v.NavStatus,
 			&posAt, &trustedAt, &staticAt, &seen, &first, &v.Source, &v.Station, &v.MsgType); err != nil {
 			return nil, err
 		}
@@ -590,7 +606,7 @@ func (v *vessel) state() *vessel {
 	return &vessel{
 		Name: v.Name, Lat: v.Lat, Lon: v.Lon, HasPos: v.HasPos, Cog: v.Cog, Sog: v.Sog, Heading: v.Heading,
 		NavStatus: v.NavStatus, ShipType: v.ShipType, Kind: v.Kind, Class: v.Class, IMO: v.IMO, CallSign: v.CallSign,
-		Destination: v.Destination, ETA: v.ETA, Draught: v.Draught, Length: v.Length, Beam: v.Beam, Seen: v.Seen,
+		Destination: v.Destination, ETA: v.ETA, Draught: v.Draught, Length: v.Length, Beam: v.Beam, Dim: v.Dim, Seen: v.Seen,
 		Source: v.Source, Station: v.Station, MsgType: v.MsgType, TrustedAt: v.TrustedAt, PosAt: v.PosAt, StaticAt: v.StaticAt,
 	}
 }
@@ -615,8 +631,8 @@ func (v *vessel) merge(o *vessel) (changed bool) {
 	fill(v.Destination == "", o.Destination != "", func() { v.Destination = o.Destination })
 	fill(v.ETA.Month == 0, o.ETA.Month != 0, func() { v.ETA = o.ETA })
 	fill(v.Draught == 0, o.Draught != 0, func() { v.Draught = o.Draught })
-	fill(v.Length == 0, o.Length != 0, func() { v.Length = o.Length })
-	fill(v.Beam == 0, o.Beam != 0, func() { v.Beam = o.Beam })
+	fill(v.Length == 0, o.Length != 0, func() { v.Length, v.Dim.A, v.Dim.B = o.Length, o.Dim.A, o.Dim.B })
+	fill(v.Beam == 0, o.Beam != 0, func() { v.Beam, v.Dim.C, v.Dim.D = o.Beam, o.Dim.C, o.Dim.D })
 	fill(!v.HasPos || o.PosAt.After(v.PosAt), o.HasPos, func() {
 		v.Lat, v.Lon, v.HasPos, v.PosAt, v.Cog, v.Sog, v.Heading = o.Lat, o.Lon, true, o.PosAt, o.Cog, o.Sog, o.Heading
 	})

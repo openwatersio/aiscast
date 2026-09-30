@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BertoldVdb/go-ais"
 )
 
 // Vector tiles of vessel positions: GET /v1/vessels/tiles/{z}/{x}/{y} answers a Mapbox Vector Tile with one
@@ -175,6 +177,7 @@ type tilePoint struct {
 	shipType, navStatus   uint8
 	cog, sog              float64
 	heading, length, beam uint16
+	dim                   ais.FieldDimension
 }
 
 // vesselTile encodes the vessels in a tile that match f.
@@ -209,7 +212,7 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		}
 		pts = append(pts, tilePoint{mmsi: mmsi, x: int32(math.Round(px)), y: int32(math.Round(py)), seen: v.Seen,
 			name: v.Name, kind: v.Kind, class: v.Class, source: sourceKind(v.Source), station: v.Station, shipType: v.ShipType,
-			navStatus: v.NavStatus, cog: v.Cog, sog: v.Sog, heading: v.Heading, length: v.Length, beam: v.Beam})
+			navStatus: v.NavStatus, cog: v.Cog, sog: v.Sog, heading: v.Heading, length: v.Length, beam: v.Beam, dim: v.Dim})
 	}
 	p.vmu.RLock()
 	p.vesselsIn([]bbox{box}, add)
@@ -262,11 +265,11 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.navStatus != 15 {
 			props = append(props, mvtProp{"nav_status", uint64(pt.navStatus)})
 		}
-		if pt.length > 0 {
-			props = append(props, mvtProp{"length", uint64(pt.length)})
+		if pt.length > 0 { // with the total known, a zero offset is information, so the pair goes together
+			props = append(props, mvtProp{"length", uint64(pt.length)}, mvtProp{"to_bow", uint64(pt.dim.A)}, mvtProp{"to_stern", uint64(pt.dim.B)})
 		}
 		if pt.beam > 0 {
-			props = append(props, mvtProp{"beam", uint64(pt.beam)})
+			props = append(props, mvtProp{"beam", uint64(pt.beam)}, mvtProp{"to_port", uint64(pt.dim.C)}, mvtProp{"to_starboard", uint64(pt.dim.D)})
 		}
 		if pt.sog < 102.3 {
 			props = append(props, mvtProp{"sog", pt.sog})
@@ -344,7 +347,9 @@ var tileFields = map[string]string{
 	"type": "Number: ITU ship and cargo type; the AtoN type for an aid to navigation", "flag": "String: ISO 3166 alpha-2 from the MMSI",
 	"nav_status": "Number", "sog": "Number: knots", "cog": "Number: degrees", "heading": "Number: degrees",
 	"hdg": "Number: heading, else course over ground, the angle to rotate an icon by", "length": "Number: metres",
-	"beam": "Number: metres", "source": "String: source kind", "station": "String: the station that heard the last message", "age_s": "Number: seconds since the last report when the tile was built",
+	"beam": "Number: metres", "to_bow": "Number: metres from the AIS antenna to the bow",
+	"to_stern": "Number: metres from the AIS antenna to the stern", "to_port": "Number: metres from the AIS antenna to port",
+	"to_starboard": "Number: metres from the AIS antenna to starboard", "source": "String: source kind", "station": "String: the station that heard the last message", "age_s": "Number: seconds since the last report when the tile was built",
 }
 
 // tileAttribution is one linked credit, the web-map convention: a tile holds whichever sources heard its
