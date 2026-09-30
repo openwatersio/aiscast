@@ -2,10 +2,11 @@ import { Suspense } from "react";
 import { Await, data, redirect } from "react-router";
 import { X } from "lucide-react";
 import { Panel } from "../components/Panel";
+import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { IconLink } from "../components/ui/IconButton";
 import { VesselDetail } from "../components/VesselDetail";
 import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselPath, vesselSlug } from "../lib/ais";
-import { browserAuth, getVessel, type VesselFeature } from "../lib/api";
+import { browserAuth, getVessel, orUnavailable, type VesselFeature } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { liveInstance } from "../lib/live";
 import { mediaKey } from "../lib/media";
@@ -29,7 +30,7 @@ function parse(param: string) {
  */
 export async function loader({ params, context, request }: Route.LoaderArgs) {
   const { mmsi, slug } = parse(params.param);
-  const feature = await getVessel(context.get(serverEnv), mmsi);
+  const feature = await orUnavailable(getVessel(context.get(serverEnv), mmsi));
   const name = feature?.properties.name;
   // The MMSI is canonical and the slug is cosmetic, so a stale or absent slug is corrected
   // with one permanent redirect rather than served as a second URL for the same vessel.
@@ -54,17 +55,20 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const record = getVessel(browserAuth(), mmsi);
   if (heard?.name) {
     if (slug !== vesselSlug(heard.name)) throw redirect(vesselPath(mmsi, heard.name));
-    const feature: VesselRecord = record;
+    // The pane is already open from the stream's copy, which stands if the record fails.
+    const feature: VesselRecord = record.catch(() => undefined);
     return { mmsi, name: heard.name, feature };
   }
-  const feature = await record;
+  const feature = await orUnavailable(record);
   const name = feature?.properties.name;
   if (feature && slug !== vesselSlug(name)) throw redirect(vesselPath(mmsi, name));
   return { mmsi, name, feature: feature as VesselRecord };
 }
 
-export function meta({ loaderData }: Route.MetaArgs) {
-  if (!loaderData) return pageMeta({ title: "Not found | Open Waters AIS", description: "No vessel at this address.", path: "/vessels", noindex: true });
+export const headers = routeErrorHeaders;
+
+export function meta({ loaderData, error }: Route.MetaArgs) {
+  if (!loaderData) return routeErrorMeta(error);
   const { mmsi } = loaderData;
   const feature = loaderData.feature instanceof Promise ? undefined : loaderData.feature;
   const props = feature?.properties;
@@ -108,4 +112,8 @@ export default function Vessel({ loaderData }: Route.ComponentProps) {
       {detail}
     </Panel>
   );
+}
+
+export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+  return <RouteError error={error} />;
 }

@@ -1,3 +1,5 @@
+import { data } from "react-router";
+
 // The aiscast API this app is a client of. The Worker fetches from it to render a page, and
 // the browser fetches from it directly after that, so in-app navigation never waits on the
 // Worker. Both answer with the same functions and differ only in base and token.
@@ -95,20 +97,53 @@ export interface Station {
   bbox?: [number, number, number, number];
 }
 
+/** The API answered with neither the resource nor a 404, or did not answer. */
+export class ApiUnavailable extends Error {}
+
+/**
+ * A resource, or undefined when the API says there is no such thing (404). Anything else
+ * throws ApiUnavailable: an outage is not an answer, and a page that took it for "not
+ * found" would tell crawlers a real vessel's page is gone.
+ */
 async function get<T>(auth: ApiAuth, path: string): Promise<T | undefined> {
+  let res: Response;
   try {
-    const res = await fetch(`${auth.api}${path}`, {
+    res = await fetch(`${auth.api}${path}`, {
       headers: {
         accept: "application/json",
         ...(auth.token ? { authorization: `Bearer ${auth.token}` } : {}),
       },
     });
-    if (!res.ok) return undefined;
+  } catch (e) {
+    throw new ApiUnavailable(`${path}: ${e}`);
+  }
+  if (res.status === 404) return undefined;
+  if (!res.ok) throw new ApiUnavailable(`${path}: ${res.status}`);
+  try {
     return (await res.json()) as T;
   } catch {
-    // A page that cannot reach the API still renders, saying so. Throwing here would turn
-    // a data outage into a 500 on every vessel URL a crawler holds.
-    return undefined;
+    throw new ApiUnavailable(`${path}: not JSON`);
+  }
+}
+
+/** For what a page can do without, such as search or a chart: an outage reads as no answer. */
+function soft<T>(answer: Promise<T>): Promise<T | undefined> {
+  return answer.catch((e) => {
+    if (e instanceof ApiUnavailable) return undefined;
+    throw e;
+  });
+}
+
+/**
+ * For what decides whether a page exists: an outage becomes a 503 that says to come back,
+ * which a crawler retries, rather than the 404 a missing record gets.
+ */
+export async function orUnavailable<T>(answer: Promise<T>): Promise<T> {
+  try {
+    return await answer;
+  } catch (e) {
+    if (e instanceof ApiUnavailable) throw data("The AIS API is unavailable", { status: 503, headers: { "retry-after": "60" } });
+    throw e;
   }
 }
 
@@ -120,10 +155,12 @@ export async function getVessel(auth: ApiAuth, mmsi: number): Promise<VesselFeat
   return get<VesselFeature>(auth, `/v1/vessels/${mmsi}`);
 }
 
-/** Name prefix, or MMSI prefix when the query is all digits. The server caps this at 50. */
-/** `filters` are further `/v1/vessels` parameters, as `filterParams` writes them. */
+/**
+ * Name prefix, or MMSI prefix when the query is all digits. The server caps this at 50.
+ * `filters` are further `/v1/vessels` parameters, as `filterParams` writes them.
+ */
 export async function searchVessels(auth: ApiAuth, q: string, filters = ""): Promise<VesselFeature[]> {
-  const fc = await get<FeatureCollection>(auth, `/v1/vessels?q=${encodeURIComponent(q)}${filters && `&${filters}`}`);
+  const fc = await soft(get<FeatureCollection>(auth, `/v1/vessels?q=${encodeURIComponent(q)}${filters && `&${filters}`}`));
   return fc?.features ?? [];
 }
 
@@ -153,11 +190,11 @@ export async function getTrack(
   const to = new Date(range.to).toISOString();
   const limit = range.limit ? `&limit=${range.limit}` : "";
   const interval = range.intervalSeconds ? `&interval=${range.intervalSeconds}` : "";
-  return get<Track>(auth, `/v1/vessels/${mmsi}/track?from=${from}&to=${to}${limit}${interval}`);
+  return soft(get<Track>(auth, `/v1/vessels/${mmsi}/track?from=${from}&to=${to}${limit}${interval}`));
 }
 
 export async function getStations(auth: ApiAuth): Promise<Station[] | undefined> {
-  return get<Station[]>(auth, "/v1/stations");
+  return soft(get<Station[]>(auth, "/v1/stations"));
 }
 
 export async function getStation(
@@ -185,5 +222,5 @@ export interface Stats {
 }
 
 export async function getStats(auth: ApiAuth): Promise<Stats | undefined> {
-  return get<Stats>(auth, "/v1/stats");
+  return soft(get<Stats>(auth, "/v1/stats"));
 }

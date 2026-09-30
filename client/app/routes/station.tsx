@@ -1,12 +1,13 @@
 import { useEffect } from "react";
 import { data } from "react-router";
 import { PageTitle, Panel } from "../components/Panel";
+import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { Facts } from "../components/ui/Facts";
 import { ClassDot, List, ListRow } from "../components/ui/List";
 import { Section, Tile } from "../components/ui/Section";
 import { StatGrid } from "../components/ui/StatGrid";
 import { formatAge, vesselPath } from "../lib/ais";
-import { browserAuth, getStation, type ApiAuth } from "../lib/api";
+import { browserAuth, getStation, orUnavailable, type ApiAuth } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
 import { pageMeta } from "../lib/meta";
@@ -15,7 +16,7 @@ import type { Route } from "./+types/station";
 
 async function load(auth: ApiAuth, id: string) {
   if (!id) throw data("Not found", { status: 404 });
-  const found = await getStation(auth, id);
+  const found = await orUnavailable(getStation(auth, id));
   return data({ id, found }, found ? undefined : { status: 404 });
 }
 
@@ -29,8 +30,11 @@ export function clientLoader({ params }: Route.ClientLoaderArgs) {
 
 const n = (v: number) => v.toLocaleString("en-US");
 
-export function meta({ loaderData }: Route.MetaArgs) {
-  const id = loaderData?.id ?? "";
+export const headers = routeErrorHeaders;
+
+export function meta({ loaderData, error }: Route.MetaArgs) {
+  if (!loaderData) return routeErrorMeta(error);
+  const id = loaderData.id;
   const st = loaderData?.found?.station;
   return pageMeta({
     title: `${id} receiving station | Open Waters AIS`,
@@ -119,4 +123,8 @@ export default function Station({ loaderData }: Route.ComponentProps) {
       )}
     </Panel>
   );
+}
+
+export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+  return <RouteError error={error} />;
 }
