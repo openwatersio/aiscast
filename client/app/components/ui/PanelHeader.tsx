@@ -57,8 +57,11 @@ export function PanelHeader({
       data-over-photo={(overlay && !showTitle) || undefined}
       className={cn(
         "flex items-center gap-1 px-3 pt-3",
-        overlay && "absolute inset-x-0 top-0 z-10 pb-2 transition-colors duration-150",
-        overlay && showTitle && "bg-surface-glass backdrop-blur-xl",
+        // Its ground, once the title shows, is the surface fading out downward, so what scrolls
+        // under the bar disappears into it rather than behind a band.
+        overlay &&
+        "pointer-events-none absolute inset-x-0 top-0 z-10 pb-6 *:pointer-events-auto before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-linear-to-b before:from-surface before:from-45% before:to-transparent before:opacity-0 before:transition-opacity before:duration-300",
+        overlay && showTitle && "before:opacity-100",
         // Over a photo the buttons need their own scrim, as the photo's credit has.
         "data-over-photo:*:[a]:bg-black/45 data-over-photo:*:[a]:text-white data-over-photo:*:[a]:backdrop-blur-sm data-over-photo:*:[a]:hover:bg-black/60",
       )}
@@ -66,7 +69,7 @@ export function PanelHeader({
       {back && <BackButton parent={back} />}
       <span
         className={cn(
-          "min-w-0 flex-1 truncate px-1 text-headline text-fg transition-opacity duration-150",
+          "min-w-0 flex-1 truncate px-1 text-headline text-fg transition-opacity duration-300",
           showTitle ? "opacity-100" : "opacity-0",
         )}
         aria-hidden={!showTitle}
