@@ -75,6 +75,8 @@
   --shadow: light-dark(rgba(15, 23, 42, 0.18), rgba(0, 0, 0, 0.45));
   --positive: light-dark(#16a34a, #4ade80);
   --caution: light-dark(#d97706, #fbbf24);
+  /* A point picked out in a drawing, such as a vessel's AIS antenna, apart from the blues. */
+  --highlight: light-dark(var(--color-coral-600), var(--color-coral-400));
 }
 
 /* The type scale, after iOS and sized for a panel: text-large-title for a vessel's name,
@@ -119,6 +121,7 @@
   --color-accent-bg-subtle: var(--accent-bg-subtle);
   --color-positive: var(--positive);
   --color-caution: var(--caution);
+  --color-highlight: var(--highlight);
 }
 
 /* For what a colour token cannot carry, such as a filter. */

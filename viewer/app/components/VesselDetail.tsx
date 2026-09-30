@@ -68,6 +68,12 @@ export function VesselDetail({
   const station = fresher?.station ?? p?.station ?? heard?.station;
   const country = flagName(p?.flag);
   const imo = p?.imo ?? heard?.imo;
+  const draught = p?.draught ? (
+    <span className="flex items-baseline gap-2">
+      <span className="text-caption text-fg-muted">Draught</span>
+      <span className="text-subhead text-fg-secondary tabular-nums">{p.draught.toFixed(1)} m</span>
+    </span>
+  ) : undefined;
   const dimensions = vesselDimensions(
     p?.to_bow != null
       ? { toBow: p.to_bow, toStern: p.to_stern ?? 0, toPort: p.to_port ?? 0, toStarboard: p.to_starboard ?? 0 }
@@ -224,13 +230,7 @@ export function VesselDetail({
 
       {(dimensions || p?.draught) && (
         <Section label="Dimensions">
-          {dimensions && <ShipDiagram {...dimensions} />}
-          {p?.draught ? (
-            <p className={cn("flex items-baseline gap-2", dimensions && "mt-2")}>
-              <span className="text-caption text-fg-muted">Draught</span>
-              <span className="text-subhead text-fg-secondary tabular-nums">{p.draught.toFixed(1)} m</span>
-            </p>
-          ) : null}
+          {dimensions ? <ShipDiagram {...dimensions} type={type} aside={draught} /> : draught}
         </Section>
       )}
 
