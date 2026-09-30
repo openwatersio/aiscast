@@ -175,7 +175,7 @@ What the web client needs next, with what each needs stored. Items that need no 
 | Station history beyond seven days | `GET /v1/stations/{id}/history` | `ais.station_days` | 13,000 rows a year |
 | `/v1/stations/{id}` scans the vessel map and sorts the station list twice | a station index in the pipeline | none | 0 |
 
-No server work: the deploy of Astro beside the Go binary, retiring `client/index.html` and `client/token.html`, the coverage fallback above the area cap, live charts from the stream, the network page's vessel counts and `/health` (both exist), and the station list's source kind, vessels heard, and duplicates (all in `/v1/stations` already).
+No server work: the deploy of Astro beside the Go binary, the coverage fallback above the area cap, live charts from the stream, the network page's vessel counts and `/health` (both exist), and the station list's source kind, vessels heard, and duplicates (all in `/v1/stations` already).
 
 Accounts for the web client add tables to the same SQLite and is the reason to introduce it in step 1 rather than later.
 

@@ -1,6 +1,6 @@
 # aiscast
 
-Live AIS vessel traffic, streamed by bounding box, from open government feeds and volunteer receivers. Part of [Open Waters](https://openwaters.io). The public instance is `ais.openwaters.io`. A live map is at [openwatersio.github.io/aiscast](https://openwatersio.github.io/aiscast/).
+Live AIS vessel traffic, streamed by bounding box, from open government feeds and volunteer receivers. Part of [Open Waters](https://openwaters.io). The public instance is `ais.openwaters.io`. A live map is at [openwaters.io/ais/vessels](https://openwaters.io/ais/vessels).
 
 This is a beta. There is no SLA. Coverage is uneven. The terms for re-serving some sources are still unsettled (see [Coverage](#coverage)). Live status and uptime history are at [status.openwaters.io](https://status.openwaters.io).
 
@@ -16,7 +16,7 @@ This is a beta. There is no SLA. Coverage is uneven. The terms for re-serving so
 
 **AI assistants.** `https://ais.openwaters.io/mcp` is an MCP (Model Context Protocol) server with five read-only tools: vessels by MMSI, vessels in an area, vessels near a point or another vessel, search by name, and coverage. No sign-in. Claude Code: `claude mcp add --transport http open-waters-ais https://ais.openwaters.io/mcp`. Claude.ai, ChatGPT, Cursor, and VS Code take the URL as a custom connector or `mcp.json` entry; setup for each is in the [API reference](https://openwaters.io/api/ais/). A token in an `Authorization: Bearer` header raises the anonymous limits.
 
-**Tokens.** `/v0/stream` needs a token. A personal token is self-serve and never expires. Use the [token page](https://openwatersio.github.io/aiscast/token.html), or generate an Ed25519 keypair and `POST https://ais.openwaters.io/v1/keys` with `{"pubkey":"<base64url public key>"}`. The response is your token. It carries the personal tier: 2 streams, 50 messages/s, and a 20°×20° area. Feed data from the same token and it becomes a feeder token by itself.
+**Tokens.** `/v0/stream` needs a token. A personal token is self-serve and never expires. Use the [token page](https://openwaters.io/ais/token), or generate an Ed25519 keypair and `POST https://ais.openwaters.io/v1/keys` with `{"pubkey":"<base64url public key>"}`. The response is your token. It carries the personal tier: 2 streams, 50 messages/s, and a 20°×20° area. Feed data from the same token and it becomes a feeder token by itself.
 
 Tiers and limits are in [docs/limits.md](docs/limits.md). For more than the feeder tier, or for commercial use, write to hello@openwaters.io.
 
@@ -30,7 +30,7 @@ If you run an AIS receiver, send its data here. aiscast re-serves it to everyone
 - **UDP** (no token): AIS-catcher `-u udp.ais.openwaters.io 10110`, [docker-shipfeeder](https://github.com/sdr-enthusiasts/docker-shipfeeder) with host `udp.ais.openwaters.io` port `10110`, or any NMEA forwarder sending plain `!AIVDM` / `!AIVDO` sentences (TAG blocks welcome). Your station appears as `udp:<id>`, a keyed hash of your address, never the address itself. If a sender's `!AIVDO` sentences identify the vessel, aiscast keys the station by that MMSI instead.
 - **Signal K**: add a UDP target `udp.ais.openwaters.io:10110` in [`ais-forwarder`](https://github.com/hkapanen/ais-forwarder) (forward AIVDM and AIVDO). Or install the [`signalk-aiscast`](signalk-plugin/README.md) plugin. It needs no token. It shares what your receiver hears, and your own position, taken from the transponder or built from Signal K when an AIS transponder is not available. It shows aiscast traffic when you have no receiver.
 
-Your station page is the [map](https://openwatersio.github.io/aiscast/) with `?station=<your id>`. It shows vessels heard, coverage extent, message counts, and how many messages another station heard first. `GET /v1/stations/{id}` returns the same numbers. Feeders get the deduplicated raw stream back on `wss://ais.openwaters.io/v1/nmea`.
+Your station page is `https://openwaters.io/ais/stations/<your id>`, and [the station list](https://openwaters.io/ais/stations) links every station. It shows vessels heard, coverage extent, message counts, and how many messages another station heard first. `GET /v1/stations/{id}` returns the same numbers. Feeders get the deduplicated raw stream back on `wss://ais.openwaters.io/v1/nmea`.
 
 ## Coverage
 
