@@ -24,7 +24,7 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test ./...
-      - run: npx --yes @redocly/cli lint openapi.json
+      - run: npx --yes @redocly/cli@2.56.1 lint openapi.json
       - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o aiscast-linux .
       - uses: actions/upload-artifact@v7
         with:
@@ -103,3 +103,21 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm pack --dry-run
+
+  client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run check:styles
+      - run: npm test
+      - run: npm run build

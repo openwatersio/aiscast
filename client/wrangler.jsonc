@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aiscast-web",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // openwaters.io is the website Worker's Custom Domain. Route Workers run in front of a
+  // Custom Domain, so these paths reach this Worker and everything else under /ais/ (the
+  // landing page, the token page, the comparisons) stays with the website.
+  "routes": [
+    { "pattern": "openwaters.io/ais/map*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/vessels*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/stations*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/network*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/assets/*", "zone_name": "openwaters.io" },
+  ],
+  // Routes disable these by default; keep the generated URL and PR previews.
+  "workers_dev": true,
+  "preview_urls": true,
+  "vars": {
+    // Server renders fetch from here. AIS_TOKEN, a secret, gives them a partner token's
+    // limits, such as the longer track, and with an `rpm` claim their own HTTP request
+    // budget rather than the per-address one shared across the Worker's egress addresses.
+    "AIS_API": "https://ais.openwaters.io",
+  },
+  "observability": { "enabled": true },
+  "env": {
+    // The browser tests' build, rendering against the aiscast server they start (e2e/).
+    "e2e": {
+      "vars": { "AIS_API": "http://127.0.0.1:8787" },
+    },
+  },
+  "upload_source_maps": true,
+}

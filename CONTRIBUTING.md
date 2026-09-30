@@ -4,7 +4,8 @@
 
 - [server/](server/): the server, one Go binary: ingest → reassemble → dedupe → decode → bbox fan-out, hourly raw and normalized archives to R2. [server/README.md](server/README.md) documents endpoints, environment, access tokens, and sources; [server/deploy/](server/deploy/) the production box.
 - [packager/](packager/): the normalized archive into queryable day-partitioned Iceberg tables (Python, run with uv). [packager/README.md](packager/README.md) has the tables; `uv run --with pytest --with duckdb --with pyarrow --with "pyiceberg[sql-sqlite,pyiceberg-core]" pytest packager/` runs its tests, same as CI.
-- [viewer/](viewer/): static MapLibre page, deployed to GitHub Pages from `main`.
+- [client/](client/): the web client for `openwaters.io/ais/`, React Router on a Cloudflare Worker (TypeScript, vitest). [client/README.md](client/README.md) has the routes, the dev loop, and the deploy.
+- [pages/](pages/): what GitHub Pages serves at `openwatersio.github.io/aiscast`, where the first viewer lived: pages that redirect its old links to `openwaters.io/ais/`.
 - [signalk-plugin/](signalk-plugin/): `signalk-aiscast`, the Signal K plugin (TypeScript, vitest). `npm install && npm test` runs it against a fake aiscast; `npm run build` emits `dist/`. Published to npm by `release.yml` on a `signalk-plugin-v*` tag.
 - [docs/](docs/): [architecture.md](docs/architecture.md) is how data flows and why; read it before proposing a change to that. [policy.md](docs/policy.md) covers per-source licensing, privacy, and funding; [limits.md](docs/limits.md) the access tiers.
 - [research/](research/): the research behind every claim in the docs.
@@ -16,13 +17,13 @@ cd server
 ALLOW_ANON=1 go run .   # Kystverket + Digitraffic in, WebSocket on :8080, UDP NMEA on :10110, archive/ in cwd
 ```
 
-`ALLOW_ANON=1` disables tokens; never set it on a public host. Kystverket allows one TCP connection per source IP, so if another server is already running on your network set `KYSTVERKET=0`. Then `cd viewer && python3 -m http.server 8089` and open http://localhost:8089/?server=localhost:8080, or point any aisstream.io client at `ws://localhost:8080/v0/stream` with any non-empty `APIKey`.
+`ALLOW_ANON=1` disables tokens; never set it on a public host. Kystverket allows one TCP connection per source IP, so if another server is already running on your network set `KYSTVERKET=0`. Then put `AIS_API=http://localhost:8080` in `client/.dev.vars`, run `npm run dev -w client`, and open http://localhost:5173/ais/vessels, or point any aisstream.io client at `ws://localhost:8080/v0/stream` with any non-empty `APIKey`.
 
 Go 1.27 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the authoritative Go version). `go test ./...` runs unit tests, the aisstream golden envelope, and the GPSD/libais public fixtures in `server/testdata/`. `go run ./cmd/loadtest -clients 1000 -duration 30s` against a server started with `WS_CONNECTS_PER_MIN=100000` measures fan-out. `go run ./cmd/aiscast-key` mints and inspects access tokens.
 
 ## Changes
 
-- Open a pull request against `main`. CI runs gofmt, vet, tests, and a linux build on every push and PR; a merge to `main` deploys aiscast to `ais-server-1` and the viewer to GitHub Pages.
+- Open a pull request against `main`. CI runs gofmt, vet, tests, and a linux build on every push and PR; a merge to `main` deploys aiscast to `ais-server-1` and, through Cloudflare Workers Builds, the web client.
 - `/v0/stream` is frozen to aisstream.io's wire format; anything new goes under `/v1`. Additive changes to `/v1` are fine; breaking ones need a note in [docs/architecture.md](docs/architecture.md#the-v0-compatibility-contract). `/mcp` is the one exception, because MCP versions itself and clients expect that path; a change to a tool or its schema bumps `mcpVersion` and `server.json` together.
 - Every source gets its own `source` value, license tag in the archive path, and env flag, and stays out of the health gate unless it is an open-licensed feed we commit to.
 - Comments explain why, not what; durable docs describe the current state, not history.
@@ -33,7 +34,7 @@ Go 1.27 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the author
 
 ## Releases
 
-The server and viewer have no release step; a merge to `main` deploys both.
+The server and web client have no release step; a merge to `main` deploys both.
 
 The MCP server's registry listing is `server.json`. After each deploy from `main` succeeds, `ci.yml` calls `mcp-registry.yml`, which looks the version up in registry.modelcontextprotocol.io and, if the registry does not have it yet, checks that the live server reports that version and publishes it, signing in with the `MCP_REGISTRY_KEY` secret; the matching public key is served by the openwaters.io repo at `/.well-known/mcp-registry-auth`. A change to `server.json` reaches the registry only with a new `version`, and `mcpVersion` in `server/mcp.go` moves with it (a test checks the two match). Server deploys need no publish: clients read the tool list live.
 
