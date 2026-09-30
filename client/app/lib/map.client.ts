@@ -528,7 +528,9 @@ export function createMap(
     }
 
     const v = focus ? stream.vessels.get(focus) : undefined;
-    const key = `${scrubAt}|${history.length}|${historyEnd}|${v?.track.length ?? 0}`;
+    // The live tail is capped, so once full its length stops changing as the vessel moves;
+    // the newest position's time is what changes.
+    const key = `${scrubAt}|${historyRevision}|${v?.track.length ?? 0}|${v?.track.at(-1)?.[2] ?? 0}`;
     if (key === trackKey) return;
     trackKey = key;
 
