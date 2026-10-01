@@ -577,6 +577,26 @@ func TestSearchAroundOrdersByDistance(t *testing.T) {
 	}
 }
 
+// A report not yet written to the record can bring a vessel into the nearest from the far side of the
+// world, past every closer match the record holds.
+func TestSearchAroundRanksTheCachedPosition(t *testing.T) {
+	p := storePipeline(t)
+	heardAgo(p, 257000001, "STRAY CAT", -30, 160, time.Hour)
+	mustFlush(t, p)
+	var bulk []record
+	for i := range 2*searchLimit + 5 {
+		v := newVessel()
+		v.Name, v.HasPos, v.Lat, v.Lon, v.Seen, v.PosAt = fmt.Sprintf("STRAY CAT %d", i), true, 34.1, -118.5, time.Now(), time.Now()
+		bulk = append(bulk, record{mmsi: uint32(367000000 + i), v: v})
+	}
+	p.store.upsert(bulk)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 34, -118.5)) // not yet flushed
+	if got := ids(getFC(t, p, "/v1/vessels?q=stray&around=34,-118.5")); len(got) != searchLimit || got[0] != 257000001 {
+		t.Errorf("nearest by the cache's position: %v", got[:min(3, len(got))])
+	}
+}
+
 func TestFirstSeenBeforeTheFirstWrite(t *testing.T) {
 	p := storePipeline(t)
 	now := time.Now().Truncate(time.Second)

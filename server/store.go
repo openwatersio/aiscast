@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -249,8 +248,7 @@ type recordQuery struct {
 	since    time.Time
 	before   time.Time
 	hasPos   bool
-	byName   bool        // order by name then MMSI, as the MCP tools page, instead of most recently heard first
-	around   *[2]float64 // order by distance from this latitude and longitude, nearest first
+	byName   bool // order by name then MMSI, as the MCP tools page, instead of most recently heard first
 	filter   *vesselFilter
 	now      time.Time // the filter's clock
 	limit    int
@@ -430,11 +428,6 @@ func (q recordQuery) sql() (text string, args []any, none bool, err error) {
 	switch {
 	case q.byName:
 		text += " ORDER BY search, mmsi"
-	case q.around != nil:
-		// The cosine of the great-circle angle, which falls as the distance grows and wraps the antimeridian.
-		φ, λ := q.around[0]*math.Pi/180, q.around[1]
-		text += " ORDER BY sin(radians(lat))*? + cos(radians(lat))*?*cos(radians(lon - ?)) DESC, seen DESC"
-		args = append(args, math.Sin(φ), math.Cos(φ), λ)
 	case byCell:
 		text += " ORDER BY +seen DESC"
 	default:
@@ -444,6 +437,38 @@ func (q recordQuery) sql() (text string, args []any, none bool, err error) {
 		text += " LIMIT " + strconv.Itoa(q.limit)
 	}
 	return text, args, false, nil
+}
+
+// storedPos is where the record last placed a vessel, and when.
+type storedPos struct {
+	mmsi     uint32
+	lat, lon float64
+	posAt    time.Time
+}
+
+// positions is where each vessel q matches was last placed, ignoring its limit: the few columns a ranking
+// by distance needs, read for every match so none is cut before it is ranked.
+func (s *store) positions(q recordQuery) ([]storedPos, error) {
+	clause, args, none, _, err := q.bounded()
+	if err != nil || none {
+		return nil, err
+	}
+	rows, err := s.db.Query("SELECT mmsi, lat, lon, pos_at FROM vessels"+clause, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []storedPos
+	for rows.Next() {
+		var p storedPos
+		var at int64
+		if err := rows.Scan(&p.mmsi, &p.lat, &p.lon, &at); err != nil {
+			return nil, err
+		}
+		p.posAt = time.UnixMilli(at)
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func (s *store) find(q recordQuery) ([]record, error) {

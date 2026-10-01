@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -634,7 +635,7 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	// The record is ordered by the seen it stores, and the cache usually runs a second ahead of it, so read
 	// past the cap and order by each vessel's newest seen before cutting.
 	now := time.Now()
-	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1, filter: vf, now: now, around: around}
+	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1, filter: vf, now: now}
 	if len(s.mmsi) > 0 {
 		q.mmsis = make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
@@ -644,7 +645,13 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	if set {
 		q.since = ageCutoff(now, age)
 	}
-	recs, err := p.store.find(q)
+	var recs []record
+	var err error
+	if around != nil {
+		recs, err = p.nearestRecords(q, *around)
+	} else {
+		recs, err = p.store.find(q)
+	}
 	if errors.Is(err, errTooManyTerms) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -946,6 +953,41 @@ func since(now time.Time, age time.Duration) time.Time {
 
 // ageAll is max_age=all: no age limit at all.
 const ageAll = time.Duration(math.MaxInt64)
+
+// nearestRecords is the records of the vessels q matches nearest the point, as many as q's limit. Every match
+// is ranked, by the cache's position where it is newer than the record's: the cache runs up to a flush ahead,
+// and a report from the last second can bring a vessel into the nearest from anywhere.
+func (p *Pipeline) nearestRecords(q recordQuery, around [2]float64) ([]record, error) {
+	limit := q.limit
+	q.limit = 0
+	pos, err := p.store.positions(q)
+	if err != nil {
+		return nil, err
+	}
+	type ranked struct {
+		mmsi uint32
+		dist float64
+	}
+	all := make([]ranked, len(pos))
+	p.vmu.RLock()
+	for i, sp := range pos {
+		lat, lon := sp.lat, sp.lon
+		if c := p.vessels[sp.mmsi]; c != nil && c.HasPos && c.PosAt.After(sp.posAt) {
+			lat, lon = c.Lat, c.Lon
+		}
+		all[i] = ranked{sp.mmsi, nm(around[0], around[1], lat, lon)}
+	}
+	p.vmu.RUnlock()
+	slices.SortFunc(all, func(a, b ranked) int { return cmp.Compare(a.dist, b.dist) })
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	q.mmsis = make([]uint32, len(all))
+	for i, r := range all {
+		q.mmsis[i] = r.mmsi
+	}
+	return p.store.find(q)
+}
 
 // parseAround reads around=lat,lon, the point a search is ordered from.
 func parseAround(s string) (*[2]float64, string) {
