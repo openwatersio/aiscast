@@ -24,9 +24,19 @@ import { stackStateFor } from "./ui/PanelHeader";
 interface ShellState {
   query: string;
   setQuery(q: string): void;
-  /** The search's filter chips. Clearing the search clears them. */
+  /** The search's filter chips. */
   filters: SearchFilters;
   setFilters(filters: SearchFilters): void;
+  /**
+   * Whether the panel is searching: from the field taking focus until `endSearch`. With
+   * nothing typed, it lists the vessels on the map.
+   */
+  searching: boolean;
+  startSearch(): void;
+  /** Leaves search, clearing the query and the filters. */
+  endSearch(): void;
+  /** Shows the panel's loading bar until the returned function is called. */
+  startLoading(): () => void;
   theme: ThemeChoice;
   setTheme(choice: ThemeChoice): void;
   /** The sheet's height on a phone. On a wider screen the panel ignores it. */
@@ -38,6 +48,10 @@ const ShellContext = createContext<ShellState>({
   setQuery: () => undefined,
   filters: NO_FILTERS,
   setFilters: () => undefined,
+  searching: false,
+  startSearch: () => undefined,
+  endSearch: () => undefined,
+  startLoading: () => () => undefined,
   theme: "system",
   setTheme: () => undefined,
   setDetent: () => undefined,
@@ -45,6 +59,24 @@ const ShellContext = createContext<ShellState>({
 
 export function useShell(): ShellState {
   return useContext(ShellContext);
+}
+
+// How long a search may take before the loading bar says it is still going. Searching as you
+// type answers in well under this, and a bar on every key pressed is only noise.
+const SLOW_MS = 1000;
+
+/** Shows the panel's loading bar once `active` has lasted longer than a search usually takes. */
+export function useLoading(active: boolean) {
+  const { startLoading } = useShell();
+  useEffect(() => {
+    if (!active) return;
+    let stop: (() => void) | undefined;
+    const t = setTimeout(() => (stop = startLoading()), SLOW_MS);
+    return () => {
+      clearTimeout(t);
+      stop?.();
+    };
+  }, [active, startLoading]);
 }
 
 // Survives opening a vessel, which remounts the search panel, and a reload of the tab. A map
@@ -65,7 +97,7 @@ function routeDetent(pathname: string): Detent {
  * navigation: the stream is capped at two connections per network address, and remounting
  * would spend that budget.
  */
-export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
+export function Shell({ initialTheme, visitor }: { initialTheme: ThemeChoice; visitor?: [number, number] }) {
   const container = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState<Live | undefined>(liveInstance);
   const location = useLocation();
@@ -87,15 +119,33 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
   const [query, setQueryState] = useState("");
   const [filters, setFilters] = useState(NO_FILTERS);
-  useEffect(() => setQueryState(sessionStorage.getItem(SAVED_QUERY) ?? ""), []);
+  // Kept here rather than in the panel, so opening a vessel and coming back finds the same list.
+  const [searching, setSearching] = useState(false);
   const setQuery = useCallback((q: string) => {
     setQueryState(q);
+    // Text can arrive without the field taking focus, restored from the last visit or autofilled.
+    if (q.trim()) setSearching(true);
     if (q) sessionStorage.setItem(SAVED_QUERY, q);
-    else {
-      sessionStorage.removeItem(SAVED_QUERY);
-      setFilters(NO_FILTERS);
-    }
+    else sessionStorage.removeItem(SAVED_QUERY);
   }, []);
+  useEffect(() => setQuery(sessionStorage.getItem(SAVED_QUERY) ?? ""), [setQuery]);
+  const startSearch = useCallback(() => setSearching(true), []);
+  // A count, so two lists loading at once keep the bar until both are done.
+  const [loading, setLoading] = useState(0);
+  const startLoading = useCallback(() => {
+    setLoading((n) => n + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      setLoading((n) => n - 1);
+    };
+  }, []);
+  const endSearch = useCallback(() => {
+    setQuery("");
+    setFilters(NO_FILTERS);
+    setSearching(false);
+  }, [setQuery]);
 
   const { choice, theme, setChoice } = useTheme(initialTheme);
 
@@ -104,7 +154,7 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
     const stream = new Stream();
     // Resolved here rather than taken from render: during hydration a System choice still
     // reads as the server's dark, and the map should open in the device's scheme.
-    const built = { stream, ctl: createMap(container.current, stream, resolveTheme(choice)) };
+    const built = { stream, ctl: createMap(container.current, stream, resolveTheme(choice), visitor) };
     setLiveInstance(built);
     setLive(built);
   }, []);
@@ -150,8 +200,20 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   }, [live, theme]);
 
   const state = useMemo(
-    () => ({ query, setQuery, filters, setFilters, theme: choice, setTheme: setChoice, setDetent }),
-    [query, setQuery, filters, choice, setChoice],
+    () => ({
+      query,
+      setQuery,
+      filters,
+      setFilters,
+      searching,
+      startSearch,
+      endSearch,
+      startLoading,
+      theme: choice,
+      setTheme: setChoice,
+      setDetent,
+    }),
+    [query, setQuery, filters, searching, startSearch, endSearch, startLoading, choice, setChoice],
   );
 
   return (
@@ -165,11 +227,11 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
         <StatusChip />
 
         <Sheet detent={detent} onDetentChange={setDetent}>
-          {/* While the next entry loads. Most navigations answer before its delay runs out,
+          {/* While the next entry loads, or a search. Most answer before its delay runs out,
               so it shows only for the slow ones, such as a large station's vessel list. */}
           <div
             aria-hidden
-            data-active={navigation.state !== "idle" || undefined}
+            data-active={navigation.state !== "idle" || loading > 0 || undefined}
             className="pending-bar pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden opacity-0 transition-opacity data-active:opacity-100 data-active:delay-150"
           />
           {/* Keyed by route, so a navigation is this entry leaving and the next arriving. React

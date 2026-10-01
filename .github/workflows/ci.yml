@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       # keep the --with list in sync with the script header in packager/packager.py
       - run: uv run --with pytest --with duckdb --with pyarrow --with "pyiceberg[sql-sqlite,pyiceberg-core]" pytest -q packager/
 

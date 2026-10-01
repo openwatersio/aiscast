@@ -44,6 +44,7 @@ type Event struct {
 	HasPos       bool
 	Sentences    []string
 	Synthesized  bool
+	Own          bool // an own-ship sentence (!AIVDO): the sender reporting itself, not a reception
 	rebuilt      bool // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
 	LowTrust     bool // from a source that cannot be authenticated (UDP)
 	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
@@ -122,7 +123,9 @@ type Pipeline struct {
 	streams      streamGauge // open streams by protocol and tier; /metrics
 	requests     requestMetrics
 	fanout       struct{ v0, v1, sse, nmea fanoutCounter }
+	names        *stationNames
 	stats        struct {
+		keysSigned, keysUnsigned                                                                                                         atomic.Int64 // personal-token mints, by whether the key signed the request
 		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts atomic.Int64
 		bySource                                                                                                                         sync.Map // source → *counterT
 	}
@@ -132,7 +135,7 @@ func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
 	p := &Pipeline{
-		arch: arch, norm: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(),
+		arch: arch, norm: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]fragment{},
@@ -304,6 +307,13 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	if pkt.Channel == 2 {
 		ch = 'B'
 	}
+	// A volunteer's TAG s: names a path inside one receiver, such as the Signal K plugin's n2k and self,
+	// not another receiver, so its events keep the receiver's own station id. The tagged id above still
+	// keeps each path's fragments apart. Feeds keep the split: their s: names real receivers, such as
+	// BarentsWatch's terrestrial and satellite networks.
+	if volunteer(rx.Source) {
+		station = rx.Station
+	}
 	// A UDP sender that transmits !AIVDO (own ship) has told us who it is: key it by MMSI from then on.
 	// Self-reported and spoofable, so this is an identity label, never a trust upgrade.
 	source := rx.Source
@@ -321,7 +331,7 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	}
 	// TAG s:self on an own-ship sentence is signalk-aiscast building reports from GPS on a boat with no
 	// transponder: not a VHF reception. VDO-only, so the tag cannot mislabel received traffic as synthesized.
-	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self"})
+	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self", Own: vdm.Type == "VDO"})
 }
 
 // ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).
@@ -372,7 +382,7 @@ func (p *Pipeline) emit(ev *Event) {
 		p.writeCopy(ev, key, prev) // prev is the accepted transmission: proximity alone is ambiguous between two of them
 		p.stats.dup.Add(1)
 		p.usage.dups.add(time.Now())
-		p.stations.dup(ev.Station, ev.Source, ev.Packet.GetHeader().UserID, ev.Time)
+		p.stations.dup(ev)
 		// A trusted source repeating what a UDP station delivered first still corroborates the vessel.
 		if !lowTrust(ev.Source) && isPositionType(typeName(ev.Packet)) {
 			p.markTrusted(ev.Packet.GetHeader().UserID, ev.Time)
@@ -518,7 +528,7 @@ func (p *Pipeline) broadcast(ev *Event) {
 func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
 		nv := p.vesselCount() // updateVessel sweeps, on the reception clock
-		p.stations.sweep(time.Now().Add(-vesselTTL))
+		p.stations.sweep(time.Now().Add(-stationVesselTTL))
 		p.sampleRate(time.Now())
 		p.smu.RLock()
 		ns := len(p.subs)

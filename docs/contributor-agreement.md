@@ -12,7 +12,7 @@ By sharing data from your AIS receiver with us, you dedicate your receptions to 
 
 Anyone may use your receptions for any purpose, including commercial use. We hold the same rights to your receptions as everyone else. You can share the same data to other networks.
 
-The dedication covers everything you send. If it includes your own vessel's sentences (`!AIVDO`), we publish them like any other reception. We then identify your station by that MMSI. Anyone who reads the data can see your position. Configure your forwarder to drop own-vessel sentences if you do not want to share them.
+The dedication covers everything you send. If it includes your own vessel's sentences (`!AIVDO`), we publish them like any other reception. We then identify your station by that MMSI and name it after the vessel. Anyone who reads the data can see your position. Configure your forwarder to drop own-vessel sentences if you do not want to share them.
 
 The dedication is permanent for data already released. If you stop sharing, we release no new data from your station. Published data stays published.
 

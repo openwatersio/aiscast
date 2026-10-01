@@ -287,7 +287,7 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	clients := map[string]any{"streams": streams, "streams_opened": p.usage.streams.windows(now), "requests": p.usage.requests.windows(now)}
 
 	sources := map[string]any{}
-	vbs := p.stations.vesselsBySource()
+	vbs := p.stations.vesselsBySource(now)
 	names := map[string]bool{}
 	for _, k := range p.usage.sourceNames(now) {
 		names[k] = true

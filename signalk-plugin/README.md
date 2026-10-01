@@ -7,7 +7,7 @@ Signal K plugin for [aiscast](https://github.com/openwatersio/aiscast), the [Ope
 
 It also follows your buddy boats worldwide: see [Buddy boats](#buddy-boats).
 
-No account. On first start the plugin generates an Ed25519 keypair in its data directory and requests its own access token from aiscast, sent as an `Authorization: Bearer` header. aiscast credits receptions to that key. Paste an operator-issued token into the config to publish as a named station with higher limits.
+No account. On first start the plugin generates an Ed25519 keypair in its data directory and requests its own access token from aiscast, signing the request with that key so nobody else can get a token for it. The token is sent as an `Authorization: Bearer` header and works from any network address, and aiscast credits receptions to that key. Advanced → Access token shows the address of the boat's station page on openwaters.io, as text to copy into a browser. Paste an operator-issued token into the config to publish as a named station with higher limits.
 
 ## Install
 
@@ -18,13 +18,13 @@ Signal K App Store → `signalk-aiscast`, or `npm install signalk-aiscast` in `~
 | Setting | Default | Meaning |
 |---|---|---|
 | Share → AIS targets I receive | on | publish AIS heard by the receiver (NMEA 0183 `!AIVDM`, NMEA 2000 AIS) |
-| Share → My own ship's AIS transponder data | on | forward what the transponder broadcasts (`!AIVDO`). Your position becomes public open data on aiscast, and the transponder already broadcasts it on VHF |
+| Share → My own ship's AIS transponder data | on | forward what the transponder broadcasts (`!AIVDO`). Your position becomes public open data on aiscast, and the transponder already broadcasts it on VHF. While this is on, your station on aiscast also takes the vessel name set in Signal K |
 | Share → Fallback to self-reported AIS position | on | when an AIS transponder is not available, build class B reports from Signal K: position every 60 s while moving, static data every 6 min, tagged `s:self`. Synthesis pauses for 5 min after any real `!AIVDO`. The setting stays disabled until an MMSI is set in Vessel settings |
 | Receive → Show traffic from aiscast | auto | `Off`, `Auto` (only while nothing is heard locally for 90 s), `Always` (also beyond local VHF range, and local reception wins per target) |
 | Receive → Radius | 50 nm | subscription box around the vessel (5–200) |
 | Receive → Send aiscast traffic to NMEA 0183 output | on | re-emit injected targets as `!AIVDM` on the `nmea0183out` event, so chartplotters and tablet apps see them too |
 | Advanced → Server | `https://ais.openwaters.io` | aiscast base URL |
-| Advanced → Access token | empty | optional operator-issued token. Empty = self-minted personal token |
+| Advanced → Access token | empty | optional operator-issued token. Empty = self-minted personal token, which works from any network address |
 
 ## Buddy boats
 
