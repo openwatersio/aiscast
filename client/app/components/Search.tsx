@@ -252,7 +252,8 @@ function Results({ q }: { q: string }) {
       current = false;
       clearTimeout(t);
     };
-  }, [key]);
+    // tooWide as well: the stream's welcome can raise the area cap after a view was refused.
+  }, [key, tooWide]);
 
   const hits = results.get(key);
   // Before the server answers, show what this tab already holds rather than nothing, filtered
@@ -329,7 +330,8 @@ function InView() {
       current = false;
       clearTimeout(t);
     };
-  }, [key]);
+    // tooWide as well: the stream's welcome can raise the area cap after a view was refused.
+  }, [key, tooWide]);
 
   if (!mapView) return null;
   if (tooWide) {
