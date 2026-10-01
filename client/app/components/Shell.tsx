@@ -65,7 +65,7 @@ function routeDetent(pathname: string): Detent {
  * navigation: the stream is capped at two connections per network address, and remounting
  * would spend that budget.
  */
-export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
+export function Shell({ initialTheme, visitor }: { initialTheme: ThemeChoice; visitor?: [number, number] }) {
   const container = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState<Live | undefined>(liveInstance);
   const location = useLocation();
@@ -104,7 +104,7 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
     const stream = new Stream();
     // Resolved here rather than taken from render: during hydration a System choice still
     // reads as the server's dark, and the map should open in the device's scheme.
-    const built = { stream, ctl: createMap(container.current, stream, resolveTheme(choice)) };
+    const built = { stream, ctl: createMap(container.current, stream, resolveTheme(choice), visitor) };
     setLiveInstance(built);
     setLive(built);
   }, []);

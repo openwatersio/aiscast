@@ -48,6 +48,14 @@ const TILE_OVERVIEW_MS = 15_000;
 /** How often a still view within the cap reloads, to clear vessels the server has dropped. */
 const TILE_BACKSTOP_MS = 5 * 60_000;
 
+/**
+ * Around the visitor, wide enough to reach the sea from most places inland. It is past the
+ * area cap on most screens, so it opens on tiles until the reader zooms in.
+ */
+const NEARBY_ZOOM = 5;
+/** With nowhere to place the visitor, the whole world, drawn from tiles. */
+const WORLD_VIEW = { center: [0, 25] as [number, number], zoom: 1.5 };
+
 /** Seconds since the last report at which a vessel fades, and fades further. */
 const FADE_STEPS = [600, 3600] as const;
 
@@ -115,13 +123,14 @@ export function createMap(
   container: HTMLElement,
   stream: Stream,
   initialTheme: Theme,
+  visitor?: [number, number],
 ): MapController {
   let theme = initialTheme;
   const map = new maplibregl.Map({
     container,
     style: BASEMAP[theme],
-    center: [-70.9, 41.6],
-    zoom: 8,
+    // A link's #map= hash, when there is one, takes precedence over both.
+    ...(visitor ? { center: visitor, zoom: NEARBY_ZOOM } : WORLD_VIEW),
     hash: "map",
     attributionControl: false,
     // North up and flat, always. A chart that turns under a stray two-finger twist is a chart
