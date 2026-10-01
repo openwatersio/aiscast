@@ -15,6 +15,9 @@ import (
 	"github.com/BertoldVdb/go-ais"
 )
 
+// The fixtures hold three ships, far under the minimum a real sync must find.
+func init() { wikidataMinShips = 1 }
+
 // fakeWDQS answers each sync query with its fixture in testdata/wikidata, recorded from the Query Service
 // with the query narrowed to five items: two cruise ships sharing IMO 9208617, one with every field, a
 // coaster with former names, and an item whose IMO is malformed. fail makes every query a 503.
@@ -155,6 +158,14 @@ func TestReplaceWikidataRefusesAShortSync(t *testing.T) {
 	if err := p.store.replaceWikidata(map[uint32]*wikidataShip{}); err == nil {
 		t.Error("an empty sync replaced the stored set")
 	}
+	// A first sync has no stored set to compare with, only the minimum.
+	fresh := storePipeline(t)
+	defer func(n int) { wikidataMinShips = n }(wikidataMinShips)
+	wikidataMinShips = 4
+	if err := fresh.store.replaceWikidata(wantWikidata); err == nil {
+		t.Error("a first sync under the minimum was stored")
+	}
+	wikidataMinShips = 1
 	if err := p.store.replaceWikidata(map[uint32]*wikidataShip{9404314: wantWikidata[9404314]}); err == nil {
 		t.Error("a sync with a third of the ships replaced the stored set")
 	}

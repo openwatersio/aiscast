@@ -13,7 +13,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -37,6 +36,10 @@ const (
 // wikidataPause spaces the queries of one sync. The Query Service allows each client 60 seconds of query
 // time a minute, and each query here takes 1 to 20.
 var wikidataPause = 10 * time.Second
+
+// wikidataMinShips is the fewest ships a sync may store. It stands in for the stored set on the first sync,
+// which has nothing to compare with: 95,514 IMO numbers had an item in September 2026.
+var wikidataMinShips = 50_000
 
 // wikidataLabelBatch is the items named per label query.
 const wikidataLabelBatch = 1000
@@ -338,8 +341,8 @@ func wikidataCounts(ships map[uint32]*wikidataShip) (n [len(wikidataFields)]int)
 }
 
 // replaceWikidata swaps the stored particulars for ships in one transaction, so a reader sees one sync or
-// the other. A sync is refused when it has fewer than half the ships already stored, or any field set on
-// fewer than half as many: Wikidata does not lose half of anything in a week, so a query was cut short, and
+// the other. A sync is refused when it has fewer than wikidataMinShips or half the ships already stored, or
+// any field set on fewer than half as many: Wikidata does not lose half of anything in a week, so a query was cut short, and
 // each field comes from its own query.
 func (s *store) replaceWikidata(ships map[uint32]*wikidataShip) error {
 	// Counted before the transaction, which then opens with a write: in WAL a transaction that reads first
@@ -352,8 +355,8 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip) error {
 	if err := s.db.QueryRow(wikidataCountSQL).Scan(dst...); err != nil {
 		return err
 	}
-	if len(ships) == 0 {
-		return errors.New("found no ships; keeping the stored set")
+	if len(ships) == 0 || len(ships) < wikidataMinShips {
+		return fmt.Errorf("found %d ships where at least %d are expected; keeping the stored set", len(ships), wikidataMinShips)
 	}
 	for i, got := range wikidataCounts(ships) {
 		if 2*got < have[i] {
