@@ -462,6 +462,7 @@
                       "description": "Ed25519-signed claim token, `ak1.<base64url claims>.<base64url signature>`, about 200 characters."
                     },
                     "claims": { "$ref": "#/components/schemas/Claims" },
+                    "signed": { "type": "boolean", "description": "`true` when the request's signature was checked and accepted. A client can wait for it before treating its key as locked to signed requests." },
                     "name_error": { "type": "string", "description": "Why a requested name was not stored. The token is issued anyway." }
                   }
                 },

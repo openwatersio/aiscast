@@ -247,7 +247,7 @@ Server only. No new state beyond the 24-hour maps.
 
 ### Phase 5: Signal K plugin sends its vessel name
 
-- [x] The plugin signs every mint with `identity.json`, and mints once after the upgrade.
+- [x] The plugin signs every mint with `identity.json`, and mints once after the upgrade. It trusts its cached token only once the server answers `"signed": true`, so a plugin released before the server mints again after the server upgrades.
 - [x] The plugin reads the vessel `name` from Signal K. While "Share my own ship" is on, it sends it as `vessel_name` on a mint signed with `identity.json`. It checks at start, which is when a name or switch change takes effect: Signal K restarts the plugin when its settings change, and a vessel name change needs a server restart. It mints again when the name differs from the one it last sent, and once after the upgrade. Turning the switch off mints with an empty `vessel_name`, which clears it.
 - [x] Plugin README: one line under the own-ship setting saying that it also names the station after the boat. CHANGELOG. The release follows CONTRIBUTING.md.
 

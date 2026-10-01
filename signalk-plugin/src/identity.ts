@@ -29,7 +29,7 @@ export interface Token {
   exp: number; // unix seconds; 0 = never
   pubkey: string;
   server: string;
-  signed?: boolean; // minted with a signed request; a token from before signing is replaced once
+  signed?: boolean; // the server confirmed it checked the signature; until one does, the plugin mints again each start
   vesselName?: string; // the vessel name sent with the mint; a different one now means minting again
 }
 
@@ -98,13 +98,15 @@ export async function mintToken(
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`POST /v1/keys: ${res.status} ${(await res.text()).trim()}`);
-  const body = (await res.json()) as { token: string; claims: { exp?: number }; name_error?: string };
+  const body = (await res.json()) as { token: string; claims: { exp?: number }; signed?: boolean; name_error?: string };
   return {
     token: body.token,
     exp: body.claims.exp ?? 0,
     pubkey: identity.pubkey,
     server,
-    signed: true,
+    // A server older than signed requests ignores sig and still issues a token. Only its confirmation counts,
+    // so a plugin released first mints again after the server upgrade and gets its name and key lock then.
+    signed: body.signed === true,
     vesselName,
     ...(body.name_error ? { nameError: body.name_error } : {}),
   };

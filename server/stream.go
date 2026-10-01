@@ -539,6 +539,9 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				cl, canPublish = ncl, ncl.may("publish")
 				pace.Store(&pacer{n: cl.Rate})
 				key := map[string]any{"type": "key", "token": tok, "claims": nc}
+				if f.Sig != "" { // verified, as on /v1/keys
+					key["signed"] = true
+				}
 				if nameErr != "" {
 					key["name_error"] = nameErr
 				}

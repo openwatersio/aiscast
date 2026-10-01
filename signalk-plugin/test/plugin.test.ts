@@ -105,6 +105,23 @@ describe("identity", () => {
     expect(server.keyRequests).toHaveLength(1);
   });
 
+  it("mints again until the server confirms it checked the signature", async () => {
+    server.keysSigned = false; // a server from before signed requests: it ignores sig and issues a token anyway
+    await start();
+    await plugin.stop!();
+    await start();
+    await until(() => server.keyRequests.length === 2);
+    await plugin.stop!();
+
+    server.keysSigned = true; // the server is upgraded
+    await start();
+    await until(() => server.keyRequests.length === 3);
+    await plugin.stop!();
+    await start(); // confirmed: the cached token stands
+    await sleep(100);
+    expect(server.keyRequests).toHaveLength(3);
+  });
+
   it("keeps receiving without a token when the server cannot mint one", async () => {
     server.keysStatus = 501;
     await start();

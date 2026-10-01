@@ -179,13 +179,13 @@ func TestSignedMint(t *testing.T) {
 	k := newTestKey()
 	id := "station:ed25519:" + k.pub
 
-	if code, out := mint(t, p, `{"pubkey":"`+k.pub+`"}`, ""); code != 200 {
+	if code, out := mint(t, p, `{"pubkey":"`+k.pub+`"}`, ""); code != 200 || out["signed"] != nil {
 		t.Fatalf("unsigned mint before the key signs: %d %v", code, out)
 	}
 	if code, out := mint(t, p, `{"pubkey":"`+k.pub+`","name":"Quissett Harbor"}`, ""); code != 403 {
 		t.Errorf("unsigned mint with a name: %d %v", code, out)
 	}
-	if code, out := mint(t, p, k.signed(now, false, strp("Quissett Harbor"), nil), ""); code != 200 || out["name_error"] != nil {
+	if code, out := mint(t, p, k.signed(now, false, strp("Quissett Harbor"), nil), ""); code != 200 || out["name_error"] != nil || out["signed"] != true {
 		t.Fatalf("signed mint: %d %v", code, out)
 	}
 	if code, _ := mint(t, p, `{"pubkey":"`+k.pub+`"}`, ""); code != 403 {
@@ -303,7 +303,7 @@ func TestSignedRegisterFrame(t *testing.T) {
 	k := newTestKey()
 	body := k.signed(time.Now().Unix(), false, nil, strp("CERULEAN"))
 	write(`{"type":"register",` + strings.TrimPrefix(body, "{"))
-	if key := read(); key["type"] != "key" || key["name_error"] != nil {
+	if key := read(); key["type"] != "key" || key["name_error"] != nil || key["signed"] != true {
 		t.Fatalf("key frame: %v", key)
 	}
 	id := "station:ed25519:" + k.pub

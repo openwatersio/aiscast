@@ -415,6 +415,9 @@ func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{"token": tok, "claims": c}
+	if req.Sig != "" { // verified, or the mint would have been refused: lets a client tell this server from one that ignores sig
+		out["signed"] = true
+	}
 	if nameErr != "" {
 		out["name_error"] = nameErr
 	}
