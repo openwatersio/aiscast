@@ -17,6 +17,7 @@ import { mediaKey, smallThumb } from "../lib/media";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
 import { BROWSE } from "../lib/nav";
 import {
+  AREAS,
   areaParams,
   filterParams,
   filterTest,
@@ -32,7 +33,8 @@ import {
 import { useMedia } from "../lib/useMedia";
 import { cn } from "../lib/cn";
 import { useShell } from "./Shell";
-import { ChipRow, MenuChip, ToggleChip } from "./ui/Chip";
+import { ChipButton, ChipRow, MenuChip } from "./ui/Chip";
+import { Menu, MenuRadioGroup, MenuRadioItem, MenuSeparator } from "./ui/Menu";
 import { ClassDot, IconBadge, List, ListRow } from "./ui/List";
 import { Prompt } from "./ui/Prompt";
 import { SearchField } from "./ui/SearchField";
@@ -140,16 +142,57 @@ function SearchChips() {
   const set = (change: Partial<SearchFilters>) => setFilters({ ...filters, ...change });
   return (
     <ChipRow label="Search filters">
-      <MenuChip value={filters.sort} options={SORTS} onChange={(sort) => set({ sort })} />
-      {/* With nothing typed the list is already the map's. */}
-      {query.trim() && (
-        <ToggleChip on={filters.inView} onChange={(inView) => set({ inView })}>
-          In view
-        </ToggleChip>
-      )}
+      <SortChip filters={filters} typed={Boolean(query.trim())} set={set} />
       <MenuChip value={filters.type} options={TYPE_OPTIONS} onChange={(type) => set({ type })} />
       <MenuChip value={filters.heard} options={HEARD} onChange={(heard) => set({ heard })} />
     </ChipRow>
+  );
+}
+
+/**
+ * The order, and for a typed search where it looks. With nothing typed the list is already the
+ * map's, so there is no where to choose.
+ */
+function SortChip({
+  filters,
+  typed,
+  set,
+}: {
+  filters: SearchFilters;
+  typed: boolean;
+  set(change: Partial<SearchFilters>): void;
+}) {
+  const inView = typed && filters.inView;
+  const sort = SORTS.find((o) => o.value === filters.sort) ?? SORTS[0]!;
+  return (
+    <Menu
+      trigger={
+        <ChipButton selected={sort !== SORTS[0] || inView}>
+          {sort.chip}
+          {inView && " in this area"}
+        </ChipButton>
+      }
+    >
+      <MenuRadioGroup value={filters.sort} onChange={(s) => set({ sort: s })}>
+        {SORTS.map((o) => (
+          <MenuRadioItem key={o.value} value={o.value}>
+            {o.label}
+          </MenuRadioItem>
+        ))}
+      </MenuRadioGroup>
+      {typed && (
+        <>
+          <MenuSeparator />
+          <MenuRadioGroup value={filters.inView} onChange={(v) => set({ inView: v })}>
+            {AREAS.map((o) => (
+              <MenuRadioItem key={o.label} value={o.value}>
+                {o.label}
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+        </>
+      )}
+    </Menu>
   );
 }
 
@@ -295,16 +338,17 @@ function InView() {
 
   const hits = results.get(key);
   const passes = filterTest({ ...filters, inView: true }, new Date(now), firstDayOfWeek(), mapView);
-  const order = rowOrder(filters, mapView.center);
-  const all = (hits ?? latest.get(baseKey) ?? [])
+  // Ranked on the server's answer, and only then brought up to date from the stream: ranked on
+  // live data, the list would reorder every time a vessel reported.
+  const all = [...(hits ?? latest.get(baseKey) ?? [])]
+    .sort(rowOrder(filters, mapView.center))
     .map((r) => {
       const v = live?.stream.vessels.get(r.mmsi);
       return v && v.seen > r.seen && v.lat != null && v.lon != null
         ? { ...r, lat: v.lat, lon: v.lon, sog: v.sog, seen: v.seen }
         : r;
     })
-    .filter(passes)
-    .sort(order);
+    .filter(passes);
 
   if (!all.length) {
     if (!hits) return <p className="px-2 py-3 text-body text-fg-muted">Looking…</p>;

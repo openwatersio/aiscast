@@ -42,6 +42,12 @@ export const SORTS: Array<{ value: Sort; label: string; chip: string }> = [
   { value: "recent", label: "Most recently heard", chip: "Most recent" },
 ];
 
+/** Where a typed search looks, under the Sort menu's separator. */
+export const AREAS: Array<{ value: boolean; label: string }> = [
+  { value: false, label: "Anywhere" },
+  { value: true, label: "In this area" },
+];
+
 /** The Heard menu's choices: the menu's label, and the chip's once chosen. */
 export const HEARD: Array<{ value: Heard; label: string; chip: string }> = [
   { value: "any", label: "Any time", chip: "Any time" },
