@@ -61,10 +61,22 @@ export function useShell(): ShellState {
   return useContext(ShellContext);
 }
 
-/** Shows the panel's loading bar while `active`, as a navigation does. */
+// How long a search may take before the loading bar says it is still going. Searching as you
+// type answers in well under this, and a bar on every key pressed is only noise.
+const SLOW_MS = 1000;
+
+/** Shows the panel's loading bar once `active` has lasted longer than a search usually takes. */
 export function useLoading(active: boolean) {
   const { startLoading } = useShell();
-  useEffect(() => (active ? startLoading() : undefined), [active, startLoading]);
+  useEffect(() => {
+    if (!active) return;
+    let stop: (() => void) | undefined;
+    const t = setTimeout(() => (stop = startLoading()), SLOW_MS);
+    return () => {
+      clearTimeout(t);
+      stop?.();
+    };
+  }, [active, startLoading]);
 }
 
 // Survives opening a vessel, which remounts the search panel, and a reload of the tab. A map
