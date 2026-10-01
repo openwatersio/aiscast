@@ -12,6 +12,7 @@ import {
   mergeTrack,
   shipClass,
   splitTrack,
+  TRACK_GAP_MS,
   viewBoxes,
 } from "./ais";
 import { publicApiBase, type CoverageTiles } from "./api";
@@ -77,6 +78,8 @@ export interface MapController {
     coords: Array<[number, number]>,
     times: number[],
     live: boolean,
+    /** How long a silence between positions is drawn as the vessel unheard. */
+    gap?: number,
   ): void;
   /**
    * Reveal the track as far as this moment and mark the vessel's position there. Null
@@ -490,13 +493,14 @@ export function createMap(
   let historyTimes: number[] = [];
   let historyEnd = 0;
   let historyLive = true;
+  let historyGap = TRACK_GAP_MS;
 
   /** A line per stretch the vessel was actually heard, so gaps are not drawn as passages. */
   function lines(
     coords: Array<[number, number]>,
     times: number[],
   ): GeoJSON.FeatureCollection {
-    const segments = splitTrack(coords, times);
+    const segments = splitTrack(coords, times, historyGap);
     return {
       type: "FeatureCollection",
       features: segments.map((seg) => ({
@@ -514,7 +518,7 @@ export function createMap(
   function scrubPoint() {
     return scrubAt === null
       ? undefined
-      : interpolateAt(history, historyTimes, scrubAt);
+      : interpolateAt(history, historyTimes, scrubAt, historyGap);
   }
 
   function trackFeature(): GeoJSON.FeatureCollection {
@@ -1174,7 +1178,8 @@ export function createMap(
       ready = false;
       map.setStyle(BASEMAP[theme], { diff: false });
     },
-    setTrack(coords, times, live) {
+    setTrack(coords, times, live, gap = TRACK_GAP_MS) {
+      historyGap = gap;
       history = coords;
       historyRevision++;
       historyTimes = times;
@@ -1232,6 +1237,7 @@ export function createMap(
         historyTimes = [];
         historyEnd = 0;
         historyLive = true;
+        historyGap = TRACK_GAP_MS;
         scrubAt = null;
       }
       focus = mmsi;

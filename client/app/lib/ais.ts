@@ -269,6 +269,15 @@ export function mergeTrack(
 export const TRACK_GAP_MS = 30 * 60 * 1000;
 
 /**
+ * The gap for a track thinned to one position per `intervalMs`. The first position in each
+ * interval can sit up to two intervals after the one before while the vessel reports all along,
+ * so only a silence past that and TRACK_GAP_MS means it went unheard.
+ */
+export function trackGap(intervalMs: number): number {
+  return TRACK_GAP_MS + 2 * intervalMs;
+}
+
+/**
  * Splits a track wherever the vessel went unheard, so the line is drawn only where there is
  * evidence. Joining across a gap invents a course and a speed: one real track here jumps
  * 208 km across 14 hours of silence, which as a single line reads as a passage that was
@@ -311,18 +320,22 @@ export function indexAt(times: number[], at: number): number {
 
 /**
  * Speed at a moment, between the reports either side. A report's own moment has its speed;
- * inside a gap longer than TRACK_GAP_MS, or that long after the last report, the vessel
+ * inside a gap longer than `maxGap`, or that long after the last report, the vessel
  * went unheard and there is none, as the chart's broken line shows.
  */
-export function speedAt(track: { times: number[]; sog: Array<number | null | undefined> }, at: number): number | undefined {
+export function speedAt(
+  track: { times: number[]; sog: Array<number | null | undefined> },
+  at: number,
+  maxGap = TRACK_GAP_MS,
+): number | undefined {
   const i = indexAt(track.times, at);
   if (i < 0) return undefined;
   const a = track.sog[i] ?? undefined;
   const t = track.times[i]!;
   if (a === undefined || at === t) return a;
-  if (i + 1 >= track.times.length) return at - t <= TRACK_GAP_MS ? a : undefined;
+  if (i + 1 >= track.times.length) return at - t <= maxGap ? a : undefined;
   const span = track.times[i + 1]! - t;
-  if (span > TRACK_GAP_MS) return undefined;
+  if (span > maxGap) return undefined;
   const b = track.sog[i + 1];
   if (b == null || span <= 0) return a;
   return a + (b - a) * ((at - t) / span);

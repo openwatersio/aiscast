@@ -247,6 +247,8 @@ export interface Track {
     points: number;
     from: string;
     to: string;
+    /** Seconds between positions at most, the step the server thinned to; 0 is every position. */
+    interval?: number;
     truncated: boolean;
     times: string[];
     sog?: Array<number | null>;

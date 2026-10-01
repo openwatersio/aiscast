@@ -21,6 +21,8 @@ import {
   shipClass,
   speedAt,
   splitTrack,
+  TRACK_GAP_MS,
+  trackGap,
   vesselPath,
   vesselDimensions,
   viewBoxes,
@@ -543,5 +545,16 @@ describe("volunteerReceiver", () => {
   it("leaves feed stations and plain ids alone", () => {
     expect(volunteerReceiver("barentswatch/terra")).toBeUndefined();
     expect(volunteerReceiver("station:mmsi:368168720")).toBeUndefined();
+  });
+});
+
+describe("trackGap", () => {
+  it("lets a thinned track's spacing pass and still breaks at a real silence", () => {
+    const hour = 3600e3;
+    const times = [0, 1.9 * hour, 3.5 * hour, 9 * hour];
+    const coords: Array<[number, number]> = times.map((_, i) => [i, i]);
+    expect(splitTrack(coords, times, trackGap(hour))).toEqual([coords.slice(0, 3)]);
+    expect(splitTrack(coords, times)).toEqual([]);
+    expect(trackGap(0)).toBe(TRACK_GAP_MS);
   });
 });
