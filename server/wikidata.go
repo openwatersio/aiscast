@@ -438,6 +438,24 @@ func (p *Pipeline) wikidataOf(imos ...uint32) map[uint32]*wikidataShip {
 	return m
 }
 
+// loadWikidataStats reads what the last sync stored, so /metrics reports it from boot, and with the sync
+// turned off the particulars it left are still counted.
+func (p *Pipeline) loadWikidataStats() error {
+	var n int64
+	if err := p.store.db.QueryRow(`SELECT count(*) FROM wikidata`).Scan(&n); err != nil {
+		return err
+	}
+	p.wikidata.ships.Store(n)
+	last, err := p.store.meta("wikidata_sync")
+	if err != nil {
+		return err
+	}
+	if t, err := time.Parse(time.RFC3339, last); err == nil {
+		p.wikidata.lastSuccess.Store(t.Unix())
+	}
+	return nil
+}
+
 // runWikidata syncs the particulars once a week, checking hourly, so a failed sync is retried within the
 // hour and a restart does not sync again.
 func (p *Pipeline) runWikidata(endpoint string) {
@@ -457,12 +475,6 @@ func (p *Pipeline) syncWikidataIfDue(now time.Time, endpoint string) bool {
 		return false
 	}
 	if t, err := time.Parse(time.RFC3339, last); err == nil && now.Sub(t) < wikidataEvery {
-		p.wikidata.lastSuccess.Store(t.Unix())
-		if p.wikidata.ships.Load() == 0 {
-			var n int64
-			p.store.db.QueryRow(`SELECT count(*) FROM wikidata`).Scan(&n)
-			p.wikidata.ships.Store(n)
-		}
 		return false
 	}
 	p.wikidata.runs.Add(1)

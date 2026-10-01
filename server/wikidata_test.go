@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -122,6 +123,27 @@ func TestWikidataSync(t *testing.T) {
 	}
 	if got[1234567] != nil {
 		t.Error("an IMO without an item has particulars")
+	}
+}
+
+// A restarted server reports what the last sync stored before any sync runs, and with the sync off.
+func TestWikidataStatsOnBoot(t *testing.T) {
+	p := storePipeline(t)
+	if err := p.store.replaceWikidata(wantWikidata); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	if err := p.store.setMeta("wikidata_sync", at.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.loadWikidataStats(); err != nil {
+		t.Fatal(err)
+	}
+	body := get(t, p, "/metrics").Body.String()
+	for _, want := range []string{"aiscast_wikidata_ships 3\n", fmt.Sprintf("aiscast_wikidata_last_success_timestamp_seconds %d\n", at.Unix())} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/metrics lacks %q", want)
+		}
 	}
 }
 

@@ -72,6 +72,9 @@ func main() {
 				}
 			}
 			go p.runStore()
+			if err := p.loadWikidataStats(); err != nil {
+				log.Printf("wikidata: %v", err)
+			}
 			if env("WIKIDATA", "1") == "1" {
 				go p.runWikidata(env("WIKIDATA_URL", wikidataSPARQL))
 			}
