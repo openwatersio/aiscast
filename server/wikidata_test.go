@@ -132,11 +132,8 @@ func TestWikidataSync(t *testing.T) {
 // A restarted server reports what the last sync stored before any sync runs, and with the sync off.
 func TestWikidataStatsOnBoot(t *testing.T) {
 	p := storePipeline(t)
-	if err := p.store.replaceWikidata(wantWikidata); err != nil {
-		t.Fatal(err)
-	}
 	at := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-	if err := p.store.setMeta("wikidata_sync", at.Format(time.RFC3339)); err != nil {
+	if err := p.store.replaceWikidata(wantWikidata, at); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.loadWikidataStats(); err != nil {
@@ -152,21 +149,21 @@ func TestWikidataStatsOnBoot(t *testing.T) {
 
 func TestReplaceWikidataRefusesAShortSync(t *testing.T) {
 	p := storePipeline(t)
-	if err := p.store.replaceWikidata(wantWikidata); err != nil {
+	if err := p.store.replaceWikidata(wantWikidata, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.store.replaceWikidata(map[uint32]*wikidataShip{}); err == nil {
+	if err := p.store.replaceWikidata(map[uint32]*wikidataShip{}, time.Now()); err == nil {
 		t.Error("an empty sync replaced the stored set")
 	}
 	// A first sync has no stored set to compare with, only the minimum.
 	fresh := storePipeline(t)
 	defer func(n int) { wikidataMinShips = n }(wikidataMinShips)
 	wikidataMinShips = 4
-	if err := fresh.store.replaceWikidata(wantWikidata); err == nil {
+	if err := fresh.store.replaceWikidata(wantWikidata, time.Now()); err == nil {
 		t.Error("a first sync under the minimum was stored")
 	}
 	wikidataMinShips = 1
-	if err := p.store.replaceWikidata(map[uint32]*wikidataShip{9404314: wantWikidata[9404314]}); err == nil {
+	if err := p.store.replaceWikidata(map[uint32]*wikidataShip{9404314: wantWikidata[9404314]}, time.Now()); err == nil {
 		t.Error("a sync with a third of the ships replaced the stored set")
 	}
 	// Every ship present, but one field's query came back short: the builders are gone.
@@ -176,7 +173,7 @@ func TestReplaceWikidataRefusesAShortSync(t *testing.T) {
 		c.Builder = ""
 		noBuilders[imo] = &c
 	}
-	if err := p.store.replaceWikidata(noBuilders); err == nil || !strings.Contains(err.Error(), "builder") {
+	if err := p.store.replaceWikidata(noBuilders, time.Now()); err == nil || !strings.Contains(err.Error(), "builder") {
 		t.Errorf("a sync that lost every builder: %v", err)
 	}
 	got, _ := p.store.wikidataShips([]uint32{5358206})
@@ -191,7 +188,7 @@ func TestReplaceWikidataRefusesAShortSync(t *testing.T) {
 	c := *wantWikidata[5358206]
 	c.Builder = ""
 	oneLess[5358206] = &c
-	if err := p.store.replaceWikidata(oneLess); err != nil {
+	if err := p.store.replaceWikidata(oneLess, time.Now()); err != nil {
 		t.Errorf("an ordinary sync was refused: %v", err)
 	}
 }
@@ -203,7 +200,7 @@ func staticIMO(mmsi, imo uint32, name string) ais.Packet {
 
 func TestVesselWikidata(t *testing.T) {
 	p := storePipeline(t)
-	if err := p.store.replaceWikidata(wantWikidata); err != nil {
+	if err := p.store.replaceWikidata(wantWikidata, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()

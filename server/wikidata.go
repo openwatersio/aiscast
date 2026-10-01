@@ -340,11 +340,12 @@ func wikidataCounts(ships map[uint32]*wikidataShip) (n [len(wikidataFields)]int)
 	return n
 }
 
-// replaceWikidata swaps the stored particulars for ships in one transaction, so a reader sees one sync or
-// the other. A sync is refused when it has fewer than wikidataMinShips or half the ships already stored, or
-// any field set on fewer than half as many: Wikidata does not lose half of anything in a week, so a query was cut short, and
-// each field comes from its own query.
-func (s *store) replaceWikidata(ships map[uint32]*wikidataShip) error {
+// replaceWikidata swaps the stored particulars for ships and records the sync's time in one transaction, so
+// a reader sees one sync or the other and the schedule never disagrees with the table. A sync is refused
+// when it has fewer than wikidataMinShips or half the ships already stored, or any field set on fewer than
+// half as many: Wikidata does not lose half of anything in a week, so a query was cut short, and each field
+// comes from its own query.
+func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) error {
 	// Counted before the transaction, which then opens with a write: in WAL a transaction that reads first
 	// fails to upgrade if the record's writer commits in between. Only the sync writes this table.
 	var have [len(wikidataFields)]int
@@ -386,6 +387,10 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip) error {
 		if _, err := st.Exec(imo, w.ID, w.Builder, w.YearBuilt, w.GrossTonnage, w.Deadweight, w.Length, w.Beam, w.Registry, names); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('wikidata_sync', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+		at.Format(time.RFC3339)); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -485,15 +490,12 @@ func (p *Pipeline) syncWikidataIfDue(now time.Time, endpoint string) bool {
 	defer cancel()
 	ships, err := fetchWikidata(ctx, endpoint)
 	if err == nil {
-		err = p.store.replaceWikidata(ships)
+		err = p.store.replaceWikidata(ships, now)
 	}
 	if err != nil {
 		p.wikidata.failures.Add(1)
 		log.Printf("wikidata: %v", err)
 		return false
-	}
-	if err := p.store.setMeta("wikidata_sync", now.Format(time.RFC3339)); err != nil {
-		log.Printf("wikidata: %v", err)
 	}
 	p.wikidata.ships.Store(int64(len(ships)))
 	p.wikidata.lastSuccess.Store(now.Unix())
