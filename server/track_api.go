@@ -48,9 +48,16 @@ const trackMaxSpan = 366 * 24 * time.Hour
 // trackLakeStep is the finest interval of a range that reaches before the track store's window: the lake's
 // tracks hold a vessel's first position in each minute, so the whole range is thinned alike, without a seam
 // where the window begins.
-// A default step never needs raising, since a range past the window spread over any tier's limit rounds to a
-// minute or more, and MCP's steps are whole minutes; an explicit interval can ask for finer.
 const trackLakeStep = time.Minute
+
+// trackStep is interval raised to trackLakeStep when the range starting at from reads the lake. A short range
+// there would otherwise default to every position, and an explicit interval can ask for finer.
+func (p *Pipeline) trackStep(from, now time.Time, interval time.Duration) time.Duration {
+	if p.lake != nil && from.Before(now.Add(-trackWindow)) && interval < trackLakeStep {
+		return trackLakeStep
+	}
+	return interval
+}
 
 // canReachArchive reports whether a tier reads positions older than the track store's window. Those reads
 // scan the lake and cost money per request, which is why history is a feeder and commercial capability.
@@ -143,9 +150,7 @@ func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time)
 			return q, http.StatusBadRequest, "interval=<seconds> or a duration such as 5m"
 		}
 	}
-	if p.lake != nil && q.from.Before(now.Add(-trackWindow)) && q.interval < trackLakeStep {
-		q.interval = trackLakeStep
-	}
+	q.interval = p.trackStep(q.from, now, q.interval)
 	return q, 0, ""
 }
 
@@ -516,6 +521,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 		}
 		interval = defaultInterval(span, limit)
 	}
+	interval = p.trackStep(from, now, interval)
 	var points []trackPoint
 	var sources []string
 	var more bool

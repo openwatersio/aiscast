@@ -392,10 +392,17 @@ func TestTrackPastTheWindowIsAPositionAMinuteAtMost(t *testing.T) {
 	if tr := getTrack(t, p, "/v1/vessels/257000001/track?interval=0"); tr.Properties.Interval != 0 || tr.Properties.Points != 2 {
 		t.Errorf("inside the window every position is still there to ask for: %+v", tr.Properties)
 	}
-	// The longest range at the largest limit just past the window still spreads to a minute or more.
-	just := now.Add(-trackWindow - time.Hour).UTC().Format(time.RFC3339)
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+just+"&limit=5000"); tr.Properties.Interval < 60 {
-		t.Errorf("default past the window: %d", tr.Properties.Interval)
+	// A short range just past the window spreads its limit at no step at all, and still reads the lake.
+	edge := now.Add(-trackWindow - time.Minute)
+	short := "from=" + edge.UTC().Format(time.RFC3339) + "&to=" + edge.Add(10*time.Second).UTC().Format(time.RFC3339)
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?"+short); tr.Properties.Interval != 60 {
+		t.Errorf("short range past the window: interval %d, want 60", tr.Properties.Interval)
+	}
+	var out mcpTrack
+	args := map[string]any{"mmsi": 257000001, "from": edge.UTC().Format(time.RFC3339), "to": edge.Add(10 * time.Second).UTC().Format(time.RFC3339)}
+	cs := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, &Claims{Sub: "fleet", Role: "partner"}))
+	if msg := mcpCall(t, cs, "get_vessel_track", args, &out); msg != "" || out.IntervalS != 60 {
+		t.Errorf("MCP short range past the window: %q interval_s %d, want 60", msg, out.IntervalS)
 	}
 }
 
