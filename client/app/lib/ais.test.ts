@@ -22,6 +22,7 @@ import {
   vesselPath,
   vesselDimensions,
   viewBoxes,
+  centerBoxes,
   vesselSlug,
 } from "./ais";
 
@@ -440,6 +441,25 @@ describe("speedAt", () => {
     expect(speedAt(track, 80 * min)).toBe(12);
     expect(speedAt(track, 101 * min)).toBeUndefined();
     expect(speedAt(track, -1)).toBeUndefined();
+  });
+});
+
+describe("centerBoxes", () => {
+  const area = (boxes: Array<[number, number, number, number]>) => boxes.reduce((sum, [s, w, n, e]) => sum + (n - s) * (e - w), 0);
+  it("stays within the cap, around the point", () => {
+    const boxes = centerBoxes([35.23, -80.84], 100);
+    expect(boxes).toHaveLength(1);
+    expect(area(boxes)).toBeLessThanOrEqual(100);
+    const [s, w, n, e] = boxes[0]!;
+    expect((s + n) / 2).toBeCloseTo(35.23, 5);
+    expect((w + e) / 2).toBeCloseTo(-80.84, 5);
+    // Square on the ground: wider in longitude by 1/cos(lat).
+    expect((e - w) * Math.cos((35.23 * Math.PI) / 180)).toBeCloseTo(n - s, 5);
+  });
+  it("splits at the antimeridian", () => {
+    const boxes = centerBoxes([-17, 179], 100);
+    expect(boxes).toHaveLength(2);
+    expect(area(boxes)).toBeLessThanOrEqual(100);
   });
 });
 

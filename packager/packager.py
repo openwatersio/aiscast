@@ -7,8 +7,9 @@
 
 Reads the server's normalized stream (versioned envelopes: accepted events, reception
 copies, weather broadcasts) and packages closed UTC days into ais.positions,
-ais.receptions, ais.vessels, and ais.weather. No parsers and no dedup rule live here;
-the server decided all of that at ingest. See docs/normalized-archive.md.
+ais.receptions, ais.vessels, and ais.weather, and rolls positions up into ais.tracks.
+No parsers and no dedup rule live here; the server decided all of that at ingest. See
+docs/normalized-archive.md.
 """
 
 import argparse
@@ -17,7 +18,7 @@ import os
 import re
 import shutil
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -40,6 +41,11 @@ POSITIONS_SCHEMA = pa.schema([
     # the source whose copy the server accepted, the one a track's credit line names; last, since it
     # joined after the first days were packaged and a new column goes at the end
     ("source", pa.string()),
+])
+# A vessel's track at one position a minute, what the server answers tracks from past its 48-hour window.
+TRACKS_SCHEMA = pa.schema([
+    ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("lat6", pa.int32()), ("lon6", pa.int32()), ("sog10", pa.int16()),
+    ("cog10", pa.int16()), ("heading", pa.int16()), ("navstat", pa.int8()), ("source", pa.string()), ("day", pa.date32()),
 ])
 RECEPTIONS_SCHEMA = pa.schema([
     ("id", pa.binary(16)), ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("source", pa.string()), ("station", pa.string()),
@@ -230,10 +236,11 @@ def process_day(day, files, con, catalog, fingerprint=None):
     if orphans:
         sys.exit(f"{day}: {orphans} positions without a reception; every transmission has a first copy, so the join lost data")
 
+    build_tracks(con)
     refresh_vessels(con, catalog)
     # Iceberg has no cross-table transaction, so order is the guarantee: positions commits last, with
     # the inputs' fingerprint in the same transaction, and that fingerprint is the completion marker.
-    for name in ("weather", "receptions"):
+    for name in ("weather", "receptions", "tracks"):
         replace_day(con, catalog, day, name)
     replace_day(con, catalog, day, "positions", {f"packaged.{day}": fingerprint} if fingerprint else None)
     print(f"{day}: {n_pos} positions, {n_rx} receptions, {n_wx} weather", file=sys.stderr)
@@ -287,6 +294,58 @@ def cell_sql(lat, lon):
             f"ELSE CAST(least(floor({lat}) + 90, 179) * 360 + least(floor({lon}) + 180, 359) AS INTEGER) END")
 
 
+# A minute a vessel spends within this many meters of the minutes either side is a repeat of them.
+TRACK_MOVED_M = 50
+# The first minute of every this many is kept however still the vessel is, so a moored vessel's track
+# never falls silent for more than twice this, which readers draw as unheard past 30 minutes.
+TRACK_BEAT_MIN = 15
+M_PER_LAT6 = 111195 / 600000  # meters per 1/600000 degree of latitude
+
+
+LON6_TURN = 360 * 600000  # a full turn of longitude in 1/600000 degree
+
+
+def meters_sql(lat, lon, lat2, lon2):
+    """Distance in meters on a flat projection about the first point: exact enough at the tens of meters
+    the rollup judges, and two orders cheaper than a haversine over a day of positions. The longitude
+    difference goes the short way round, so a vessel moored on the antimeridian stays still."""
+    half = LON6_TURN // 2
+    dlon = f"((({lon2} - {lon} + {half}) % {LON6_TURN} + {LON6_TURN}) % {LON6_TURN} - {half})"
+    return (f"sqrt(pow(({lat2} - {lat}) * {M_PER_LAT6}, 2) "
+            f"+ pow({dlon} * {M_PER_LAT6} * cos(radians({lat} / 600000)), 2))")
+
+
+def build_tracks(con):
+    """Roll the staged positions up into tracks: each vessel's first position in each minute, without the
+    minutes it spent within TRACK_MOVED_M of both neighbors, apart from the first minute of each
+    TRACK_BEAT_MIN. Minutes and beats count from the epoch, as the server's thinning buckets do, so
+    thinning these to whole minutes picks what thinning every position would, wherever the vessel moved.
+    Spikes stay in: the server judges them after thinning, as it does every position.
+
+    Only the day's arrivals are staged, so a report relayed late can give a vessel-minute a second row in
+    the next day's partition. A reader thins by minute after merging the days it reads, which keeps the
+    earlier, so the day packaged before is never rewritten for it."""
+    minute = "epoch_us(ts) // 60000000"
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE tracks AS
+        WITH first AS (
+            SELECT mmsi, ts, lat6, lon6, sog10, cog10, heading, navstat, source, day, {minute} AS minute
+            FROM positions WHERE lat6 IS NOT NULL
+            QUALIFY row_number() OVER (PARTITION BY mmsi, {minute} ORDER BY ts, lat6, lon6) = 1
+        ), around AS (
+            SELECT *, lag(lat6) OVER w AS plat, lag(lon6) OVER w AS plon, lead(lat6) OVER w AS nlat, lead(lon6) OVER w AS nlon,
+                   row_number() OVER (PARTITION BY mmsi, minute // {TRACK_BEAT_MIN} ORDER BY minute) AS nth
+            FROM first WINDOW w AS (PARTITION BY mmsi ORDER BY minute)
+        )
+        SELECT mmsi, ts, lat6, lon6, sog10, cog10, heading, navstat, source, day FROM around
+        WHERE nth = 1 OR plat IS NULL OR nlat IS NULL
+           OR {meters_sql("plat", "plon", "lat6", "lon6")} > {TRACK_MOVED_M}
+           OR {meters_sql("lat6", "lon6", "nlat", "nlon")} > {TRACK_MOVED_M}
+        """
+    )
+
+
 # The lake's layout, set per warehouse so a new one can take another without a code change. A table
 # records the positions sort and bucket count it was created with and refuses the others (check_layout).
 # Sorting positions by cell lets a bbox query skip row groups on the cell column's statistics; sorting
@@ -297,7 +356,7 @@ MMSI_BUCKETS = int(os.environ.get("LAKE_MMSI_BUCKETS") or 32)
 SORT_KEY = "aiscast.positions-sort"
 
 # Row order within each written file.
-ORDER = {"positions": POSITIONS_SORTS[POSITIONS_SORT], "receptions": "source, station, recv_ts", "weather": "mmsi, ts"}
+ORDER = {"positions": POSITIONS_SORTS[POSITIONS_SORT], "receptions": "source, station, recv_ts", "weather": "mmsi, ts", "tracks": "mmsi, ts"}
 
 
 # A day is written in this many passes, each holding whole mmsi buckets. The Arrow copies of a full
@@ -306,8 +365,8 @@ ORDER = {"positions": POSITIONS_SORTS[POSITIONS_SORT], "receptions": "source, st
 WRITE_PASSES = 4
 
 
-def write_passes(con, tbl, name):
-    """WHERE clauses that split a staged table into WRITE_PASSES groups of whole mmsi buckets, computed
+def write_passes(con, tbl, name, passes=WRITE_PASSES):
+    """WHERE clauses that split a staged table into `passes` groups of whole mmsi buckets, computed
     with the table's own bucket transform, or one pass for a table not bucketed by mmsi."""
     import pyarrow as pa
     from pyiceberg.transforms import BucketTransform
@@ -322,9 +381,9 @@ def write_passes(con, tbl, name):
     con.register("write_bucket", pa.table({"mmsi": mmsis.column("mmsi"), "b": buckets}))
     con.execute("CREATE OR REPLACE TEMP TABLE write_bucket_t AS SELECT * FROM write_bucket")
     con.unregister("write_bucket")
-    passes = [f"WHERE {source.name} IN (SELECT mmsi FROM write_bucket_t WHERE b % {WRITE_PASSES} = {i})" for i in range(WRITE_PASSES)]
-    passes[0] += f" OR {source.name} IS NULL"
-    return passes
+    wheres = [f"WHERE {source.name} IN (SELECT mmsi FROM write_bucket_t WHERE b % {passes} = {i})" for i in range(passes)]
+    wheres[0] += f" OR {source.name} IS NULL"
+    return wheres
 
 
 def replace_day(con, catalog, day, name, properties=None):
@@ -502,20 +561,94 @@ def _fetch(fs, local, info, path):
         raise OSError(f"{info.path}: copied {got} of {info.size} bytes")
 
 
+# A month is compacted once the packager no longer repackages its days on its own, so the nightly run
+# does not rewrite it again the next night.
+COMPACT_AFTER = timedelta(days=8)
+
+
+def month_start(months):
+    """The first day of the month `months` after January 1970, as Iceberg's month transform counts."""
+    return date(1970 + months // 12, months % 12 + 1, 1)
+
+
+def compact_tracks(catalog, stage, today):
+    """Rewrite each closed month of ais.tracks as one file per mmsi bucket. Days are written a file per
+    bucket each, so a month a vessel's year reads would otherwise be thirty files per vessel. A month
+    with any bucket in more than one file qualifies, so a day repackaged into a compacted month brings
+    its month back."""
+    tbl = retry(lambda: catalog.load_table("ais.tracks"))
+    parts = retry(lambda: tbl.inspect.partitions()).to_pylist()
+    months = sorted({p["partition"]["day_month"] for p in parts if p["file_count"] > 1})
+    for m in months:
+        first = month_start(m)
+        nxt = month_start(m + 1)
+        if date.fromisoformat(today) < nxt + COMPACT_AFTER:
+            continue
+        con = open_stage(stage)
+        try:
+            def go():
+                tbl = catalog.load_table("ais.tracks")
+                where = f"day >= '{first}' AND day < '{nxt}'"
+                # Read inside the retry, so a commit refused for a newer snapshot rewrites what that holds.
+                reader = tbl.scan(row_filter=where).to_arrow_batch_reader()
+                con.register("reader", reader)
+                con.execute("CREATE OR REPLACE TABLE tracks AS SELECT * FROM reader")
+                con.unregister("reader")
+                schema = tbl.schema().as_arrow()
+                with tbl.transaction() as tx:
+                    tx.delete(where)
+                    # a pass per bucket keeps each pass's Arrow copies to a thirty-second of a month
+                    for w in write_passes(con, tbl, "tracks", passes=MMSI_BUCKETS):
+                        data = con.execute(f"SELECT * FROM tracks {w} ORDER BY {ORDER['tracks']}").to_arrow_table().cast(schema)
+                        if data.num_rows:
+                            tx.append(data)
+                        del data
+
+            retry(go)
+            print(f"tracks: compacted {first:%Y-%m}", file=sys.stderr)
+        finally:
+            con.close()
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def tracks_from_lake(day, con, catalog):
+    """Roll a packaged day's positions up into tracks, for days packaged before ais.tracks existed."""
+    cols = ("mmsi", "ts", "lat6", "lon6", "sog10", "cog10", "heading", "navstat", "source", "day")
+    tbl = retry(lambda: catalog.load_table("ais.positions"))
+    reader = retry(lambda: tbl.scan(row_filter=f"day = '{day}'", selected_fields=cols).to_arrow_batch_reader())
+    con.register("reader", reader)
+    con.execute("CREATE OR REPLACE TABLE positions AS SELECT * FROM reader")
+    con.unregister("reader")
+    n = con.execute("SELECT count(*) FROM positions").fetchone()[0]
+    if not n:
+        sys.exit(f"{day}: no positions in the lake to roll up")
+    build_tracks(con)
+    replace_day(con, catalog, day, "tracks")
+    print(f"{day}: {con.execute('SELECT count(*) FROM tracks').fetchone()[0]} track points from {n} positions", file=sys.stderr)
+
+
 # A reader skips data by row-group statistics, and at the default of about a million rows a day's
 # file is one or two row groups spanning nearly every value of the sort key. Smaller groups each cover
 # a narrow range for a query to skip on.
 ROW_GROUP_KEY, ROW_GROUP_ROWS = "write.parquet.row-group-limit", os.environ.get("LAKE_ROW_GROUP_ROWS") or "32768"
 
 
+# A compacted month is one file per bucket only while the file stays under the writer's target size, about
+# 225 MB at 2026's traffic against a default of 512 MB; past it the month would split, count as uncompacted,
+# and be rewritten every night.
+TRACKS_PROPERTIES = {ROW_GROUP_KEY: ROW_GROUP_ROWS, "write.target-file-size-bytes": str(2 << 30)}
+
+
 def _specs():
-    from pyiceberg.transforms import BucketTransform, IdentityTransform
+    from pyiceberg.transforms import BucketTransform, IdentityTransform, MonthTransform
 
     # Identity on day, so replacing a day rewrites that partition, not the table. Positions and
-    # receptions also bucket by mmsi, so one vessel's history reads one file per day.
+    # receptions also bucket by mmsi, so one vessel's history reads one file per day. Tracks partition
+    # by month, so a compacted month is one file per bucket and a vessel's year reads twelve.
     by_day = [("day", IdentityTransform(), "day")]
-    by_vessel = by_day + [("mmsi", BucketTransform(MMSI_BUCKETS), "mmsi_bucket")]
-    return {"positions": by_vessel, "receptions": by_vessel, "weather": by_day}
+    bucket = [("mmsi", BucketTransform(MMSI_BUCKETS), "mmsi_bucket")]
+    by_month = [("day", MonthTransform(), "day_month")]
+    return {"positions": by_day + bucket, "receptions": by_day + bucket, "weather": by_day, "tracks": by_month + bucket}
 
 
 def get_catalog():
@@ -529,7 +662,8 @@ def get_catalog():
         wh.mkdir(parents=True, exist_ok=True)
         catalog = load_catalog("local", uri=f"sqlite:///{wh}/catalog.db", warehouse=f"file://{wh}")
     retry(lambda: catalog.create_namespace_if_not_exists("ais"))
-    for name, schema in [("positions", POSITIONS_SCHEMA), ("receptions", RECEPTIONS_SCHEMA), ("vessels", VESSELS_SCHEMA), ("weather", WEATHER_SCHEMA)]:
+    for name, schema in [("positions", POSITIONS_SCHEMA), ("receptions", RECEPTIONS_SCHEMA), ("vessels", VESSELS_SCHEMA),
+                         ("weather", WEATHER_SCHEMA), ("tracks", TRACKS_SCHEMA)]:
         if ("ais", name) not in retry(lambda: list(catalog.list_tables("ais"))):
             retry(lambda: catalog.create_table(f"ais.{name}", schema=schema))
         tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
@@ -544,6 +678,10 @@ def get_catalog():
                 with tbl.transaction() as tx:
                     tx.set_properties(want)
                 tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
+        if name == "tracks" and {k: tbl.properties.get(k) for k in TRACKS_PROPERTIES} != TRACKS_PROPERTIES:
+            with tbl.transaction() as tx:
+                tx.set_properties(TRACKS_PROPERTIES)
+            tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
         have = {f.name for f in tbl.schema().fields}
         if missing := [f for f in schema if f.name not in have]:
             # schema changes are additive: a new column joins the table at the end, null for the days before it
@@ -580,7 +718,10 @@ def main():
     ap.add_argument("--date", help="UTC day YYYY-MM-DD; default: every closed day of the past week missing from the catalog")
     ap.add_argument("--min-hours", type=int, default=20, help="refuse a day with fewer distinct hours")
     ap.add_argument("--init", action="store_true", help="create or upgrade the tables and stop; run once before packaging days in parallel")
+    ap.add_argument("--tracks-only", action="store_true", help="with --date, roll that packaged day's positions up into ais.tracks and stop")
     args = ap.parse_args()
+    if args.tracks_only and not args.date:
+        ap.error("--tracks-only needs --date")
 
     all_files = glob.glob(f"{args.normalized}/**/*.gz", recursive=True) if args.normalized else []
     now = datetime.now(timezone.utc)
@@ -588,16 +729,28 @@ def main():
     catalog = get_catalog()
     if args.init:
         return
+    stage = HERE / "stage"
+    if args.tracks_only:
+        con = open_stage(stage)
+        try:
+            tracks_from_lake(args.date, con, catalog)
+        finally:
+            con.close()
+            shutil.rmtree(stage, ignore_errors=True)
+        return
     days = [args.date] if args.date else [(now - timedelta(days=n)).strftime("%Y-%m-%d") for n in range(7, 0, -1)]
     packaged = retry(lambda: catalog.load_table("ais.positions")).properties
 
     # A day's staging database is several times the day's compressed input (about 40 GB for a full
     # day of production traffic), so each day gets its own, deleted before the next day starts and
     # however the run ends: a week of days in one file does not fit on a runner's disk.
-    stage = HERE / "stage"
     shutil.rmtree(stage, ignore_errors=True)  # a run the OS killed leaves it behind
     try:
         failed = package_days(days, args, all_files, today, packaged, stage, catalog)
+        # Only the nightly run compacts: days packaged by hand run in parallel, and a compaction racing
+        # them would have its commit refused and read the month again.
+        if not args.date:
+            compact_tracks(catalog, stage, today)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     if failed:
