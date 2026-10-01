@@ -630,6 +630,11 @@ def tracks_from_lake(day, con, catalog):
 # A reader skips data by row-group statistics, and at the default of about a million rows a day's
 # file is one or two row groups spanning nearly every value of the sort key. Smaller groups each cover
 # a narrow range for a query to skip on.
+# Each commit adds a manifest, and a reader's first query opens every manifest of the current snapshot:
+# 164 of them after the history was packaged took 7 to 8 s cold. Merging folds them into a few on each
+# commit, so the list stays short however many days the table holds.
+MANIFEST_MERGE = {"commit.manifest-merge.enabled": "true", "commit.manifest.min-count-to-merge": "4"}
+
 ROW_GROUP_KEY, ROW_GROUP_ROWS = "write.parquet.row-group-limit", os.environ.get("LAKE_ROW_GROUP_ROWS") or "32768"
 
 
@@ -667,6 +672,7 @@ def get_catalog():
         if ("ais", name) not in retry(lambda: list(catalog.list_tables("ais"))):
             retry(lambda: catalog.create_table(f"ais.{name}", schema=schema))
         tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
+        want = {}
         if name == "positions":
             # a table from before the sort was recorded is cell-sorted; a new one takes the setting
             sort = tbl.properties.get(SORT_KEY) or ("cell" if tbl.current_snapshot() else POSITIONS_SORT)
@@ -674,13 +680,13 @@ def get_catalog():
                 sys.exit(f"ais.positions is sorted by {sort}, not {POSITIONS_SORT}: a table keeps one order, "
                          f"so set LAKE_POSITIONS_SORT={sort} or package into a new warehouse")
             want = {SORT_KEY: sort, ROW_GROUP_KEY: ROW_GROUP_ROWS}
-            if {k: tbl.properties.get(k) for k in want} != want:
-                with tbl.transaction() as tx:
-                    tx.set_properties(want)
-                tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
-        if name == "tracks" and {k: tbl.properties.get(k) for k in TRACKS_PROPERTIES} != TRACKS_PROPERTIES:
+        if name == "tracks":
+            want = dict(TRACKS_PROPERTIES)
+        if name != "vessels":  # vessels is rewritten whole each run, so its manifests never pile up
+            want |= MANIFEST_MERGE
+        if {k: tbl.properties.get(k) for k in want} != want:
             with tbl.transaction() as tx:
-                tx.set_properties(TRACKS_PROPERTIES)
+                tx.set_properties(want)
             tbl = retry(lambda: catalog.load_table(f"ais.{name}"))
         have = {f.name for f in tbl.schema().fields}
         if missing := [f for f in schema if f.name not in have]:
