@@ -70,6 +70,57 @@ export interface VesselProps {
   source: string;
   station: string;
   msg_type: string;
+  /** Particulars as registered, from the vessel's Wikidata item. On /v1/vessels/{mmsi} only. */
+  wikidata?: VesselWikidata;
+  /** Particulars as documented with the US Coast Guard, for a US-flag vessel. On /v1/vessels/{mmsi} only. */
+  uscg?: VesselUSCG;
+}
+
+/** A vessel's Wikidata item, found by its IMO number. Dimensions are in meters, deadweight in tonnes. */
+export interface VesselWikidata {
+  id: string;
+  url: string;
+  license: string;
+  ship_type?: string;
+  builder?: string;
+  yard_number?: string;
+  /** The year it entered service. */
+  year_built?: number;
+  gross_tonnage?: number;
+  deadweight?: number;
+  length?: number;
+  beam?: number;
+  /** Design draught; the vessel's own `draught` is the current voyage's. */
+  draught?: number;
+  registry?: string;
+  home_port?: string;
+  owner?: string;
+  operator?: string;
+  /** Oldest first. */
+  former_names?: string[];
+  wikipedia?: string;
+  commons_category?: string;
+  /** The Commons page of one photo, which carries its own license. */
+  image?: string;
+}
+
+/** A US-flag vessel as the Coast Guard's PSIX documents it, matched by call sign and name. Dimensions in meters. */
+export interface VesselUSCG {
+  id: number;
+  license: string;
+  name: string;
+  /** The official number of a documented vessel, else its state registration. */
+  identification?: string;
+  service?: string;
+  status?: string;
+  year_built?: number;
+  length?: number;
+  beam?: number;
+  depth?: number;
+  gross_tonnage?: number;
+  net_tonnage?: number;
+  /** Absent until the dimensions and tonnage have been read. */
+  tonnage_measure?: "Convention" | "Regulatory" | "Simplified";
 }
 
 export interface VesselFeature {

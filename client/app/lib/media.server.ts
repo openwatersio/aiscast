@@ -1,8 +1,7 @@
 import { isValidImo } from "./ais";
-import { type Particulars, type Photo, type VesselMedia } from "./media";
+import { type Photo, type VesselMedia } from "./media";
 
 const COMMONS = "https://commons.wikimedia.org/w/api.php";
-const WIKIDATA = "https://www.wikidata.org/w/api.php";
 
 // Wikimedia asks every client to name itself and give a contact. A browser cannot set this
 // header, which is one reason the lookup runs in the Worker.
@@ -19,8 +18,8 @@ const MAX_CANDIDATES = 50;
 // Ship-identity subcategories under an IMO category: one per name the hull has carried.
 const MAX_SUBCATEGORIES = 2;
 
-// How long answers keep. Photos and particulars change rarely; a vessel with neither is the
-// common case and is asked again daily; a failure is not an answer, so it is retried soon.
+// How long answers keep. Photos change rarely; a vessel without any is the common case and is
+// asked again daily; a failure is not an answer, so it is retried soon.
 const FOUND = "public, max-age=604800, stale-while-revalidate=86400";
 const EMPTY = "public, max-age=86400";
 const FAILED = "public, max-age=900";
@@ -74,7 +73,7 @@ function taken(meta: Record<string, { value?: string }>): number {
  * The newest photos in a Commons category and its first ship-identity subcategories.
  * Throws UpstreamError when Wikimedia fails, so the caller can cache that briefly.
  */
-async function lookupPhotos(category: string): Promise<Pick<VesselMedia, "photos" | "links">> {
+async function lookupPhotos(category: string): Promise<VesselMedia> {
   const top = await members(category, "file|subcat");
   const files = top.filter((m) => m.ns === 6).map((m) => m.title);
   const subcats = top.filter((m) => m.ns === 14).slice(0, MAX_SUBCATEGORIES);
@@ -122,72 +121,12 @@ async function lookupPhotos(category: string): Promise<Pick<VesselMedia, "photos
   };
 }
 
-type Claim = { rank: string; mainsnak: { datavalue?: { value: any } }; qualifiers?: Record<string, unknown> };
-
-/** A property's current value: the preferred claim, else one without an end time (P582). */
-function best(claims: Claim[] | undefined): any {
-  const usable = (claims ?? []).filter((c) => c.rank !== "deprecated" && c.mainsnak.datavalue);
-  const pick = usable.find((c) => c.rank === "preferred") ?? usable.find((c) => !c.qualifiers?.P582) ?? usable[0];
-  return pick?.mainsnak.datavalue!.value;
-}
-
-// Units a ship's dimensions are given in, by Wikidata item: metre and foot.
-const TO_METERS: Record<string, number> = { Q11573: 1, Q3710: 0.3048 };
-
-function meters(quantity: { amount?: string; unit?: string } | undefined): number | undefined {
-  const factor = TO_METERS[String(quantity?.unit).split("/").pop()!];
-  const n = Number(quantity?.amount);
-  return factor && Number.isFinite(n) ? Math.round(n * factor * 100) / 100 : undefined;
-}
-
 /**
- * The vessel's Wikidata item, found by its IMO (P458), as particulars and links. A bot import
- * made items for most IMO-registered ships, so this answers for more of them than Commons.
- */
-async function lookupParticulars(imo: string): Promise<Pick<VesselMedia, "particulars" | "links">> {
-  const search = await wikimedia(WIKIDATA, { action: "query", list: "search", srsearch: `haswbstatement:P458=${imo}` });
-  const qid: string | undefined = search.query?.search?.[0]?.title;
-  if (!qid) return { particulars: null, links: {} };
-
-  const body = await wikimedia(WIKIDATA, { action: "wbgetentities", ids: qid, props: "claims|sitelinks/urls", sitefilter: "enwiki" });
-  const item = body.entities?.[qid];
-  const value = (property: string) => best(item?.claims?.[property]);
-
-  // Builder, registry, operator and owner are items themselves, named in one more call.
-  const refs = { builder: value("P176")?.id, registry: value("P8047")?.id, operator: value("P137")?.id, owner: value("P127")?.id };
-  const ids = [...new Set(Object.values(refs).filter(Boolean))];
-  const labels = ids.length
-    ? (await wikimedia(WIKIDATA, { action: "wbgetentities", ids: ids.join("|"), props: "labels", languages: "en", languagefallback: "1" })).entities
-    : {};
-  const label = (id: string | undefined): string | undefined => (id ? labels?.[id]?.labels?.en?.value : undefined);
-
-  const tonnage = value("P1093");
-  const particulars: Particulars = {
-    entered: Number(/^\+(\d{4})/.exec(value("P729")?.time ?? "")?.[1]) || undefined,
-    builder: label(refs.builder),
-    yardNumber: value("P617"),
-    length: meters(value("P2043")),
-    beam: meters(value("P2261")),
-    draught: meters(value("P2262")),
-    grossTonnage: tonnage?.unit === "1" ? Number(tonnage.amount) : undefined,
-    callsign: value("P2317"),
-    registry: label(refs.registry),
-    operator: label(refs.operator),
-    owner: label(refs.owner),
-  };
-  return {
-    particulars: Object.values(particulars).some((v) => v != null) ? particulars : null,
-    links: { wikidata: `https://www.wikidata.org/wiki/${qid}`, wikipedia: item?.sitelinks?.enwiki?.url },
-  };
-}
-
-/**
- * The media route's answer for a key: photographs from Wikimedia Commons and, for an IMO,
- * particulars from Wikidata. A seven-digit key is an IMO, looked up in Commons' per-hull
- * "IMO <n>" category; a nine-digit key is an MMSI, looked up in its "MMSI <n>" category, for
- * vessels without a usable IMO. Wikidata is asked by IMO only: its MMSI claims measured no
- * vessels that the IMO lookup misses. Answers are cached at the edge, so Wikimedia sees a few
- * requests per vessel per week.
+ * The media route's answer for a key: photographs from Wikimedia Commons. A seven-digit key is
+ * an IMO, looked up in Commons' per-hull "IMO <n>" category; a nine-digit key is an MMSI, looked
+ * up in its "MMSI <n>" category, for vessels without a usable IMO. Answers are cached at the edge,
+ * so Wikimedia sees a few requests per vessel per week. The vessel's particulars come from the
+ * API, which syncs them from Wikidata and the Coast Guard.
  */
 export async function mediaResponse(key: string, requestUrl: string): Promise<Response> {
   let category: string;
@@ -206,22 +145,17 @@ export async function mediaResponse(key: string, requestUrl: string): Promise<Re
   const hit = await cache.match(cacheKey);
   if (hit) return hit;
 
-  const [photos, about] = await Promise.allSettled([
-    lookupPhotos(category),
-    key.length === 7 ? lookupParticulars(key) : Promise.resolve({ particulars: null, links: {} }),
-  ]);
-  for (const result of [photos, about]) if (result.status === "rejected" && !isUpstream(result.reason)) throw result.reason;
-  const media: VesselMedia = {
-    photos: photos.status === "fulfilled" ? photos.value.photos : [],
-    particulars: about.status === "fulfilled" ? about.value.particulars : null,
-    links: {
-      ...(photos.status === "fulfilled" ? photos.value.links : {}),
-      ...(about.status === "fulfilled" ? about.value.links : {}),
-    },
-  };
-  // Half an answer is served but kept only briefly, so the missing half is asked for again.
-  const failed = photos.status === "rejected" || about.status === "rejected";
-  const cacheControl = failed ? FAILED : media.photos.length || media.particulars ? FOUND : EMPTY;
+  let media: VesselMedia;
+  let cacheControl: string;
+  try {
+    media = await lookupPhotos(category);
+    cacheControl = media.photos.length ? FOUND : EMPTY;
+  } catch (e) {
+    if (!isUpstream(e)) throw e;
+    // Served, but kept only briefly, so the photos are asked for again.
+    media = { photos: [], links: {} };
+    cacheControl = FAILED;
+  }
   const response = Response.json(media, { headers: { "cache-control": cacheControl } });
   await cache.put(cacheKey, response.clone());
   return response;
