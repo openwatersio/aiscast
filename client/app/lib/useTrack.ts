@@ -1,48 +1,60 @@
 import { useEffect, useState } from "react";
 import { browserAuth, getTrack } from "./api";
-
-/** The server keeps this many hours of positions per vessel and clamps anything longer. */
-export const TRACK_WINDOW_HOURS = 48;
-
-// Positions a request may return: 200 anonymous, 1,000 with a personal token. A little under,
-// so the interval below always fits.
-const BUDGET = { anonymous: 190, token: 950 };
+import { rangeBounds, type TrackRange } from "./trackRange";
 
 export interface LoadedTrack {
-  /** The range asked for, which the chart spans even where the vessel went unheard. */
+  /** The range the server covered, which the chart spans even where the vessel went unheard. */
   from: number;
   to: number;
+  /** The range ends now, so the stream's positions continue it. */
+  live: boolean;
+  /** The server covered less than was asked, because the token does not reach that far back. */
+  limited: boolean;
   coords: Array<[number, number]>;
   times: number[];
   sog: Array<number | null>;
 }
 
+/** Why there is no track: the range is beyond the token's reach, or the API did not answer. */
+export type TrackFailure = "forbidden" | "unavailable";
+
+// The server clamps a range to the token's reach from its own clock, which can differ from the
+// browser's by this much without the range counting as cut short.
+const CLOCK_SLACK_MS = 60e3;
+
 /**
- * A vessel's positions over the last `hours`. The server keeps the first position in each
- * interval, and the interval is sized so the whole range fits the tier's limit: without it
- * the limit would cut the range short from the start, and a day's track would begin a few
- * hours ago.
+ * A vessel's positions over `range`. The server spreads the tier's limit over the whole range
+ * at a round interval. The last track stays while the next loads, so the chart does not jump.
  */
-export function useTrack(mmsi: number, hours: number): { track?: LoadedTrack; loading: boolean } {
+export function useTrack(
+  mmsi: number,
+  range: TrackRange,
+): { track?: LoadedTrack; loading: boolean; failure?: TrackFailure } {
   const [track, setTrack] = useState<LoadedTrack>();
   const [loading, setLoading] = useState(true);
+  const [failure, setFailure] = useState<TrackFailure>();
+  const { hours, end } = range;
   useEffect(() => {
     let current = true;
     setLoading(true);
-    const auth = browserAuth();
-    const to = Date.now();
-    const from = to - hours * 3600e3;
-    const budget = auth.token ? BUDGET.token : BUDGET.anonymous;
-    const intervalSeconds = Math.ceil((hours * 3600) / budget);
-    void getTrack(auth, mmsi, { from, to, intervalSeconds }).then((t) => {
+    const { from, to } = rangeBounds({ hours, end });
+    void getTrack(browserAuth(), mmsi, { from, to }).then((t) => {
       if (!current) return;
       setLoading(false);
-      // A failed fetch leaves whatever track was showing.
-      if (!t) return;
-      const coords = t.geometry?.coordinates ?? [];
+      if (!t || t === "forbidden") {
+        setTrack(undefined);
+        setFailure(t ?? "unavailable");
+        return;
+      }
+      const g = t.geometry;
+      const coords = !g ? [] : g.type === "Point" ? [g.coordinates] : g.coordinates;
+      const covered = Date.parse(t.properties.from);
+      setFailure(undefined);
       setTrack({
-        from,
-        to,
+        from: covered,
+        to: Date.parse(t.properties.to),
+        live: end == null,
+        limited: covered - from > CLOCK_SLACK_MS,
         coords,
         times: t.properties.times.map((x) => Date.parse(x)),
         sog: t.properties.sog ?? coords.map(() => null),
@@ -51,6 +63,6 @@ export function useTrack(mmsi: number, hours: number): { track?: LoadedTrack; lo
     return () => {
       current = false;
     };
-  }, [mmsi, hours]);
-  return { track, loading };
+  }, [mmsi, hours, end]);
+  return { track, loading, failure };
 }
