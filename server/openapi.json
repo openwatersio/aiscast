@@ -814,8 +814,6 @@
                 "events": { "$ref": "#/components/schemas/Windows" },
                 "last_age_s": { "type": "integer", "description": "Seconds since any member last produced an event." },
                 "vessels": { "type": "integer", "description": "Distinct MMSIs heard in the last 30 minutes." },
-          "vessels_24h": { "type": "integer", "description": "Distinct MMSIs heard in the last 24 hours, including the station's own vessel." },
-          "vessels_exclusive_24h": { "type": "integer", "description": "Of `vessels_24h`, the vessels no other station heard. A vessel counts whether this station delivered a message first or as a duplicate. Rows that share a station id before `/` count as one station, and a station's own vessel is left out." },
                 "vessels_exclusive": { "type": "integer", "description": "Of those, MMSIs no other source kind heard in that window." },
                 "delay": {
                   "type": "object",
