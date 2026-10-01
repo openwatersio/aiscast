@@ -14,6 +14,7 @@ import {
   shipClass,
   vesselDimensions,
   vesselPath,
+  volunteerReceiver,
 } from "../lib/ais";
 import { publicApiBase, type VesselFeature } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
@@ -23,6 +24,7 @@ import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
 import { mediaKey, type VesselMedia } from "../lib/media";
 import { useMedia } from "../lib/useMedia";
+import { useStationTitle } from "../lib/useStationTitle";
 import { useTrack } from "../lib/useTrack";
 import { PageTitle } from "./Panel";
 import { ActionButton, ActionLink, ActionRow } from "./ui/ActionButton";
@@ -70,6 +72,7 @@ export function VesselDetail({
   const heading = fresher ? fresher.heading : (p?.heading ?? heard?.heading);
   const navStatusCode = fresher?.navStatus ?? p?.nav_status ?? heard?.navStatus;
   const station = fresher?.station ?? p?.station ?? heard?.station;
+  const stationName = useStationTitle(station);
   const source = fresher?.source ?? p?.source ?? heard?.source;
   const country = flagName(p?.flag);
   const imo = p?.imo ?? heard?.imo;
@@ -247,7 +250,7 @@ export function VesselDetail({
       <Facts
         className="mt-5"
         items={[
-          ["Station", station ? <Link to={`/stations/${station}`}>{station}</Link> : undefined],
+          ["Station", station ? <Link to={`/stations/${volunteerReceiver(station) ?? station}`}>{stationName}</Link> : undefined],
         ]}
       />
 
