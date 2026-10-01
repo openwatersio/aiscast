@@ -575,16 +575,20 @@ export function createMap(
       // Unsplit on purpose. The solid line above is split, so wherever the vessel went
       // unheard only this shows through, which is the whole point: a dashed stretch says a
       // course was never reported rather than leaving a blank the eye reads as an end.
+      // A range the vessel was heard in once has no line, so its one position is a dot.
       (
         map.getSource("track-all") as maplibregl.GeoJSONSource | undefined
       )?.setData(
-        history.length > 1
+        history.length > 0
           ? {
               type: "FeatureCollection",
               features: [
                 {
                   type: "Feature",
-                  geometry: { type: "LineString", coordinates: history },
+                  geometry:
+                    history.length > 1
+                      ? { type: "LineString", coordinates: history }
+                      : { type: "Point", coordinates: history[0]! },
                   properties: {},
                 },
               ],
@@ -941,6 +945,18 @@ export function createMap(
         "line-dasharray": [0.5, 3],
       },
     });
+    map.addLayer({
+      id: "track-point",
+      type: "circle",
+      source: "track-all",
+      filter: ["==", ["geometry-type"], "Point"],
+      paint: {
+        "circle-radius": 4,
+        "circle-color": c.track,
+        "circle-stroke-width": 1.5,
+        "circle-stroke-color": c.outline,
+      },
+    });
 
     map.addLayer({
       id: "track-line",
@@ -1177,6 +1193,11 @@ export function createMap(
       render();
     },
     fitTrack() {
+      const only = history.length === 1 ? history[0] : undefined;
+      if (only) {
+        requestCamera(() => map.flyTo({ center: only, zoom: Math.max(map.getZoom(), 12), speed: 1.4 }));
+        return;
+      }
       if (history.length < 2) return;
       const lons = history.map((c) => c[0]);
       const lats = history.map((c) => c[1]);

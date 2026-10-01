@@ -176,13 +176,15 @@ export function VesselTrack({
         <p className="py-8 text-center text-body text-fg-muted">
           {loading
             ? "Loading…"
-            : failure === "forbidden"
-              ? <ReachNote />
-              : failure === "unavailable"
-                ? "The track is unavailable right now."
-                : range.end == null && !track?.limited
-                  ? `Not heard in the ${label.toLowerCase()}.`
-                  : "Not heard in this period."}
+            : track && points === 1
+              ? `Heard once, at ${momentOn(track, track.times[0]!)} UTC.`
+              : failure === "forbidden"
+                ? <ReachNote />
+                : failure === "unavailable"
+                  ? "The track is unavailable right now."
+                  : range.end == null && !track?.limited
+                    ? `Not heard in the ${label.toLowerCase()}.`
+                    : "Not heard in this period."}
         </p>
       )}
 
