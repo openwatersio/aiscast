@@ -391,13 +391,10 @@ function InView() {
     if (unavailable) return unavailable;
     if (!hits) return <p className="px-2 py-3 text-body text-fg-muted">Looking…</p>;
     // With nothing typed the list is always the view's, so that is no filter to clear.
-    return hasFilters({ ...filters, where: "anywhere" }) ? (
-      <NoMatches onMap />
-    ) : (
-      <p className="px-2 py-3 text-body text-fg-muted">
-        {partial ? "No vessels near the middle of the map." : "No vessels on the map. Zoom out or move the map to see more."}
-      </p>
-    );
+    if (hasFilters({ ...filters, where: "anywhere" })) return <NoMatches onMap />;
+    // Zoomed out over open water or inland, the map itself shows where the vessels are.
+    if (partial) return null;
+    return <p className="px-2 py-3 text-body text-fg-muted">No vessels on the map. Zoom out or move the map to see more.</p>;
   }
   return (
     <>
