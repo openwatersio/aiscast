@@ -1,11 +1,20 @@
 import { createRequestHandler, RouterContextProvider } from "react-router";
-import { serverEnv } from "../app/lib/context";
+import { serverEnv, visitorLocation } from "../app/lib/context";
 
 declare global {
   // A secret, set with `wrangler secret put AIS_TOKEN`, so the generated Env leaves it out.
   interface Env {
     AIS_TOKEN?: string;
   }
+}
+
+/** Cloudflare's guess at where the request came from, which it cannot always make. */
+function locate(request: Request): [number, number] | undefined {
+  const { latitude, longitude } = request.cf ?? {};
+  if (!latitude || !longitude) return undefined;
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  return Number.isFinite(lat) && Number.isFinite(lon) ? [lon, lat] : undefined;
 }
 
 const handler = createRequestHandler(
@@ -21,6 +30,7 @@ export default {
     if (!url.pathname.startsWith("/ais/")) return Response.redirect(new URL("/ais/vessels", url), 302);
     const context = new RouterContextProvider();
     context.set(serverEnv, { api: env.AIS_API, token: env.AIS_TOKEN || undefined });
+    context.set(visitorLocation, locate(request));
     return handler(request, context);
   },
 } satisfies ExportedHandler<Env>;

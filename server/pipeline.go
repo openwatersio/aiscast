@@ -307,6 +307,13 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	if pkt.Channel == 2 {
 		ch = 'B'
 	}
+	// A volunteer's TAG s: names a path inside one receiver, such as the Signal K plugin's n2k and self,
+	// not another receiver, so its events keep the receiver's own station id. The tagged id above still
+	// keeps each path's fragments apart. Feeds keep the split: their s: names real receivers, such as
+	// BarentsWatch's terrestrial and satellite networks.
+	if volunteer(rx.Source) {
+		station = rx.Station
+	}
 	// A UDP sender that transmits !AIVDO (own ship) has told us who it is: key it by MMSI from then on.
 	// Self-reported and spoofable, so this is an identity label, never a trust upgrade.
 	source := rx.Source

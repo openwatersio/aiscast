@@ -377,6 +377,28 @@ export function bearing([lon1, lat1]: [number, number], [lon2, lat2]: [number, n
   return (Math.atan2(y, x) / rad + 360) % 360;
 }
 
+/** Great-circle distance between two [lat, lon] positions, in nautical miles. */
+export function distanceNM([lat1, lon1]: [number, number], [lat2, lon2]: [number, number]): number {
+  const rad = Math.PI / 180;
+  const a =
+    Math.sin(((lat2 - lat1) * rad) / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lon2 - lon1) * rad) / 2) ** 2;
+  return 2 * 3440.065 * Math.asin(Math.sqrt(a));
+}
+
+/** "0.4 nm" close by, "37 nm" and "8,400 nm" further off. */
+export function formatDistance(nm: number): string {
+  return nm < 10 ? `${nm.toFixed(1)} nm` : `${Math.round(nm).toLocaleString("en-US")} nm`;
+}
+
+/** An age short enough for the edge of a list row: "45s", "12m", "18h", then days past two of them. */
+export function shortAge(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 48 * 3600) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
 /**
  * Whether a number passes the IMO check: the seventh digit is the sum of the first six
  * weighted 7 down to 2, mod 10. AIS static data carries a fair share of mistyped IMOs, and
@@ -435,6 +457,21 @@ export function viewBoxes(south: number, west: number, north: number, east: numb
   return e <= 180 ? [[s, w, n, e]] : [[s, w, n, 180], [s, -180, n, e - 360]];
 }
 
+/**
+ * The largest box around a [lat, lon] that an area cap of `cap` square degrees allows, as the
+ * boxes `viewBoxes` gives. It is square on the ground, so it widens in longitude toward the poles,
+ * and is cut a little short so rounding never takes it over the cap.
+ */
+export function centerBoxes([lat, lon]: [number, number], cap: number): Array<[number, number, number, number]> {
+  const area = cap * 0.98;
+  const squeeze = Math.max(Math.cos((lat * Math.PI) / 180), 0.05);
+  const height = Math.min(Math.sqrt(area * squeeze), 180);
+  const width = Math.min(area / height, 360);
+  const south = Math.max(-90, lat - height / 2);
+  const north = Math.min(90, south + height);
+  return viewBoxes(south, lon - width / 2, north, lon + width / 2);
+}
+
 // The source kinds people run: a receiver sending over UDP, HTTP or the stream with a token,
 // or identified by its own vessel's MMSI. Everything else is a government feed or a partner
 // aggregate, named by its upstream.
@@ -465,4 +502,15 @@ export function stationTitles(sts: Array<{ station: string; name?: string; near?
       return [st.station, `${title} (${tag ?? `…${base.slice(-4)}`})`];
     }),
   );
+}
+
+/**
+ * Returns the receiver for a volunteer station id that ends in a TAG path: `station:mmsi:368168720`
+ * for `station:mmsi:368168720/n2k`. A volunteer receiver is one station, but links to its paths are
+ * still shared. Returns undefined for any other id, because a feed's path, such as
+ * `barentswatch/terra`, is a station of its own.
+ */
+export function volunteerReceiver(id: string): string | undefined {
+  const [base, path] = id.split("/", 2);
+  return path != null && isVolunteer(base) ? base : undefined;
 }

@@ -19,6 +19,7 @@ export function ListRow({
   title,
   subtitle,
   trailing,
+  onHover,
 }: {
   to?: string;
   href?: string;
@@ -26,6 +27,8 @@ export function ListRow({
   title: ReactNode;
   subtitle?: ReactNode;
   trailing?: ReactNode;
+  /** The pointer entering the row, and leaving it. */
+  onHover?(over: boolean): void;
 }) {
   const body = (
     <>
@@ -39,7 +42,7 @@ export function ListRow({
   );
   const className = "flex items-center gap-3 rounded-lg px-2 py-2 no-underline transition-colors hover:bg-surface-subtle";
   return (
-    <li>
+    <li onPointerEnter={onHover && (() => onHover(true))} onPointerLeave={onHover && (() => onHover(false))}>
       {to ? (
         <Link to={to} className={className}>
           {body}

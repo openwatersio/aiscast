@@ -57,7 +57,9 @@ func (st *stationStat) note(mmsi uint32, t time.Time, lat, lon float64, pos, own
 	}
 }
 
-// events24h sums events over the given station ids in the 24 clock hours ending now.
+// events24h sums events over the given station ids in the 24 clock hours ending now. A station not heard
+// since a restart counts from its restored ring: its client reconnects before it publishes again, and the
+// tier that connection gets holds until it closes.
 func (s *stationStats) events24h(ids []string, now time.Time) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,6 +67,8 @@ func (s *stationStats) events24h(ids []string, now time.Time) int64 {
 	for _, id := range ids {
 		if st := s.m[id]; st != nil {
 			n += st.ring.sum(now, 24)
+		} else if r, ok := s.restored[id]; ok {
+			n += (&hourRing{ringState: r}).sum(now, 24)
 		}
 	}
 	return n

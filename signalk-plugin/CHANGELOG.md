@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 - Your station on aiscast takes your boat's name, the vessel name set in Signal K, while *Share my own ship* is on. Turning that switch off removes the name, so the station never says where the boat is. There is nothing to set up.
 - The plugin signs its token requests with the boat's key, so nobody else can get a token for your station. After the upgrade it requests a new token once.
+- Plugin Config shows the address of this boat's station page on openwaters.io under Advanced → Access token, to copy into a browser, so you can see what your receiver is contributing.
+- A pasted token that aiscast refuses now says how to fix it: clear Advanced → Access token and the plugin goes back to its own token. Tokens from openwaters.io/ais/token that are bound to a network address stop working when that address changes, as it does on Starlink and cellular. The plugin's own token works from any address.
 
 ## 0.5.2
 

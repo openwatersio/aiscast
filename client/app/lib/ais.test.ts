@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   bearing,
+  distanceNM,
+  formatDistance,
+  shortAge,
   isValidImo,
   isVolunteer,
   stationTitle,
+  volunteerReceiver,
   stationTitles,
   indexAt,
   interpolateAt,
@@ -18,6 +22,7 @@ import {
   vesselPath,
   vesselDimensions,
   viewBoxes,
+  centerBoxes,
   vesselSlug,
 } from "./ais";
 
@@ -332,6 +337,30 @@ describe("interpolateAt", () => {
   });
 });
 
+describe("distanceNM", () => {
+  it("measures a minute of latitude as a mile, and across the antimeridian", () => {
+    expect(distanceNM([0, 0], [1 / 60, 0])).toBeCloseTo(1, 2);
+    expect(distanceNM([-17, 179.9], [-17, -179.9])).toBeLessThan(12);
+  });
+});
+
+describe("formatDistance", () => {
+  it("keeps a decimal close by and groups thousands far off", () => {
+    expect(formatDistance(0.43)).toBe("0.4 nm");
+    expect(formatDistance(37.4)).toBe("37 nm");
+    expect(formatDistance(8412)).toBe("8,412 nm");
+  });
+});
+
+describe("shortAge", () => {
+  it("counts hours for two days, then days", () => {
+    expect(shortAge(45)).toBe("45s");
+    expect(shortAge(600)).toBe("10m");
+    expect(shortAge(47 * 3600)).toBe("47h");
+    expect(shortAge(935 * 3600)).toBe("39d");
+  });
+});
+
 describe("bearing", () => {
   it("reads the cardinal directions", () => {
     expect(Math.round(bearing([0, 0], [0, 1]))).toBe(0);
@@ -415,6 +444,25 @@ describe("speedAt", () => {
   });
 });
 
+describe("centerBoxes", () => {
+  const area = (boxes: Array<[number, number, number, number]>) => boxes.reduce((sum, [s, w, n, e]) => sum + (n - s) * (e - w), 0);
+  it("stays within the cap, around the point", () => {
+    const boxes = centerBoxes([35.23, -80.84], 100);
+    expect(boxes).toHaveLength(1);
+    expect(area(boxes)).toBeLessThanOrEqual(100);
+    const [s, w, n, e] = boxes[0]!;
+    expect((s + n) / 2).toBeCloseTo(35.23, 5);
+    expect((w + e) / 2).toBeCloseTo(-80.84, 5);
+    // Square on the ground: wider in longitude by 1/cos(lat).
+    expect((e - w) * Math.cos((35.23 * Math.PI) / 180)).toBeCloseTo(n - s, 5);
+  });
+  it("splits at the antimeridian", () => {
+    const boxes = centerBoxes([-17, 179], 100);
+    expect(boxes).toHaveLength(2);
+    expect(area(boxes)).toBeLessThanOrEqual(100);
+  });
+});
+
 describe("viewBoxes", () => {
   it("keeps a view inside the world as one box", () => {
     expect(viewBoxes(50, 2, 60, 12)).toEqual([[50, 2, 60, 12]]);
@@ -468,5 +516,16 @@ describe("stationTitles", () => {
       "CERULEAN (n2k)",
       "aishub",
     ]);
+  });
+});
+
+describe("volunteerReceiver", () => {
+  it("names the receiver behind a volunteer's TAG path", () => {
+    expect(volunteerReceiver("station:mmsi:368168720/n2k")).toBe("station:mmsi:368168720");
+    expect(volunteerReceiver("udp:24dfc99708ff/self")).toBe("udp:24dfc99708ff");
+  });
+  it("leaves feed stations and plain ids alone", () => {
+    expect(volunteerReceiver("barentswatch/terra")).toBeUndefined();
+    expect(volunteerReceiver("station:mmsi:368168720")).toBeUndefined();
   });
 });

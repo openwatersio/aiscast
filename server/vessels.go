@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -383,6 +384,7 @@ type vesselProps struct {
 	MsgType     string   `json:"msg_type"`
 	Name        string   `json:"name,omitempty"`
 	NavStatus   *uint8   `json:"nav_status,omitempty"`
+	Near        string   `json:"near,omitempty"` // the place nearest the position, on searches only
 	Seen        string   `json:"seen"`
 	Sog         *float64 `json:"sog,omitempty"`
 	Source      string   `json:"source"`
@@ -594,7 +596,7 @@ func (p *Pipeline) newestState(rec record) (v *vessel, cached bool) {
 // searchParams are the parameters a search accepts. Search refuses any other, so a filter added later
 // never changes an answer an older client already received. The rest of /v1/vessels ignores unknown
 // parameters, as it always has.
-var searchParams = map[string]bool{"q": true, "bbox": true, "mmsi": true, "max_age": true, "key": true}
+var searchParams = map[string]bool{"q": true, "bbox": true, "mmsi": true, "max_age": true, "around": true, "key": true}
 
 func init() {
 	for k := range vesselFilterParams {
@@ -603,7 +605,8 @@ func init() {
 }
 
 // serveVesselSearch: GET /v1/vessels?q= → vessels whose name starts with q, or whose MMSI does when q is
-// digits, most recently heard first, from the record. bbox, mmsi, and max_age narrow it.
+// digits, most recently heard first, from the record, each labeled with the place nearest it. bbox, mmsi, and
+// max_age narrow it, and around=lat,lon orders it nearest first.
 func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl *Claims) {
 	for k := range vals {
 		if !searchParams[k] {
@@ -619,7 +622,8 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	s, msg := parseSub(vals, cl, false)
 	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
 	vf, filterMsg := parseVesselFilter(vals, 0)
-	msg = cmp.Or(msg, ageMsg, filterMsg)
+	around, aroundMsg := parseAround(vals.Get("around"))
+	msg = cmp.Or(msg, ageMsg, filterMsg, aroundMsg)
 	if msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
@@ -641,7 +645,13 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	if set {
 		q.since = ageCutoff(now, age)
 	}
-	recs, err := p.store.find(q)
+	var recs []record
+	var err error
+	if around != nil {
+		recs, err = p.nearestRecords(q, *around)
+	} else {
+		recs, err = p.store.find(q)
+	}
 	if errors.Is(err, errTooManyTerms) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -652,27 +662,32 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 		return
 	}
 	type hit struct {
-		feature []byte
+		feature vesselFeature
 		source  string
 		seen    time.Time
+		dist    float64
 	}
 	hits := make([]hit, 0, len(recs))
 	p.vmu.RLock()
 	for _, rec := range recs {
-		v, cached := p.newestState(rec)
+		v, _ := p.newestState(rec)
 		if !vf.match(v, now) { // the cache can be a report ahead of the row the filter passed
 			continue
 		}
-		var f []byte
-		if cached {
-			f = v.featureJSON(rec.mmsi)
-		} else {
-			f, _ = json.Marshal(v.feature(rec.mmsi))
+		h := hit{feature: v.feature(rec.mmsi), source: v.Source, seen: v.Seen}
+		if around != nil {
+			h.dist = nm(around[0], around[1], v.Lat, v.Lon)
 		}
-		hits = append(hits, hit{f, v.Source, v.Seen})
+		hits = append(hits, h)
 	}
 	p.vmu.RUnlock()
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].seen.After(hits[j].seen) })
+	// Ordered again here because the cache's position and seen can be a report ahead of the record's.
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].dist != hits[j].dist {
+			return hits[i].dist < hits[j].dist
+		}
+		return hits[i].seen.After(hits[j].seen)
+	})
 	truncated := len(hits) > searchLimit
 	if truncated {
 		hits = hits[:searchLimit]
@@ -680,7 +695,10 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	var features [][]byte
 	attribution := map[string]string{}
 	for _, h := range hits {
-		features = append(features, h.feature)
+		c := h.feature.Geometry.Coordinates
+		h.feature.Properties.Near = nearLabel(c[1], c[0])
+		f, _ := json.Marshal(h.feature)
+		features = append(features, f)
 		noteAttribution(attribution, h.source)
 	}
 	w.Header().Set("Content-Type", "application/geo+json")
@@ -935,6 +953,58 @@ func since(now time.Time, age time.Duration) time.Time {
 
 // ageAll is max_age=all: no age limit at all.
 const ageAll = time.Duration(math.MaxInt64)
+
+// nearestRecords is the records of the vessels q matches nearest the point, as many as q's limit. Every match
+// is ranked, by the cache's position where it is newer than the record's: the cache runs up to a flush ahead,
+// and a report from the last second can bring a vessel into the nearest from anywhere.
+func (p *Pipeline) nearestRecords(q recordQuery, around [2]float64) ([]record, error) {
+	limit := q.limit
+	q.limit = 0
+	pos, err := p.store.positions(q)
+	if err != nil {
+		return nil, err
+	}
+	type ranked struct {
+		mmsi uint32
+		dist float64
+	}
+	all := make([]ranked, len(pos))
+	p.vmu.RLock()
+	for i, sp := range pos {
+		lat, lon := sp.lat, sp.lon
+		if c := p.vessels[sp.mmsi]; c != nil && c.HasPos && c.PosAt.After(sp.posAt) {
+			lat, lon = c.Lat, c.Lon
+		}
+		all[i] = ranked{sp.mmsi, nm(around[0], around[1], lat, lon)}
+	}
+	p.vmu.RUnlock()
+	slices.SortFunc(all, func(a, b ranked) int { return cmp.Compare(a.dist, b.dist) })
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	q.mmsis = make([]uint32, len(all))
+	for i, r := range all {
+		q.mmsis[i] = r.mmsi
+	}
+	return p.store.find(q)
+}
+
+// parseAround reads around=lat,lon, the point a search is ordered from.
+func parseAround(s string) (*[2]float64, string) {
+	if s == "" {
+		return nil, ""
+	}
+	f := strings.Split(s, ",")
+	if len(f) != 2 {
+		return nil, "around=lat,lon"
+	}
+	lat, latErr := strconv.ParseFloat(f[0], 64)
+	lon, lonErr := strconv.ParseFloat(f[1], 64)
+	if latErr != nil || lonErr != nil || !(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) { // NaN fails every comparison
+		return nil, "around=lat,lon"
+	}
+	return &[2]float64{lat, lon}, ""
+}
 
 // parseMaxAge reads max_age: whole seconds, a duration such as 90m or 24h, or all. set is false when the
 // parameter is absent.

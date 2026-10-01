@@ -48,6 +48,14 @@ const TILE_OVERVIEW_MS = 15_000;
 /** How often a still view within the cap reloads, to clear vessels the server has dropped. */
 const TILE_BACKSTOP_MS = 5 * 60_000;
 
+/**
+ * Around the visitor, wide enough to reach the sea from most places inland. It is past the
+ * area cap on most screens, so it opens on tiles until the reader zooms in.
+ */
+const NEARBY_ZOOM = 5;
+/** With nowhere to place the visitor, the whole world, drawn from tiles. */
+const WORLD_VIEW = { center: [0, 25] as [number, number], zoom: 1.5 };
+
 /** Seconds since the last report at which a vessel fades, and fades further. */
 const FADE_STEPS = [600, 3600] as const;
 
@@ -76,6 +84,8 @@ export interface MapController {
   /** Bring the whole track into the uncovered map, for starting playback. */
   fitTrack(): void;
   flyToVessel(mmsi: number, fallback?: [number, number]): void;
+  /** Brings a [lat, lon] into the middle of the uncovered map, close enough to see a harbour. */
+  flyToPoint(at: [number, number]): void;
   fitBBox(bbox: BBox): void;
   /** A vessel clicked on the map, with the name its feature carries for the URL slug. */
   onSelect(fn: (mmsi: number, name?: string) => void): void;
@@ -89,6 +99,36 @@ export interface MapController {
   mode(): "live" | "overview";
   /** Swaps the basemap and the colours drawn over it. */
   setTheme(theme: Theme): void;
+  /**
+   * What the map shows, rounded so a nudge does not count as a new view. `fits` is false when
+   * the view is wider than this client may ask an area of.
+   */
+  view(): MapView;
+  /** Hears each view once the map stops moving. */
+  onViewChange(fn: () => void): () => void;
+  /** Marks where each search result is. An empty list clears them. */
+  setResults(results: SearchResult[]): void;
+  /** Rings one result's mark brighter, as its row is pointed at. */
+  highlightResult(mmsi: number | undefined): void;
+}
+
+export interface MapView {
+  center: [number, number];
+  boxes: BBox[];
+  fits: boolean;
+  /** Square degrees this client may ask an area of: 0 is unlimited, below 0 is MMSI-only. */
+  cap: number;
+}
+
+export interface SearchResult {
+  mmsi: number;
+  lat: number;
+  lon: number;
+  name?: string;
+  kind?: string;
+  shipType?: number;
+  sog?: number;
+  seen: number;
 }
 
 function shipIcon(): ImageData {
@@ -115,13 +155,14 @@ export function createMap(
   container: HTMLElement,
   stream: Stream,
   initialTheme: Theme,
+  visitor?: [number, number],
 ): MapController {
   let theme = initialTheme;
   const map = new maplibregl.Map({
     container,
     style: BASEMAP[theme],
-    center: [-70.9, 41.6],
-    zoom: 8,
+    // A link's #map= hash, when there is one, takes precedence over both.
+    ...(visitor ? { center: visitor, zoom: NEARBY_ZOOM } : WORLD_VIEW),
     hash: "map",
     attributionControl: false,
     // North up and flat, always. A chart that turns under a stray two-finger twist is a chart
@@ -733,7 +774,7 @@ export function createMap(
     hover.setLngLat([v.lon!, v.lat!]).setDOMContent(el).addTo(map);
   }
 
-  for (const layer of ["vessel-still", "vessel-moving", "tile-still", "tile-moving"]) {
+  for (const layer of ["vessel-still", "vessel-moving", "tile-still", "tile-moving", "result-ring"]) {
     map.on("mousemove", layer, showHover);
     map.on("mouseleave", layer, () => {
       map.getCanvas().style.cursor = "";
@@ -745,6 +786,31 @@ export function createMap(
       const name = typeof props?.name === "string" && props.name ? props.name : undefined;
       if (mmsi) for (const fn of selectHandlers) fn(mmsi, name);
     });
+  }
+
+  // The search's results, kept here so a theme swap draws them again.
+  let results: SearchResult[] = [];
+  let resultsKey = "";
+  let litResult: number | undefined;
+
+  function resultsFC(): GeoJSON.FeatureCollection {
+    const now = Date.now();
+    return {
+      type: "FeatureCollection",
+      features: results.map((r) => ({
+        type: "Feature",
+        id: r.mmsi,
+        geometry: { type: "Point", coordinates: [r.lon, r.lat] },
+        properties: {
+          mmsi: r.mmsi,
+          kind: r.kind,
+          ...(r.name ? { name: r.name } : {}),
+          ...(r.shipType ? { type: r.shipType } : {}),
+          ...(r.sog != null ? { sog: r.sog } : {}),
+          age_s: Math.max(0, (now - r.seen) / 1000),
+        },
+      })),
+    };
   }
 
   // Sources, layers, and images belong to the style, so swapping the basemap for a theme
@@ -795,6 +861,30 @@ export function createMap(
         "circle-stroke-color": c.outline,
       },
     });
+
+    // Beneath every vessel layer, so a result the map is drawing shows its own icon inside the
+    // ring, and one too old for the map still shows its class in the dot.
+    map.addSource("results", { type: "geojson", data: resultsFC(), promoteId: "mmsi" });
+    const lit: any = ["boolean", ["feature-state", "lit"], false];
+    map.addLayer({
+      id: "result-ring",
+      type: "circle",
+      source: "results",
+      paint: {
+        "circle-radius": ["case", lit, 12, 9],
+        "circle-color": c.disc,
+        "circle-opacity": c.discOpacity,
+        "circle-stroke-width": ["case", lit, 3, 2],
+        "circle-stroke-color": c.track,
+      },
+    });
+    map.addLayer({
+      id: "result-dot",
+      type: "circle",
+      source: "results",
+      paint: { "circle-radius": 3.5, "circle-color": colorExpr },
+    });
+    litResult = undefined;
 
     map.addSource("vessels", {
       type: "geojson",
@@ -892,8 +982,11 @@ export function createMap(
 
   /** Square degrees this client may subscribe to: 0 is unlimited, below 0 is MMSI-only. */
   function areaCap(): number {
-    const area = stream.limits?.area;
-    return typeof area === "number" ? area : DEFAULT_AREA_CAP;
+    // The welcome leaves area out for a token without a cap, so only a stream yet to be welcomed
+    // falls back to the anonymous default.
+    if (!stream.limits) return DEFAULT_AREA_CAP;
+    const area = stream.limits.area;
+    return typeof area === "number" ? area : 0;
   }
 
   function updateView() {
@@ -1023,6 +1116,9 @@ export function createMap(
         map.flyTo({ center, zoom: Math.max(map.getZoom(), 12), speed: 1.4 }),
       );
     },
+    flyToPoint([lat, lon]) {
+      requestCamera(() => map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 11), speed: 1.4 }));
+    },
     fitBBox(bbox) {
       // fitBounds' own padding replaces the camera padding rather than adding to it, so the
       // panel insets have to be folded in here or the fitted box lands under a panel.
@@ -1035,6 +1131,47 @@ export function createMap(
     onCameraFollow(fn) {
       followListeners.add(fn);
       return () => followListeners.delete(fn);
+    },
+    view() {
+      // Two decimals is about a kilometre: finer than any search needs, coarse enough that
+      // the same view asks the same question.
+      const r = (n: number) => Math.round(n * 100) / 100;
+      const c = map.getCenter();
+      const boxes = viewBBoxes().map((b) => b.map(r) as BBox);
+      const cap = areaCap();
+      const area = boxes.reduce((sum, b) => sum + bboxArea(b), 0);
+      return {
+        center: [r(c.lat), r(((c.lng + 540) % 360) - 180)],
+        boxes,
+        fits: cap === 0 || (cap > 0 && area <= cap),
+        cap,
+      };
+    },
+    onViewChange(fn) {
+      map.on("moveend", fn);
+      // The welcome frame can raise the area cap after the view was read.
+      const off = stream.subscribe(fn);
+      return () => {
+        map.off("moveend", fn);
+        off();
+      };
+    },
+    setResults(next) {
+      const key = next.map((r) => `${r.mmsi}@${r.lat},${r.lon}`).join("|");
+      if (key === resultsKey) return;
+      results = next;
+      resultsKey = key;
+      const source = map.getSource("results") as maplibregl.GeoJSONSource | undefined;
+      // Feature state outlives setData, so a lit mark would stay lit in the next set of results.
+      if (source && litResult != null) map.removeFeatureState({ source: "results", id: litResult }, "lit");
+      litResult = undefined;
+      source?.setData(resultsFC());
+    },
+    highlightResult(mmsi) {
+      if (mmsi === litResult || !map.getSource("results")) return;
+      if (litResult != null) map.removeFeatureState({ source: "results", id: litResult }, "lit");
+      litResult = mmsi;
+      if (mmsi != null) map.setFeatureState({ source: "results", id: mmsi }, { lit: true });
     },
   };
 
