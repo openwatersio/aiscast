@@ -136,7 +136,7 @@ func TestOwnVesselName(t *testing.T) {
 	p.ingestPacket("aishub", "aishub", now, now, ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 227006760}, Valid: true, Name: "CERULEAN"})
 	p.Ingest(Reception{Source: "station:ed25519:k", Station: "station:ed25519:k", RecvTime: now, Body: `\s:n2k*7E\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
 	p.refreshOwn(now)
-	r := rowOf(t, p.stationRows(now), "station:ed25519:k/n2k")
+	r := rowOf(t, p.stationRows(now), "station:ed25519:k")
 	if r.Name != "CERULEAN" || r.NameFrom != "vessel" || r.MMSI != 227006760 {
 		t.Errorf("own vessel: %+v", r)
 	}

@@ -716,7 +716,7 @@
         "type": "object",
         "required": ["station", "source", "events", "duplicates", "vessels", "vessels_24h", "vessels_exclusive_24h", "positions", "first_seen", "last_seen", "last_age_s"],
         "properties": {
-          "station": { "type": "string", "description": "Station id. Volunteer UDP stations are a keyed hash of the sender, never an address." },
+          "station": { "type": "string", "description": "Station id. Volunteer UDP stations are a keyed hash of the sender, never an address. A feed's TAG `s:` adds a path naming one of its receivers, such as `barentswatch/terra`; a volunteer's station is its `source`, whatever its sentences' TAG `s:` says." },
           "source": { "type": "string" },
           "events": { "$ref": "#/components/schemas/Windows" },
           "duplicates": { "type": "integer", "description": "Messages another station delivered first, since this station was first heard after the last restart." },

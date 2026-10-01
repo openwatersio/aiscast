@@ -1,6 +1,6 @@
 import { Antenna, Check, Share } from "lucide-react";
 import { useEffect, useState } from "react";
-import { data, Link } from "react-router";
+import { data, Link, redirect } from "react-router";
 import { PageTitle, Panel } from "../components/Panel";
 import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { Facts } from "../components/ui/Facts";
@@ -9,7 +9,7 @@ import { Prompt } from "../components/ui/Prompt";
 import { ClassDot, List, ListRow } from "../components/ui/List";
 import { Section, Tile } from "../components/ui/Section";
 import { StatGrid } from "../components/ui/StatGrid";
-import { formatAge, isVolunteer, stationTitle, vesselPath } from "../lib/ais";
+import { formatAge, isVolunteer, stationTitle, vesselPath, volunteerReceiver } from "../lib/ais";
 import { browserAuth, getStation, orUnavailable, type ApiAuth } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
@@ -21,6 +21,8 @@ import type { Route } from "./+types/station";
 
 async function load(auth: ApiAuth, id: string) {
   if (!id) throw data("Not found", { status: 404 });
+  const receiver = volunteerReceiver(id);
+  if (receiver) throw redirect(`/stations/${receiver}`, 301);
   const found = await orUnavailable(getStation(auth, id));
   return data({ id, found }, found ? undefined : { status: 404 });
 }

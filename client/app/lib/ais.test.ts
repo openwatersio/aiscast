@@ -4,6 +4,7 @@ import {
   isValidImo,
   isVolunteer,
   stationTitle,
+  volunteerReceiver,
   stationTitles,
   indexAt,
   interpolateAt,
@@ -468,5 +469,16 @@ describe("stationTitles", () => {
       "CERULEAN (n2k)",
       "aishub",
     ]);
+  });
+});
+
+describe("volunteerReceiver", () => {
+  it("names the receiver behind a volunteer's TAG path", () => {
+    expect(volunteerReceiver("station:mmsi:368168720/n2k")).toBe("station:mmsi:368168720");
+    expect(volunteerReceiver("udp:24dfc99708ff/self")).toBe("udp:24dfc99708ff");
+  });
+  it("leaves feed stations and plain ids alone", () => {
+    expect(volunteerReceiver("barentswatch/terra")).toBeUndefined();
+    expect(volunteerReceiver("station:mmsi:368168720")).toBeUndefined();
   });
 });

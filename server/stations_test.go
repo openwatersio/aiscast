@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 )
@@ -65,12 +66,25 @@ func TestUniqueVesselsLeaveOutOwnShip(t *testing.T) {
 	now := time.Now()
 	p.Ingest(Reception{Source: "station:ed25519:k", Station: "station:ed25519:k", RecvTime: now, Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
 	p.ingestPacket("station:ed25519:k", "station:ed25519:k", now, now, posReport(366000009, 41.5, -70.6))
-	r := rowOf(t, p.stations.rows(now), "station:ed25519:k/self")
-	if r.Vessels24 != 1 || r.Exclusive != 0 {
+	if r := rowOf(t, p.stations.rows(now), "station:ed25519:k"); r.Vessels24 != 2 || r.Exclusive != 1 {
 		t.Errorf("own ship counted as unique: %+v", r)
 	}
-	if r := rowOf(t, p.stations.rows(now), "station:ed25519:k"); r.Exclusive != 1 {
-		t.Errorf("received vessel: %+v", r)
+}
+
+// One volunteer receiver is one station, whatever paths its TAG s: names. A feed's s: still names separate
+// receivers, and its stations stay apart.
+func TestTagSplitsFeedStationsOnly(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.Ingest(Reception{Source: "station:mmsi:368168720", Station: "station:mmsi:368168720", RecvTime: now, Body: `\s:n2k*7E\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`})
+	p.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: `\s:n2k*7E\!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E`})
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now, Body: `\s:2573010*7B\!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43`})
+	var ids []string
+	for _, r := range p.stations.rows(now) {
+		ids = append(ids, r.Station)
+	}
+	if want := []string{"kystverket/2573010", "station:mmsi:368168720", "udp:abc"}; !slices.Equal(ids, want) {
+		t.Errorf("stations %v, want %v", ids, want)
 	}
 }
 

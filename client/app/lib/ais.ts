@@ -466,3 +466,14 @@ export function stationTitles(sts: Array<{ station: string; name?: string; near?
     }),
   );
 }
+
+/**
+ * Returns the receiver for a volunteer station id that ends in a TAG path: `station:mmsi:368168720`
+ * for `station:mmsi:368168720/n2k`. A volunteer receiver is one station, but links to its paths are
+ * still shared. Returns undefined for any other id, because a feed's path, such as
+ * `barentswatch/terra`, is a station of its own.
+ */
+export function volunteerReceiver(id: string): string | undefined {
+  const [base, path] = id.split("/", 2);
+  return path != null && isVolunteer(base) ? base : undefined;
+}
