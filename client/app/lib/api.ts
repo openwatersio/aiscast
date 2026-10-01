@@ -157,7 +157,15 @@ export interface Station {
 }
 
 /** The API answered with neither the resource nor a 404, or did not answer. */
-export class ApiUnavailable extends Error {}
+export class ApiUnavailable extends Error {
+  constructor(
+    message: string,
+    /** The status the API answered with, when it answered. */
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * A resource, or undefined when the API says there is no such thing (404). Anything else
@@ -177,7 +185,7 @@ async function get<T>(auth: ApiAuth, path: string): Promise<T | undefined> {
     throw new ApiUnavailable(`${path}: ${e}`);
   }
   if (res.status === 404) return undefined;
-  if (!res.ok) throw new ApiUnavailable(`${path}: ${res.status}`);
+  if (!res.ok) throw new ApiUnavailable(`${path}: ${res.status}`, res.status);
   try {
     return (await res.json()) as T;
   } catch {
@@ -230,7 +238,8 @@ export async function vesselsInArea(auth: ApiAuth, params: string): Promise<Vess
 
 export interface Track {
   type: "Feature";
-  geometry: { type: "LineString"; coordinates: Array<[number, number]> } | null;
+  /** A Point when the vessel was heard once in the range. */
+  geometry: { type: "LineString"; coordinates: Array<[number, number]> } | { type: "Point"; coordinates: [number, number] } | null;
   properties: {
     mmsi: number;
     name?: string;
@@ -244,17 +253,31 @@ export interface Track {
   };
 }
 
-/** Where a vessel has been. The server holds the last 48 hours and clamps to it. */
+/** A track's URL: the server's default range without `from` and `to`, GeoJSON without `format`. */
+export function trackPath(mmsi: number, q: { from?: number; to?: number; format?: "gpx" }): string {
+  const params = new URLSearchParams();
+  if (q.from != null) params.set("from", new Date(q.from).toISOString());
+  if (q.to != null) params.set("to", new Date(q.to).toISOString());
+  if (q.format) params.set("format", q.format);
+  return `/v1/vessels/${mmsi}/track?${params}`;
+}
+
+/**
+ * Where a vessel has been. The server thins the range to fit the token's limit. It clamps a
+ * range that overlaps the last 48 hours to what the token reaches, and answers "forbidden"
+ * for one wholly before the token's reach.
+ */
 export async function getTrack(
   auth: ApiAuth,
   mmsi: number,
-  range: { from: number; to: number; limit?: number; intervalSeconds?: number },
-): Promise<Track | undefined> {
-  const from = new Date(range.from).toISOString();
-  const to = new Date(range.to).toISOString();
-  const limit = range.limit ? `&limit=${range.limit}` : "";
-  const interval = range.intervalSeconds ? `&interval=${range.intervalSeconds}` : "";
-  return soft(get<Track>(auth, `/v1/vessels/${mmsi}/track?from=${from}&to=${to}${limit}${interval}`));
+  range: { from: number; to: number },
+): Promise<Track | "forbidden" | undefined> {
+  try {
+    return await get<Track>(auth, trackPath(mmsi, range));
+  } catch (e) {
+    if (e instanceof ApiUnavailable) return e.status === 403 ? "forbidden" : undefined;
+    throw e;
+  }
 }
 
 export async function getStations(auth: ApiAuth): Promise<Station[] | undefined> {
