@@ -33,8 +33,10 @@ export function later(r: TrackRange, now = Date.now()): TrackRange {
   return { hours: r.hours, end: end >= now ? null : end };
 }
 
-const dayFormat = (withYear: boolean) =>
-  new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: withYear ? "numeric" : undefined, timeZone: "UTC" });
+// Built once: the chart formats every tick and the readout on each pointer move.
+const DAY_FORMAT = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
+const DAY_YEAR_FORMAT = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+const dayFormat = (withYear: boolean) => (withYear ? DAY_YEAR_FORMAT : DAY_FORMAT);
 
 const hhmm = (t: number) => new Date(t).toISOString().slice(11, 16);
 
