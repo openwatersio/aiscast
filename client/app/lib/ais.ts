@@ -444,3 +444,25 @@ const VOLUNTEER_KINDS = new Set(["udp", "http", "v1", "mmsi", "station"]);
 export function isVolunteer(source: string | undefined): boolean {
   return source != null && VOLUNTEER_KINDS.has(source.split(":")[0]!);
 }
+
+/** What to call a station: its name, else the place nearest its traffic, else its id. */
+export function stationTitle(st: { station: string; name?: string; near?: string }): string {
+  return st.name ?? (st.near ? `Near ${st.near}` : st.station);
+}
+
+/**
+ * Titles for a list of stations, keyed by id. Where two would read the same, each gets its receiver's
+ * tag (`n2k`) or the end of its id, so the list never shows two identical rows.
+ */
+export function stationTitles(sts: Array<{ station: string; name?: string; near?: string }>): Map<string, string> {
+  const count = new Map<string, number>();
+  for (const st of sts) count.set(stationTitle(st), (count.get(stationTitle(st)) ?? 0) + 1);
+  return new Map(
+    sts.map((st) => {
+      const title = stationTitle(st);
+      if (count.get(title)! < 2 || title === st.station) return [st.station, title];
+      const [base, tag] = st.station.split("/", 2) as [string, string | undefined];
+      return [st.station, `${title} (${tag ?? `…${base.slice(-4)}`})`];
+    }),
+  );
+}

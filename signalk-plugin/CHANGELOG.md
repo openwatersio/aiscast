@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Your station on aiscast takes your boat's name, the vessel name set in Signal K, while *Share my own ship* is on. Turning that switch off removes the name, so the station never says where the boat is. There is nothing to set up.
+- The plugin signs its token requests with the boat's key, so nobody else can get a token for your station. After the upgrade it requests a new token once.
+
 ## 0.5.2
 
 - Works with aiscast's new names for contributing stations. aiscast now files every contribution as `station:<key>`, which 0.5.1 does not recognize, so it took its own reports coming back from the server for traffic from another station. The loop guard then held back the boat's receiver when it heard an identical report again, such as a nearby vessel's unchanged static data, and that report never reached aiscast. The plugin recognizes its own reports under the old and new names, and with an operator-issued token as well as one it minted itself.

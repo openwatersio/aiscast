@@ -156,7 +156,7 @@ func openStore(path string) (*store, error) {
 	// Each connection holds its own page cache, and the pool is otherwise unlimited, so a burst of public
 	// lookups and searches could open as many as it liked.
 	db.SetMaxOpenConns(storeConns)
-	if _, err := db.Exec(storeSchema); err != nil {
+	if _, err := db.Exec(storeSchema + stationsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

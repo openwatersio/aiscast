@@ -281,7 +281,7 @@
         "operationId": "listStations",
         "tags": ["Vessels and stations"],
         "summary": "Stations",
-        "description": "Every receiving station heard since the server started, with what it contributes. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes. `bbox` is the extent of positions heard, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
+        "description": "Every receiving station heard since the server started, with what it contributes. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes and `vessels_24h` in the last 24 hours. `vessels_exclusive_24h` counts the vessels no other station heard in those 24 hours, the gap a station fills. `bbox` is the extent of positions heard, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
         "security": [],
         "responses": {
           "200": {
@@ -296,11 +296,30 @@
                     "events": { "last_24h": 41812, "last_7d": 280112 },
                     "duplicates": 40,
                     "vessels": 61,
+                    "vessels_24h": 212,
+                    "vessels_exclusive_24h": 17,
                     "positions": 1500,
                     "first_seen": "2026-08-20T16:57:47Z",
                     "last_seen": "2026-08-21T03:10:32Z",
                     "last_age_s": 2,
                     "bbox": [59.41, 10.31, 59.93, 10.78]
+                  },
+                  {
+                    "station": "station:ed25519:9BEqQjPRE0sZse-EbW1xUJa0K2iTBTV3TCqz1sPS7Fk",
+                    "source": "station:ed25519:9BEqQjPRE0sZse-EbW1xUJa0K2iTBTV3TCqz1sPS7Fk",
+                    "events": { "last_24h": 18230, "last_7d": 120412 },
+                    "duplicates": 512,
+                    "vessels": 14,
+                    "vessels_24h": 61,
+                    "vessels_exclusive_24h": 9,
+                    "positions": 15904,
+                    "first_seen": "2026-08-20T16:57:47Z",
+                    "last_seen": "2026-08-21T03:10:31Z",
+                    "last_age_s": 3,
+                    "bbox": [41.38, -70.94, 41.62, -70.51],
+                    "name": "Quissett Harbor",
+                    "name_from": "operator",
+                    "near": "Falmouth, MA"
                   }
                 ]
               }
@@ -394,7 +413,7 @@
         "operationId": "mintKey",
         "tags": ["Authentication"],
         "summary": "Create a personal token",
-        "description": "Create a personal token for an Ed25519 key you generate. It never expires. Generate a key and print its public half in the form `pubkey` expects:\n\n```\nopenssl genpkey -algorithm ed25519 -out ais-key.pem\nopenssl pkey -in ais-key.pem -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '='\n```\n\nTiers and limits are in [docs/limits.md](https://github.com/openwatersio/aiscast/blob/main/docs/limits.md).",
+        "description": "Create a personal token for an Ed25519 key you generate. It never expires. Generate a key and print its public half in the form `pubkey` expects:\n\n```\nopenssl genpkey -algorithm ed25519 -out ais-key.pem\nPUB=$(openssl pkey -in ais-key.pem -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=')\n```\n\nSign the request with the same key, so nobody else can mint a token for it. The signature covers six lines joined by newlines, with no newline at the end: `aiscast-key`, `pubkey`, `ts`, `1` or `0` for `bind_ip`, `name`, and `vessel_name`, with an empty line for a name left out:\n\n```\nTS=$(date +%s)\nprintf 'aiscast-key\\n%s\\n%s\\n0\\n\\n' \"$PUB\" \"$TS\" > msg\nSIG=$(openssl pkeyutl -sign -inkey ais-key.pem -rawin -in msg | base64 | tr '+/' '-_' | tr -d '=\\n')\ncurl -d \"{\\\"pubkey\\\":\\\"$PUB\\\",\\\"ts\\\":$TS,\\\"sig\\\":\\\"$SIG\\\"}\" https://ais.openwaters.io/v1/keys\n```\n\nOnce a key has signed a request, every later request for it must be signed, and a request that names the station must be signed. Unsigned requests are still accepted for keys that have never signed, for clients that do not sign yet.\n\nTiers and limits are in [docs/limits.md](https://github.com/openwatersio/aiscast/blob/main/docs/limits.md).",
         "security": [],
         "requestBody": {
           "required": true,
@@ -411,11 +430,21 @@
                   "bind_ip": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Bind the token to the requesting address, so a receiver sending UDP from that address counts toward this token's feeder tier. The token then only works from that address."
-                  }
+                    "description": "Bind the token to the requesting address, so a receiver sending UDP from that address counts toward this token's feeder tier, and takes this request's names. The token then only works from that address."
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "The station's public name, up to 40 characters of letters, digits, spaces, and `. , ' - & ( ) / #`. Unique among stations. An empty string clears it. Needs `sig`. Generating again with a new name renames the station, and tokens already issued keep working."
+                  },
+                  "vessel_name": {
+                    "type": "string",
+                    "description": "The name of the boat the station is on, from a client that knows it, such as the Signal K plugin. Same rules as `name`, except that two stations may share it. Shown when there is no `name`. Needs `sig`."
+                  },
+                  "ts": { "type": "integer", "description": "Unix seconds, within 5 minutes of the server clock and later than the last signed request for this key." },
+                  "sig": { "type": "string", "description": "Ed25519 signature by `pubkey` over the signed lines, base64url without padding." }
                 }
               },
-              "example": { "pubkey": "9BEqQjPRE0sZse-EbW1xUJa0K2iTBTV3TCqz1sPS7Fk", "bind_ip": false }
+              "example": { "pubkey": "9BEqQjPRE0sZse-EbW1xUJa0K2iTBTV3TCqz1sPS7Fk", "bind_ip": false, "name": "Quissett Harbor", "ts": 1790000000, "sig": "2Wq…" }
             }
           }
         },
@@ -432,7 +461,9 @@
                       "type": "string",
                       "description": "Ed25519-signed claim token, `ak1.<base64url claims>.<base64url signature>`, about 200 characters."
                     },
-                    "claims": { "$ref": "#/components/schemas/Claims" }
+                    "claims": { "$ref": "#/components/schemas/Claims" },
+                    "signed": { "type": "boolean", "description": "`true` when the request's signature was checked and accepted. A client can wait for it before treating its key as locked to signed requests." },
+                    "name_error": { "type": "string", "description": "Why a requested name was not stored. The token is issued anyway." }
                   }
                 },
                 "example": {
@@ -447,6 +478,7 @@
             "content": { "text/plain": { "schema": { "type": "string" } } }
           },
           "429": { "$ref": "#/components/responses/RateLimited" },
+          "403": { "description": "The request is not signed and must be, or its signature, `ts`, or key does not check out. The body says which." },
           "501": {
             "description": "This server has no personal-token issuer configured.",
             "content": { "text/plain": { "schema": { "type": "string" } } }
@@ -682,13 +714,19 @@
       },
       "Station": {
         "type": "object",
-        "required": ["station", "source", "events", "duplicates", "vessels", "positions", "first_seen", "last_seen", "last_age_s"],
+        "required": ["station", "source", "events", "duplicates", "vessels", "vessels_24h", "vessels_exclusive_24h", "positions", "first_seen", "last_seen", "last_age_s"],
         "properties": {
           "station": { "type": "string", "description": "Station id. Volunteer UDP stations are a keyed hash of the sender, never an address." },
           "source": { "type": "string" },
           "events": { "$ref": "#/components/schemas/Windows" },
           "duplicates": { "type": "integer", "description": "Messages another station delivered first, since this station was first heard after the last restart." },
           "vessels": { "type": "integer", "description": "Distinct MMSIs heard in the last 30 minutes." },
+          "vessels_24h": { "type": "integer", "description": "Distinct MMSIs heard in the last 24 hours, including the station's own vessel." },
+          "vessels_exclusive_24h": { "type": "integer", "description": "Of `vessels_24h`, the vessels no other station heard. A vessel counts whether this station delivered a message first or as a duplicate. Rows that share a station id before `/` count as one station, and a station's own vessel is left out." },
+          "name": { "type": "string", "description": "What to call the station: the name its operator chose when minting its token, else the name of the boat it is on. Absent when it has neither, or when moderation has locked it. Rows that share a station id before `/` share a name." },
+          "name_from": { "type": "string", "enum": ["operator", "vessel"], "description": "Where `name` came from." },
+          "mmsi": { "type": "integer", "description": "The station's own vessel, from the `!AIVDO` sentences it sends." },
+          "near": { "type": "string", "description": "The town or region nearest the traffic the station hears, such as `Santa Monica, CA` or `Munster, Ireland`. Volunteer stations only. Place names from GeoNames, CC BY 4.0." },
           "positions": { "type": "integer", "description": "Position messages since first heard after the last restart." },
           "first_seen": { "type": "string", "format": "date-time" },
           "last_seen": { "type": "string", "format": "date-time" },

@@ -821,7 +821,7 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 			age[k] = r.LastAgeS
 		}
 	}
-	vbs := p.stations.vesselsBySource()
+	vbs := p.stations.vesselsBySource(now)
 	for _, k := range p.usage.sourceNames(now) {
 		if _, ok := vbs[k]; !ok {
 			vbs[k] = [2]int{}
