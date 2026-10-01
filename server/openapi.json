@@ -27,7 +27,7 @@
         "operationId": "getVessels",
         "tags": ["Vessels and stations"],
         "summary": "Vessels",
-        "description": "Vessel positions as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.\n\nAn area answers with last known positions: every vessel heard in it in the last 30 minutes, and those last heard up to 7 days ago whose last report was stationary, meaning moored, at anchor, aground, under 1 knot, or an aid to navigation or base station. A vessel is usually still where it stopped when its receiver goes offline or it switches AIS off at its berth, while one last heard under way has moved on. `max_age` changes the 7 days and `max_age_moving` the 30 minutes for moving vessels. Past 30 minutes the answer takes at most 500 vessels, newest first, and sets `truncated` when there were more. A vessel named in `mmsi` answers with its last known position however long ago it was heard, moving or not, unless `max_age` or `max_age_moving` is given. The vector tiles answer by the same rules. Every feature carries `seen`, so an old position reads as where the vessel was.\n\n`q` searches instead: vessels whose name starts with it, or whose MMSI does when it is digits, most recently heard first, at most 50. `bbox`, `mmsi`, and `max_age` narrow a search, and it needs neither. `kind`, `class`, `type`, `min_sog`, and `max_age_moving` filter an area, a list, or a search, as they filter the vector tiles. A search refuses parameters it does not know, so a filter added later never changes an earlier answer.",
+        "description": "Vessel positions as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.\n\nAn area answers with last known positions: every vessel heard in it in the last 30 minutes, and those last heard up to 7 days ago whose last report was stationary, meaning moored, at anchor, aground, under 1 knot, or an aid to navigation or base station. A vessel is usually still where it stopped when its receiver goes offline or it switches AIS off at its berth, while one last heard under way has moved on. `max_age` changes the 7 days and `max_age_moving` the 30 minutes for moving vessels. Past 30 minutes the answer takes at most 500 vessels, newest first, and sets `truncated` when there were more. A vessel named in `mmsi` answers with its last known position however long ago it was heard, moving or not, unless `max_age` or `max_age_moving` is given. The vector tiles answer by the same rules. Every feature carries `seen`, so an old position reads as where the vessel was.\n\n`q` searches instead: vessels whose name starts with it, or whose MMSI does when it is digits, most recently heard first, at most 50. Each result carries `near`, the town or region nearest its position. `around` orders a search nearest first. `bbox`, `mmsi`, and `max_age` narrow a search, and it needs neither. `kind`, `class`, `type`, `min_sog`, and `max_age_moving` filter an area, a list, or a search, as they filter the vector tiles. A search refuses parameters it does not know, so a filter added later never changes an earlier answer.",
         "security": [{}, { "token": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/bbox" },
@@ -47,6 +47,14 @@
             "description": "Search: a name prefix, case-insensitive, or an MMSI prefix when all digits. At least 2 characters.",
             "schema": { "type": "string", "minLength": 2 },
             "example": "CERUL"
+          },
+          {
+            "name": "around",
+            "in": "query",
+            "required": false,
+            "description": "`lat,lon`. Orders a search by distance from this point, nearest first, before the cap of 50 cuts it. Search only.",
+            "schema": { "type": "string" },
+            "example": "38.97,-76.49"
           },
           { "$ref": "#/components/parameters/kind" },
           { "$ref": "#/components/parameters/class" },
@@ -691,6 +699,7 @@
               "sog": { "type": "number", "description": "Speed over ground, knots. Present only when known." },
               "heading": { "type": "integer", "description": "True heading, degrees. Present only when known." },
               "nav_status": { "type": "integer", "description": "AIS navigational status. Present only when known." },
+              "near": { "type": "string", "description": "The town or region nearest the position, such as `Santa Monica, CA` or `Munster, Ireland`. On `q` searches only, and absent more than 100 km from a town of 5,000. Place names from GeoNames, CC BY 4.0." },
               "flag": { "type": "string", "description": "ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits. Present only when the MID is known." },
               "imo": { "type": "integer", "description": "IMO number from the vessel's static data. Present only when sent." },
               "callsign": { "type": "string", "description": "Radio call sign. Present only when sent." },

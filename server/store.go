@@ -439,6 +439,38 @@ func (q recordQuery) sql() (text string, args []any, none bool, err error) {
 	return text, args, false, nil
 }
 
+// storedPos is where the record last placed a vessel, and when.
+type storedPos struct {
+	mmsi     uint32
+	lat, lon float64
+	posAt    time.Time
+}
+
+// positions is where each vessel q matches was last placed, ignoring its limit: the few columns a ranking
+// by distance needs, read for every match so none is cut before it is ranked.
+func (s *store) positions(q recordQuery) ([]storedPos, error) {
+	clause, args, none, _, err := q.bounded()
+	if err != nil || none {
+		return nil, err
+	}
+	rows, err := s.db.Query("SELECT mmsi, lat, lon, pos_at FROM vessels"+clause, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []storedPos
+	for rows.Next() {
+		var p storedPos
+		var at int64
+		if err := rows.Scan(&p.mmsi, &p.lat, &p.lon, &at); err != nil {
+			return nil, err
+		}
+		p.posAt = time.UnixMilli(at)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func (s *store) find(q recordQuery) ([]record, error) {
 	sqlText, args, none, err := q.sql()
 	if err != nil || none {

@@ -64,6 +64,8 @@ export interface VesselProps {
   to_port?: number;
   to_starboard?: number;
   first_seen?: string;
+  /** The town or region nearest the position, on search results only. */
+  near?: string;
   seen: string;
   source: string;
   station: string;
@@ -168,6 +170,11 @@ export async function getVessel(auth: ApiAuth, mmsi: number): Promise<VesselFeat
 export async function searchVessels(auth: ApiAuth, q: string, filters = ""): Promise<VesselFeature[]> {
   const fc = await soft(get<FeatureCollection>(auth, `/v1/vessels?q=${encodeURIComponent(q)}${filters && `&${filters}`}`));
   return fc?.features ?? [];
+}
+
+/** The vessels in an area, as `areaParams` asks for them. Undefined when the API does not answer. */
+export async function vesselsInArea(auth: ApiAuth, params: string): Promise<VesselFeature[] | undefined> {
+  return (await soft(get<FeatureCollection>(auth, `/v1/vessels?${params}`)))?.features;
 }
 
 export interface Track {

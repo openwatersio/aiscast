@@ -1,13 +1,23 @@
 import { Antenna } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { flagEmoji, flagName, vesselPath } from "../lib/ais";
-import { browserAuth, searchVessels, type VesselFeature } from "../lib/api";
-import { useLive, useNow, useStreamFrame } from "../lib/live";
+import {
+  CLASS_LABELS,
+  distanceNM,
+  flagEmoji,
+  flagName,
+  formatDistance,
+  shipClass,
+  shortAge,
+  vesselPath,
+} from "../lib/ais";
+import { browserAuth, searchVessels, vesselsInArea, type VesselFeature } from "../lib/api";
+import { useLive, useMapView, useNow, useStreamFrame } from "../lib/live";
 import { mediaKey, smallThumb } from "../lib/media";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
 import { BROWSE } from "../lib/nav";
 import {
+  areaParams,
   filterParams,
   filterTest,
   firstDayOfWeek,
@@ -15,8 +25,13 @@ import {
   HEARD,
   NO_FILTERS,
   SHIP_TYPES,
+  sortOf,
+  WHERE,
   type SearchFilters,
+  type SearchView,
+  type Where,
 } from "../lib/searchFilters";
+import { locate, useMyPosition } from "../lib/geolocation";
 import { useMedia } from "../lib/useMedia";
 import { cn } from "../lib/cn";
 import { useShell } from "./Shell";
@@ -34,6 +49,11 @@ interface Row {
   seen: number;
   flag?: string;
   imo?: number;
+  lat?: number;
+  lon?: number;
+  length?: number;
+  /** The town or region nearest the vessel, from the server. */
+  near?: string;
 }
 
 function fromFeature(f: VesselFeature): Row {
@@ -47,24 +67,57 @@ function fromFeature(f: VesselFeature): Row {
     seen: Date.parse(p.seen),
     flag: p.flag,
     imo: p.imo,
+    lon: f.geometry?.coordinates[0],
+    lat: f.geometry?.coordinates[1],
+    length: p.length,
+    near: p.near,
   };
 }
 
-function shortAge(seconds: number): string {
-  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.round(seconds / 60)}m` : `${Math.round(seconds / 3600)}h`;
+/** What tells one result from another of the same name: where it is, what it is, and whether it is moving. */
+function rowSubtitle(v: Row, byMMSI: boolean): string | undefined {
+  const cls = shipClass(v.kind, v.shipType);
+  const what = [cls !== "other" ? CLASS_LABELS[cls] : undefined, v.length ? `${v.length} m` : undefined].filter(Boolean).join(", ");
+  const parts = [
+    // A vessel without a name is already titled by its MMSI.
+    byMMSI && v.name ? `MMSI ${v.mmsi}` : undefined,
+    v.near,
+    what || undefined,
+    // A moored boat reads 0.0 kn, which says nothing a still dot does not.
+    v.sog != null && v.sog >= 0.5 ? `${v.sog.toFixed(1)} kn` : undefined,
+  ].filter(Boolean);
+  if (parts.length) return parts.join(" · ");
+  return v.name ? `MMSI ${v.mmsi}` : undefined;
 }
 
-// Per query and filters, for the life of the page: the list repaints every second for ages
-// and speeds, and that must not ask the server again. Keyed on the Heard choice rather than
-// the seconds it becomes, which change every minute.
+// Per query, filters, and view, the most recent of them: the list repaints every second for
+// ages and speeds, and that must not ask the server again. Keyed on the Heard choice rather
+// than the seconds it becomes, which change every minute.
 const results = new Map<string, Row[]>();
+// The newest answer per query and filters, whatever the view, shown while a pan's answer loads
+// so the list reorders rather than falling back to what the stream holds.
+const latest = new Map<string, Row[]>();
+
+// Each pan is a new view and so a new answer, and an answer for the map can hold thousands of
+// vessels, so only the most recent are kept. A Map iterates in insertion order, oldest first.
+const CACHED_ANSWERS = 20;
+
+function remember(cache: Map<string, Row[]>, key: string, rows: Row[]) {
+  cache.delete(key);
+  cache.set(key, rows);
+  for (const old of cache.keys()) {
+    if (cache.size <= CACHED_ANSWERS) break;
+    cache.delete(old);
+  }
+}
 
 /**
- * The search box that heads the home panel, and the filters under it once there is something
- * to filter. Clearing the search clears them, so none is ever set while they are hidden.
+ * The search box that heads the home panel, and the filters under it while searching. Search
+ * starts when the field takes focus and ends at its clear button or Escape, not when it loses
+ * focus, which a tap on a chip or a scroll of the list does.
  */
 export function SearchBox() {
-  const { query, setQuery, setDetent } = useShell();
+  const { query, setQuery, searching, startSearch, endSearch, setDetent } = useShell();
   const navigate = useNavigate();
   return (
     <div className="pb-2">
@@ -78,11 +131,16 @@ export function SearchBox() {
               if (/^\d{7,9}$/.test(q)) navigate(`/vessels/${q}`);
             }}
             // Searching needs room for results, as in a maps app.
-            onFocus={() => setDetent("full")}
+            onFocus={() => {
+              startSearch();
+              setDetent("full");
+            }}
+            onClear={endSearch}
+            clearable={searching}
           />
         </div>
       </div>
-      {query.trim() && <SearchChips />}
+      {searching && <SearchChips />}
     </div>
   );
 }
@@ -94,21 +152,57 @@ const TYPE_OPTIONS = [
 
 /** Filters for the search, as chips. */
 function SearchChips() {
-  const { filters, setFilters } = useShell();
-  const set = (change: Partial<SearchFilters>) => setFilters({ ...filters, ...change });
+  const { query, filters, setFilters } = useShell();
+  const live = useLive();
+  const [locating, setLocating] = useState(false);
+  const [note, setNote] = useState<string>();
+  const set = (change: Partial<SearchFilters>) => {
+    setNote(undefined);
+    setFilters({ ...filters, ...change });
+  };
+  const typed = Boolean(query.trim());
+  // Read when the position arrives, so a chip changed while it was being found is kept.
+  const current = useRef({ filters, typed });
+  current.current = { filters, typed };
+  // With nothing typed the list is the map's, so the choice is which part of the map.
+  const options = typed ? WHERE : WHERE.filter((o) => o.value !== "anywhere");
+  const where = !typed && filters.where === "anywhere" ? "view" : filters.where;
+
+  const chooseWhere = (next: Where) => {
+    if (next !== "me") return set({ where: next });
+    // Near me waits for a position, so the list never orders from nowhere.
+    setLocating(true);
+    setNote(undefined);
+    locate()
+      .then((at) => {
+        setFilters({ ...current.current.filters, where: "me" });
+        if (!current.current.typed) live?.ctl.flyToPoint(at);
+      })
+      .catch((e: Error) => setNote(`${e.message} Results are ordered from the middle of the map.`))
+      .finally(() => setLocating(false));
+  };
+
   return (
-    <ChipRow label="Search filters">
-      <MenuChip value={filters.type} options={TYPE_OPTIONS} onChange={(type) => set({ type })} />
-      <MenuChip value={filters.heard} options={HEARD} onChange={(heard) => set({ heard })} />
-    </ChipRow>
+    <>
+      <ChipRow label="Search filters">
+        <MenuChip value={where} options={options} onChange={chooseWhere} />
+        <MenuChip value={filters.type} options={TYPE_OPTIONS} onChange={(type) => set({ type })} />
+        <MenuChip value={filters.heard} options={HEARD} onChange={(heard) => set({ heard })} />
+      </ChipRow>
+      {(locating || note) && (
+        <p role="status" className="px-3 pt-2 text-footnote text-fg-muted">
+          {locating ? "Finding your location…" : note}
+        </p>
+      )}
+    </>
   );
 }
 
-/** The destinations, or what the search turns up once there is a query. */
+/** What the search turns up, the vessels on the map while searching with nothing typed, or the destinations. */
 export function SearchResults() {
-  const { query } = useShell();
+  const { query, searching } = useShell();
   const q = query.trim();
-  return q ? <Results q={q} /> : <Destinations />;
+  return q ? <Results q={q} /> : searching ? <InView /> : <Destinations />;
 }
 
 /** What there is to browse besides vessels. */
@@ -128,18 +222,32 @@ function Results({ q }: { q: string }) {
   const live = useLive();
   useStreamFrame();
   const now = useNow();
-  const { filters, setFilters } = useShell();
+  const mapView = useMapView();
+  const { filters } = useShell();
   const [, setAnswered] = useState(0);
-  const key = `${q}|${JSON.stringify(filters)}`;
+  const me = useMyPosition();
+  const view: SearchView = {
+    origin: filters.where === "me" ? me : mapView?.center,
+    boxes: mapView?.boxes,
+  };
+  // Only what the search asks for: panning the map changes nothing for a search sorted by
+  // recency and not kept to the view.
+  const viewKey = [sortOf(filters) === "nearest" ? view.origin : "", filters.where === "view" ? view.boxes : ""];
+  const baseKey = `${q}|${JSON.stringify(filters)}`;
+  const key = `${baseKey}|${JSON.stringify(viewKey)}`;
+  // Past the area cap the server refuses the box, so the reader is asked to zoom in instead.
+  const tooWide = filters.where === "view" && mapView != null && !mapView.fits;
 
   // The server searches every vessel it has ever heard, not just what this tab is hearing,
   // so a berthed boat is findable.
   useEffect(() => {
-    if (q.length < 2 || results.has(key)) return;
+    if (q.length < 2 || tooWide || results.has(key)) return;
     let current = true;
     const t = setTimeout(() => {
-      void searchVessels(browserAuth(), q, filterParams(filters, new Date(), firstDayOfWeek())).then((features) => {
-        results.set(key, features.map(fromFeature));
+      void searchVessels(browserAuth(), q, filterParams(filters, new Date(), firstDayOfWeek(), view)).then((features) => {
+        const rows = features.map(fromFeature);
+        remember(results, key, rows);
+        remember(latest, baseKey, rows);
         if (current) setAnswered((n) => n + 1);
       });
     }, 150);
@@ -147,31 +255,31 @@ function Results({ q }: { q: string }) {
       current = false;
       clearTimeout(t);
     };
-  }, [key]);
+    // tooWide as well: the stream's welcome can raise the area cap after a view was refused.
+  }, [key, tooWide]);
 
   const hits = results.get(key);
   // Before the server answers, show what this tab already holds rather than nothing, filtered
-  // as the server will filter it.
+  // and ordered as the server will.
   const lower = q.toLowerCase();
-  const passes = filterTest(filters, new Date(now), firstDayOfWeek());
-  const rows: Row[] =
-    hits ??
-    [...(live?.stream.vessels.values() ?? [])]
-      .filter((v) => (v.name?.toLowerCase().includes(lower) || String(v.mmsi).includes(q)) && passes(v))
-      .sort((a, b) => b.seen - a.seen)
-      .slice(0, 50);
+  const passes = filterTest(filters, new Date(now), firstDayOfWeek(), view);
+  const center = view.origin;
+  const order = rowOrder(filters, center);
+  const rows: Row[] = tooWide
+    ? []
+    : (hits ??
+      latest.get(baseKey)?.filter(passes).sort(order) ??
+      [...(live?.stream.vessels.values() ?? [])]
+        .filter((v) => (v.name?.toLowerCase().includes(lower) || String(v.mmsi).includes(q)) && passes(v))
+        .sort(order)
+        .slice(0, 50));
+
+  if (tooWide) {
+    return <p className="px-2 py-3 text-body text-fg-muted">Zoom in to search what&rsquo;s on the map.</p>;
+  }
 
   if (!rows.length) {
-    if (hits && hasFilters(filters)) {
-      return (
-        <p className="px-2 py-3 text-body text-fg-muted">
-          No matches with these filters.{" "}
-          <button type="button" onClick={() => setFilters(NO_FILTERS)} className="text-accent hover:text-accent-hover">
-            Clear filters
-          </button>
-        </p>
-      );
-    }
+    if (hits && hasFilters(filters)) return <NoMatches />;
     return (
       <>
         <p className="px-2 py-3 text-body text-fg-muted">
@@ -186,27 +294,183 @@ function Results({ q }: { q: string }) {
     );
   }
 
+  return <ResultList rows={rows} center={center} byMMSI={/^\d+$/.test(q)} />;
+}
+
+// Of the vessels in view, the most the list shows. A busy harbour holds hundreds.
+const IN_VIEW_LIMIT = 50;
+
+/**
+ * The vessels on the map that pass the filters, while searching with nothing typed. The server
+ * holds those heard before this tab was open, and those the stream has heard since are brought
+ * up to date.
+ */
+function InView() {
+  const live = useLive();
+  useStreamFrame();
+  const now = useNow();
+  const mapView = useMapView();
+  const { filters } = useShell();
+  const [, setAnswered] = useState(0);
+  // The view whose request failed, and how many times the reader has asked again.
+  const [failed, setFailed] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
+  const me = useMyPosition();
+  // Where is the list's own order, so changing it asks the server nothing.
+  const baseKey = `view|${JSON.stringify({ ...filters, where: "" })}`;
+  const key = `${baseKey}|${JSON.stringify(mapView?.boxes)}`;
+  const tooWide = mapView != null && !mapView.fits;
+
+  useEffect(() => {
+    if (!mapView || tooWide || results.has(key)) return;
+    let current = true;
+    const t = setTimeout(() => {
+      void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), mapView.boxes)).then((features) => {
+        if (!features) {
+          if (current) setFailed(key);
+          return;
+        }
+        const rows = features.map(fromFeature);
+        remember(results, key, rows);
+        remember(latest, baseKey, rows);
+        if (current) setAnswered((n) => n + 1);
+      });
+    }, 150);
+    return () => {
+      current = false;
+      clearTimeout(t);
+    };
+    // tooWide as well: the stream's welcome can raise the area cap after a view was refused.
+  }, [key, tooWide, attempt]);
+
+  if (!mapView) return null;
+  if (tooWide) {
+    return <p className="px-2 py-3 text-body text-fg-muted">Zoom in to list the vessels on the map.</p>;
+  }
+
+  const hits = results.get(key);
+  // Without an answer, what the stream holds, which is only what is live on the map.
+  const unanswered = !hits && failed === key;
+  const passes = filterTest({ ...filters, where: "view" }, new Date(now), firstDayOfWeek(), mapView);
+  const origin = filters.where === "me" && me ? me : mapView.center;
+  // Ranked on the server's answer, and only then brought up to date from the stream: ranked on
+  // live data, the list would reorder every time a vessel reported.
+  const all = [...(hits ?? latest.get(baseKey) ?? (unanswered ? [...(live?.stream.vessels.values() ?? [])] : []))]
+    .sort(rowOrder(filters, origin))
+    .map((r) => {
+      const v = live?.stream.vessels.get(r.mmsi);
+      return v && v.seen > r.seen && v.lat != null && v.lon != null
+        ? { ...r, lat: v.lat, lon: v.lon, sog: v.sog, seen: v.seen }
+        : r;
+    })
+    .filter(passes);
+
+  const unavailable = unanswered && (
+    <p className="px-2 py-3 text-body text-fg-muted">
+      The server did not answer, so this is only what is live on the map.{" "}
+      <button
+        type="button"
+        onClick={() => {
+          setFailed(undefined);
+          setAttempt((n) => n + 1);
+        }}
+        className="text-accent hover:text-accent-hover"
+      >
+        Try again
+      </button>
+    </p>
+  );
+
+  if (!all.length) {
+    if (unavailable) return unavailable;
+    if (!hits) return <p className="px-2 py-3 text-body text-fg-muted">Looking…</p>;
+    // With nothing typed the list is always the view's, so that is no filter to clear.
+    return hasFilters({ ...filters, where: "anywhere" }) ? (
+      <NoMatches onMap />
+    ) : (
+      <p className="px-2 py-3 text-body text-fg-muted">No vessels on the map. Zoom out or move the map to see more.</p>
+    );
+  }
+  return (
+    <>
+      {unavailable}
+      <ResultList rows={all.slice(0, IN_VIEW_LIMIT)} center={origin} byMMSI={false} />
+      {all.length > IN_VIEW_LIMIT && (
+        <p className="px-2 py-3 text-footnote text-fg-muted">
+          {sortOf(filters) === "nearest" ? "The" : "The most recent"} {IN_VIEW_LIMIT} of {all.length.toLocaleString("en-US")}
+          {sortOf(filters) === "recent" ? "" : filters.where === "me" ? " nearest you" : " nearest the middle of the map"}.
+          Zoom in for the rest.
+        </p>
+      )}
+    </>
+  );
+}
+
+/** How results are ordered: by distance from the middle of the map, then the most recently heard. */
+function rowOrder(filters: SearchFilters, center: [number, number] | undefined): (a: Row, b: Row) => number {
+  const nearest = sortOf(filters) === "nearest" && center != null;
+  return (a, b) => (nearest ? (distanceTo(center, a) ?? Infinity) - (distanceTo(center, b) ?? Infinity) : 0) || b.seen - a.seen;
+}
+
+function distanceTo(center: [number, number] | undefined, v: Row): number | undefined {
+  return center && v.lat != null && v.lon != null ? distanceNM(center, [v.lat, v.lon]) : undefined;
+}
+
+function NoMatches({ onMap }: { onMap?: boolean }) {
+  const { filters, setFilters } = useShell();
+  return (
+    <p className="px-2 py-3 text-body text-fg-muted">
+      {onMap ? "No vessels on the map match these filters." : "No matches with these filters."}{" "}
+      <button
+        type="button"
+        // Near me is an order, not a filter, so it stays.
+        onClick={() => setFilters({ ...NO_FILTERS, where: filters.where === "me" ? "me" : "anywhere" })}
+        className="text-accent hover:text-accent-hover"
+      >
+        Clear filters
+      </button>
+    </p>
+  );
+}
+
+/** Result rows, with each result ringed on the map for as long as the list shows. */
+function ResultList({ rows, center, byMMSI }: { rows: Row[]; center?: [number, number]; byMMSI: boolean }) {
+  const live = useLive();
+  const now = useNow();
+  useEffect(() => {
+    live?.ctl.setResults(rows.filter((r): r is Row & { lat: number; lon: number } => r.lat != null && r.lon != null));
+  });
+  useEffect(() => () => live?.ctl.setResults([]), [live]);
   return (
     <List>
-      {rows.map((v) => (
-        <ListRow
-          key={v.mmsi}
-          to={vesselPath(v.mmsi, v.name)}
-          leading={<VesselThumb row={v} />}
-          title={
-            <>
-              {v.name ?? v.mmsi}
-              {v.flag && flagEmoji(v.flag) && (
-                <span role="img" aria-label={flagName(v.flag) ?? v.flag} className="ml-1.5">
-                  {flagEmoji(v.flag)}
-                </span>
-              )}
-            </>
-          }
-          subtitle={`${v.sog != null ? `${v.sog.toFixed(1)} kn · ` : ""}MMSI ${v.mmsi}`}
-          trailing={shortAge(Math.max(0, Math.round((now - v.seen) / 1000)))}
-        />
-      ))}
+      {rows.map((v) => {
+        const nm = distanceTo(center, v);
+        return (
+          <ListRow
+            key={v.mmsi}
+            to={vesselPath(v.mmsi, v.name)}
+            onHover={(over) => live?.ctl.highlightResult(over ? v.mmsi : undefined)}
+            leading={<VesselThumb row={v} />}
+            title={
+              <>
+                {v.name ?? v.mmsi}
+                {v.flag && flagEmoji(v.flag) && (
+                  <span role="img" aria-label={flagName(v.flag) ?? v.flag} className="ml-1.5">
+                    {flagEmoji(v.flag)}
+                  </span>
+                )}
+              </>
+            }
+            subtitle={rowSubtitle(v, byMMSI)}
+            trailing={
+              <span className="flex flex-col items-end">
+                {nm != null && <span>{formatDistance(nm)}</span>}
+                <span>{shortAge(Math.max(0, Math.round((now - v.seen) / 1000)))}</span>
+              </span>
+            }
+          />
+        );
+      })}
     </List>
   );
 }

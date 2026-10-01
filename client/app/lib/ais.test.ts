@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   bearing,
+  distanceNM,
+  formatDistance,
+  shortAge,
   isValidImo,
   isVolunteer,
   stationTitle,
@@ -330,6 +333,30 @@ describe("interpolateAt", () => {
     expect(interpolateAt(coords, [10, 20], 5)?.point).toEqual([0, 0]);
     expect(interpolateAt(coords, [10, 20], 99)?.point).toEqual([10, 10]);
     expect(interpolateAt([], [], 1)).toBeUndefined();
+  });
+});
+
+describe("distanceNM", () => {
+  it("measures a minute of latitude as a mile, and across the antimeridian", () => {
+    expect(distanceNM([0, 0], [1 / 60, 0])).toBeCloseTo(1, 2);
+    expect(distanceNM([-17, 179.9], [-17, -179.9])).toBeLessThan(12);
+  });
+});
+
+describe("formatDistance", () => {
+  it("keeps a decimal close by and groups thousands far off", () => {
+    expect(formatDistance(0.43)).toBe("0.4 nm");
+    expect(formatDistance(37.4)).toBe("37 nm");
+    expect(formatDistance(8412)).toBe("8,412 nm");
+  });
+});
+
+describe("shortAge", () => {
+  it("counts hours for two days, then days", () => {
+    expect(shortAge(45)).toBe("45s");
+    expect(shortAge(600)).toBe("10m");
+    expect(shortAge(47 * 3600)).toBe("47h");
+    expect(shortAge(935 * 3600)).toBe("39d");
   });
 });
 
