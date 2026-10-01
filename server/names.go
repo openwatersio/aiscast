@@ -40,6 +40,7 @@ type stationMeta struct {
 
 type stationNames struct {
 	mu      sync.Mutex
+	wmu     sync.Mutex // serializes writes to the stations table; see write
 	m       map[string]*stationMeta
 	dirty   map[string]bool
 	store   *store          // nil without the vessel record: names then live only as long as the process
@@ -90,7 +91,21 @@ func (n *stationNames) attach(s *store) error {
 // flush writes changed stations. A failed write stays dirty for the next pass.
 func (n *stationNames) flush() error {
 	n.mu.Lock()
-	if n.store == nil || len(n.dirty) == 0 {
+	ids := make([]string, 0, len(n.dirty))
+	for id := range n.dirty {
+		ids = append(ids, id)
+	}
+	n.mu.Unlock()
+	return n.write(ids)
+}
+
+// write saves the given stations now. wmu spans the snapshot and the writes, so a pass that read a station
+// earlier can never land after one that read it later and roll it back. A station that fails stays dirty.
+func (n *stationNames) write(ids []string) error {
+	n.wmu.Lock()
+	defer n.wmu.Unlock()
+	n.mu.Lock()
+	if n.store == nil || len(ids) == 0 {
 		n.mu.Unlock()
 		return nil
 	}
@@ -99,10 +114,12 @@ func (n *stationNames) flush() error {
 		m  stationMeta
 	}
 	var rows []row
-	for id := range n.dirty {
-		rows = append(rows, row{id, *n.m[id]})
+	for _, id := range ids {
+		if m := n.m[id]; m != nil {
+			rows = append(rows, row{id, *m})
+			delete(n.dirty, id)
+		}
 	}
-	n.dirty = map[string]bool{}
 	db := n.store.db
 	n.mu.Unlock()
 	var errs []error

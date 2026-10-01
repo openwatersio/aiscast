@@ -231,6 +231,36 @@ func TestSignedMint(t *testing.T) {
 	}
 }
 
+// A signed mint's lock is in the stations table before the token is returned, so a crash right after cannot
+// let the next process accept unsigned mints for the key. A write that fails refuses the mint.
+func TestSignedMintSavesLockFirst(t *testing.T) {
+	p := mintPipeline(t)
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.names.attach(st); err != nil {
+		t.Fatal(err)
+	}
+	k := newTestKey()
+	if code, out := mint(t, p, k.signed(time.Now().Unix(), false, nil, nil), ""); code != 200 {
+		t.Fatalf("%d %v", code, out)
+	}
+	fresh := newStationNames() // the next process, with no flush in between
+	if err := fresh.attach(st); err != nil {
+		t.Fatal(err)
+	}
+	if m := fresh.m["station:ed25519:"+k.pub]; m == nil || m.SignedAt == 0 {
+		t.Fatalf("lock not saved: %+v", m)
+	}
+	st.close()
+	other := newTestKey()
+	if code, out := mint(t, p, other.signed(time.Now().Unix(), false, nil, nil), ""); code != 500 || out["token"] != nil {
+		t.Errorf("mint with an unwritable store: %d %v", code, out)
+	}
+}
+
 func TestSignedMintNamesBoundUDPStation(t *testing.T) {
 	p := mintPipeline(t)
 	k := newTestKey()

@@ -29,7 +29,7 @@ Environment:
 - `ALLOW_ANON=1`: no tokens needed, local development only.
 - `STATION_VESSELS` (`station-vessels.json`): each station's vessels from the last 24 hours, behind `vessels_24h` and `vessels_exclusive_24h` on `/v1/stations`. Written on shutdown and restored on boot.
 - `USAGE` (`vessels-usage.json`): the rolling 24 h/7 d counters behind `/v1/stats`, written every minute and on shutdown, and restored on boot.
-- `STORE` (`aiscast.db`): the vessel record, in SQLite. The vessel cache is restored from it on boot. `off` runs without it, and without tracks, and a restart starts with an empty map. See [Vessel record](#vessel-record).
+- `STORE` (`aiscast.db`): the vessel record, in SQLite. The vessel cache is restored from it on boot. `off` runs without it, and without tracks, and a restart starts with an empty map. It also holds the `stations` table: names, coverage labels, and which keys must sign their token requests. A signed request is saved there before its token is issued, so without the record those locks last only as long as the process. See [Vessel record](#vessel-record).
 - `TRACKS` (`tracks.db`): every position of the last 48 hours, in SQLite, for tracks. `off` runs without it. See [Recent tracks](#recent-tracks).
 - `LAKE_CATALOG_TOKEN` (set = tracks reach the lake past 48 hours, and the record imports its history), `LAKE_BUCKET` (`ais-lake`), `LAKE_DUCKDB_DIR` (`duckdb`, where DuckDB keeps its extensions). The token needs R2 Data Catalog read and object read on the bucket; the account is `R2_ACCOUNT_ID`.
 - `WS_CONNECTS_PER_MIN` (`60` per IP).

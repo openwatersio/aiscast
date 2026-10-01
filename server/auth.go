@@ -375,20 +375,30 @@ func (p *Pipeline) mintPersonal(ip string, req mintRequest) (token string, c Cla
 	if req.BindIP {
 		c.CIDR = []string{ip}
 	}
+	if req.Sig != "" {
+		ids := []string{stationSource(c.Sub)}
+		if req.BindIP {
+			ids = append(ids, udpStation(ip))
+		}
+		nameErr = p.names.applyNames(ids, req, now)
+		// The lock and the replay guard are saved before the token exists: a crash between the two must not
+		// leave a token whose key the next process would let mint unsigned. Without a store (STORE=off) they
+		// last as long as the process.
+		if werr := p.names.write(ids); werr != nil {
+			log.Printf("stations: %v", werr)
+			return "", Claims{}, "", &mintError{http.StatusInternalServerError, "could not save the station; try again"}
+		}
+	}
 	token, serr := signToken(priv, c)
 	if serr != nil { // a signing failure is ours, not the client's
 		return "", Claims{}, "", &mintError{http.StatusInternalServerError, serr.Error()}
 	}
 	if req.Sig == "" {
 		p.stats.keysUnsigned.Add(1)
-		return token, c, "", nil
+	} else {
+		p.stats.keysSigned.Add(1)
 	}
-	p.stats.keysSigned.Add(1)
-	ids := []string{stationSource(c.Sub)}
-	if req.BindIP {
-		ids = append(ids, udpStation(ip))
-	}
-	return token, c, p.names.applyNames(ids, req, now), nil
+	return token, c, nameErr, nil
 }
 
 func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
