@@ -34,7 +34,7 @@ export default function (app: ServerAPI): Plugin {
   const events = app as unknown as EventEmitter;
   let generation = 0; // bumped by stop(); a start() still in its awaits checks it and gives up
   let teardown: (() => Promise<void>) | null = null;
-  let stationHelp: string | null = null; // where aiscast files this boat's receptions, once a token names it
+  let stationHelp: string | null = null; // the boat's station page, once a token names the station
 
   const plugin: Plugin = {
     id: PLUGIN_ID,
@@ -229,10 +229,7 @@ export default function (app: ServerAPI): Plugin {
         }
       }
       selfSub = token ? (tokenSub(token.token) ?? `ed25519:${identity.pubkey}`) : null;
-      const station = selfSub && `station:${selfSub}`;
-      stationHelp = station
-        ? `This boat's station is ${station}` + (server === DEFAULT_SERVER ? `: ${STATION_PAGE}${station}` : "")
-        : null;
+      stationHelp = stationPageHelp(server, selfSub);
     };
     await refreshToken();
     if (!live()) return;
@@ -425,6 +422,11 @@ export default function (app: ServerAPI): Plugin {
   }
 
   return plugin;
+}
+
+// The station page exists only on the web client for DEFAULT_SERVER, so another server gets no help text.
+export function stationPageHelp(server: string, sub: string | null): string | null {
+  return server === DEFAULT_SERVER && sub ? `This boat's station page: ${STATION_PAGE}station:${sub}` : null;
 }
 
 // fetch's "fetch failed" hides the real reason (ECONNREFUSED, ENOTFOUND, a TLS error) in `cause`.

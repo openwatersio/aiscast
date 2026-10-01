@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Plugin } from "@signalk/server-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mintMessage } from "../src/identity.js";
-import createPlugin, { type Config } from "../src/index.js";
+import createPlugin, { type Config, stationPageHelp } from "../src/index.js";
 import { fakeApp, type FakeApp } from "./fake-app.js";
 import { startFakeServer, type FakeServer } from "./fake-server.js";
 
@@ -298,13 +298,15 @@ describe("config UI", () => {
     expect(noMmsi.share.position["ui:help"]).toMatch(/MMSI/);
   });
 
-  it("shows the boat's full station id once the plugin has a token", async () => {
+  it("links the boat's station page on openwaters.io, and only for the default server", async () => {
+    expect(stationPageHelp("https://ais.openwaters.io", "ed25519:abc")).toBe(
+      "This boat's station page: https://openwaters.io/ais/stations/station:ed25519:abc",
+    );
+    expect(stationPageHelp("https://ais.openwaters.io", null)).toBeNull();
+    expect(stationPageHelp(server.url, "ed25519:abc")).toBeNull();
     type Ui = { advanced: { token: Record<string, unknown> } };
-    expect((createPlugin(app).uiSchema as () => Ui)().advanced.token["ui:help"]).toBeUndefined();
-    await start();
-    const { x } = JSON.parse(await readFile(join(app.dataDir, "identity.json"), "utf8"));
-    const ui = (plugin.uiSchema as () => Ui)();
-    expect(ui.advanced.token["ui:help"]).toBe(`This boat's station is station:ed25519:${x}`);
+    await start(); // the fake server is not the default, so no link
+    expect((plugin.uiSchema as () => Ui)().advanced.token["ui:help"]).toBeUndefined();
   });
 });
 
