@@ -1,0 +1,52 @@
+{
+ "head": {
+  "vars": [
+   "item",
+   "v"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q488014"
+    },
+    "v": {
+     "type": "uri",
+     "value": "http://commons.wikimedia.org/wiki/Special:FilePath/Star%20Princess%20Tendering.jpg"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1052819"
+    },
+    "v": {
+     "type": "uri",
+     "value": "http://commons.wikimedia.org/wiki/Special:FilePath/Celebrity%20Eclipse%20leaving%20Southampton.jpg"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2109568"
+    },
+    "v": {
+     "type": "uri",
+     "value": "http://commons.wikimedia.org/wiki/Special:FilePath/PrideofRotterdam.png"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q83569204"
+    },
+    "v": {
+     "type": "uri",
+     "value": "http://commons.wikimedia.org/wiki/Special:FilePath/PRIDE%20OF%20ROTTERDAM%20%2851143929101%29.jpg"
+    }
+   }
+  ]
+ }
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><soap:Body><getVesselTonnageXMLStringResponse xmlns="https://cgmix.uscg.mil"><getVesselTonnageXMLStringResult>&lt;NewDataSet&gt;
+  &lt;VesselTonnage&gt;
+    &lt;VesselId&gt;167771&lt;/VesselId&gt;
+    &lt;MeasureOfWeight&gt;7&lt;/MeasureOfWeight&gt;
+    &lt;TonnageTypeLookupId&gt;4&lt;/TonnageTypeLookupId&gt;
+    &lt;TonnageTypeLookupName&gt;Simplified&lt;/TonnageTypeLookupName&gt;
+    &lt;TonnageUnitOfMeasurementFilterLookupId&gt;64&lt;/TonnageUnitOfMeasurementFilterLookupId&gt;
+    &lt;UnitOfMeasureLookupName&gt;Long Ton&lt;/UnitOfMeasureLookupName&gt;
+  &lt;/VesselTonnage&gt;
+  &lt;VesselTonnage&gt;
+    &lt;VesselId&gt;167771&lt;/VesselId&gt;
+    &lt;MeasureOfWeight&gt;7&lt;/MeasureOfWeight&gt;
+    &lt;TonnageTypeLookupId&gt;4&lt;/TonnageTypeLookupId&gt;
+    &lt;TonnageTypeLookupName&gt;Simplified&lt;/TonnageTypeLookupName&gt;
+    &lt;TonnageUnitOfMeasurementFilterLookupId&gt;111&lt;/TonnageUnitOfMeasurementFilterLookupId&gt;
+    &lt;UnitOfMeasureLookupName&gt;Short Ton&lt;/UnitOfMeasureLookupName&gt;
+  &lt;/VesselTonnage&gt;
+&lt;/NewDataSet&gt;</getVesselTonnageXMLStringResult></getVesselTonnageXMLStringResponse></soap:Body></soap:Envelope>

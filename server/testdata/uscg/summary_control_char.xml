@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><soap:Body><getVesselSummaryXMLStringResponse xmlns="https://cgmix.uscg.mil"><getVesselSummaryXMLStringResult>&lt;NewDataSet&gt;
+  &lt;VesselSummary&gt;
+    &lt;VesselId&gt;1205346&lt;/VesselId&gt;
+    &lt;VesselName&gt;VA&amp;#x12;08BP&lt;/VesselName&gt;
+    &lt;VesselCallSign&gt;N/A&lt;/VesselCallSign&gt;
+    &lt;ServiceType&gt;Recreational&lt;/ServiceType&gt;
+    &lt;ConstructionCompletedYear&gt;2008&lt;/ConstructionCompletedYear&gt;
+    &lt;StatusLookupName&gt;Active&lt;/StatusLookupName&gt;
+    &lt;Identification&gt;VA1208BP&lt;/Identification&gt;
+    &lt;HIN&gt;SLPZK053D809&lt;/HIN&gt;
+    &lt;CountryLookupName&gt;UNITED STATES&lt;/CountryLookupName&gt;
+  &lt;/VesselSummary&gt;
+&lt;/NewDataSet&gt;</getVesselSummaryXMLStringResult></getVesselSummaryXMLStringResponse></soap:Body></soap:Envelope>
