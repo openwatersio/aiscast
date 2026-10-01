@@ -35,7 +35,7 @@ import {
 import { locate, useMyPosition } from "../lib/geolocation";
 import { useMedia } from "../lib/useMedia";
 import { cn } from "../lib/cn";
-import { useShell } from "./Shell";
+import { useLoading, useShell } from "./Shell";
 import { ChipRow, MenuChip } from "./ui/Chip";
 import { ClassDot, IconBadge, List, ListRow } from "./ui/List";
 import { Prompt } from "./ui/Prompt";
@@ -220,8 +220,6 @@ function Destinations() {
 }
 
 function Results({ q }: { q: string }) {
-  const live = useLive();
-  useStreamFrame();
   const now = useNow();
   const mapView = useMapView();
   const { filters } = useShell();
@@ -260,32 +258,30 @@ function Results({ q }: { q: string }) {
   }, [key, tooWide]);
 
   const hits = results.get(key);
-  // Before the server answers, show what this tab already holds rather than nothing, filtered
-  // and ordered as the server will.
-  const lower = q.toLowerCase();
   const passes = filterTest(filters, new Date(now), firstDayOfWeek(), view);
   const center = view.origin;
-  const order = rowOrder(filters, center);
-  const rows: Row[] = tooWide
+  // Until the server answers, the list keeps what it last showed, so it changes once per answer
+  // rather than with every key pressed: this query's answer for another view, or the last
+  // answer to any query.
+  const shown = useRef<Row[]>(undefined);
+  const rows: Row[] | undefined = tooWide
     ? []
-    : (hits ??
-      latest.get(baseKey)?.filter(passes).sort(order) ??
-      [...(live?.stream.vessels.values() ?? [])]
-        .filter((v) => (v.name?.toLowerCase().includes(lower) || String(v.mmsi).includes(q)) && passes(v))
-        .sort(order)
-        .slice(0, 50));
+    : (hits ?? latest.get(baseKey)?.filter(passes).sort(rowOrder(filters, center)) ?? shown.current);
+  if (hits) shown.current = hits;
+  useLoading(q.length >= 2 && !tooWide && !hits);
 
   if (tooWide) {
     return <p className="px-2 py-3 text-body text-fg-muted">Zoom in to search what&rsquo;s on the map.</p>;
   }
 
+  if (q.length < 2) return <p className="px-2 py-3 text-body text-fg-muted">Keep typing.</p>;
+  if (!rows) return null;
   if (!rows.length) {
-    if (hits && hasFilters(filters)) return <NoMatches />;
+    if (!hits) return null;
+    if (hasFilters(filters)) return <NoMatches />;
     return (
       <>
-        <p className="px-2 py-3 text-body text-fg-muted">
-          {hits ? "No vessel matches that name or MMSI." : q.length < 2 ? "Keep typing." : "Searching…"}
-        </p>
+        <p className="px-2 py-3 text-body text-fg-muted">No vessel matches that name or MMSI.</p>
         {hits && (
           <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mx-2">
             The network only knows vessels its receivers have heard.
@@ -346,6 +342,7 @@ function InView() {
       clearTimeout(t);
     };
   }, [key, attempt]);
+  useLoading(boxes != null && !results.has(key) && failed !== key);
 
   if (!mapView) return null;
   if (!boxes) {
