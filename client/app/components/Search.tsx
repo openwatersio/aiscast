@@ -161,6 +161,9 @@ function SearchChips() {
     setFilters({ ...filters, ...change });
   };
   const typed = Boolean(query.trim());
+  // Read when the position arrives, so a chip changed while it was being found is kept.
+  const current = useRef({ filters, typed });
+  current.current = { filters, typed };
   // With nothing typed the list is the map's, so the choice is which part of the map.
   const options = typed ? WHERE : WHERE.filter((o) => o.value !== "anywhere");
   const where = !typed && filters.where === "anywhere" ? "view" : filters.where;
@@ -172,8 +175,8 @@ function SearchChips() {
     setNote(undefined);
     locate()
       .then((at) => {
-        setFilters({ ...filters, where: "me" });
-        if (!typed) live?.ctl.flyToPoint(at);
+        setFilters({ ...current.current.filters, where: "me" });
+        if (!current.current.typed) live?.ctl.flyToPoint(at);
       })
       .catch((e: Error) => setNote(`${e.message} Results are ordered from the middle of the map.`))
       .finally(() => setLocating(false));
