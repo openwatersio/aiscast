@@ -679,3 +679,20 @@ func TestMMSIOnlyKey(t *testing.T) {
 		t.Errorf("mmsi subscribe on an mmsi-only key: %s", r)
 	}
 }
+
+// A feeding station keeps the tier across a restart: its client reconnects before it publishes again.
+func TestFeederSurvivesRestart(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: "station:ed25519:dev1", Source: "station:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
+	}
+	q := testPipeline(t)
+	q.stations.restoreRings(p.stations.rings(now))
+	if e := q.effective(&Claims{Sub: "ed25519:dev1", Role: "personal"}); !e.Feeder {
+		t.Error("restored station lost the feeder tier before it published")
+	}
+	if e := q.effective(&Claims{Sub: "ed25519:dev2", Role: "personal"}); e.Feeder {
+		t.Error("unknown station earned the feeder tier")
+	}
+}
