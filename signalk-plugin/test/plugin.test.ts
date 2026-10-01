@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Plugin } from "@signalk/server-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mintMessage } from "../src/identity.js";
-import createPlugin, { type Config } from "../src/index.js";
+import createPlugin, { type Config, stationPageHelp } from "../src/index.js";
 import { fakeApp, type FakeApp } from "./fake-app.js";
 import { startFakeServer, type FakeServer } from "./fake-server.js";
 
@@ -296,6 +296,27 @@ describe("config UI", () => {
     const noMmsi = (createPlugin(bare).uiSchema as () => Ui)();
     expect(noMmsi.share.position["ui:disabled"]).toBe(true);
     expect(noMmsi.share.position["ui:help"]).toMatch(/MMSI/);
+  });
+
+  it("links the boat's station page on openwaters.io, and only for the default server", async () => {
+    expect(stationPageHelp("https://ais.openwaters.io", "ed25519:abc")).toBe(
+      "This boat's station page: https://openwaters.io/ais/stations/station:ed25519:abc",
+    );
+    expect(stationPageHelp("https://ais.openwaters.io", null)).toBeNull();
+    expect(stationPageHelp(server.url, "ed25519:abc")).toBeNull();
+    type Ui = { advanced: { token: Record<string, unknown> } };
+    await start(); // the fake server is not the default, so no link
+    expect((plugin.uiSchema as () => Ui)().advanced.token["ui:help"]).toBeUndefined();
+  });
+});
+
+describe("configured token", () => {
+  it("says how to go back to the plugin's own token when aiscast refuses a pasted one", async () => {
+    await start({ advanced: { server: server.url, token: "ak1.pasted.token" } });
+    server.send({ type: "error", error: "token not valid from this address" });
+    await until(() => app.errors.length > 0);
+    expect(app.errors[0]).toMatch(/refused the configured token: token not valid from this address\. Clear Advanced → Access token/);
+    expect(server.keyRequests).toHaveLength(0);
   });
 });
 
