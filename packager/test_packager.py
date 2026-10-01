@@ -330,6 +330,28 @@ def test_a_table_from_before_the_sort_was_recorded_counts_as_cell_sorted(package
     assert catalog.load_table("ais.positions").properties[packager.SORT_KEY] == "cell"
 
 
+def test_manifests_stay_few_as_days_accumulate(tmp_path):
+    """A reader's first query opens every manifest of the current snapshot, one per commit unless they
+    merge. Days packaged one after another keep the list short."""
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    envs = fixture_envelopes()
+    ev, cp = template(envs, "event", "PositionReport"), template(envs, "copy")
+    catalog = packager.get_catalog()
+    for n in range(1, 9):
+        day = f"2026-09-{n:02d}"
+        ts = f"{day}T08:00:00Z"
+        d = tmp_path / f"normalized/v1/{day.replace('-', '/')}"
+        d.mkdir(parents=True)
+        with gzip.open(d / "08.gz", "wt") as f:
+            f.writelines(json.dumps(e) + "\n" for e in (event_at(ev, f"6a0000{n:02d}", ts), copy_at(cp, f"6a0000{n:02d}", ts)))
+        packager.process_day(day, sorted(glob.glob(f"{d}/*.gz")), duckdb.connect(), catalog)
+    tbl = catalog.load_table("ais.positions")
+    manifests = tbl.current_snapshot().manifests(tbl.io)
+    assert len(rows(catalog, "positions")) == 8
+    assert len(manifests) <= 4, f"{len(manifests)} manifests after 8 days"
+
+
 def test_rerun_replaces_day(packaged):
     envs, catalog, con, files = packaged
     first = {(p["id"], p["ts"]) for p in rows(catalog, "positions")}
