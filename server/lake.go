@@ -6,9 +6,11 @@ package main
 // repackages it, which it does only within a week. Reads past the window cost server time and R2 requests, which
 // is why they are a feeder-tier capability.
 //
-// ais.positions is partitioned by day and by a bucket of the MMSI and sorted by MMSI and time, so one vessel's
-// day is a few row groups of one file. Each position carries the source that delivered it, and a vessel-day's
-// credit lines come from those.
+// Tracks read ais.tracks, each vessel's positions rolled up to its first in each minute, without the minutes it
+// sat still between neighbors apart from one a quarter hour. Thinned to whole minutes, it gives what thinning
+// every position would. It is partitioned by month and by a bucket of the MMSI and sorted by MMSI and time, so
+// one vessel's month is a few row groups of one file once the packager compacts the month. Each position
+// carries the source that delivered it, and a vessel-day's credit lines come from those.
 
 import (
 	"context"
@@ -120,7 +122,7 @@ func lakeOrder(want []string, days map[string]lakeDay) []lakeDay {
 // fetch reads the positions and their sources for one vessel in the given days.
 func (l *lake) fetch(ctx context.Context, mmsi uint32, want []string) (map[string]lakeDay, error) {
 	days := map[string]lakeDay{}
-	err := l.run(ctx, fmt.Sprintf(`SELECT day, ts, lat6, lon6, sog10, cog10, heading, navstat, source FROM lake.ais.positions
+	err := l.run(ctx, fmt.Sprintf(`SELECT day, ts, lat6, lon6, sog10, cog10, heading, navstat, source FROM lake.ais.tracks
 		WHERE mmsi = %d AND day IN (DATE '%s') AND lat6 IS NOT NULL`, mmsi, strings.Join(want, "', DATE '")), func(r map[string]json.RawMessage) error {
 		day, err := lakeDate(r["day"])
 		if err != nil {
@@ -231,14 +233,16 @@ func lakeTime(raw json.RawMessage) (time.Time, error) {
 
 // ---- the cache, in tracks.db ----
 
-const lakeCacheSchema = `CREATE TABLE IF NOT EXISTS lake_days (
+// lake_days is where an older binary cached every position of a vessel-day, up to 2 GB this one never reads.
+const lakeCacheSchema = `DROP TABLE IF EXISTS lake_days;
+CREATE TABLE IF NOT EXISTS lake_track_days (
 	mmsi    INTEGER NOT NULL,
 	day     TEXT    NOT NULL,
 	fetched INTEGER NOT NULL,  -- unix ms
 	points  BLOB    NOT NULL,  -- trackPoint records, 24 bytes each: ts ms, lat6, lon6, sog10, cog10, heading, nav status, source
 	sources TEXT    NOT NULL,  -- the source kinds a record's last byte indexes, comma-separated
 	PRIMARY KEY (mmsi, day)) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS lake_days_fetched ON lake_days (fetched)`
+CREATE INDEX IF NOT EXISTS lake_track_days_fetched ON lake_track_days (fetched)`
 
 const lakePointSize = 24
 
@@ -292,7 +296,7 @@ func decodeLakePoints(mmsi uint32, b []byte, sources string) []trackPoint {
 func (t *trackStore) lakeCached(mmsi uint32, days []string, now time.Time) (map[string]lakeDay, error) {
 	out := map[string]lakeDay{}
 	err := t.read(func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT day, fetched, points, sources FROM lake_days WHERE mmsi = ? AND day >= ? AND day <= ?`, mmsi, days[0], days[len(days)-1])
+		rows, err := tx.Query(`SELECT day, fetched, points, sources FROM lake_track_days WHERE mmsi = ? AND day >= ? AND day <= ?`, mmsi, days[0], days[len(days)-1])
 		if err != nil {
 			return err
 		}
@@ -321,7 +325,7 @@ func (t *trackStore) lakeCached(mmsi uint32, days []string, now time.Time) (map[
 // lakeStore caches a vessel-day, and every lakeTrimEvery bytes trims the cache to lakeCacheBytes.
 func (t *trackStore) lakeStore(mmsi uint32, day string, d lakeDay, now time.Time) error {
 	b, sources := encodeLakePoints(d.points)
-	if _, err := t.db.Exec(`INSERT OR REPLACE INTO lake_days (mmsi, day, fetched, points, sources) VALUES (?, ?, ?, ?, ?)`,
+	if _, err := t.db.Exec(`INSERT OR REPLACE INTO lake_track_days (mmsi, day, fetched, points, sources) VALUES (?, ?, ?, ?, ?)`,
 		mmsi, day, now.UnixMilli(), b, sources); err != nil {
 		return err
 	}
@@ -334,8 +338,8 @@ func (t *trackStore) lakeStore(mmsi uint32, day string, d lakeDay, now time.Time
 
 // lakeTrim drops the least recently fetched vessel-days until the positions cached total at most max bytes.
 func (t *trackStore) lakeTrim(max int64) error {
-	_, err := t.db.Exec(`DELETE FROM lake_days WHERE fetched <= (
-		SELECT fetched FROM (SELECT fetched, sum(length(points)) OVER (ORDER BY fetched DESC) AS total FROM lake_days)
+	_, err := t.db.Exec(`DELETE FROM lake_track_days WHERE fetched <= (
+		SELECT fetched FROM (SELECT fetched, sum(length(points)) OVER (ORDER BY fetched DESC) AS total FROM lake_track_days)
 		WHERE total > ? LIMIT 1)`, max)
 	return err
 }

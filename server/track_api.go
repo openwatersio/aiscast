@@ -41,9 +41,16 @@ type trackRequest struct {
 	limit    int
 }
 
-// trackMaxSpan is the longest range one request may ask for. Reads past the window are billed by the bytes
-// they scan, so a request's reach is bounded; a longer history pages back by moving to.
-const trackMaxSpan = 7 * 24 * time.Hour
+// trackMaxSpan is the longest range one request may ask for: a year, since the lake's tracks hold a position a
+// minute at most and a vessel's month is one file. A longer history pages back by moving to.
+const trackMaxSpan = 366 * 24 * time.Hour
+
+// trackLakeStep is the finest interval of a range that reaches before the track store's window: the lake's
+// tracks hold a vessel's first position in each minute, so the whole range is thinned alike, without a seam
+// where the window begins.
+// A default step never needs raising, since a range past the window spread over any tier's limit rounds to a
+// minute or more, and MCP's steps are whole minutes; an explicit interval can ask for finer.
+const trackLakeStep = time.Minute
 
 // canReachArchive reports whether a tier reads positions older than the track store's window. Those reads
 // scan the lake and cost money per request, which is why history is a feeder and commercial capability.
@@ -89,7 +96,7 @@ func parseTrackRange(fromS, toS string, now time.Time, archive, lakeOn bool) (fr
 	}
 	to = clampTime(to, time.Time{}, now)
 	if to.Sub(from) > trackMaxSpan {
-		return from, to, http.StatusBadRequest, "a track covers at most 7 days per request; page back by moving to"
+		return from, to, http.StatusBadRequest, "a track covers at most 366 days per request; page back by moving to"
 	}
 	return clampTime(from, time.Time{}, now).UTC(), to.UTC(), 0, ""
 }
@@ -135,6 +142,9 @@ func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time)
 		} else {
 			return q, http.StatusBadRequest, "interval=<seconds> or a duration such as 5m"
 		}
+	}
+	if p.lake != nil && q.from.Before(now.Add(-trackWindow)) && q.interval < trackLakeStep {
+		q.interval = trackLakeStep
 	}
 	return q, 0, ""
 }
@@ -440,7 +450,7 @@ const mcpTrackDefaultLimit = 50
 
 type mcpTrackIn struct {
 	MMSI            uint32 `json:"mmsi" jsonschema:"the vessel's MMSI; use search_vessels_by_name first when you only have a name"`
-	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. Anonymous and personal calls reach back 48 hours; feeder and commercial tokens reach the archive, up to 7 days per call"`
+	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. Anonymous and personal calls reach back 48 hours; feeder and commercial tokens reach the archive, up to 366 days per call at one position a minute at most"`
 	To              string `json:"to,omitempty" jsonschema:"end, RFC 3339 UTC; default now"`
 	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the limit is spread over the range at a round spacing, reported as interval_s"`
 	Limit           int    `json:"limit,omitempty" jsonschema:"positions to return: default 50, maximum 200; when more match, the newest are kept"`

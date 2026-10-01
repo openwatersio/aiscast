@@ -105,7 +105,7 @@ func (d *duckLake) attach(ctx context.Context) (*sql.DB, error) {
 	// The first query of a table reads every manifest, several seconds for a lake of a few months, and later
 	// queries reuse them. A query that matches nothing pays that here instead of in a request. A lake without
 	// the table yet has nothing to load.
-	db.ExecContext(ctx, `SELECT 1 FROM lake.ais.positions WHERE day = DATE '1970-01-01' LIMIT 0`)
+	db.ExecContext(ctx, `SELECT 1 FROM lake.ais.tracks WHERE day = DATE '1970-01-01' LIMIT 0`)
 	return db, nil
 }
 
