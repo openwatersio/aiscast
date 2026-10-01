@@ -80,6 +80,26 @@ CREATE TABLE IF NOT EXISTS wikidata (
 	registry      TEXT    NOT NULL DEFAULT '', -- country of registry, in English
 	former_names  TEXT    NOT NULL DEFAULT ''  -- JSON array, oldest first
 );
+-- US-flag vessels with a call sign from the Coast Guard's PSIX, listed weekly, with dimensions and tonnage
+-- read for the vessels AIS matches to them (uscg.go)
+CREATE TABLE IF NOT EXISTS uscg (
+	vessel_id       INTEGER PRIMARY KEY,         -- PSIX's id
+	callsign        TEXT    NOT NULL,
+	name            TEXT    NOT NULL,
+	identification  TEXT    NOT NULL DEFAULT '',
+	service         TEXT    NOT NULL DEFAULT '',
+	status          TEXT    NOT NULL DEFAULT '',
+	year_built      INTEGER NOT NULL DEFAULT 0,
+	length          REAL    NOT NULL DEFAULT 0,  -- metres
+	beam            REAL    NOT NULL DEFAULT 0,
+	depth           REAL    NOT NULL DEFAULT 0,
+	gross_tonnage   INTEGER NOT NULL DEFAULT 0,
+	net_tonnage     INTEGER NOT NULL DEFAULT 0,
+	tonnage_measure TEXT    NOT NULL DEFAULT '',
+	listed          INTEGER NOT NULL DEFAULT 0,  -- unix ms of the listing that last held the vessel
+	details_at      INTEGER NOT NULL DEFAULT 0   -- unix ms of the last dimensions and tonnage read; 0 before
+);
+CREATE INDEX IF NOT EXISTS uscg_callsign ON uscg (callsign);
 `
 
 // storeAddedCols are columns a file created by an earlier build lacks. SQLite has no ADD COLUMN IF NOT

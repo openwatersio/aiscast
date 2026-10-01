@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><soap:Body><getVesselDimensionsXMLStringResponse xmlns="https://cgmix.uscg.mil"><getVesselDimensionsXMLStringResult>&lt;NewDataSet&gt;
+  &lt;VesselDimensions&gt;
+    &lt;VesselId&gt;1097015&lt;/VesselId&gt;
+    &lt;DimensionTypeLookupId&gt;2&lt;/DimensionTypeLookupId&gt;
+    &lt;DimensionTypeLookupName&gt;Convention&lt;/DimensionTypeLookupName&gt;
+    &lt;BreadthInFeet&gt;131.20&lt;/BreadthInFeet&gt;
+    &lt;DepthInFeet&gt;66.60&lt;/DepthInFeet&gt;
+    &lt;LengthInFeet&gt;941.20&lt;/LengthInFeet&gt;
+  &lt;/VesselDimensions&gt;
+  &lt;VesselDimensions&gt;
+    &lt;VesselId&gt;1097015&lt;/VesselId&gt;
+    &lt;DimensionTypeLookupId&gt;8&lt;/DimensionTypeLookupId&gt;
+    &lt;DimensionTypeLookupName&gt;Length Between Perpendiculars&lt;/DimensionTypeLookupName&gt;
+    &lt;LengthInFeet&gt;940.60&lt;/LengthInFeet&gt;
+  &lt;/VesselDimensions&gt;
+  &lt;VesselDimensions&gt;
+    &lt;VesselId&gt;1097015&lt;/VesselId&gt;
+    &lt;DimensionTypeLookupId&gt;9&lt;/DimensionTypeLookupId&gt;
+    &lt;DimensionTypeLookupName&gt;Design Draft&lt;/DimensionTypeLookupName&gt;
+    &lt;LengthInFeet&gt;39.40&lt;/LengthInFeet&gt;
+  &lt;/VesselDimensions&gt;
+  &lt;VesselDimensions&gt;
+    &lt;VesselId&gt;1097015&lt;/VesselId&gt;
+    &lt;DimensionTypeLookupId&gt;11&lt;/DimensionTypeLookupId&gt;
+    &lt;DimensionTypeLookupName&gt;Length&lt;/DimensionTypeLookupName&gt;
+    &lt;LengthInFeet&gt;941.20&lt;/LengthInFeet&gt;
+  &lt;/VesselDimensions&gt;
+&lt;/NewDataSet&gt;</getVesselDimensionsXMLStringResult></getVesselDimensionsXMLStringResponse></soap:Body></soap:Envelope>

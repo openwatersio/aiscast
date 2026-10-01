@@ -111,7 +111,7 @@
         "operationId": "getVessel",
         "tags": ["Vessels and stations"],
         "summary": "One vessel",
-        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is the earliest report of the vessel the network holds, from live traffic or its archive. `attribution` carries the credit line for the source of its last message. `properties.wikidata` holds the vessel's particulars as registered, from its Wikidata item, when its IMO number has one.",
+        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is the earliest report of the vessel the network holds, from live traffic or its archive. `attribution` carries the credit line for the source of its last message. `properties.wikidata` holds the vessel's particulars as registered, from its Wikidata item, when its IMO number has one. `properties.uscg` holds a US-flag vessel's particulars as documented with the US Coast Guard, when its call sign and name match a vessel there.",
         "security": [{}, { "token": [] }],
         "parameters": [
           {
@@ -143,7 +143,8 @@
                         "properties": {
                           "type": "object",
                           "properties": {
-                            "wikidata": { "$ref": "#/components/schemas/VesselWikidata" }
+                            "wikidata": { "$ref": "#/components/schemas/VesselWikidata" },
+                            "uscg": { "$ref": "#/components/schemas/VesselUSCG" }
                           }
                         }
                       }
@@ -743,6 +744,26 @@
           "beam": { "type": "number", "description": "Beam in meters (P2261)." },
           "registry": { "type": "string", "description": "Country of registry, its English name (P8047)." },
           "former_names": { "type": "array", "items": { "type": "string" }, "description": "Names the vessel carried before, oldest first (P1448 with an end time)." }
+        }
+      },
+      "VesselUSCG": {
+        "type": "object",
+        "description": "Particulars from the US Coast Guard's Port State Information Exchange (PSIX), a weekly public snapshot of its MISLE database. Present on `/v1/vessels/{mmsi}` for a US-flag vessel whose call sign and name both match a vessel PSIX lists; names match through abbreviations and misspellings, and a call sign alone never does. The listing is refreshed weekly. Dimensions and tonnage are read for each matched vessel after it is first heard, a request a second, and refreshed every 90 days, so a vessel can carry the other fields before them. A US government work, in the public domain, so no credit line is required. Each field other than `id`, `license`, and `name` is present only when PSIX has it.",
+        "required": ["id", "license", "name"],
+        "properties": {
+          "id": { "type": "integer", "description": "The vessel's ID in PSIX.", "example": 1097015 },
+          "license": { "type": "string", "const": "public domain (U.S. government work)" },
+          "name": { "type": "string", "description": "Name as documented, which can differ from the AIS name." },
+          "identification": { "type": "string", "description": "The official number of a documented vessel, else its state registration." },
+          "service": { "type": "string", "description": "Service type, such as `Towing Vessel`, `Passenger (Inspected)`, `Commercial Fishing Vessel`, or `Recreational`." },
+          "status": { "type": "string", "description": "Coast Guard status, such as `Active` or `Laid Up`." },
+          "year_built": { "type": "integer" },
+          "length": { "type": "number", "description": "Registered length in meters." },
+          "beam": { "type": "number", "description": "Registered breadth in meters." },
+          "depth": { "type": "number", "description": "Registered depth in meters." },
+          "gross_tonnage": { "type": "integer" },
+          "net_tonnage": { "type": "integer" },
+          "tonnage_measure": { "type": "string", "enum": ["Convention", "Regulatory", "Simplified"], "description": "How the tonnage was measured: `Convention` is the international system, `Regulatory` the older US system in register tons, and `Simplified` the method for small vessels. Convention is reported when a vessel has more than one." }
         }
       },
       "Station": {

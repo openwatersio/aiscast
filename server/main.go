@@ -78,6 +78,12 @@ func main() {
 			if env("WIKIDATA", "1") == "1" {
 				go p.runWikidata(env("WIKIDATA_URL", wikidataSPARQL))
 			}
+			if err := p.loadUSCGStats(); err != nil {
+				log.Printf("uscg: %v", err)
+			}
+			if env("USCG", "1") == "1" {
+				go p.runUSCG(env("USCG_URL", psixEndpoint))
+			}
 			go p.runRecordCounts()
 		}
 	}

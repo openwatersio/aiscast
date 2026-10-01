@@ -394,6 +394,7 @@ type vesselProps struct {
 	ToStarboard *uint8        `json:"to_starboard,omitempty"`
 	ToStern     *uint16       `json:"to_stern,omitempty"`
 	Type        uint8         `json:"type,omitempty"`
+	USCG        *uscgVessel   `json:"uscg,omitempty"`     // on /v1/vessels/{mmsi} only
 	Wikidata    *wikidataShip `json:"wikidata,omitempty"` // on /v1/vessels/{mmsi} only
 }
 
@@ -708,7 +709,8 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 
 // serveVessel: GET /v1/vessels/{mmsi} → one vessel's last known state as a GeoJSON Feature, from the cache
 // completed by the record, or from the record alone for a vessel the cache no longer holds, with its
-// particulars from Wikidata when its IMO has an item. geometry is null for a vessel whose position was never
+// particulars from Wikidata when its IMO has an item and from the Coast Guard when it is a documented US
+// vessel. geometry is null for a vessel whose position was never
 // heard. An unknown vessel is a 404.
 func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	if _, err := p.requestClaims(r); err != nil {
@@ -763,6 +765,7 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 		f.Properties.FirstSeen = first.UTC().Format(time.RFC3339)
 	}
 	f.Properties.Wikidata = p.wikidataOf(cur.IMO)[cur.IMO]
+	f.Properties.USCG = p.uscgOf(uscgKey{mmsi, cur.CallSign, cur.Name})[mmsi]
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
 	// allocation.

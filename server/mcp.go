@@ -44,6 +44,7 @@ const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the ope
 - get_vessel_track answers where a vessel has been. Anonymous and personal calls reach the last 48 hours; feeder and commercial tokens reach further, 7 days per call.
 - These tools answer one question at a time. For continuous updates use the WebSocket stream at wss://ais.openwaters.io/v1/stream, documented at ` + mcpDocsURL + `.
 - get_vessels adds a wikidata object for vessels whose IMO number has a Wikidata item: builder, year built, gross tonnage, deadweight, registered length and beam, country of registry, and former names. It is refreshed weekly and public domain (CC0), so it needs no credit line. Registered dimensions can differ from the ones AIS reports.
+- get_vessels adds a uscg object for US-flag vessels whose call sign and name match the Coast Guard's PSIX database: service type such as Towing Vessel or Passenger (Inspected), status, year built, official number, and, once read, registered length, breadth, depth, and tonnage. It is public domain and needs no credit line.
 - The network holds no port registry, weather, ownership, or inspection data.`
 
 // mcpService is the MCP server and its HTTP handler, built once per Pipeline.
@@ -80,7 +81,7 @@ func newMCPService(p *Pipeline) *mcpService {
 			SetCacheable: func(_ context.Context, _ mcp.Request, c *mcp.Cacheable) { c.TTLMs, c.CacheScope = 3600_000, "public" },
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "get_vessels", Title: "Vessels by MMSI", Annotations: ro("Vessels by MMSI"),
-		Description: "Last known position and particulars of specific vessels by MMSI (Maritime Mobile Service Identity) or IMO number: the last report heard for each, however long ago, with destination, ETA, draught, and dimensions once its static data has been heard, and which identifiers match no vessel the network has heard. A vessel whose IMO number has a Wikidata item also carries its builder, year built, tonnage, registered dimensions, country of registry, and former names from there. Use search_vessels_by_name first when you only have a name."},
+		Description: "Last known position and particulars of specific vessels by MMSI (Maritime Mobile Service Identity) or IMO number: the last report heard for each, however long ago, with destination, ETA, draught, and dimensions once its static data has been heard, and which identifiers match no vessel the network has heard. A vessel whose IMO number has a Wikidata item also carries its builder, year built, tonnage, registered dimensions, country of registry, and former names from there, and a documented US vessel its service type, status, official number, registered dimensions, and tonnage from the US Coast Guard. Use search_vessels_by_name first when you only have a name."},
 		p.mcpGetVessels)
 	mcp.AddTool(s, &mcp.Tool{Name: "find_vessels_in_area", Title: "Vessels in an area", Annotations: ro("Vessels in an area"),
 		Description: "Vessels currently inside a latitude/longitude bounding box, newest report first, with optional kind and ship-type filters. Use for what is in a port, a strait, or a stretch of coast. Anonymous calls may cover 100 square degrees per call."},
@@ -166,6 +167,7 @@ type mcpVessel struct {
 	DistanceNM    *float64      `json:"distance_nm,omitempty" jsonschema:"nautical miles from the search centre (find_vessels_near)"`
 	Bearing       *float64      `json:"bearing,omitempty" jsonschema:"degrees true from the search centre to the vessel (find_vessels_near)"`
 	Wikidata      *wikidataShip `json:"wikidata,omitempty" jsonschema:"particulars as registered, from the vessel's Wikidata item found by its IMO number (get_vessels)"`
+	USCG          *uscgVessel   `json:"uscg,omitempty" jsonschema:"particulars as documented with the US Coast Guard, for a US-flag vessel whose call sign and name match a vessel in its PSIX database (get_vessels)"`
 }
 
 type mcpVessels struct {
@@ -464,8 +466,13 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 		imos = append(imos, r.IMO)
 	}
 	wd := p.wikidataOf(imos...)
-	for i := range out.Vessels {
-		out.Vessels[i].Wikidata = wd[out.Vessels[i].IMO]
+	keys := make([]uscgKey, 0, len(out.Vessels))
+	for _, r := range out.Vessels {
+		keys = append(keys, uscgKey{r.MMSI, r.CallSign, r.Name})
+	}
+	cg := p.uscgOf(keys...)
+	for i, r := range out.Vessels {
+		out.Vessels[i].Wikidata, out.Vessels[i].USCG = wd[r.IMO], cg[r.MMSI]
 	}
 	for _, m := range in.MMSI {
 		if !known[m] {
