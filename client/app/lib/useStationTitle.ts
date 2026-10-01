@@ -25,23 +25,33 @@ function titles(): Promise<Map<string, string>> {
 }
 
 /**
- * What to call a station: its name, or "Near" the place its traffic is, once the station list
- * arrives. The id until then, and for a station the list does not have. A volunteer's tagged id,
- * which vessel records still carry, is named as its receiver.
+ * Which listed station an id names, and what to call it. An id the list has stands as it is. One it
+ * lacks may be a volunteer's tagged id, which vessel records still carry, so it falls back to the
+ * receiver when the list has that. A token subject can itself contain "/", so the exact id is tried
+ * first. Before the list arrives, and for an id it has neither way, the id names itself.
  */
-export function useStationTitle(id: string | undefined): string | undefined {
-  const key = id && (volunteerReceiver(id) ?? id);
-  const [title, setTitle] = useState(() => (key ? (known?.titles.get(key) ?? key) : undefined));
+export function resolveStation(id: string, titles: Map<string, string> | undefined): { id: string; title: string } {
+  const listed = titles?.get(id);
+  if (listed != null) return { id, title: listed };
+  const receiver = volunteerReceiver(id);
+  const viaReceiver = receiver != null ? titles?.get(receiver) : undefined;
+  if (receiver != null && viaReceiver != null) return { id: receiver, title: viaReceiver };
+  return { id, title: id };
+}
+
+/** resolveStation for a station id, once the station list arrives. */
+export function useStation(id: string | undefined): { id: string; title: string } | undefined {
+  const [station, setStation] = useState(() => (id ? resolveStation(id, known?.titles) : undefined));
   useEffect(() => {
-    if (!key) return setTitle(undefined);
-    setTitle(known?.titles.get(key) ?? key);
+    if (!id) return setStation(undefined);
+    setStation(resolveStation(id, known?.titles));
     let current = true;
     void titles().then((t) => {
-      if (current) setTitle(t.get(key) ?? key);
+      if (current) setStation(resolveStation(id, t));
     });
     return () => {
       current = false;
     };
-  }, [key]);
-  return title;
+  }, [id]);
+  return station;
 }
