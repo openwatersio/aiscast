@@ -1,11 +1,11 @@
 import { ChevronDown, ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
-import { speedAt, TRACK_GAP_MS } from "../lib/ais";
+import { speedAt } from "../lib/ais";
 import { cn } from "../lib/cn";
 import { publicApiBase, storedToken, trackPath } from "../lib/api";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
 import { useLive } from "../lib/live";
-import { earlier, later, rangeBounds, rangeLabel, timeTicks, TRACK_RANGES, utcMoment, type TrackRange } from "../lib/trackRange";
+import { earlier, later, rangeBounds, rangeLabel, timeTicks, TRACK_RANGES, utcMoment, type TrackRange, type TrackSpan } from "../lib/trackRange";
 import type { LoadedTrack, TrackFailure } from "../lib/useTrack";
 import { IconButton } from "./ui/IconButton";
 import { Menu, MenuRadioGroup, MenuRadioItem } from "./ui/Menu";
@@ -59,7 +59,7 @@ export function VesselTrack({
   // range is somewhere the reader asked to go, so the map goes there.
   useEffect(() => {
     if (!live) return;
-    live.ctl.setTrack(track?.coords ?? [], track?.times ?? [], track?.live ?? true);
+    live.ctl.setTrack(track?.coords ?? [], track?.times ?? [], track?.live ?? true, track?.gap);
     if (track && !track.live) live.ctl.fitTrack();
   }, [live, track]);
   useEffect(() => live?.ctl.scrubTo(scrubAt), [live, scrubAt]);
@@ -112,10 +112,10 @@ export function VesselTrack({
             </button>
           }
         >
-          <MenuRadioGroup value={range.end == null ? range.hours : null} onChange={(hours: number) => changeRange({ hours, end: null })}>
-            {TRACK_RANGES.map((hours) => (
-              <MenuRadioItem key={hours} value={hours}>
-                {rangeLabel({ hours, end: null })}
+          <MenuRadioGroup value={range.end == null ? range.span : null} onChange={(span: TrackSpan) => changeRange({ span, end: null })}>
+            {TRACK_RANGES.map((span) => (
+              <MenuRadioItem key={span} value={span}>
+                {rangeLabel({ span, end: null })}
               </MenuRadioItem>
             ))}
           </MenuRadioGroup>
@@ -141,10 +141,10 @@ export function VesselTrack({
           {track && scrubAt != null ? (
             <>
               <span className="font-semibold text-fg tabular-nums">{momentOn(track, scrubAt)} UTC</span>
-              {speedAt(track, scrubAt) != null && (
+              {speedAt(track, scrubAt, track.gap) != null && (
                 <>
                   {" · "}
-                  <span className="font-semibold text-fg tabular-nums">{speedAt(track, scrubAt)!.toFixed(1)} kn</span>
+                  <span className="font-semibold text-fg tabular-nums">{speedAt(track, scrubAt, track.gap)!.toFixed(1)} kn</span>
                 </>
               )}
             </>
@@ -251,7 +251,7 @@ function scale(top: number): { max: number; step: number } {
 
 /**
  * Speed over time as a line over a soft fill, broken wherever the vessel went unheard for
- * longer than TRACK_GAP_MS, since joining across a silence draws speeds nobody reported.
+ * longer than the track's gap, since joining across a silence draws speeds nobody reported.
  * The chart is also the scrubber: a mouse scrubs by hovering, a finger by pressing and
  * dragging, and the keyboard with the arrow keys.
  */
@@ -294,7 +294,7 @@ function TrackChart({
   let run: Array<[number, number]> = [];
   times.forEach((t, i) => {
     const v = sog[i];
-    if (v == null || (i > 0 && t - times[i - 1]! > TRACK_GAP_MS)) {
+    if (v == null || (i > 0 && t - times[i - 1]! > track.gap)) {
       if (run.length > 1) segments.push(run);
       run = [];
     }
@@ -342,7 +342,7 @@ function TrackChart({
     }
   };
 
-  const speed = scrubAt != null ? speedAt(track, scrubAt) : undefined;
+  const speed = scrubAt != null ? speedAt(track, scrubAt, track.gap) : undefined;
   const readout = scrubAt != null ? `${momentOn(track, scrubAt)}${speed != null ? ` · ${speed.toFixed(1)} kn` : ""}` : undefined;
   const cursorX = scrubAt != null ? x(scrubAt) : undefined;
 
