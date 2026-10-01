@@ -302,11 +302,17 @@ TRACK_BEAT_MIN = 15
 M_PER_LAT6 = 111195 / 600000  # meters per 1/600000 degree of latitude
 
 
+LON6_TURN = 360 * 600000  # a full turn of longitude in 1/600000 degree
+
+
 def meters_sql(lat, lon, lat2, lon2):
     """Distance in meters on a flat projection about the first point: exact enough at the tens of meters
-    the rollup judges, and two orders cheaper than a haversine over a day of positions."""
+    the rollup judges, and two orders cheaper than a haversine over a day of positions. The longitude
+    difference goes the short way round, so a vessel moored on the antimeridian stays still."""
+    half = LON6_TURN // 2
+    dlon = f"((({lon2} - {lon} + {half}) % {LON6_TURN} + {LON6_TURN}) % {LON6_TURN} - {half})"
     return (f"sqrt(pow(({lat2} - {lat}) * {M_PER_LAT6}, 2) "
-            f"+ pow(({lon2} - {lon}) * {M_PER_LAT6} * cos(radians({lat} / 600000)), 2))")
+            f"+ pow({dlon} * {M_PER_LAT6} * cos(radians({lat} / 600000)), 2))")
 
 
 def build_tracks(con):

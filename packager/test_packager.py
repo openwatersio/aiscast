@@ -694,6 +694,17 @@ def test_tracks_keep_a_moored_vessels_ends_and_beats():
     assert track_minutes(con, 1) == [0, 15, 30, 45, 59]
 
 
+def test_tracks_keep_a_vessel_moored_on_the_antimeridian_still():
+    from datetime import datetime, timedelta
+
+    con = duckdb.connect()
+    t0 = datetime(2026, 9, 1, 0, 0, 0)
+    # a few meters either side of 180 degrees, every 20 s for an hour
+    staged_positions(con, [(4, t0 + timedelta(seconds=20 * i), -16.0, 179.99995 if i % 2 else -179.99995) for i in range(180)])
+    packager.build_tracks(con)
+    assert track_minutes(con, 4) == [0, 15, 30, 45, 59]
+
+
 def test_tracks_keep_every_minute_a_vessel_moves_and_its_first_report_in_it():
     from datetime import datetime, timedelta
 
