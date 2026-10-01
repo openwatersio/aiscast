@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.62.0",
+    "@maplibre/maplibre-gl-style-spec": "^26.4.4",
     "@playwright/test": "^1.63.0",
     "@react-router/dev": "^8.4.0",
     "@tailwindcss/vite": "^4.3.3",

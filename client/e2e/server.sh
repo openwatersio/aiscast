@@ -7,6 +7,10 @@ set -e
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$here/.run"
 bin=${AISCAST_BIN:-}
+# A path is relative to where this was started, not to .run, where it runs from.
+case "$bin" in
+  */*) bin=$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin") ;;
+esac
 if [ -z "$bin" ]; then
   (cd "$here/../../server" && go build -o "$here/.run/aiscast" .)
   bin="$here/.run/aiscast"

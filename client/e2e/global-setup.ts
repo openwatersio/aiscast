@@ -8,10 +8,17 @@ import { namedVessels } from "./data";
 export default async function globalSetup() {
   const deadline = Date.now() + 180_000;
   let found = 0;
+  let failure: unknown;
   while (Date.now() < deadline) {
-    found = (await namedVessels().catch(() => [])).length;
-    if (found >= 5) return;
+    try {
+      found = (await namedVessels()).length;
+      failure = undefined;
+      if (found >= 5) return;
+    } catch (e) {
+      // The server can still be starting; anything else is the cause if this times out.
+      failure = e;
+    }
     await new Promise((r) => setTimeout(r, 2_000));
   }
-  throw new Error(`Digitraffic named ${found} vessels in the test area within three minutes`);
+  throw new Error(`Digitraffic named ${found} vessels in the test area within three minutes`, { cause: failure });
 }
