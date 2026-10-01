@@ -297,6 +297,25 @@ describe("config UI", () => {
     expect(noMmsi.share.position["ui:disabled"]).toBe(true);
     expect(noMmsi.share.position["ui:help"]).toMatch(/MMSI/);
   });
+
+  it("shows the boat's full station id once the plugin has a token", async () => {
+    type Ui = { advanced: { token: Record<string, unknown> } };
+    expect((createPlugin(app).uiSchema as () => Ui)().advanced.token["ui:help"]).toBeUndefined();
+    await start();
+    const { x } = JSON.parse(await readFile(join(app.dataDir, "identity.json"), "utf8"));
+    const ui = (plugin.uiSchema as () => Ui)();
+    expect(ui.advanced.token["ui:help"]).toBe(`This boat's station is station:ed25519:${x}`);
+  });
+});
+
+describe("configured token", () => {
+  it("says how to go back to the plugin's own token when aiscast refuses a pasted one", async () => {
+    await start({ advanced: { server: server.url, token: "ak1.pasted.token" } });
+    server.send({ type: "error", error: "token not valid from this address" });
+    await until(() => app.errors.length > 0);
+    expect(app.errors[0]).toMatch(/refused the configured token: token not valid from this address\. Clear Advanced → Access token/);
+    expect(server.keyRequests).toHaveLength(0);
+  });
 });
 
 describe("downlink", () => {

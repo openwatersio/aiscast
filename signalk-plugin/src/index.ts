@@ -18,6 +18,7 @@ import { Uplink } from "./uplink.js";
 
 export const PLUGIN_ID = "signalk-aiscast";
 const DEFAULT_SERVER = "https://ais.openwaters.io";
+const STATION_PAGE = "https://openwaters.io/ais/stations/"; // the web client for DEFAULT_SERVER
 const STATUS_EVERY = 5_000;
 const TOKEN_CHECK_EVERY = 6 * 3600_000; // with a token: renew a few days before expiry
 const TOKEN_RETRY_MIN = 60_000; // without one (network not up yet at boot, server down): retry soon, backing off
@@ -36,6 +37,7 @@ export default function (app: ServerAPI): Plugin {
   const events = app as unknown as EventEmitter;
   let generation = 0; // bumped by stop(); a start() still in its awaits checks it and gives up
   let teardown: (() => Promise<void>) | null = null;
+  let stationHelp: string | null = null; // where aiscast files this boat's receptions, once a token names it
 
   const plugin: Plugin = {
     id: PLUGIN_ID,
@@ -110,7 +112,7 @@ export default function (app: ServerAPI): Plugin {
               type: "string",
               title: "Access token (optional)",
               description:
-                "Leave empty: the plugin creates a keypair on first start and requests its own personal token. Paste a token from the aiscast operator to publish with a named station and higher limits.",
+                "Leave empty: the plugin creates a keypair on first start and requests its own personal token, which works from any network address. Paste a token here only if the aiscast operator issued you one for a named station with higher limits.",
             },
           },
         },
@@ -146,7 +148,12 @@ export default function (app: ServerAPI): Plugin {
             "Relay aiscast targets as !AIVDM on the nmea0183out event, so chartplotters and tablet apps reading the server's NMEA 0183 connections see them. Turn off if another plugin (signalk-vessels-to-ais) already converts them.",
         },
       },
-      advanced: { token: { "ui:widget": "password" } },
+      advanced: {
+        token: {
+          "ui:widget": "password",
+          ...(stationHelp && { "ui:help": stationHelp }),
+        },
+      },
     }),
 
     start(config: object) {
@@ -229,6 +236,10 @@ export default function (app: ServerAPI): Plugin {
         }
       }
       selfSub = token ? (tokenSub(token.token) ?? `ed25519:${identity.pubkey}`) : null;
+      const station = selfSub && `station:${selfSub}`;
+      stationHelp = station
+        ? `This boat's station is ${station}` + (server === DEFAULT_SERVER ? `: ${STATION_PAGE}${station}` : "")
+        : null;
     };
     await refreshToken();
     if (!live()) return;
@@ -274,8 +285,12 @@ export default function (app: ServerAPI): Plugin {
     });
     l.on("error", (message) => {
       if (/token/i.test(message) && !/publish/.test(message)) {
-        reportError(`aiscast refused the token: ${message}`);
-        if (!configuredToken) {
+        if (configuredToken) {
+          reportError(
+            `aiscast refused the configured token: ${message}. Clear Advanced → Access token and the plugin uses its own, which works from any network address.`,
+          );
+        } else {
+          reportError(`aiscast refused the token: ${message}`);
           const refused = token?.token;
           // A fresh token reconnects at once; the same token again waits out the refusal backoff.
           forgetToken(dir)

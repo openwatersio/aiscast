@@ -7,7 +7,7 @@ Signal K plugin for [aiscast](https://github.com/openwatersio/aiscast), the [Ope
 
 It also follows your buddy boats worldwide: see [Buddy boats](#buddy-boats).
 
-No account. On first start the plugin generates an Ed25519 keypair in its data directory and requests its own access token from aiscast, signing the request with that key so nobody else can get a token for it. The token is sent as an `Authorization: Bearer` header, and aiscast credits receptions to that key. Paste an operator-issued token into the config to publish as a named station with higher limits.
+No account. On first start the plugin generates an Ed25519 keypair in its data directory and requests its own access token from aiscast, signing the request with that key so nobody else can get a token for it. The token is sent as an `Authorization: Bearer` header and works from any network address, and aiscast credits receptions to that key. Advanced → Access token shows the address of the boat's station page on openwaters.io, as text to copy into a browser. Paste an operator-issued token into the config to publish as a named station with higher limits.
 
 ## Install
 
@@ -24,7 +24,7 @@ Signal K App Store → `signalk-aiscast`, or `npm install signalk-aiscast` in `~
 | Receive → Radius | 50 nm | subscription box around the vessel (5–200) |
 | Receive → Send aiscast traffic to NMEA 0183 output | on | re-emit injected targets as `!AIVDM` on the `nmea0183out` event, so chartplotters and tablet apps see them too |
 | Advanced → Server | `https://ais.openwaters.io` | aiscast base URL |
-| Advanced → Access token | empty | optional operator-issued token. Empty = self-minted personal token |
+| Advanced → Access token | empty | optional operator-issued token. Empty = self-minted personal token, which works from any network address |
 
 ## Buddy boats
 
