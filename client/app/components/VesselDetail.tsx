@@ -24,6 +24,7 @@ import { cn } from "../lib/cn";
 import { mediaKey } from "../lib/media";
 import { particularsFacts } from "../lib/particulars";
 import { useMedia } from "../lib/useMedia";
+import type { TrackRange } from "../lib/trackRange";
 import { useStation } from "../lib/useStationTitle";
 import { useTrack } from "../lib/useTrack";
 import { PageTitle } from "./Panel";
@@ -52,8 +53,8 @@ export function VesselDetail({
 }) {
   const live = useLive();
   const heard = useLiveVessel(mmsi);
-  const [trackHours, setTrackHours] = useState(24);
-  const { track, loading: trackLoading } = useTrack(mmsi, trackHours);
+  const [trackRange, setTrackRange] = useState<TrackRange>({ hours: 24, end: null });
+  const { track, loading: trackLoading, failure: trackFailure } = useTrack(mmsi, trackRange);
 
   const p = feature?.properties;
   const recordSeen = p ? Date.parse(p.seen) : 0;
@@ -227,7 +228,15 @@ export function VesselDetail({
         </Section>
       )}
 
-      <VesselTrack mmsi={mmsi} track={track} loading={trackLoading} hours={trackHours} onHoursChange={setTrackHours} />
+      <VesselTrack
+        mmsi={mmsi}
+        track={track}
+        loading={trackLoading}
+        failure={trackFailure}
+        range={trackRange}
+        firstSeen={p?.first_seen ? Date.parse(p.first_seen) : undefined}
+        onRangeChange={setTrackRange}
+      />
 
       {/* Shown even when absent: a blank under "Speed" says the vessel is not reporting it,
           where an omitted row says nothing at all. */}
