@@ -31,6 +31,7 @@ Environment:
 - `USAGE` (`vessels-usage.json`): the rolling 24 h/7 d counters behind `/v1/stats`, written every minute and on shutdown, and restored on boot.
 - `STORE` (`aiscast.db`): the vessel record, in SQLite. The vessel cache is restored from it on boot. `off` runs without it, and without tracks, and a restart starts with an empty map. It also holds the `stations` table: names, coverage labels, and which keys must sign their token requests. A signed request is saved there before its token is issued, so without the record those locks last only as long as the process. See [Vessel record](#vessel-record).
 - `TRACKS` (`tracks.db`): every position of the last 48 hours, in SQLite, for tracks. `off` runs without it. See [Recent tracks](#recent-tracks).
+- `WIKIDATA` (`1`): sync vessel particulars from Wikidata weekly into the vessel record. `0` turns it off. `WIKIDATA_URL` (`https://query.wikidata.org/sparql`) names the query endpoint. See [Vessel particulars](#vessel-particulars).
 - `LAKE_CATALOG_TOKEN` (set = tracks reach the lake past 48 hours, and the record imports its history), `LAKE_BUCKET` (`ais-lake`), `LAKE_DUCKDB_DIR` (`duckdb`, where DuckDB keeps its extensions). The token needs R2 Data Catalog read and object read on the bucket; the account is `R2_ACCOUNT_ID`.
 - `WS_CONNECTS_PER_MIN` (`60` per IP).
 - `STATION_SALT`: keys the UDP station ids. Set it on a public host.
@@ -83,6 +84,14 @@ The fold marks each vessel it updates, and a writer upserts the marked vessels o
 History reaches the record through the lake. Once a day after 03:00 UTC, when the packager's night is over, and after a restart when the last import is more than a day old, the server reads `ais.vessels` a page at a time and merges every row. The packager records there, per MMSI, the earliest report of any kind and the latest position across every day it has packaged, so every archive it packages backdates `first_seen` with nothing source-specific here. The import's merge has its own rule, because history is usually older than the record: a stored name or particular is only filled when blank, `first_seen` takes the earlier value, and a position is taken only when it is newer. A vessel only history knows gets a row, with its last position and the source kind that delivered it. An import that finds the lake empty does not count, so it retries at the next check. It needs the lake, so it runs only with `LAKE_CATALOG_TOKEN`.
 
 `/metrics` reports `aiscast_store_up`, flushes, flush failures and seconds, rows written, and the file size. `/metrics` also reports import runs, failures, and rows merged, and when the last import succeeded.
+
+## Vessel particulars
+
+`GET /v1/vessels/{mmsi}` and the MCP `get_vessels` tool add a `wikidata` object for a vessel whose IMO number has a Wikidata item: builder, year built, gross tonnage, deadweight, registered length and beam, country of registry, and former names, with the item's ID and URL. A bot import gave most IMO-registered ships an item; about two in three vessels with an IMO have one. Wikidata is CC0, so the object carries `license: CC0-1.0` and adds no credit line to `attribution`.
+
+The particulars live in the `wikidata` table of the vessel record, keyed by IMO, and requests never call Wikidata. Once a week ([wikidata.go](wikidata.go)) the server reads every item with an IMO (P458) from the Wikidata Query Service, about 96,000 of them. It sends one query per field, ten seconds apart, and then names the builders and registries, about 1,500 items, a thousand per query. Each query takes 1 to 20 seconds. One query for every field takes half a minute, close to the service's 60-second limit, and joining names onto every ship's statements runs past it. A sync takes about three minutes and replaces the table in one transaction. An IMO that fails its check digit is skipped on both sides, so a mistyped IMO in AIS never picks up another ship's particulars. An IMO on more than one item takes the lowest QID. A sync that finds fewer than half the ships already stored is refused, and a failed sync is retried at the next hourly check. The fields and properties are in [openapi.json](openapi.json) under `VesselWikidata`.
+
+`/metrics` reports syncs, failures, the IMO numbers stored, and when the last sync succeeded.
 
 ## Recent tracks
 

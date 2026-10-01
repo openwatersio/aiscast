@@ -1,0 +1,89 @@
+{
+ "head": {
+  "vars": [
+   "v",
+   "label"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q233"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Malta"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q783"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Honduras"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q55"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Netherlands"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1327429"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Fincantieri"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q14552001"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Jansen-Werft"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q705377"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Meyer Werft"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1327429"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Fincantieri"
+    }
+   }
+  ]
+ }
+}

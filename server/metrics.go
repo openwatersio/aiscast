@@ -255,6 +255,18 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "aiscast_import_last_success_timestamp_seconds %d\n", t)
 		}
 	}
+	if p.store != nil {
+		metricHead(w, "aiscast_wikidata_syncs_total", "counter", "weekly syncs of vessel particulars from Wikidata")
+		fmt.Fprintf(w, "aiscast_wikidata_syncs_total %d\n", p.wikidata.runs.Load())
+		metricHead(w, "aiscast_wikidata_sync_failures_total", "counter", "Wikidata syncs that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_wikidata_sync_failures_total %d\n", p.wikidata.failures.Load())
+		metricHead(w, "aiscast_wikidata_ships", "gauge", "IMO numbers with particulars from Wikidata")
+		fmt.Fprintf(w, "aiscast_wikidata_ships %d\n", p.wikidata.ships.Load())
+		if t := p.wikidata.lastSuccess.Load(); t > 0 {
+			metricHead(w, "aiscast_wikidata_last_success_timestamp_seconds", "gauge", "when vessel particulars last synced from Wikidata")
+			fmt.Fprintf(w, "aiscast_wikidata_last_success_timestamp_seconds %d\n", t)
+		}
+	}
 
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")
 	streams := p.streams.snapshot()

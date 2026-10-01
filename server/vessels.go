@@ -368,32 +368,33 @@ type pointGeometry struct {
 }
 
 type vesselProps struct {
-	Beam        uint16   `json:"beam,omitempty"`
-	CallSign    string   `json:"callsign,omitempty"`
-	Cog         *float64 `json:"cog,omitempty"`
-	Destination string   `json:"destination,omitempty"`
-	Draught     float64  `json:"draught,omitempty"`
-	ETA         string   `json:"eta,omitempty"`
-	FirstSeen   string   `json:"first_seen,omitempty"` // from the record, on /v1/vessels/{mmsi} only
-	Flag        string   `json:"flag,omitempty"`
-	Heading     *uint16  `json:"heading,omitempty"`
-	IMO         uint32   `json:"imo,omitempty"`
-	Kind        string   `json:"kind"`
-	Length      uint16   `json:"length,omitempty"`
-	MMSI        uint32   `json:"mmsi"`
-	MsgType     string   `json:"msg_type"`
-	Name        string   `json:"name,omitempty"`
-	NavStatus   *uint8   `json:"nav_status,omitempty"`
-	Near        string   `json:"near,omitempty"` // the place nearest the position, on searches only
-	Seen        string   `json:"seen"`
-	Sog         *float64 `json:"sog,omitempty"`
-	Source      string   `json:"source"`
-	Station     string   `json:"station"`
-	ToBow       *uint16  `json:"to_bow,omitempty"`
-	ToPort      *uint8   `json:"to_port,omitempty"`
-	ToStarboard *uint8   `json:"to_starboard,omitempty"`
-	ToStern     *uint16  `json:"to_stern,omitempty"`
-	Type        uint8    `json:"type,omitempty"`
+	Beam        uint16        `json:"beam,omitempty"`
+	CallSign    string        `json:"callsign,omitempty"`
+	Cog         *float64      `json:"cog,omitempty"`
+	Destination string        `json:"destination,omitempty"`
+	Draught     float64       `json:"draught,omitempty"`
+	ETA         string        `json:"eta,omitempty"`
+	FirstSeen   string        `json:"first_seen,omitempty"` // from the record, on /v1/vessels/{mmsi} only
+	Flag        string        `json:"flag,omitempty"`
+	Heading     *uint16       `json:"heading,omitempty"`
+	IMO         uint32        `json:"imo,omitempty"`
+	Kind        string        `json:"kind"`
+	Length      uint16        `json:"length,omitempty"`
+	MMSI        uint32        `json:"mmsi"`
+	MsgType     string        `json:"msg_type"`
+	Name        string        `json:"name,omitempty"`
+	NavStatus   *uint8        `json:"nav_status,omitempty"`
+	Near        string        `json:"near,omitempty"` // the place nearest the position, on searches only
+	Seen        string        `json:"seen"`
+	Sog         *float64      `json:"sog,omitempty"`
+	Source      string        `json:"source"`
+	Station     string        `json:"station"`
+	ToBow       *uint16       `json:"to_bow,omitempty"`
+	ToPort      *uint8        `json:"to_port,omitempty"`
+	ToStarboard *uint8        `json:"to_starboard,omitempty"`
+	ToStern     *uint16       `json:"to_stern,omitempty"`
+	Type        uint8         `json:"type,omitempty"`
+	Wikidata    *wikidataShip `json:"wikidata,omitempty"` // on /v1/vessels/{mmsi} only
 }
 
 func (v *vessel) feature(mmsi uint32) vesselFeature {
@@ -706,8 +707,9 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 }
 
 // serveVessel: GET /v1/vessels/{mmsi} → one vessel's last known state as a GeoJSON Feature, from the cache
-// completed by the record, or from the record alone for a vessel the cache no longer holds. geometry is
-// null for a vessel whose position was never heard. An unknown vessel is a 404.
+// completed by the record, or from the record alone for a vessel the cache no longer holds, with its
+// particulars from Wikidata when its IMO has an item. geometry is null for a vessel whose position was never
+// heard. An unknown vessel is a 404.
 func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	if _, err := p.requestClaims(r); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -760,6 +762,7 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	if !first.IsZero() {
 		f.Properties.FirstSeen = first.UTC().Format(time.RFC3339)
 	}
+	f.Properties.Wikidata = p.wikidataOf(cur.IMO)[cur.IMO]
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
 	// allocation.

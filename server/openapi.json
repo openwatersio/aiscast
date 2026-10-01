@@ -111,7 +111,7 @@
         "operationId": "getVessel",
         "tags": ["Vessels and stations"],
         "summary": "One vessel",
-        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is the earliest report of the vessel the network holds, from live traffic or its archive. `attribution` carries the credit line for the source of its last message.",
+        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is the earliest report of the vessel the network holds, from live traffic or its archive. `attribution` carries the credit line for the source of its last message. `properties.wikidata` holds the vessel's particulars as registered, from its Wikidata item, when its IMO number has one.",
         "security": [{}, { "token": [] }],
         "parameters": [
           {
@@ -139,6 +139,12 @@
                           "type": "object",
                           "description": "Credit line for the source kind of the vessel's last message, keyed as in a FeatureCollection.",
                           "additionalProperties": { "type": "string" }
+                        },
+                        "properties": {
+                          "type": "object",
+                          "properties": {
+                            "wikidata": { "$ref": "#/components/schemas/VesselWikidata" }
+                          }
                         }
                       }
                     }
@@ -719,6 +725,24 @@
               "msg_type": { "type": "string", "description": "aisstream-style type name of that message." }
             }
           }
+        }
+      },
+      "VesselWikidata": {
+        "type": "object",
+        "description": "Particulars as registered, from the Wikidata item that carries the vessel's IMO number (P458). Present on `/v1/vessels/{mmsi}` when the IMO from the vessel's static data has a valid check digit and an item. Refreshed weekly. Wikidata is CC0, so no credit line is required. Registered dimensions can differ from the ones AIS reports. Each field other than `id`, `url`, and `license` is present only when the item has it.",
+        "required": ["id", "url", "license"],
+        "properties": {
+          "id": { "type": "string", "description": "Wikidata item ID.", "example": "Q1052819" },
+          "url": { "type": "string", "format": "uri", "description": "The item's page on Wikidata." },
+          "license": { "type": "string", "const": "CC0-1.0" },
+          "builder": { "type": "string", "description": "Shipyard or builder (P176)." },
+          "year_built": { "type": "integer", "description": "Year the vessel entered service (P729)." },
+          "gross_tonnage": { "type": "integer", "description": "Gross tonnage (P1093)." },
+          "deadweight": { "type": "integer", "description": "Deadweight in tonnes (P4519)." },
+          "length": { "type": "number", "description": "Length in meters (P2043)." },
+          "beam": { "type": "number", "description": "Beam in meters (P2261)." },
+          "registry": { "type": "string", "description": "Country of registry, its English name (P8047)." },
+          "former_names": { "type": "array", "items": { "type": "string" }, "description": "Names the vessel carried before, oldest first (P1448 with an end time)." }
         }
       },
       "Station": {
