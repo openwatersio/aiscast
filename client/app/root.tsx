@@ -4,7 +4,7 @@ import type { Route } from "./+types/root";
 import "./app.css";
 import { Shell } from "./components/Shell";
 import { setPublicApi } from "./lib/api";
-import { serverEnv } from "./lib/context";
+import { serverEnv, visitorLocation } from "./lib/context";
 import { themeFromCookie } from "./lib/theme";
 
 export const links: Route.LinksFunction = () => [
@@ -18,10 +18,15 @@ export const links: Route.LinksFunction = () => [
 
 /**
  * The API the server rendered against is the one the browser should use. The theme choice
- * comes from its cookie so the first response is already in it.
+ * comes from its cookie so the first response is already in it. The map opens where the
+ * visitor's network address places them.
  */
 export function loader({ context, request }: Route.LoaderArgs) {
-  return { api: context.get(serverEnv).api, theme: themeFromCookie(request.headers.get("cookie")) };
+  return {
+    api: context.get(serverEnv).api,
+    theme: themeFromCookie(request.headers.get("cookie")),
+    visitor: context.get(visitorLocation),
+  };
 }
 
 // Nothing here changes after the first load, and revalidating it would send every
@@ -53,7 +58,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 export default function App({ loaderData }: Route.ComponentProps) {
   setPublicApi(loaderData.api);
-  return <Shell initialTheme={loaderData.theme} />;
+  return <Shell initialTheme={loaderData.theme} visitor={loaderData.visitor} />;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
