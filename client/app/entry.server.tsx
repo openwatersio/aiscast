@@ -11,6 +11,11 @@ export default async function handleRequest(
 ) {
   let shellRendered = false;
   const body = await renderToReadableStream(<ServerRouter context={routerContext} url={request.url} />, {
+    // React writes a finished Suspense boundary larger than this as its fallback, with the
+    // content in a hidden element that a script swaps in. A vessel page's facts are larger
+    // than the 12.8 kB default, and a reader or crawler without scripts would see "Loading…"
+    // under "MMSI <n>". Content that is ready is written in place; pending content streams.
+    progressiveChunkSize: Number.POSITIVE_INFINITY,
     onError(error: unknown) {
       status = 500;
       // Errors before the shell renders reject and are logged by React Router.
