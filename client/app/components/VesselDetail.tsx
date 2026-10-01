@@ -1,4 +1,4 @@
-import { ArrowRight, Check, LocateFixed, MapPin, Route, Share } from "lucide-react";
+import { Antenna, ArrowRight, Check, ImagePlus, LocateFixed, MapPin, Route, Sailboat, Share } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
@@ -6,6 +6,7 @@ import {
   flagEmoji,
   flagName,
   formatCoord,
+  isVolunteer,
   NAV_STATUS,
   parseDestination,
   parseEta,
@@ -14,20 +15,24 @@ import {
   vesselDimensions,
   vesselPath,
 } from "../lib/ais";
-import type { VesselFeature } from "../lib/api";
+import { publicApiBase, type VesselFeature } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
+import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS, SIGNALK_PLUGIN } from "../lib/links";
 import { SITE } from "../lib/meta";
+import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
 import { mediaKey, type VesselMedia } from "../lib/media";
 import { useMedia } from "../lib/useMedia";
+import { useStation } from "../lib/useStationTitle";
 import { useTrack } from "../lib/useTrack";
 import { PageTitle } from "./Panel";
-import { ActionButton, ActionRow } from "./ui/ActionButton";
+import { ActionButton, ActionLink, ActionRow } from "./ui/ActionButton";
 import { Facts } from "./ui/Facts";
+import { Prompt } from "./ui/Prompt";
 import { Section } from "./ui/Section";
 import { ShipDiagram } from "./ui/ShipDiagram";
 import { StatGrid } from "./ui/StatGrid";
-import { VesselPhotos } from "./VesselPhotos";
+import { uploadUrl, VesselPhotos } from "./VesselPhotos";
 import { VesselTrack } from "./VesselTrack";
 
 /**
@@ -66,6 +71,8 @@ export function VesselDetail({
   const heading = fresher ? fresher.heading : (p?.heading ?? heard?.heading);
   const navStatusCode = fresher?.navStatus ?? p?.nav_status ?? heard?.navStatus;
   const station = fresher?.station ?? p?.station ?? heard?.station;
+  const stationRef = useStation(station);
+  const source = fresher?.source ?? p?.source ?? heard?.source;
   const country = flagName(p?.flag);
   const imo = p?.imo ?? heard?.imo;
   const draught = p?.draught ? (
@@ -132,6 +139,11 @@ export function VesselDetail({
         <p className="mt-2 text-body text-fg-secondary">
           {loading ? "Loading…" : "The network has never heard this vessel."}
         </p>
+        {!loading && (
+          <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-4">
+            The network hears what its receivers hear. One where this vessel sails would pick it up.
+          </Prompt>
+        )}
       </article>
     );
   }
@@ -170,7 +182,7 @@ export function VesselDetail({
       </p>
       <p className="mt-0.5 text-footnote text-fg-muted">{ids}</p>
 
-      <VesselActions live={live} mmsi={mmsi} name={name} hasTrack={(track?.coords.length ?? 0) > 1} />
+      <VesselActions live={live} mmsi={mmsi} imo={imo} name={name} hasTrack={(track?.coords.length ?? 0) > 1} />
 
       {lat != null && lon != null && (
         <Section
@@ -184,7 +196,7 @@ export function VesselDetail({
           }
         >
           <div className="flex items-center gap-3">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-surface text-accent">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent-bg text-accent">
               <MapPin className="size-5" aria-hidden />
             </span>
             <span className="min-w-0 font-mono text-footnote text-fg-secondary">{formatCoord(lat, lon)}</span>
@@ -237,11 +249,26 @@ export function VesselDetail({
       <Facts
         className="mt-5"
         items={[
-          ["Station", station ? <Link to={`/stations/${station}`}>{station}</Link> : undefined],
+          ["Station", stationRef ? <Link to={`/stations/${stationRef.id}`}>{stationRef.title}</Link> : undefined],
         ]}
       />
 
       {media && <VesselParticulars media={media} />}
+
+      <ContributePrompt ownBoat={cls === "pleasure" || /ClassB/.test(p?.msg_type ?? "")} volunteer={isVolunteer(source)} />
+
+      <Section label="Use this data">
+        <p className="text-subhead text-fg-secondary">This vessel&rsquo;s latest record, as JSON:</p>
+        <code className="mt-1.5 block rounded-md bg-surface-subtle px-2 py-1.5 font-mono text-footnote break-all text-fg">
+          curl {publicApiBase()}/v1/vessels/{mmsi}
+        </code>
+        <p className="mt-2 text-subhead text-fg-secondary">
+          Stream its positions as they are heard, or every vessel in an area.{" "}
+          <a href={DEVELOPERS} className="font-medium whitespace-nowrap">
+            Developers →
+          </a>
+        </p>
+      </Section>
 
       {/* The credit that came with this vessel's own last message, which only the stream carries. */}
       {attribution && (
@@ -301,27 +328,29 @@ function VesselParticulars({ media: { particulars: p, links } }: { media: Vessel
   );
 }
 
-/** Follow, share, and show the track: what a reader does with a vessel once it is open. */
-function VesselActions({ live, mmsi, name, hasTrack }: { live: Live | undefined; mmsi: number; name?: string; hasTrack: boolean }) {
+/** Follow, share, show the track, add a photo: what a reader does with a vessel once it is open. */
+function VesselActions({
+  live,
+  mmsi,
+  imo,
+  name,
+  hasTrack,
+}: {
+  live: Live | undefined;
+  mmsi: number;
+  imo?: number;
+  name?: string;
+  hasTrack: boolean;
+}) {
   const [following, setFollowing] = useState(false);
   const [copied, setCopied] = useState(false);
   // The map owns the state: a drag or another vessel ends following without this button.
   useEffect(() => live?.ctl.onCameraFollow(setFollowing), [live]);
 
   async function share() {
-    const url = `${SITE}${vesselPath(mmsi, name)}`;
     const title = name ?? `MMSI ${mmsi}`;
-    if (navigator.share) {
-      try {
-        await navigator.share({ title, url });
-        return;
-      } catch (e) {
-        // Dismissing the share sheet is the reader's choice. Anything else, such as a browser
-        // that has the API but will not open a sheet, falls back to copying the link.
-        if (e instanceof DOMException && e.name === "AbortError") return;
-      }
-    }
-    await navigator.clipboard.writeText(url);
+    const done = await shareLink({ title, text: `${title}, live on Open Waters AIS`, url: `${SITE}${vesselPath(mmsi, name)}` });
+    if (done !== "copied") return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
@@ -331,6 +360,28 @@ function VesselActions({ live, mmsi, name, hasTrack }: { live: Live | undefined;
       <ActionButton icon={LocateFixed} label="Follow" pressed={following} onClick={() => live?.ctl.followCamera(!following)} />
       <ActionButton icon={copied ? Check : Share} label={copied ? "Copied" : "Share"} onClick={() => void share()} />
       <ActionButton icon={Route} label="Track" disabled={!hasTrack} onClick={() => live?.ctl.fitTrack()} />
+      <ActionLink icon={ImagePlus} label="Add photo" href={uploadUrl(imo, mmsi)} target="_blank" rel="noopener" />
     </ActionRow>
+  );
+}
+
+/**
+ * One invitation to run a receiver, fitted to the vessel. Someone looking up a pleasure boat
+ * or a class B set is often its owner, who has the antenna already. Otherwise it is shown when
+ * a volunteer's receiver heard the vessel, which is the network working as it should.
+ */
+function ContributePrompt({ ownBoat, volunteer }: { ownBoat: boolean; volunteer: boolean }) {
+  if (ownBoat) {
+    return (
+      <Prompt icon={Sailboat} href={SIGNALK_PLUGIN} action="Signal K plugin" className="mt-5">
+        Is this your boat? Share what its AIS hears with the network, and see traffic beyond its range.
+      </Prompt>
+    );
+  }
+  if (!volunteer) return null;
+  return (
+    <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-5">
+      A volunteer&rsquo;s receiver heard this vessel.
+    </Prompt>
   );
 }

@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   bearing,
+  distanceNM,
+  formatDistance,
+  shortAge,
   isValidImo,
+  isVolunteer,
+  stationTitle,
+  volunteerReceiver,
+  stationTitles,
   indexAt,
   interpolateAt,
   mergeTrack,
@@ -15,6 +22,7 @@ import {
   vesselPath,
   vesselDimensions,
   viewBoxes,
+  centerBoxes,
   vesselSlug,
 } from "./ais";
 
@@ -329,6 +337,30 @@ describe("interpolateAt", () => {
   });
 });
 
+describe("distanceNM", () => {
+  it("measures a minute of latitude as a mile, and across the antimeridian", () => {
+    expect(distanceNM([0, 0], [1 / 60, 0])).toBeCloseTo(1, 2);
+    expect(distanceNM([-17, 179.9], [-17, -179.9])).toBeLessThan(12);
+  });
+});
+
+describe("formatDistance", () => {
+  it("keeps a decimal close by and groups thousands far off", () => {
+    expect(formatDistance(0.43)).toBe("0.4 nm");
+    expect(formatDistance(37.4)).toBe("37 nm");
+    expect(formatDistance(8412)).toBe("8,412 nm");
+  });
+});
+
+describe("shortAge", () => {
+  it("counts hours for two days, then days", () => {
+    expect(shortAge(45)).toBe("45s");
+    expect(shortAge(600)).toBe("10m");
+    expect(shortAge(47 * 3600)).toBe("47h");
+    expect(shortAge(935 * 3600)).toBe("39d");
+  });
+});
+
 describe("bearing", () => {
   it("reads the cardinal directions", () => {
     expect(Math.round(bearing([0, 0], [0, 1]))).toBe(0);
@@ -412,6 +444,25 @@ describe("speedAt", () => {
   });
 });
 
+describe("centerBoxes", () => {
+  const area = (boxes: Array<[number, number, number, number]>) => boxes.reduce((sum, [s, w, n, e]) => sum + (n - s) * (e - w), 0);
+  it("stays within the cap, around the point", () => {
+    const boxes = centerBoxes([35.23, -80.84], 100);
+    expect(boxes).toHaveLength(1);
+    expect(area(boxes)).toBeLessThanOrEqual(100);
+    const [s, w, n, e] = boxes[0]!;
+    expect((s + n) / 2).toBeCloseTo(35.23, 5);
+    expect((w + e) / 2).toBeCloseTo(-80.84, 5);
+    // Square on the ground: wider in longitude by 1/cos(lat).
+    expect((e - w) * Math.cos((35.23 * Math.PI) / 180)).toBeCloseTo(n - s, 5);
+  });
+  it("splits at the antimeridian", () => {
+    const boxes = centerBoxes([-17, 179], 100);
+    expect(boxes).toHaveLength(2);
+    expect(area(boxes)).toBeLessThanOrEqual(100);
+  });
+});
+
 describe("viewBoxes", () => {
   it("keeps a view inside the world as one box", () => {
     expect(viewBoxes(50, 2, 60, 12)).toEqual([[50, 2, 60, 12]]);
@@ -429,5 +480,52 @@ describe("viewBoxes", () => {
   it("takes a view wider than the world, or a wrapped copy of it, as the world or its place in it", () => {
     expect(viewBoxes(-80, -300, 80, 300)).toEqual([[-80, -180, 80, 180]]);
     expect(viewBoxes(50, 362, 60, 372)).toEqual([[50, 2, 60, 12]]);
+  });
+});
+
+describe("isVolunteer", () => {
+  it("counts the kinds people run", () => {
+    for (const s of ["udp:24dfc99708ff", "station:ed25519:abc", "http:ed25519:abc", "v1:abc", "mmsi:367430440"]) {
+      expect(isVolunteer(s)).toBe(true);
+    }
+  });
+  it("leaves out feeds and aggregates", () => {
+    for (const s of ["aishub", "aisstream", "kystverket", "barentswatch", "digitraffic"]) expect(isVolunteer(s)).toBe(false);
+    expect(isVolunteer(undefined)).toBe(false);
+  });
+});
+
+describe("stationTitles", () => {
+  it("prefers the name, then the place, then the id", () => {
+    expect(stationTitle({ station: "udp:1", name: "Pier", near: "Falmouth, MA" })).toBe("Pier");
+    expect(stationTitle({ station: "udp:1", near: "Falmouth, MA" })).toBe("Near Falmouth, MA");
+    expect(stationTitle({ station: "udp:1" })).toBe("udp:1");
+  });
+  it("tells apart stations that would read the same", () => {
+    const titles = stationTitles([
+      { station: "udp:aaaac34f", near: "Santa Monica, CA" },
+      { station: "udp:bbbb9d1e", near: "Santa Monica, CA" },
+      { station: "station:ed25519:xyz", name: "CERULEAN" },
+      { station: "station:ed25519:xyz/n2k", name: "CERULEAN" },
+      { station: "aishub" },
+    ]);
+    expect([...titles.values()]).toEqual([
+      "Near Santa Monica, CA (…c34f)",
+      "Near Santa Monica, CA (…9d1e)",
+      "CERULEAN (…:xyz)",
+      "CERULEAN (n2k)",
+      "aishub",
+    ]);
+  });
+});
+
+describe("volunteerReceiver", () => {
+  it("names the receiver behind a volunteer's TAG path", () => {
+    expect(volunteerReceiver("station:mmsi:368168720/n2k")).toBe("station:mmsi:368168720");
+    expect(volunteerReceiver("udp:24dfc99708ff/self")).toBe("udp:24dfc99708ff");
+  });
+  it("leaves feed stations and plain ids alone", () => {
+    expect(volunteerReceiver("barentswatch/terra")).toBeUndefined();
+    expect(volunteerReceiver("station:mmsi:368168720")).toBeUndefined();
   });
 });

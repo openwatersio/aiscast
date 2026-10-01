@@ -1,10 +1,13 @@
+import { Antenna, CodeXml } from "lucide-react";
 import { PageTitle, Panel } from "../components/Panel";
 import { Facts } from "../components/ui/Facts";
+import { Prompt } from "../components/ui/Prompt";
 import { Section, Tile } from "../components/ui/Section";
 import { StatGrid } from "../components/ui/StatGrid";
-import { formatAge } from "../lib/ais";
-import { browserAuth, getStats } from "../lib/api";
+import { formatAge, isVolunteer } from "../lib/ais";
+import { browserAuth, getStats, publicApiBase } from "../lib/api";
 import { serverEnv } from "../lib/context";
+import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS } from "../lib/links";
 import { pageMeta } from "../lib/meta";
 import type { Route } from "./+types/network";
 
@@ -33,8 +36,32 @@ const KINDS: Record<string, string> = { vessel: "Vessels", aton: "Aids to naviga
 export default function Network({ loaderData }: Route.ComponentProps) {
   const { stats } = loaderData;
   const sources = Object.entries(stats?.sources ?? {}).sort((a, b) => b[1].events.last_24h - a[1].events.last_24h);
+  const volunteers = Object.entries(stats?.stations.by_source ?? {})
+    .filter(([kind]) => isVolunteer(kind))
+    .reduce((sum, [, count]) => sum + count, 0);
   const cell = "py-1.5 pl-3 text-right tabular-nums whitespace-nowrap";
   const head = "pb-1 pl-3 text-right font-medium whitespace-nowrap";
+  const v = stats?.vessels;
+  // [label, active, new]; a server without the vessel record sends no windows
+  const windows: [string, number | undefined, number | undefined][] = v
+    ? [
+        ["30 min", v.active, undefined],
+        ["24 h", v.last_24h, v.new?.last_24h],
+        ["7 d", v.last_7d, v.new?.last_7d],
+        ["30 d", v.last_30d, v.new?.last_30d],
+        ["All", v.total, undefined],
+      ]
+    : [];
+  const count = (key: string, c: number | undefined) =>
+    c == null ? (
+      <td key={key} className={`${cell} text-fg-muted`}>
+        —
+      </td>
+    ) : (
+      <td key={key} className={cell} title={n(c)}>
+        {compact.format(c)}
+      </td>
+    );
   return (
     <Panel back="/vessels" title="Network">
       <PageTitle>Network</PageTitle>
@@ -48,11 +75,46 @@ export default function Network({ loaderData }: Route.ComponentProps) {
               tiles
               stats={[
                 { label: "Messages/s", value: Math.round(stats.events.per_second).toString() },
-                { label: "Vessels", value: n(stats.vessels.total) },
+                { label: "Vessels", value: n(stats.vessels.active) },
                 { label: "Stations", value: `${stats.stations.active}/${stats.stations.total}` },
               ]}
             />
           </div>
+
+          <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-3">
+            {volunteers === 0
+              ? "Volunteer receivers add coverage where the feeds do not reach."
+              : `${volunteers === 1 ? "One station is" : `${n(volunteers)} stations are`} run by volunteers, sharing what their receivers hear.`}
+          </Prompt>
+
+          <Section label="Vessels">
+            <table className="w-full text-subhead">
+              <thead>
+                <tr className="text-left text-caption text-fg-muted uppercase">
+                  <th className="pb-1 font-medium" />
+                  {windows.map(([label]) => (
+                    <th key={label} className={head}>
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-t border-line-subtle text-fg">
+                  <td className="py-1.5">Active</td>
+                  {windows.map(([label, active]) => count(label, active))}
+                </tr>
+                <tr className="border-t border-line-subtle text-fg">
+                  <td className="py-1.5">New</td>
+                  {windows.map(([label, , fresh]) => count(label, fresh))}
+                </tr>
+              </tbody>
+            </table>
+          </Section>
+          <p className="mt-2 px-0.5 text-footnote text-fg-muted">
+            "Active" counts vessels heard within each window, and "New" those the network had never heard before it.
+            "All" is every vessel the network has heard.
+          </p>
 
           <Section label="Sources">
             <table className="w-full text-subhead">
@@ -60,7 +122,7 @@ export default function Network({ loaderData }: Route.ComponentProps) {
                 <tr className="text-left text-caption text-fg-muted uppercase">
                   <th className="pb-1 font-medium">Source</th>
                   <th className={head}>24 h</th>
-                  <th className={head}>Only here</th>
+                  <th className={head}>Unique</th>
                   <th className={head}>Delay</th>
                   <th className={head}>Last</th>
                 </tr>
@@ -81,7 +143,7 @@ export default function Network({ loaderData }: Route.ComponentProps) {
             </table>
           </Section>
           <p className="mt-2 px-0.5 text-footnote text-fg-muted">
-            "Only here" counts vessels no other source kind heard in the last 30 minutes, and delay is the median.
+            "Unique" counts vessels no other source kind heard in the last 30 minutes, and delay is the median.
             Counts are rolling windows, not totals since start.
           </p>
 
@@ -92,6 +154,14 @@ export default function Network({ loaderData }: Route.ComponentProps) {
                 .map(([kind, count]): [string, string] => [KINDS[kind] ?? kind, n(count)])}
             />
           </Section>
+
+          <Prompt icon={CodeXml} href={DEVELOPERS} action="Developers" className="mt-5">
+            Everything on this page is at{" "}
+            <a href={`${publicApiBase()}/v1/stats`} className="font-mono">
+              /v1/stats
+            </a>
+            , and every vessel in it is on the stream.
+          </Prompt>
         </>
       )}
     </Panel>

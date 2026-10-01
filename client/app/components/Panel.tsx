@@ -30,6 +30,7 @@ export function Panel({
   children: ReactNode;
 }) {
   const { key } = useLocation();
+  const hasBar = Boolean(back || title || actions);
   const scroller = useRef<HTMLDivElement>(null);
   // Assumed visible until measured, so a server render never shows the title twice.
   const [largeTitleVisible, setLargeTitleVisible] = useState(true);
@@ -54,13 +55,19 @@ export function Panel({
     <TitleContext.Provider value={observeTitle}>
       {/* A hero starts at the top edge of the sheet, under its grabber on a phone. */}
       <div className={cn("relative flex min-h-0 flex-1 flex-col", hero && "max-md:-mt-3")}>
-        <PanelHeader back={back} title={title} showTitle={!largeTitleVisible} actions={actions} overlay={hero} />
+        <PanelHeader back={back} title={title} showTitle={!largeTitleVisible} actions={actions} overPhoto={hero} />
         {header}
         <div
           ref={scroller}
           data-sheet-scroll
           onScroll={(e) => scrolled.set(key, e.currentTarget.scrollTop)}
-          className={cn("sidebar-scroll min-h-0 flex-1 pb-3", header ? "px-2" : "px-4")}
+          className={cn(
+            "sidebar-scroll min-h-0 flex-1 pb-3",
+            header ? "px-2" : "px-4",
+            // The bar floats over the page. A photo starts under it; anything else starts below
+            // it, the height of its buttons and the space above them.
+            hasBar && !hero && "pt-11",
+          )}
         >
           {children}
         </div>

@@ -5,10 +5,11 @@ import { WebSocketServer, type WebSocket } from "ws";
 export interface FakeServer {
   url: string; // http://127.0.0.1:port
   frames: Record<string, unknown>[]; // every frame any client sent
-  keyRequests: { pubkey: string }[];
+  keyRequests: { pubkey: string; [k: string]: unknown }[];
   clients: WebSocket[]; // sockets the client side has confirmed open (it answered our ping)
   ack: boolean; // answer publish frames with ack (default true)
   keysStatus: number; // response code for POST /v1/keys
+  keysSigned: boolean; // whether POST /v1/keys confirms a signed request, as a server that checks signatures does
   send(frame: unknown): void; // to every connected client
   waitForFrame(pred: (f: Record<string, unknown>) => boolean, timeoutMs?: number): Promise<Record<string, unknown>>;
   close(): Promise<void>;
@@ -17,7 +18,7 @@ export interface FakeServer {
 // Enough of aiscast to drive the plugin: POST /v1/keys and a /v1/stream socket that records frames and acks.
 export function startFakeServer(port = 0): Promise<FakeServer> {
   const frames: Record<string, unknown>[] = [];
-  const keyRequests: { pubkey: string }[] = [];
+  const keyRequests: { pubkey: string; [k: string]: unknown }[] = [];
   const clients: WebSocket[] = [];
   const waiters: { pred: (f: Record<string, unknown>) => boolean; resolve: (f: Record<string, unknown>) => void }[] = [];
 
@@ -31,7 +32,11 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
         res.setHeader("content-type", "application/json");
         res.end(
           fake.keysStatus === 200
-            ? JSON.stringify({ token: "ak1.test.token", claims: { exp: Math.floor(Date.now() / 1000) + 30 * 86400 } })
+            ? JSON.stringify({
+                token: "ak1.test.token",
+                claims: { exp: Math.floor(Date.now() / 1000) + 30 * 86400 },
+                ...(fake.keysSigned && keyRequests.at(-1)?.sig ? { signed: true } : {}),
+              })
             : JSON.stringify({ error: "no personal issuer" }),
         );
       });
@@ -67,6 +72,7 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
     clients,
     ack: true,
     keysStatus: 200,
+    keysSigned: true,
     send(frame) {
       for (const c of clients) c.send(JSON.stringify(frame));
     },

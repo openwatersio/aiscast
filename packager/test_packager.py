@@ -465,7 +465,7 @@ def test_init_creates_the_tables_and_packages_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["packager", "--init"])
     packager.main()
     catalog = packager.get_catalog()
-    assert {t[-1] for t in catalog.list_tables("ais")} == {"positions", "receptions", "vessels", "weather"}
+    assert {t[-1] for t in catalog.list_tables("ais")} == {"positions", "receptions", "vessels", "weather", "tracks"}
     assert not catalog.load_table("ais.positions").snapshots(), "nothing was packaged"
 
 
@@ -686,3 +686,136 @@ def test_vessels_carry_first_seen_and_last_position_in_any_day_order(tmp_path):
     sources = {p["ts"].isoformat(): p["source"] for p in rows(catalog, "positions") if p["mmsi"] == 257999001}
     assert sources == {"2026-09-02T10:00:00": "barentswatch", "2026-09-01T08:00:00": "digitraffic", "2013-12-31T23:00:00": "barentswatch"}, \
         "each position names the source of the copy the server accepted, so a track needs no second table"
+
+
+def staged_positions(con, points):
+    """A staged positions table from (mmsi, ts, lat, lon) tuples, the columns build_tracks reads."""
+    con.execute("""CREATE OR REPLACE TABLE positions (mmsi INTEGER, ts TIMESTAMP, lat6 INTEGER, lon6 INTEGER, sog10 SMALLINT,
+                   cog10 SMALLINT, heading SMALLINT, navstat TINYINT, source VARCHAR, day DATE)""")
+    for mmsi, ts, lat, lon in points:
+        lat6 = None if lat is None else round(lat * 600000)
+        lon6 = None if lon is None else round(lon * 600000)
+        con.execute("INSERT INTO positions VALUES (?, ?, ?, ?, 0, 0, 511, 0, 'kystverket', ?)", [mmsi, ts, lat6, lon6, ts.date()])
+
+
+def track_minutes(con, mmsi):
+    return [r[0] for r in con.execute(
+        "SELECT (epoch(ts)::BIGINT % 86400) // 60 FROM tracks WHERE mmsi = ? ORDER BY ts", [mmsi]).fetchall()]
+
+
+def test_tracks_keep_a_moored_vessels_ends_and_beats():
+    """A vessel that never leaves its berth keeps its first and last minute and the first minute of each
+    quarter hour, so its track says where it was without ever falling silent for 30 minutes."""
+    from datetime import datetime, timedelta
+
+    con = duckdb.connect()
+    t0 = datetime(2026, 9, 1, 0, 0, 0)
+    # a report every 20 s for an hour, swinging a few meters about the berth
+    staged_positions(con, [(1, t0 + timedelta(seconds=20 * i), 60.0 + (i % 3) * 1e-5, 5.0) for i in range(180)])
+    packager.build_tracks(con)
+    assert track_minutes(con, 1) == [0, 15, 30, 45, 59]
+
+
+def test_tracks_keep_a_vessel_moored_on_the_antimeridian_still():
+    from datetime import datetime, timedelta
+
+    con = duckdb.connect()
+    t0 = datetime(2026, 9, 1, 0, 0, 0)
+    # a few meters either side of 180 degrees, every 20 s for an hour
+    staged_positions(con, [(4, t0 + timedelta(seconds=20 * i), -16.0, 179.99995 if i % 2 else -179.99995) for i in range(180)])
+    packager.build_tracks(con)
+    assert track_minutes(con, 4) == [0, 15, 30, 45, 59]
+
+
+def test_tracks_keep_every_minute_a_vessel_moves_and_its_first_report_in_it():
+    from datetime import datetime, timedelta
+
+    con = duckdb.connect()
+    t0 = datetime(2026, 9, 1, 0, 0, 5)
+    # 10 knots north, a report every 10 s: about 50 m between reports and 300 m a minute
+    pts = [(2, t0 + timedelta(seconds=10 * i), 60.0 + i * 10 * 10 / 3600 / 60, 5.0) for i in range(60)]
+    staged_positions(con, pts + [(2, t0 + timedelta(minutes=3), None, None)])
+    packager.build_tracks(con)
+    assert track_minutes(con, 2) == list(range(10))
+    firsts = [r[0].second for r in con.execute("SELECT ts FROM tracks WHERE mmsi = 2 ORDER BY ts").fetchall()]
+    assert firsts == [5] * 10, "each minute is its first report, as the server's thinning picks"
+
+
+def test_tracks_keep_the_minute_a_vessel_stops_and_the_minute_it_leaves():
+    from datetime import datetime, timedelta
+
+    con = duckdb.connect()
+    t0 = datetime(2026, 9, 1, 0, 0, 0)
+    lat = [60.0 + 0.003 * min(i, 3) + 0.003 * max(0, i - 9) for i in range(13)]  # moves, rests minutes 3 to 9, moves
+    staged_positions(con, [(3, t0 + timedelta(minutes=i), lat[i], 5.0) for i in range(13)])
+    packager.build_tracks(con)
+    assert track_minutes(con, 3) == [0, 1, 2, 3, 9, 10, 11, 12]
+
+
+def test_packaging_writes_tracks_and_a_rerun_replaces_them(packaged):
+    envs, catalog, con, files = packaged
+    tracks = rows(catalog, "tracks")
+    positions = rows(catalog, "positions")
+    assert tracks, "the fixture's positions roll up"
+    assert {r["day"].isoformat() for r in tracks} == {DAY}
+    have = {(p["mmsi"], p["ts"], p["lat6"], p["lon6"]) for p in positions}
+    assert all((t["mmsi"], t["ts"], t["lat6"], t["lon6"]) in have for t in tracks), "every track point is a position"
+    minutes = [(t["mmsi"], t["ts"].replace(second=0, microsecond=0)) for t in tracks]
+    assert len(minutes) == len(set(minutes)), "at most one point per vessel per minute"
+    packager.process_day(DAY, files, con, catalog)
+    assert sorted((t["mmsi"], t["ts"]) for t in rows(catalog, "tracks")) == sorted((t["mmsi"], t["ts"]) for t in tracks)
+
+
+def test_tracks_only_rolls_up_a_packaged_day_from_the_lake(packaged, tmp_path):
+    envs, catalog, con, files = packaged
+    want = sorted((t["mmsi"], t["ts"]) for t in rows(catalog, "tracks"))
+    catalog.load_table("ais.tracks").delete(f"day = '{DAY}'")
+    assert not rows(catalog, "tracks")
+    packager.tracks_from_lake(DAY, duckdb.connect(), catalog)
+    assert sorted((t["mmsi"], t["ts"]) for t in rows(catalog, "tracks")) == want
+
+
+def data_files(catalog):
+    """(month, bucket) -> data files, as compaction sees them."""
+    parts = catalog.load_table("ais.tracks").inspect.partitions().to_pylist()
+    return {(p["partition"]["day_month"], p["partition"]["mmsi_bucket"]): p["file_count"] for p in parts}
+
+
+def test_compaction_folds_a_closed_month_into_a_file_per_bucket(tmp_path):
+    from datetime import datetime, timedelta
+
+    packager.HERE = tmp_path / "home"
+    packager.HERE.mkdir()
+    catalog = packager.get_catalog()
+    stage = tmp_path / "stage"
+
+    def package(day, mmsis):
+        con = duckdb.connect()
+        t0 = datetime.fromisoformat(day)
+        staged_positions(con, [(m, t0 + timedelta(minutes=i), 60.0 + i * 0.01, 5.0) for m in mmsis for i in range(5)])
+        packager.build_tracks(con)
+        packager.replace_day(con, catalog, day, "tracks")
+
+    for day in ("2026-09-01", "2026-09-02", "2026-09-03"):
+        package(day, [111, 222, 333])
+    package("2026-10-01", [111])
+    before = sorted((t["mmsi"], t["ts"]) for t in rows(catalog, "tracks"))
+    assert max(data_files(catalog).values()) == 3, "a file per day in each bucket"
+
+    packager.compact_tracks(catalog, stage, "2026-10-08")
+    assert max(n for (m, _), n in data_files(catalog).items()) == 3, "September is still within its repackaging week"
+
+    packager.compact_tracks(catalog, stage, "2026-10-09")
+    files = data_files(catalog)
+    assert all(n == 1 for n in files.values()), files
+    assert sorted((t["mmsi"], t["ts"]) for t in rows(catalog, "tracks")) == before, "compaction moves rows, never changes them"
+    assert catalog.load_table("ais.tracks").properties["write.target-file-size-bytes"] == str(2 << 30)
+
+    # a day repackaged into a compacted month replaces its rows and brings the month back to compact
+    package("2026-09-02", [111])
+    after = rows(catalog, "tracks")
+    assert sorted((t["mmsi"], t["day"].isoformat()) for t in after if t["day"].isoformat() == "2026-09-02") == [(111, "2026-09-02")] * 5
+    assert sum(1 for t in after if t["day"].isoformat() in ("2026-09-01", "2026-09-03")) == 30, "the month's other days stay"
+    assert max(data_files(catalog).values()) > 1
+    packager.compact_tracks(catalog, stage, "2026-10-09")
+    assert all(n == 1 for n in data_files(catalog).values())

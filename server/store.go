@@ -65,6 +65,7 @@ CREATE INDEX IF NOT EXISTS vessels_search ON vessels (search);
 CREATE INDEX IF NOT EXISTS vessels_cell ON vessels (cell, seen);
 CREATE INDEX IF NOT EXISTS vessels_seen ON vessels (seen);
 CREATE INDEX IF NOT EXISTS vessels_imo ON vessels (imo);
+CREATE INDEX IF NOT EXISTS vessels_first_seen ON vessels (first_seen);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `
 
@@ -155,7 +156,7 @@ func openStore(path string) (*store, error) {
 	// Each connection holds its own page cache, and the pool is otherwise unlimited, so a burst of public
 	// lookups and searches could open as many as it liked.
 	db.SetMaxOpenConns(storeConns)
-	if _, err := db.Exec(storeSchema); err != nil {
+	if _, err := db.Exec(storeSchema + stationsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -389,6 +390,34 @@ func (s *store) count(q recordQuery) (int, error) {
 	return n, err
 }
 
+// counts counts every vessel in the record, and those heard and first heard within each window. Each
+// window is a range on its own index.
+func (s *store) counts(now time.Time) (*recordCounts, error) {
+	c := &recordCounts{Heard: map[string]int{}, New: map[string]int{}}
+	if err := s.db.QueryRow("SELECT count(*) FROM vessels").Scan(&c.Total); err != nil {
+		return nil, err
+	}
+	for _, w := range recordWindows {
+		cut := unixMs(now.Add(-w.age))
+		var heard, fresh int
+		if err := s.db.QueryRow("SELECT count(*) FROM vessels WHERE seen >= ?", cut).Scan(&heard); err != nil {
+			return nil, err
+		}
+		if err := s.db.QueryRow("SELECT count(*) FROM vessels WHERE first_seen >= ?", cut).Scan(&fresh); err != nil {
+			return nil, err
+		}
+		c.Heard[w.key], c.New[w.key] = heard, fresh
+	}
+	return c, nil
+}
+
+// countFirstSeen is the number of vessels first heard at or after since.
+func (s *store) countFirstSeen(since time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow("SELECT count(*) FROM vessels WHERE first_seen >= ?", unixMs(since)).Scan(&n)
+	return n, err
+}
+
 // sql is the statement find runs for q.
 func (q recordQuery) sql() (text string, args []any, none bool, err error) {
 	clause, args, none, byCell, err := q.bounded()
@@ -408,6 +437,38 @@ func (q recordQuery) sql() (text string, args []any, none bool, err error) {
 		text += " LIMIT " + strconv.Itoa(q.limit)
 	}
 	return text, args, false, nil
+}
+
+// storedPos is where the record last placed a vessel, and when.
+type storedPos struct {
+	mmsi     uint32
+	lat, lon float64
+	posAt    time.Time
+}
+
+// positions is where each vessel q matches was last placed, ignoring its limit: the few columns a ranking
+// by distance needs, read for every match so none is cut before it is ranked.
+func (s *store) positions(q recordQuery) ([]storedPos, error) {
+	clause, args, none, _, err := q.bounded()
+	if err != nil || none {
+		return nil, err
+	}
+	rows, err := s.db.Query("SELECT mmsi, lat, lon, pos_at FROM vessels"+clause, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []storedPos
+	for rows.Next() {
+		var p storedPos
+		var at int64
+		if err := rows.Scan(&p.mmsi, &p.lat, &p.lon, &at); err != nil {
+			return nil, err
+		}
+		p.posAt = time.UnixMilli(at)
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func (s *store) find(q recordQuery) ([]record, error) {

@@ -64,6 +64,8 @@ export interface VesselProps {
   to_port?: number;
   to_starboard?: number;
   first_seen?: string;
+  /** The town or region nearest the position, on search results only. */
+  near?: string;
   seen: string;
   source: string;
   station: string;
@@ -89,12 +91,18 @@ export interface Station {
   source: string;
   events: { last_24h: number; last_7d: number };
   duplicates: number;
-  vessels: number;
+  vessels: number; // last 30 minutes
+  vessels_24h?: number; // optional while a server without them is still deployed
+  vessels_exclusive_24h?: number; // of vessels_24h, heard by no other station
   positions: number;
   first_seen: string;
   last_seen: string;
   last_age_s: number;
   bbox?: [number, number, number, number];
+  name?: string;
+  name_from?: "operator" | "vessel";
+  mmsi?: number; // the station's own vessel
+  near?: string; // the town or region nearest the traffic it hears
 }
 
 /** The API answered with neither the resource nor a 404, or did not answer. */
@@ -164,6 +172,11 @@ export async function searchVessels(auth: ApiAuth, q: string, filters = ""): Pro
   return fc?.features ?? [];
 }
 
+/** The vessels in an area, as `areaParams` asks for them. Undefined when the API does not answer. */
+export async function vesselsInArea(auth: ApiAuth, params: string): Promise<VesselFeature[] | undefined> {
+  return (await soft(get<FeatureCollection>(auth, `/v1/vessels?${params}`)))?.features;
+}
+
 export interface Track {
   type: "Feature";
   geometry: { type: "LineString"; coordinates: Array<[number, number]> } | null;
@@ -207,7 +220,16 @@ export async function getStation(
 export interface Stats {
   time: string;
   stations: { total: number; active: number; by_source: Record<string, number> };
-  vessels: { total: number; with_position: number; by_kind: Record<string, number> };
+  vessels: {
+    total: number; // every vessel the network has heard
+    active: number; // heard in the last 30 minutes; with_position and by_kind describe these
+    with_position: number;
+    by_kind: Record<string, number>;
+    last_24h?: number; // the windows are absent on a server running without the vessel record
+    last_7d?: number;
+    last_30d?: number;
+    new?: { last_24h: number; last_7d: number; last_30d: number };
+  };
   events: { per_second: number; last_24h: number; last_7d: number };
   sources: Record<
     string,

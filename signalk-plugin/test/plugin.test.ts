@@ -1,8 +1,10 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createPublicKey, verify } from "node:crypto";
 import { join } from "node:path";
 import type { Plugin } from "@signalk/server-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import createPlugin, { type Config } from "../src/index.js";
+import { mintMessage } from "../src/identity.js";
+import createPlugin, { type Config, stationPageHelp } from "../src/index.js";
 import { fakeApp, type FakeApp } from "./fake-app.js";
 import { startFakeServer, type FakeServer } from "./fake-server.js";
 
@@ -52,17 +54,72 @@ afterEach(async () => {
 });
 
 describe("identity", () => {
-  it("creates a keypair once and mints a personal token for it", async () => {
+  it("creates a keypair once and mints a personal token for it with a signed request", async () => {
     await start();
     const jwk = JSON.parse(await readFile(join(app.dataDir, "identity.json"), "utf8"));
     expect(jwk.crv).toBe("Ed25519");
-    expect(server.keyRequests).toEqual([{ pubkey: jwk.x }]);
+    expect(server.keyRequests).toHaveLength(1);
+    const req = server.keyRequests[0] as { pubkey: string; ts: number; sig: string; vessel_name: string };
+    expect(req.pubkey).toBe(jwk.x);
+    expect(Math.abs(req.ts - Date.now() / 1000)).toBeLessThan(10);
+    const pub = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: jwk.x }, format: "jwk" });
+    expect(verify(null, mintMessage(jwk.x, req.ts, false, "", req.vessel_name), pub, Buffer.from(req.sig, "base64url"))).toBe(true);
     expect(Buffer.from(jwk.x, "base64url")).toHaveLength(32);
     await plugin.stop!();
 
     await start(); // same key, cached token: no second /v1/keys call
     expect(server.keyRequests).toHaveLength(1);
     expect(JSON.parse(await readFile(join(app.dataDir, "identity.json"), "utf8")).x).toBe(jwk.x);
+  });
+
+  it("names the station after the boat while own-ship sharing is on, minting again when that changes", async () => {
+    app.self.name = "CERULEAN";
+    await start();
+    expect(server.keyRequests.at(-1)).toMatchObject({ vessel_name: "CERULEAN" });
+    await plugin.stop!();
+
+    await start(); // same name: the cached token stands
+    expect(server.keyRequests).toHaveLength(1);
+    await plugin.stop!();
+
+    app.self.name = "CERULEAN II";
+    await start();
+    await until(() => server.keyRequests.length === 2);
+    expect(server.keyRequests.at(-1)).toMatchObject({ vessel_name: "CERULEAN II" });
+    await plugin.stop!();
+
+    await start({ share: { ownShip: false } }); // private: the name is cleared
+    await until(() => server.keyRequests.length === 3);
+    expect(server.keyRequests.at(-1)).toMatchObject({ vessel_name: "" });
+    expect(server.keyRequests).toHaveLength(3);
+  });
+
+  it("replaces a token minted before requests were signed, once", async () => {
+    const jwk = JSON.parse(JSON.stringify((await import("node:crypto")).generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" })));
+    await writeFile(join(app.dataDir, "identity.json"), JSON.stringify(jwk));
+    await writeFile(join(app.dataDir, "token.json"), JSON.stringify({ token: "ak1.old", exp: 0, pubkey: jwk.x, server: server.url }));
+    await start();
+    expect(server.keyRequests).toHaveLength(1);
+    await plugin.stop!();
+    await start();
+    expect(server.keyRequests).toHaveLength(1);
+  });
+
+  it("mints again until the server confirms it checked the signature", async () => {
+    server.keysSigned = false; // a server from before signed requests: it ignores sig and issues a token anyway
+    await start();
+    await plugin.stop!();
+    await start();
+    await until(() => server.keyRequests.length === 2);
+    await plugin.stop!();
+
+    server.keysSigned = true; // the server is upgraded
+    await start();
+    await until(() => server.keyRequests.length === 3);
+    await plugin.stop!();
+    await start(); // confirmed: the cached token stands
+    await sleep(100);
+    expect(server.keyRequests).toHaveLength(3);
   });
 
   it("keeps receiving without a token when the server cannot mint one", async () => {
@@ -239,6 +296,27 @@ describe("config UI", () => {
     const noMmsi = (createPlugin(bare).uiSchema as () => Ui)();
     expect(noMmsi.share.position["ui:disabled"]).toBe(true);
     expect(noMmsi.share.position["ui:help"]).toMatch(/MMSI/);
+  });
+
+  it("links the boat's station page on openwaters.io, and only for the default server", async () => {
+    expect(stationPageHelp("https://ais.openwaters.io", "ed25519:abc")).toBe(
+      "This boat's station page: https://openwaters.io/ais/stations/station:ed25519:abc",
+    );
+    expect(stationPageHelp("https://ais.openwaters.io", null)).toBeNull();
+    expect(stationPageHelp(server.url, "ed25519:abc")).toBeNull();
+    type Ui = { advanced: { token: Record<string, unknown> } };
+    await start(); // the fake server is not the default, so no link
+    expect((plugin.uiSchema as () => Ui)().advanced.token["ui:help"]).toBeUndefined();
+  });
+});
+
+describe("configured token", () => {
+  it("says how to go back to the plugin's own token when aiscast refuses a pasted one", async () => {
+    await start({ advanced: { server: server.url, token: "ak1.pasted.token" } });
+    server.send({ type: "error", error: "token not valid from this address" });
+    await until(() => app.errors.length > 0);
+    expect(app.errors[0]).toMatch(/refused the configured token: token not valid from this address\. Clear Advanced → Access token/);
+    expect(server.keyRequests).toHaveLength(0);
   });
 });
 

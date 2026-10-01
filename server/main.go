@@ -55,6 +55,9 @@ func main() {
 			log.Printf("store: %v; running without the vessel record", err)
 		} else {
 			log.Printf("restored %d vessels from %s", p.vesselCount(), path)
+			if err := p.names.attach(st); err != nil {
+				log.Printf("stations: %v; station names will not survive a restart", err)
+			}
 			// Tracks ride on the record's writer, so they run only beside it.
 			if tp := env("TRACKS", "tracks.db"); tp != "off" {
 				if ts, err := openTracks(tp); err != nil {
@@ -69,11 +72,18 @@ func main() {
 				}
 			}
 			go p.runStore()
+			go p.runRecordCounts()
 		}
 	}
 	dedupe := env("DEDUPE", "dedupe.json")
 	if n, err := p.loadDedupe(dedupe); err == nil {
 		log.Printf("restored %d dedupe entries from %s", n, dedupe)
+	}
+	stationVessels := env("STATION_VESSELS", "station-vessels.json")
+	if err := p.stations.loadVessels(stationVessels); err == nil {
+		log.Printf("restored station vessels from %s", stationVessels)
+	} else if !os.IsNotExist(err) {
+		log.Printf("station vessels: %v (24-hour counts start empty)", err)
 	}
 	usage := env("USAGE", "vessels-usage.json")
 	if err := p.loadUsage(usage); err == nil {
@@ -126,6 +136,7 @@ func main() {
 		go runUDP(p, l)
 	}
 	go p.logStats()
+	go p.runStationNames()
 	go func() {
 		for range time.Tick(usageEvery) {
 			if err := p.saveUsage(usage); err != nil {
@@ -142,8 +153,14 @@ func main() {
 		if err := p.saveUsage(usage); err != nil {
 			log.Printf("usage: %v", err)
 		}
+		if err := p.stations.saveVessels(stationVessels, time.Now()); err != nil {
+			log.Printf("station vessels: %v", err)
+		}
 		if err := p.saveDedupe(dedupe); err != nil {
 			log.Printf("dedupe: %v (the next process may re-accept copies inside the window)", err)
+		}
+		if err := p.names.flush(); err != nil {
+			log.Printf("station names: %v", err)
 		}
 		if err := p.closeStore(); err != nil {
 			log.Printf("store: %v", err)

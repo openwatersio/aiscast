@@ -353,6 +353,43 @@ func TestMCPCoverage(t *testing.T) {
 	}
 }
 
+func TestMCPCoverageFreshness(t *testing.T) {
+	p := recordSeed(t)
+	cs := mcpClient(t, p)
+	oslo := map[string]any{"min_lat": 59, "min_lon": 10, "max_lat": 60, "max_lon": 11}
+	var out mcpCoverage
+	if msg := mcpCall(t, cs, "get_coverage", map[string]any{"bbox": oslo}, &out); msg != "" {
+		t.Fatal(msg)
+	}
+	if v := out.Vessels; v.Total != 5 || v.Active != 1 || v.Heard != nil || v.New != nil || out.Area.Vessels != 1 {
+		t.Errorf("default: every vessel in total, the last 30 minutes elsewhere: %+v %+v", v, out.Area)
+	}
+	if msg := mcpCall(t, cs, "get_coverage", map[string]any{"bbox": oslo, "max_age": "7d"}, &out); msg != "" {
+		t.Fatal(msg)
+	}
+	if v := out.Vessels; v.Heard == nil || *v.Heard != 4 || v.New == nil || *v.New != 3 || out.Area.Vessels != 2 || !strings.Contains(out.Summary, "heard within 7d") {
+		t.Errorf("7d: %+v %+v %q", v, out.Area, out.Summary)
+	}
+	if msg := mcpCall(t, cs, "get_coverage", map[string]any{"bbox": oslo, "max_age": "all"}, &out); msg != "" {
+		t.Fatal(msg)
+	}
+	if v := out.Vessels; v.Heard == nil || *v.Heard != 5 || v.New != nil || out.Area.Vessels != 3 {
+		t.Errorf("all: %+v %+v", v, out.Area)
+	}
+	// heard since the writer's last flush: in the cache, not yet in the record
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000006, 59.8, 10.8))
+	if msg := mcpCall(t, cs, "get_coverage", map[string]any{"bbox": oslo, "max_age": "30m"}, &out); msg != "" || out.Area.Vessels != 2 || *out.Vessels.Heard != 2 {
+		t.Errorf("unflushed vessel counted: %q %+v %+v", msg, out.Vessels, out.Area)
+	}
+	if msg := mcpCall(t, cs, "get_coverage", map[string]any{"max_age": "soon"}, &out); !strings.Contains(msg, "max_age") {
+		t.Errorf("bad max_age: %q", msg)
+	}
+	if msg := mcpCall(t, mcpClient(t, mcpSeed(t)), "get_coverage", map[string]any{"max_age": "24h"}, &out); !strings.Contains(msg, "vessel record") {
+		t.Errorf("max_age without a record: %q", msg)
+	}
+}
+
 // bearerTransport sends one token on every request, as an MCP client configured with a header does.
 type bearerTransport string
 

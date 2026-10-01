@@ -231,7 +231,7 @@ func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
 	sub := p.subscribe()
 	p.Ingest(Reception{Source: "station:ed25519:k", Station: "station:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDO,1,1,,A,B1mg=5@3wh<?d@8TIb3Q3wv00000,0*39`})
 	ev := <-sub.ch
-	if !ev.Synthesized || ev.Station != "station:ed25519:k/self" {
+	if !ev.Synthesized || ev.Station != "station:ed25519:k" {
 		t.Errorf("synthesized=%v station=%q", ev.Synthesized, ev.Station)
 	}
 	if feedable(ev) {
