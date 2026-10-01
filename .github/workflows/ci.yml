@@ -123,3 +123,44 @@ jobs:
       - run: npm run check:styles
       - run: npm test
       - run: npm run build
+
+  # The web client in a browser, against the server binary the test job built, fed by
+  # Digitraffic. client/e2e/ has the tests.
+  client-e2e:
+    needs: test
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/download-artifact@v8
+        with:
+          name: aiscast-linux
+          path: ${{ runner.temp }}/aiscast
+      - run: chmod +x "$RUNNER_TEMP/aiscast/aiscast-linux"
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p 'require("@playwright/test/package.json").version')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      # Downloads the browser only on a cache miss; the system libraries it needs are not cached.
+      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npm run test:e2e
+        env:
+          AISCAST_BIN: ${{ runner.temp }}/aiscast/aiscast-linux
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            client/playwright-report
+            client/test-results
+          retention-days: 7
