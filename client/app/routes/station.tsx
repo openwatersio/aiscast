@@ -1,6 +1,6 @@
 import { Antenna, Check, Share } from "lucide-react";
 import { useEffect, useState } from "react";
-import { data } from "react-router";
+import { data, Link } from "react-router";
 import { PageTitle, Panel } from "../components/Panel";
 import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { Facts } from "../components/ui/Facts";
@@ -9,7 +9,7 @@ import { Prompt } from "../components/ui/Prompt";
 import { ClassDot, List, ListRow } from "../components/ui/List";
 import { Section, Tile } from "../components/ui/Section";
 import { StatGrid } from "../components/ui/StatGrid";
-import { formatAge, isVolunteer, vesselPath } from "../lib/ais";
+import { formatAge, isVolunteer, stationTitle, vesselPath } from "../lib/ais";
 import { browserAuth, getStation, orUnavailable, type ApiAuth } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
@@ -41,10 +41,11 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
   if (!loaderData) return routeErrorMeta(error);
   const id = loaderData.id;
   const st = loaderData?.found?.station;
+  const title = st ? stationTitle(st) : id;
   return pageMeta({
-    title: `${id} receiving station | Open Waters AIS`,
+    title: `${title} receiving station | Open Waters AIS`,
     description: st
-      ? `AIS receiving station ${id}: ${n(st.events.last_24h)} messages in 24 hours, ${n(st.vessels)} vessels heard, last message ${formatAge(st.last_age_s)}.`
+      ? `AIS receiving station ${title}: ${n(st.events.last_24h)} messages in 24 hours, ${n(st.vessels)} vessels heard, last message ${formatAge(st.last_age_s)}.`
       : `AIS receiving station ${id}.`,
     path: `/stations/${id}`,
     noindex: !st,
@@ -54,6 +55,7 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
 export default function Station({ loaderData }: Route.ComponentProps) {
   const { id, found } = loaderData;
   const st = found?.station;
+  const title = st ? stationTitle(st) : id;
   const vessels = found?.vessels.features ?? [];
   const live = useLive();
 
@@ -80,8 +82,8 @@ export default function Station({ loaderData }: Route.ComponentProps) {
     : undefined;
 
   return (
-    <Panel back="/stations" title={id} actions={<ShareStation id={id} />}>
-      <PageTitle className="break-all">{id}</PageTitle>
+    <Panel back="/stations" title={title} actions={<ShareStation id={id} title={title} />}>
+      <PageTitle className="break-all">{title}</PageTitle>
 
       {!st ? (
         <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard since the server started.</Tile>
@@ -97,7 +99,7 @@ export default function Station({ loaderData }: Route.ComponentProps) {
               stats={[
                 { label: "Messages 24 h", value: n(st.events.last_24h) },
                 { label: "Vessels", value: n(st.vessels) },
-                { label: "Heard first elsewhere", value: n(st.duplicates) },
+                { label: "Unique vessels", value: n(st.vessels_exclusive_24h ?? 0) },
               ]}
             />
           </div>
@@ -105,9 +107,19 @@ export default function Station({ loaderData }: Route.ComponentProps) {
           <Facts
             className="mt-4"
             items={[
+              ["Vessels 24 h", st.vessels_24h != null ? n(st.vessels_24h) : undefined],
+              ["Heard first elsewhere", n(st.duplicates)],
               ["Messages 7 d", n(st.events.last_7d)],
               ["Coverage span", span],
               ["First heard", new Date(st.first_seen).toISOString().slice(0, 10)],
+              [
+                "Own vessel",
+                st.mmsi != null ? (
+                  <Link to={vesselPath(st.mmsi, st.name_from === "vessel" ? st.name : undefined)} className="text-accent hover:text-accent-hover">
+                    {st.name_from === "vessel" && st.name ? st.name : `MMSI ${st.mmsi}`}
+                  </Link>
+                ) : undefined,
+              ],
             ]}
           />
 
@@ -137,10 +149,10 @@ export default function Station({ loaderData }: Route.ComponentProps) {
 }
 
 /** The station's link, for its operator to pass around. */
-function ShareStation({ id }: { id: string }) {
+function ShareStation({ id, title }: { id: string; title: string }) {
   const [copied, setCopied] = useState(false);
   async function share() {
-    const done = await shareLink({ title: `${id} receiving station`, text: "A receiver in the open AIS network", url: `${SITE}/stations/${id}` });
+    const done = await shareLink({ title: `${title} receiving station`, text: "A receiver in the open AIS network", url: `${SITE}/stations/${id}` });
     if (done !== "copied") return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);

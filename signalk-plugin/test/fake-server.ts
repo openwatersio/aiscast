@@ -5,7 +5,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 export interface FakeServer {
   url: string; // http://127.0.0.1:port
   frames: Record<string, unknown>[]; // every frame any client sent
-  keyRequests: { pubkey: string }[];
+  keyRequests: { pubkey: string; [k: string]: unknown }[];
   clients: WebSocket[]; // sockets the client side has confirmed open (it answered our ping)
   ack: boolean; // answer publish frames with ack (default true)
   keysStatus: number; // response code for POST /v1/keys
@@ -17,7 +17,7 @@ export interface FakeServer {
 // Enough of aiscast to drive the plugin: POST /v1/keys and a /v1/stream socket that records frames and acks.
 export function startFakeServer(port = 0): Promise<FakeServer> {
   const frames: Record<string, unknown>[] = [];
-  const keyRequests: { pubkey: string }[] = [];
+  const keyRequests: { pubkey: string; [k: string]: unknown }[] = [];
   const clients: WebSocket[] = [];
   const waiters: { pred: (f: Record<string, unknown>) => boolean; resolve: (f: Record<string, unknown>) => void }[] = [];
 

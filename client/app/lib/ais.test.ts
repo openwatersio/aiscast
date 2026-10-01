@@ -3,6 +3,8 @@ import {
   bearing,
   isValidImo,
   isVolunteer,
+  stationTitle,
+  stationTitles,
   indexAt,
   interpolateAt,
   mergeTrack,
@@ -442,5 +444,29 @@ describe("isVolunteer", () => {
   it("leaves out feeds and aggregates", () => {
     for (const s of ["aishub", "aisstream", "kystverket", "barentswatch", "digitraffic"]) expect(isVolunteer(s)).toBe(false);
     expect(isVolunteer(undefined)).toBe(false);
+  });
+});
+
+describe("stationTitles", () => {
+  it("prefers the name, then the place, then the id", () => {
+    expect(stationTitle({ station: "udp:1", name: "Pier", near: "Falmouth, MA" })).toBe("Pier");
+    expect(stationTitle({ station: "udp:1", near: "Falmouth, MA" })).toBe("Near Falmouth, MA");
+    expect(stationTitle({ station: "udp:1" })).toBe("udp:1");
+  });
+  it("tells apart stations that would read the same", () => {
+    const titles = stationTitles([
+      { station: "udp:aaaac34f", near: "Santa Monica, CA" },
+      { station: "udp:bbbb9d1e", near: "Santa Monica, CA" },
+      { station: "station:ed25519:xyz", name: "CERULEAN" },
+      { station: "station:ed25519:xyz/n2k", name: "CERULEAN" },
+      { station: "aishub" },
+    ]);
+    expect([...titles.values()]).toEqual([
+      "Near Santa Monica, CA (…c34f)",
+      "Near Santa Monica, CA (…9d1e)",
+      "CERULEAN (…:xyz)",
+      "CERULEAN (n2k)",
+      "aishub",
+    ]);
   });
 });

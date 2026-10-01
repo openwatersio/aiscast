@@ -89,12 +89,18 @@ export interface Station {
   source: string;
   events: { last_24h: number; last_7d: number };
   duplicates: number;
-  vessels: number;
+  vessels: number; // last 30 minutes
+  vessels_24h?: number; // optional while a server without them is still deployed
+  vessels_exclusive_24h?: number; // of vessels_24h, heard by no other station
   positions: number;
   first_seen: string;
   last_seen: string;
   last_age_s: number;
   bbox?: [number, number, number, number];
+  name?: string;
+  name_from?: "operator" | "vessel";
+  mmsi?: number; // the station's own vessel
+  near?: string; // the town or region nearest the traffic it hears
 }
 
 /** The API answered with neither the resource nor a 404, or did not answer. */

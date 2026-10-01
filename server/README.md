@@ -25,7 +25,9 @@ Environment:
 - `ISSUER_PUBKEYS` (`kid:base64url-pubkey,...`): the issuers whose tokens aiscast accepts.
 - `PERSONAL_ISSUER_KEY` (`kid:base64url-seed`): lets `POST /v1/keys` mint personal-tier tokens.
 - `REVOKED_SUBS` (comma list).
+- `LOCKED_STATIONS` (comma list of station ids): moderation. A locked station shows no operator or vessel name and refuses new names, and keeps publishing.
 - `ALLOW_ANON=1`: no tokens needed, local development only.
+- `STATION_VESSELS` (`station-vessels.json`): each station's vessels from the last 24 hours, behind `vessels_24h` and `vessels_exclusive_24h` on `/v1/stations`. Written on shutdown and restored on boot.
 - `USAGE` (`vessels-usage.json`): the rolling 24 h/7 d counters behind `/v1/stats`, written every minute and on shutdown, and restored on boot.
 - `STORE` (`aiscast.db`): the vessel record, in SQLite. The vessel cache is restored from it on boot. `off` runs without it, and without tracks, and a restart starts with an empty map. See [Vessel record](#vessel-record).
 - `TRACKS` (`tracks.db`): every position of the last 48 hours, in SQLite, for tracks. `off` runs without it. See [Recent tracks](#recent-tracks).
@@ -52,7 +54,7 @@ Claims:
 
 `tiers.go` holds the defaults, and [docs/limits.md](../docs/limits.md) documents them: anonymous 2 per address / 20 / 100 (subscribe only), personal 2 / 50 / 400 with no expiry, feeder 5 / 200 / unlimited plus `/v1/nmea`. A personal token earns the feeder tier when its stations deliver 1,000 events in 24 h. You can also mint a feeder token directly. The cap is 8 streams per address across tokens.
 
-The token goes everywhere an API key went: aisstream `APIKey`, `Authorization: Bearer`, Basic-auth password (AIS-catcher `USERPWD x:ak1...`), MQTT CONNECT password (AIS-catcher `-Q wssmqtt://x:ak1...@`), or `?key=`. A browser page on another origin can send the header too: every JSON endpoint answers the CORS preflight, so a token never has to go on the query string. `POST /v1/keys {"pubkey": "<base64url ed25519 public key>"}` returns a personal token (no expiry) for that device key. The Signal K plugin and the chart plugin use this, and they bundle no secret. `/v1/stream` subscribe and `/v1/vessels` are open. `/v0/stream`, publishing, and `/v1/receive` need a token.
+The token goes everywhere an API key went: aisstream `APIKey`, `Authorization: Bearer`, Basic-auth password (AIS-catcher `USERPWD x:ak1...`), MQTT CONNECT password (AIS-catcher `-Q wssmqtt://x:ak1...@`), or `?key=`. A browser page on another origin can send the header too: every JSON endpoint answers the CORS preflight, so a token never has to go on the query string. `POST /v1/keys {"pubkey": "<base64url ed25519 public key>", "ts": <unix seconds>, "sig": "<signature>"}` returns a personal token (no expiry) for that device key. `sig` signs the request with the key, so nobody else can mint a token for a station; once a key has signed, unsigned requests for it are refused, and a request that names the station must be signed. The signed lines and an `openssl` recipe are in [openapi.json](openapi.json). The Signal K plugin and the chart plugin use this, and they bundle no secret. `/v1/stream` subscribe and `/v1/vessels` are open. `/v0/stream`, publishing, and `/v1/receive` need a token.
 
 `aiscast-key issuer` makes an issuer keypair. `aiscast-key new -sub station-42 -role feeder -exp 8760h` mints a token. `aiscast-key inspect <token>` shows the claims.
 

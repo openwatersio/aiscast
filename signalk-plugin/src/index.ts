@@ -213,7 +213,13 @@ export default function (app: ServerAPI): Plugin {
         };
       } else {
         try {
-          token = await loadToken(dir, server, identity.pubkey);
+          // The station takes the boat's name only while own-ship sharing is on: that switch is how a boat
+          // keeps its whereabouts private, and its name beside the station's coverage label would give them away.
+          const name = app.getSelfPath("name");
+          const vesselName = shareOwn && typeof name === "string" ? name.trim() : "";
+          const t: Token & { nameError?: string } = await loadToken(dir, server, identity, vesselName);
+          if (t.nameError) log(`aiscast did not take the vessel name "${vesselName}": ${t.nameError}`);
+          token = t;
           clearError();
         } catch (err) {
           token = null;

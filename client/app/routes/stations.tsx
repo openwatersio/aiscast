@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { PageTitle, Panel } from "../components/Panel";
 import { Antenna, Plus } from "lucide-react";
+import { ChipRow, MenuChip } from "../components/ui/Chip";
 import { iconButtonClass } from "../components/ui/IconButton";
 import { IconBadge, List, ListRow } from "../components/ui/List";
-import { formatAge } from "../lib/ais";
-import { browserAuth, getStations, type ApiAuth } from "../lib/api";
+import { formatAge, stationTitles } from "../lib/ais";
+import { browserAuth, getStations, type ApiAuth, type Station } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
 import { pageMeta } from "../lib/meta";
@@ -32,8 +34,18 @@ export const meta = () =>
 
 const n = (v: number) => v.toLocaleString("en-US");
 
+type Sort = "messages" | "unique";
+const SORTS: Array<{ value: Sort; label: string; chip: string }> = [
+  { value: "messages", label: "Most messages today", chip: "Messages" },
+  { value: "unique", label: "Most unique vessels", chip: "Unique vessels" },
+];
+const unique = (s: Station) => s.vessels_exclusive_24h ?? 0;
+
 export default function Stations({ loaderData }: Route.ComponentProps) {
-  const { stations } = loaderData;
+  const [sort, setSort] = useState<Sort>("messages");
+  const stations =
+    sort === "unique" && loaderData.stations ? [...loaderData.stations].sort((a, b) => unique(b) - unique(a)) : loaderData.stations;
+  const titles = stationTitles(stations ?? []);
   const active = stations?.filter((s) => s.last_age_s < 300).length ?? 0;
   return (
     <Panel
@@ -51,7 +63,12 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
         Open one to see where its traffic is now.
       </p>
       {stations && (
-        <List className="mt-4">
+        <ChipRow label="Sort stations" className="-mx-3 mt-4">
+          <MenuChip value={sort} options={SORTS} onChange={setSort} />
+        </ChipRow>
+      )}
+      {stations && (
+        <List className="mt-3">
           {/* Pinned: the reader looking at who receives is the one most likely to join them. */}
           <ListRow
             href={CONTRIBUTE}
@@ -63,8 +80,8 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
             <ListRow
               key={s.station}
               to={`/stations/${s.station}`}
-              title={s.station}
-              subtitle={`${s.source.split(":")[0]} · ${n(s.events.last_24h)} messages today · ${n(s.vessels)} vessels`}
+              title={titles.get(s.station)}
+              subtitle={`${n(s.events.last_24h)} messages today · ${n(s.vessels)} vessels · ${n(unique(s))} unique`}
               trailing={formatAge(s.last_age_s)}
             />
           ))}

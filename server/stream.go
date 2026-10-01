@@ -302,6 +302,12 @@ type v1Frame struct {
 	Snapshot bool     `json:"snapshot,omitempty"` // subscribe: first replay the last known events for vessels already tracked
 	Pubkey   string   `json:"pubkey,omitempty"`   // register: base64url ed25519 public key
 	BindIP   bool     `json:"bind_ip,omitempty"`  // register: bind the token to this connection's address (as /v1/keys bind_ip)
+
+	// register, as on /v1/keys: names for the station, and the signature proving the key
+	Name       *string `json:"name,omitempty"`
+	VesselName *string `json:"vessel_name,omitempty"`
+	TS         int64   `json:"ts,omitempty"`
+	Sig        string  `json:"sig,omitempty"`
 }
 
 // v1Welcome is the first frame on every /v1/stream socket: the tier in effect for this connection, so a
@@ -507,9 +513,9 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					errf("rate limited")
 					continue
 				}
-				tok, nc, msg := mintPersonal(ip, f.Pubkey, f.BindIP)
-				if msg != "" {
-					errf(msg)
+				tok, nc, nameErr, err := p.mintPersonal(ip, mintRequest{Pubkey: f.Pubkey, BindIP: f.BindIP, Name: f.Name, VesselName: f.VesselName, TS: f.TS, Sig: f.Sig})
+				if err != nil {
+					errf(err.Error())
 					continue
 				}
 				ncl := p.effective(&nc) // an already-feeding bound station earns the feeder tier now, as a reconnect would
@@ -532,7 +538,11 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				slotMu.Unlock()
 				cl, canPublish = ncl, ncl.may("publish")
 				pace.Store(&pacer{n: cl.Rate})
-				wsWriteJSON(ctx, c, map[string]any{"type": "key", "token": tok, "claims": nc})
+				key := map[string]any{"type": "key", "token": tok, "claims": nc}
+				if nameErr != "" {
+					key["name_error"] = nameErr
+				}
+				wsWriteJSON(ctx, c, key)
 				if sendWelcome() != nil {
 					return
 				}
