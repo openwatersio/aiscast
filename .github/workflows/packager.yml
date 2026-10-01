@@ -53,8 +53,11 @@ jobs:
           TO: ${{ inputs.to }}
           REPLAY: ${{ inputs.replay }}
           TRACKS_ONLY: ${{ inputs.tracks_only }}
+          WRITE: ${{ inputs.write }}
         run: |
           [ "$REPLAY" != true ] || [ "$TRACKS_ONLY" != true ] || { echo "::error::replay and tracks_only do not combine"; exit 1; }
+          # with write off the job packages into a throwaway warehouse, which holds no positions to roll up
+          [ "$TRACKS_ONLY" != true ] || [ "$WRITE" = true ] || { echo "::error::tracks_only reads the lake's positions, so it needs write on"; exit 1; }
           # an empty entry is the nightly past-week run
           if [ -z "$FROM" ]; then
             [ "$REPLAY" != true ] || { echo "::error::replay needs a from day"; exit 1; }
