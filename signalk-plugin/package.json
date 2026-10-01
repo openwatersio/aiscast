@@ -46,11 +46,11 @@
     "@canboat/ts-pgns": "^1.11.18",
     "@signalk/nmea0183-signalk": "^3.20.1",
     "ggencoder": "^1.0.12",
-    "ws": "^8.18.0"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@signalk/server-api": "^2.32.0",
-    "@types/node": "^26.6.1",
+    "@signalk/server-api": "^2.33.0",
+    "@types/node": "^26.6.3",
     "@types/ws": "^8.18.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1"
