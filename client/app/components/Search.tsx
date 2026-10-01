@@ -322,6 +322,9 @@ function InView() {
   const mapView = useMapView();
   const { filters } = useShell();
   const [, setAnswered] = useState(0);
+  // The view whose request failed, and how many times the reader has asked again.
+  const [failed, setFailed] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
   // The order is the list's own, so changing it asks the server nothing.
   const baseKey = `view|${JSON.stringify({ ...filters, sort: "", inView: true })}`;
   const key = `${baseKey}|${JSON.stringify(mapView?.boxes)}`;
@@ -332,7 +335,10 @@ function InView() {
     let current = true;
     const t = setTimeout(() => {
       void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), mapView)).then((features) => {
-        if (!features) return;
+        if (!features) {
+          if (current) setFailed(key);
+          return;
+        }
         const rows = features.map(fromFeature);
         remember(results, key, rows);
         remember(latest, baseKey, rows);
@@ -344,7 +350,7 @@ function InView() {
       clearTimeout(t);
     };
     // tooWide as well: the stream's welcome can raise the area cap after a view was refused.
-  }, [key, tooWide]);
+  }, [key, tooWide, attempt]);
 
   if (!mapView) return null;
   if (tooWide) {
@@ -352,10 +358,12 @@ function InView() {
   }
 
   const hits = results.get(key);
+  // Without an answer, what the stream holds, which is only what is live on the map.
+  const unanswered = !hits && failed === key;
   const passes = filterTest({ ...filters, inView: true }, new Date(now), firstDayOfWeek(), mapView);
   // Ranked on the server's answer, and only then brought up to date from the stream: ranked on
   // live data, the list would reorder every time a vessel reported.
-  const all = [...(hits ?? latest.get(baseKey) ?? [])]
+  const all = [...(hits ?? latest.get(baseKey) ?? (unanswered ? [...(live?.stream.vessels.values() ?? [])] : []))]
     .sort(rowOrder(filters, mapView.center))
     .map((r) => {
       const v = live?.stream.vessels.get(r.mmsi);
@@ -365,7 +373,24 @@ function InView() {
     })
     .filter(passes);
 
+  const unavailable = unanswered && (
+    <p className="px-2 py-3 text-body text-fg-muted">
+      The server did not answer, so this is only what is live on the map.{" "}
+      <button
+        type="button"
+        onClick={() => {
+          setFailed(undefined);
+          setAttempt((n) => n + 1);
+        }}
+        className="text-accent hover:text-accent-hover"
+      >
+        Try again
+      </button>
+    </p>
+  );
+
   if (!all.length) {
+    if (unavailable) return unavailable;
     if (!hits) return <p className="px-2 py-3 text-body text-fg-muted">Looking…</p>;
     // In view has no chip with nothing typed, so it is no filter to clear.
     return hasFilters({ ...filters, inView: false }) ? (
@@ -376,6 +401,7 @@ function InView() {
   }
   return (
     <>
+      {unavailable}
       <ResultList rows={all.slice(0, IN_VIEW_LIMIT)} center={mapView.center} byMMSI={false} />
       {all.length > IN_VIEW_LIMIT && (
         <p className="px-2 py-3 text-footnote text-fg-muted">
