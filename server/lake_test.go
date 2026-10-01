@@ -426,3 +426,21 @@ func TestOpeningTheTrackStoreDropsTheCacheOfEveryPosition(t *testing.T) {
 		t.Error("lake_days survives")
 	}
 }
+
+func TestTrackKeepsTheEarlierOfAMinutesRowsAcrossDays(t *testing.T) {
+	// The packager rolls each day up from its own arrivals, so a report relayed late gives its minute a
+	// second row in the next day's partition. Thinned by minute, the earlier of the two is the track's.
+	now := time.Now()
+	minute := now.Add(-4 * 24 * time.Hour).Truncate(time.Minute)
+	onTime := lakePosition(minute.Add(40*time.Second), 59.0)
+	late := lakePosition(minute.Add(10*time.Second), 59.001)
+	late["day"] = minute.Add(24 * time.Hour).UTC().Format("2006-01-02")
+	p := lakePipeline(t, &fakeLake{positions: []map[string]any{onTime, late}})
+	sail(t, p, 257000001, time.Hour)
+	from := minute.Add(-time.Hour).UTC().Format(time.RFC3339)
+	to := minute.Add(time.Hour).UTC().Format(time.RFC3339)
+	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=0")
+	if tr.Properties.Points != 1 || tr.Properties.Times[0] != minute.Add(10*time.Second).UTC().Format(time.RFC3339) {
+		t.Errorf("one point, the late report's earlier one: %d %v", tr.Properties.Points, tr.Properties.Times)
+	}
+}
