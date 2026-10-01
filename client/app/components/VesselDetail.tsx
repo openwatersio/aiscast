@@ -183,7 +183,7 @@ export function VesselDetail({
       </p>
       <p className="mt-0.5 text-footnote text-fg-muted">{ids}</p>
 
-      <VesselActions live={live} mmsi={mmsi} imo={imo} name={name} hasTrack={(track?.coords.length ?? 0) > 1} />
+      <VesselActions live={live} mmsi={mmsi} imo={imo} name={name} hasTrack={(track?.coords.length ?? 0) > 0} />
 
       {lat != null && lon != null && (
         <Section
