@@ -89,13 +89,26 @@ function rowSubtitle(v: Row, byMMSI: boolean): string | undefined {
   return v.name ? `MMSI ${v.mmsi}` : undefined;
 }
 
-// Per query, filters, and view, for the life of the page: the list repaints every second for
+// Per query, filters, and view, the most recent of them: the list repaints every second for
 // ages and speeds, and that must not ask the server again. Keyed on the Heard choice rather
 // than the seconds it becomes, which change every minute.
 const results = new Map<string, Row[]>();
 // The newest answer per query and filters, whatever the view, shown while a pan's answer loads
 // so the list reorders rather than falling back to what the stream holds.
 const latest = new Map<string, Row[]>();
+
+// Each pan is a new view and so a new answer, and an answer for the map can hold thousands of
+// vessels, so only the most recent are kept. A Map iterates in insertion order, oldest first.
+const CACHED_ANSWERS = 20;
+
+function remember(cache: Map<string, Row[]>, key: string, rows: Row[]) {
+  cache.delete(key);
+  cache.set(key, rows);
+  for (const old of cache.keys()) {
+    if (cache.size <= CACHED_ANSWERS) break;
+    cache.delete(old);
+  }
+}
 
 /**
  * The search box that heads the home panel, and the filters under it while searching. Search
@@ -243,8 +256,8 @@ function Results({ q }: { q: string }) {
     const t = setTimeout(() => {
       void searchVessels(browserAuth(), q, filterParams(filters, new Date(), firstDayOfWeek(), view)).then((features) => {
         const rows = features.map(fromFeature);
-        results.set(key, rows);
-        latest.set(baseKey, rows);
+        remember(results, key, rows);
+        remember(latest, baseKey, rows);
         if (current) setAnswered((n) => n + 1);
       });
     }, 150);
@@ -321,8 +334,8 @@ function InView() {
       void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), mapView)).then((features) => {
         if (!features) return;
         const rows = features.map(fromFeature);
-        results.set(key, rows);
-        latest.set(baseKey, rows);
+        remember(results, key, rows);
+        remember(latest, baseKey, rows);
         if (current) setAnswered((n) => n + 1);
       });
     }, 150);
