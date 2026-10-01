@@ -2,6 +2,7 @@ import { Antenna } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
+  centerBoxes,
   CLASS_LABELS,
   distanceNM,
   flagEmoji,
@@ -318,14 +319,18 @@ function InView() {
   const me = useMyPosition();
   // Where is the list's own order, so changing it asks the server nothing.
   const baseKey = `view|${JSON.stringify({ ...filters, where: "" })}`;
-  const key = `${baseKey}|${JSON.stringify(mapView?.boxes)}`;
-  const tooWide = mapView != null && !mapView.fits;
+  // A view wider than this client may ask for lists the middle of it: the largest area the cap
+  // allows around the centre, which is where the nearest are anyway. Only an MMSI-only token
+  // has no area at all.
+  const partial = mapView != null && !mapView.fits;
+  const boxes = !mapView ? undefined : partial ? (mapView.cap > 0 ? centerBoxes(mapView.center, mapView.cap) : undefined) : mapView.boxes;
+  const key = `${baseKey}|${JSON.stringify(boxes)}`;
 
   useEffect(() => {
-    if (!mapView || tooWide || results.has(key)) return;
+    if (!boxes || results.has(key)) return;
     let current = true;
     const t = setTimeout(() => {
-      void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), mapView.boxes)).then((features) => {
+      void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), boxes)).then((features) => {
         if (!features) {
           if (current) setFailed(key);
           return;
@@ -340,18 +345,19 @@ function InView() {
       current = false;
       clearTimeout(t);
     };
-    // tooWide as well: the stream's welcome can raise the area cap after a view was refused.
-  }, [key, tooWide, attempt]);
+  }, [key, attempt]);
 
   if (!mapView) return null;
-  if (tooWide) {
+  if (!boxes) {
     return <p className="px-2 py-3 text-body text-fg-muted">Zoom in to list the vessels on the map.</p>;
   }
 
   const hits = results.get(key);
   // Without an answer, what the stream holds, which is only what is live on the map.
   const unanswered = !hits && failed === key;
-  const passes = filterTest({ ...filters, where: "view" }, new Date(now), firstDayOfWeek(), mapView);
+  const inView = filterTest({ ...filters, where: "view" }, new Date(now), firstDayOfWeek(), mapView);
+  const inBoxes = filterTest({ ...NO_FILTERS, where: "view" }, new Date(now), firstDayOfWeek(), { boxes });
+  const passes = (v: Row) => inView(v) && inBoxes(v);
   const origin = filters.where === "me" && me ? me : mapView.center;
   // Ranked on the server's answer, and only then brought up to date from the stream: ranked on
   // live data, the list would reorder every time a vessel reported.
@@ -388,19 +394,25 @@ function InView() {
     return hasFilters({ ...filters, where: "anywhere" }) ? (
       <NoMatches onMap />
     ) : (
-      <p className="px-2 py-3 text-body text-fg-muted">No vessels on the map. Zoom out or move the map to see more.</p>
+      <p className="px-2 py-3 text-body text-fg-muted">
+        {partial ? "No vessels near the middle of the map." : "No vessels on the map. Zoom out or move the map to see more."}
+      </p>
     );
   }
   return (
     <>
       {unavailable}
       <ResultList rows={all.slice(0, IN_VIEW_LIMIT)} center={origin} byMMSI={false} />
-      {all.length > IN_VIEW_LIMIT && (
+      {all.length > IN_VIEW_LIMIT ? (
         <p className="px-2 py-3 text-footnote text-fg-muted">
           {sortOf(filters) === "nearest" ? "The" : "The most recent"} {IN_VIEW_LIMIT} of {all.length.toLocaleString("en-US")}
           {sortOf(filters) === "recent" ? "" : filters.where === "me" ? " nearest you" : " nearest the middle of the map"}.
           Zoom in for the rest.
         </p>
+      ) : (
+        partial && (
+          <p className="px-2 py-3 text-footnote text-fg-muted">Only vessels near the middle of the map. Zoom in to list the rest.</p>
+        )
       )}
     </>
   );

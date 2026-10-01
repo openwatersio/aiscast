@@ -116,6 +116,8 @@ export interface MapView {
   center: [number, number];
   boxes: BBox[];
   fits: boolean;
+  /** Square degrees this client may ask an area of: 0 is unlimited, below 0 is MMSI-only. */
+  cap: number;
 }
 
 export interface SearchResult {
@@ -1135,7 +1137,12 @@ export function createMap(
       const boxes = viewBBoxes().map((b) => b.map(r) as BBox);
       const cap = areaCap();
       const area = boxes.reduce((sum, b) => sum + bboxArea(b), 0);
-      return { center: [r(c.lat), r(((c.lng + 540) % 360) - 180)], boxes, fits: cap === 0 || (cap > 0 && area <= cap) };
+      return {
+        center: [r(c.lat), r(((c.lng + 540) % 360) - 180)],
+        boxes,
+        fits: cap === 0 || (cap > 0 && area <= cap),
+        cap,
+      };
     },
     onViewChange(fn) {
       map.on("moveend", fn);
