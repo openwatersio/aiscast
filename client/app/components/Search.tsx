@@ -400,7 +400,12 @@ function InView() {
   return (
     <>
       {unavailable}
-      <ResultList rows={all.slice(0, IN_VIEW_LIMIT)} center={origin} byMMSI={false} />
+      <ResultList
+        rows={all.slice(0, IN_VIEW_LIMIT)}
+        center={origin}
+        byMMSI={false}
+        ringAll={hasFilters({ ...filters, where: "anywhere" })}
+      />
       {all.length > IN_VIEW_LIMIT ? (
         <p className="px-2 py-3 text-footnote text-fg-muted">
           {sortOf(filters) === "nearest" ? "The" : "The most recent"} {IN_VIEW_LIMIT} of {all.length.toLocaleString("en-US")}
@@ -443,12 +448,29 @@ function NoMatches({ onMap }: { onMap?: boolean }) {
   );
 }
 
-/** Result rows, with each result ringed on the map for as long as the list shows. */
-function ResultList({ rows, center, byMMSI }: { rows: Row[]; center?: [number, number]; byMMSI: boolean }) {
+/**
+ * Result rows, each ringed on the map for as long as the list shows, and the one under the
+ * pointer ringed brighter. A list of everything on the map rings only that one: ringing every
+ * vessel marks nothing out.
+ */
+function ResultList({
+  rows,
+  center,
+  byMMSI,
+  ringAll = true,
+}: {
+  rows: Row[];
+  center?: [number, number];
+  byMMSI: boolean;
+  ringAll?: boolean;
+}) {
   const live = useLive();
   const now = useNow();
+  const [hovered, setHovered] = useState<number>();
   useEffect(() => {
-    live?.ctl.setResults(rows.filter((r): r is Row & { lat: number; lon: number } => r.lat != null && r.lon != null));
+    const ringed = ringAll ? rows : rows.filter((r) => r.mmsi === hovered);
+    live?.ctl.setResults(ringed.filter((r): r is Row & { lat: number; lon: number } => r.lat != null && r.lon != null));
+    live?.ctl.highlightResult(hovered);
   });
   useEffect(() => () => live?.ctl.setResults([]), [live]);
   return (
@@ -459,7 +481,7 @@ function ResultList({ rows, center, byMMSI }: { rows: Row[]; center?: [number, n
           <ListRow
             key={v.mmsi}
             to={vesselPath(v.mmsi, v.name)}
-            onHover={(over) => live?.ctl.highlightResult(over ? v.mmsi : undefined)}
+            onHover={(over) => setHovered(over ? v.mmsi : undefined)}
             leading={<VesselThumb row={v} />}
             title={
               <>
