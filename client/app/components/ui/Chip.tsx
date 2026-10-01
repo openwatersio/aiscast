@@ -61,7 +61,7 @@ export function MenuChip<T>({
 }
 
 // The menu's trigger, which Base UI hands its props and ref to.
-export function ChipButton({ selected, children, className, ...props }: { selected: boolean } & ComponentProps<"button">) {
+function ChipButton({ selected, children, className, ...props }: { selected: boolean } & ComponentProps<"button">) {
   return (
     <button type="button" className={cn(chipClass(selected), className)} {...props}>
       {children}

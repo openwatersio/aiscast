@@ -107,11 +107,6 @@ export function MenuLinkItem({
   );
 }
 
-/** A rule between groups of items. */
-export function MenuSeparator() {
-  return <BaseMenu.Separator className="mx-2 my-1 border-t border-line" />;
-}
-
 /** A line of explanation under a menu's items. */
 export function MenuNote({ children }: { children: ReactNode }) {
   return <p className="mt-1 border-t border-line px-2 pt-1.5 text-caption text-fg-muted">{children}</p>;

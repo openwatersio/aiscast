@@ -76,6 +76,8 @@ export interface MapController {
   /** Bring the whole track into the uncovered map, for starting playback. */
   fitTrack(): void;
   flyToVessel(mmsi: number, fallback?: [number, number]): void;
+  /** Brings a [lat, lon] into the middle of the uncovered map, close enough to see a harbour. */
+  flyToPoint(at: [number, number]): void;
   fitBBox(bbox: BBox): void;
   /** A vessel clicked on the map, with the name its feature carries for the URL slug. */
   onSelect(fn: (mmsi: number, name?: string) => void): void;
@@ -1099,6 +1101,9 @@ export function createMap(
       requestCamera(() =>
         map.flyTo({ center, zoom: Math.max(map.getZoom(), 12), speed: 1.4 }),
       );
+    },
+    flyToPoint([lat, lon]) {
+      requestCamera(() => map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 11), speed: 1.4 }));
     },
     fitBBox(bbox) {
       // fitBounds' own padding replaces the camera padding rather than adding to it, so the

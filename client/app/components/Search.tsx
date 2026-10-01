@@ -17,7 +17,6 @@ import { mediaKey, smallThumb } from "../lib/media";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
 import { BROWSE } from "../lib/nav";
 import {
-  AREAS,
   areaParams,
   filterParams,
   filterTest,
@@ -26,15 +25,17 @@ import {
   HEARD,
   NO_FILTERS,
   SHIP_TYPES,
-  SORTS,
+  sortOf,
+  WHERE,
   type SearchFilters,
   type SearchView,
+  type Where,
 } from "../lib/searchFilters";
+import { locate, useMyPosition } from "../lib/geolocation";
 import { useMedia } from "../lib/useMedia";
 import { cn } from "../lib/cn";
 import { useShell } from "./Shell";
-import { ChipButton, ChipRow, MenuChip } from "./ui/Chip";
-import { Menu, MenuRadioGroup, MenuRadioItem, MenuSeparator } from "./ui/Menu";
+import { ChipRow, MenuChip } from "./ui/Chip";
 import { ClassDot, IconBadge, List, ListRow } from "./ui/List";
 import { Prompt } from "./ui/Prompt";
 import { SearchField } from "./ui/SearchField";
@@ -152,60 +153,45 @@ const TYPE_OPTIONS = [
 /** Filters for the search, as chips. */
 function SearchChips() {
   const { query, filters, setFilters } = useShell();
-  const set = (change: Partial<SearchFilters>) => setFilters({ ...filters, ...change });
-  return (
-    <ChipRow label="Search filters">
-      <SortChip filters={filters} typed={Boolean(query.trim())} set={set} />
-      <MenuChip value={filters.type} options={TYPE_OPTIONS} onChange={(type) => set({ type })} />
-      <MenuChip value={filters.heard} options={HEARD} onChange={(heard) => set({ heard })} />
-    </ChipRow>
-  );
-}
+  const live = useLive();
+  const [locating, setLocating] = useState(false);
+  const [note, setNote] = useState<string>();
+  const set = (change: Partial<SearchFilters>) => {
+    setNote(undefined);
+    setFilters({ ...filters, ...change });
+  };
+  const typed = Boolean(query.trim());
+  // With nothing typed the list is the map's, so the choice is which part of the map.
+  const options = typed ? WHERE : WHERE.filter((o) => o.value !== "anywhere");
+  const where = !typed && filters.where === "anywhere" ? "view" : filters.where;
 
-/**
- * The order, and for a typed search where it looks. With nothing typed the list is already the
- * map's, so there is no where to choose.
- */
-function SortChip({
-  filters,
-  typed,
-  set,
-}: {
-  filters: SearchFilters;
-  typed: boolean;
-  set(change: Partial<SearchFilters>): void;
-}) {
-  const inView = typed && filters.inView;
-  const sort = SORTS.find((o) => o.value === filters.sort) ?? SORTS[0]!;
+  const chooseWhere = (next: Where) => {
+    if (next !== "me") return set({ where: next });
+    // Near me waits for a position, so the list never orders from nowhere.
+    setLocating(true);
+    setNote(undefined);
+    locate()
+      .then((at) => {
+        setFilters({ ...filters, where: "me" });
+        if (!typed) live?.ctl.flyToPoint(at);
+      })
+      .catch((e: Error) => setNote(`${e.message} Results are ordered from the middle of the map.`))
+      .finally(() => setLocating(false));
+  };
+
   return (
-    <Menu
-      trigger={
-        <ChipButton selected={sort !== SORTS[0] || inView}>
-          {sort.chip}
-          {inView && " in this area"}
-        </ChipButton>
-      }
-    >
-      <MenuRadioGroup value={filters.sort} onChange={(s) => set({ sort: s })}>
-        {SORTS.map((o) => (
-          <MenuRadioItem key={o.value} value={o.value}>
-            {o.label}
-          </MenuRadioItem>
-        ))}
-      </MenuRadioGroup>
-      {typed && (
-        <>
-          <MenuSeparator />
-          <MenuRadioGroup value={filters.inView} onChange={(v) => set({ inView: v })}>
-            {AREAS.map((o) => (
-              <MenuRadioItem key={o.label} value={o.value}>
-                {o.label}
-              </MenuRadioItem>
-            ))}
-          </MenuRadioGroup>
-        </>
+    <>
+      <ChipRow label="Search filters">
+        <MenuChip value={where} options={options} onChange={chooseWhere} />
+        <MenuChip value={filters.type} options={TYPE_OPTIONS} onChange={(type) => set({ type })} />
+        <MenuChip value={filters.heard} options={HEARD} onChange={(heard) => set({ heard })} />
+      </ChipRow>
+      {(locating || note) && (
+        <p role="status" className="px-3 pt-2 text-footnote text-fg-muted">
+          {locating ? "Finding your location…" : note}
+        </p>
       )}
-    </Menu>
+    </>
   );
 }
 
@@ -236,17 +222,18 @@ function Results({ q }: { q: string }) {
   const mapView = useMapView();
   const { filters } = useShell();
   const [, setAnswered] = useState(0);
+  const me = useMyPosition();
+  const view: SearchView = {
+    origin: filters.where === "me" ? me : mapView?.center,
+    boxes: mapView?.boxes,
+  };
   // Only what the search asks for: panning the map changes nothing for a search sorted by
   // recency and not kept to the view.
-  const view: SearchView | undefined = mapView && {
-    center: mapView.center,
-    boxes: mapView.boxes,
-  };
-  const viewKey = [filters.sort === "nearest" ? mapView?.center : "", filters.inView ? mapView?.boxes : ""];
+  const viewKey = [sortOf(filters) === "nearest" ? view.origin : "", filters.where === "view" ? view.boxes : ""];
   const baseKey = `${q}|${JSON.stringify(filters)}`;
   const key = `${baseKey}|${JSON.stringify(viewKey)}`;
   // Past the area cap the server refuses the box, so the reader is asked to zoom in instead.
-  const tooWide = filters.inView && mapView != null && !mapView.fits;
+  const tooWide = filters.where === "view" && mapView != null && !mapView.fits;
 
   // The server searches every vessel it has ever heard, not just what this tab is hearing,
   // so a berthed boat is findable.
@@ -273,7 +260,7 @@ function Results({ q }: { q: string }) {
   // and ordered as the server will.
   const lower = q.toLowerCase();
   const passes = filterTest(filters, new Date(now), firstDayOfWeek(), view);
-  const center = view?.center;
+  const center = view.origin;
   const order = rowOrder(filters, center);
   const rows: Row[] = tooWide
     ? []
@@ -325,8 +312,9 @@ function InView() {
   // The view whose request failed, and how many times the reader has asked again.
   const [failed, setFailed] = useState<string>();
   const [attempt, setAttempt] = useState(0);
-  // The order is the list's own, so changing it asks the server nothing.
-  const baseKey = `view|${JSON.stringify({ ...filters, sort: "", inView: true })}`;
+  const me = useMyPosition();
+  // Where is the list's own order, so changing it asks the server nothing.
+  const baseKey = `view|${JSON.stringify({ ...filters, where: "" })}`;
   const key = `${baseKey}|${JSON.stringify(mapView?.boxes)}`;
   const tooWide = mapView != null && !mapView.fits;
 
@@ -334,7 +322,7 @@ function InView() {
     if (!mapView || tooWide || results.has(key)) return;
     let current = true;
     const t = setTimeout(() => {
-      void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), mapView)).then((features) => {
+      void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), mapView.boxes)).then((features) => {
         if (!features) {
           if (current) setFailed(key);
           return;
@@ -360,11 +348,12 @@ function InView() {
   const hits = results.get(key);
   // Without an answer, what the stream holds, which is only what is live on the map.
   const unanswered = !hits && failed === key;
-  const passes = filterTest({ ...filters, inView: true }, new Date(now), firstDayOfWeek(), mapView);
+  const passes = filterTest({ ...filters, where: "view" }, new Date(now), firstDayOfWeek(), mapView);
+  const origin = filters.where === "me" && me ? me : mapView.center;
   // Ranked on the server's answer, and only then brought up to date from the stream: ranked on
   // live data, the list would reorder every time a vessel reported.
   const all = [...(hits ?? latest.get(baseKey) ?? (unanswered ? [...(live?.stream.vessels.values() ?? [])] : []))]
-    .sort(rowOrder(filters, mapView.center))
+    .sort(rowOrder(filters, origin))
     .map((r) => {
       const v = live?.stream.vessels.get(r.mmsi);
       return v && v.seen > r.seen && v.lat != null && v.lon != null
@@ -392,8 +381,8 @@ function InView() {
   if (!all.length) {
     if (unavailable) return unavailable;
     if (!hits) return <p className="px-2 py-3 text-body text-fg-muted">Looking…</p>;
-    // In view has no chip with nothing typed, so it is no filter to clear.
-    return hasFilters({ ...filters, inView: false }) ? (
+    // With nothing typed the list is always the view's, so that is no filter to clear.
+    return hasFilters({ ...filters, where: "anywhere" }) ? (
       <NoMatches onMap />
     ) : (
       <p className="px-2 py-3 text-body text-fg-muted">No vessels on the map. Zoom out or move the map to see more.</p>
@@ -402,11 +391,12 @@ function InView() {
   return (
     <>
       {unavailable}
-      <ResultList rows={all.slice(0, IN_VIEW_LIMIT)} center={mapView.center} byMMSI={false} />
+      <ResultList rows={all.slice(0, IN_VIEW_LIMIT)} center={origin} byMMSI={false} />
       {all.length > IN_VIEW_LIMIT && (
         <p className="px-2 py-3 text-footnote text-fg-muted">
-          {filters.sort === "nearest" ? "The" : "The most recent"} {IN_VIEW_LIMIT} of {all.length.toLocaleString("en-US")}
-          {filters.sort === "nearest" ? " nearest the middle of the map" : ""}. Zoom in for the rest.
+          {sortOf(filters) === "nearest" ? "The" : "The most recent"} {IN_VIEW_LIMIT} of {all.length.toLocaleString("en-US")}
+          {sortOf(filters) === "recent" ? "" : filters.where === "me" ? " nearest you" : " nearest the middle of the map"}.
+          Zoom in for the rest.
         </p>
       )}
     </>
@@ -415,7 +405,7 @@ function InView() {
 
 /** How results are ordered: by distance from the middle of the map, then the most recently heard. */
 function rowOrder(filters: SearchFilters, center: [number, number] | undefined): (a: Row, b: Row) => number {
-  const nearest = filters.sort === "nearest" && center != null;
+  const nearest = sortOf(filters) === "nearest" && center != null;
   return (a, b) => (nearest ? (distanceTo(center, a) ?? Infinity) - (distanceTo(center, b) ?? Infinity) : 0) || b.seen - a.seen;
 }
 
@@ -430,7 +420,8 @@ function NoMatches({ onMap }: { onMap?: boolean }) {
       {onMap ? "No vessels on the map match these filters." : "No matches with these filters."}{" "}
       <button
         type="button"
-        onClick={() => setFilters({ ...NO_FILTERS, sort: filters.sort })}
+        // Near me is an order, not a filter, so it stays.
+        onClick={() => setFilters({ ...NO_FILTERS, where: filters.where === "me" ? "me" : "anywhere" })}
         className="text-accent hover:text-accent-hover"
       >
         Clear filters
