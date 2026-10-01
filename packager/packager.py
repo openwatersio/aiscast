@@ -314,7 +314,11 @@ def build_tracks(con):
     minutes it spent within TRACK_MOVED_M of both neighbors, apart from the first minute of each
     TRACK_BEAT_MIN. Minutes and beats count from the epoch, as the server's thinning buckets do, so
     thinning these to whole minutes picks what thinning every position would, wherever the vessel moved.
-    Spikes stay in: the server judges them after thinning, as it does every position."""
+    Spikes stay in: the server judges them after thinning, as it does every position.
+
+    Only the day's arrivals are staged, so a report relayed late can give a vessel-minute a second row in
+    the next day's partition. A reader thins by minute after merging the days it reads, which keeps the
+    earlier, so the day packaged before is never rewritten for it."""
     minute = "epoch_us(ts) // 60000000"
     con.execute(
         f"""
