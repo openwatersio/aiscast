@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { trackGap } from "./ais";
 import { browserAuth, getTrack } from "./api";
 import { rangeBounds, type TrackRange } from "./trackRange";
 
@@ -10,6 +11,8 @@ export interface LoadedTrack {
   live: boolean;
   /** The server covered less than was asked, because the token does not reach that far back. */
   limited: boolean;
+  /** How long a silence between positions means the vessel went unheard, given how far they were thinned. */
+  gap: number;
   coords: Array<[number, number]>;
   times: number[];
   sog: Array<number | null>;
@@ -33,11 +36,11 @@ export function useTrack(
   const [track, setTrack] = useState<LoadedTrack>();
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<TrackFailure>();
-  const { hours, end } = range;
+  const { span, end } = range;
   useEffect(() => {
     let current = true;
     setLoading(true);
-    const { from, to } = rangeBounds({ hours, end });
+    const { from, to } = rangeBounds({ span, end });
     void getTrack(browserAuth(), mmsi, { from, to }).then((t) => {
       if (!current) return;
       setLoading(false);
@@ -55,6 +58,7 @@ export function useTrack(
         to: Date.parse(t.properties.to),
         live: end == null,
         limited: covered - from > CLOCK_SLACK_MS,
+        gap: trackGap((t.properties.interval ?? 0) * 1000),
         coords,
         times: t.properties.times.map((x) => Date.parse(x)),
         sog: t.properties.sog ?? coords.map(() => null),
@@ -63,6 +67,6 @@ export function useTrack(
     return () => {
       current = false;
     };
-  }, [mmsi, hours, end]);
+  }, [mmsi, span, end]);
   return { track, loading, failure };
 }

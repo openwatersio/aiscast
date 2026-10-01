@@ -52,7 +52,7 @@ export function VesselDetail({
 }) {
   const live = useLive();
   const heard = useLiveVessel(mmsi);
-  const [trackRange, setTrackRange] = useState<TrackRange>({ hours: 24, end: null });
+  const [trackRange, setTrackRange] = useState<TrackRange>({ span: 24, end: null });
   const { track, loading: trackLoading, failure: trackFailure } = useTrack(mmsi, trackRange);
 
   const p = feature?.properties;
