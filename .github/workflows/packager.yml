@@ -89,7 +89,7 @@ jobs:
       LAKE_ROW_GROUP_ROWS: ${{ vars.LAKE_ROW_GROUP_ROWS }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - run: uv run --script packager/packager.py --init
 
   package:
@@ -126,7 +126,7 @@ jobs:
       WRITE: ${{ github.event_name == 'schedule' || inputs.write }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - run: sudo mkdir -p /mnt/work "$PACKAGER_HOME" && sudo chown "$USER" /mnt/work "$PACKAGER_HOME"
       - if: inputs.replay
         uses: actions/setup-go@v7
