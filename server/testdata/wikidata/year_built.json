@@ -10,6 +10,17 @@
    {
     "item": {
      "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q488014"
+    },
+    "v": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "2002"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
      "value": "http://www.wikidata.org/entity/Q1052819"
     },
     "v": {

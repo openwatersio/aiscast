@@ -69,16 +69,25 @@ CREATE INDEX IF NOT EXISTS vessels_first_seen ON vessels (first_seen);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 -- particulars from Wikidata by IMO, replaced whole by each weekly sync (wikidata.go)
 CREATE TABLE IF NOT EXISTS wikidata (
-	imo           INTEGER PRIMARY KEY,
-	qid           TEXT    NOT NULL,
-	builder       TEXT    NOT NULL DEFAULT '',
-	year_built    INTEGER NOT NULL DEFAULT 0,
-	gross_tonnage INTEGER NOT NULL DEFAULT 0,
-	deadweight    INTEGER NOT NULL DEFAULT 0,  -- tonnes
-	length        REAL    NOT NULL DEFAULT 0,  -- metres
-	beam          REAL    NOT NULL DEFAULT 0,
-	registry      TEXT    NOT NULL DEFAULT '', -- country of registry, in English
-	former_names  TEXT    NOT NULL DEFAULT ''  -- JSON array, oldest first
+	imo              INTEGER PRIMARY KEY,
+	qid              TEXT    NOT NULL,
+	builder          TEXT    NOT NULL DEFAULT '',
+	year_built       INTEGER NOT NULL DEFAULT 0,
+	gross_tonnage    INTEGER NOT NULL DEFAULT 0,
+	deadweight       INTEGER NOT NULL DEFAULT 0,  -- tonnes
+	length           REAL    NOT NULL DEFAULT 0,  -- metres
+	beam             REAL    NOT NULL DEFAULT 0,
+	registry         TEXT    NOT NULL DEFAULT '', -- country of registry, in English
+	former_names     TEXT    NOT NULL DEFAULT '', -- JSON array, oldest first
+	ship_type        TEXT    NOT NULL DEFAULT '',
+	yard_number      TEXT    NOT NULL DEFAULT '',
+	draught          REAL    NOT NULL DEFAULT 0,  -- design draught, metres
+	home_port        TEXT    NOT NULL DEFAULT '',
+	owner            TEXT    NOT NULL DEFAULT '',
+	operator         TEXT    NOT NULL DEFAULT '',
+	wikipedia        TEXT    NOT NULL DEFAULT '', -- URLs
+	commons_category TEXT    NOT NULL DEFAULT '',
+	image            TEXT    NOT NULL DEFAULT ''
 );
 -- US-flag vessels with a call sign from the Coast Guard's PSIX, listed weekly, with dimensions and tonnage
 -- read for the vessels AIS matches to them (uscg.go)

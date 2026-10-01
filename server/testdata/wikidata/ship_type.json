@@ -14,7 +14,7 @@
     },
     "v": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q1327429"
+     "value": "http://www.wikidata.org/entity/Q39804"
     }
    },
    {
@@ -24,27 +24,17 @@
     },
     "v": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q705377"
+     "value": "http://www.wikidata.org/entity/Q39804"
     }
    },
    {
     "item": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q2109568"
+     "value": "http://www.wikidata.org/entity/Q30103175"
     },
     "v": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q1327429"
-    }
-   },
-   {
-    "item": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q52296707"
-    },
-    "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q14552001"
+     "value": "http://www.wikidata.org/entity/Q1430652"
     }
    }
   ]

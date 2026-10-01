@@ -1,0 +1,42 @@
+{
+ "head": {
+  "vars": [
+   "item",
+   "v"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1052819"
+    },
+    "v": {
+     "type": "uri",
+     "value": "https://en.wikipedia.org/wiki/Celebrity_Eclipse"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q488014"
+    },
+    "v": {
+     "type": "uri",
+     "value": "https://en.wikipedia.org/wiki/Carnival_Encounter"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2109568"
+    },
+    "v": {
+     "type": "uri",
+     "value": "https://en.wikipedia.org/wiki/Pride_of_Rotterdam"
+    }
+   }
+  ]
+ }
+}

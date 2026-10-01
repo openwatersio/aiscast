@@ -10,6 +10,16 @@
    {
     "item": {
      "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q488014"
+    },
+    "v": {
+     "type": "literal",
+     "value": "9192363"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
      "value": "http://www.wikidata.org/entity/Q1052819"
     },
     "v": {

@@ -36,7 +36,8 @@ func fakeWDQS(t *testing.T, fail *atomic.Bool) (url string, queries *atomic.Int6
 		}
 		q := r.FormValue("query")
 		if strings.HasPrefix(q, "SELECT ?v ?label WHERE { VALUES ?v { ") {
-			for _, qid := range []string{"Q55", "Q233", "Q783", "Q705377", "Q1327429", "Q14552001"} {
+			for _, qid := range []string{"Q55", "Q84", "Q233", "Q783", "Q23635", "Q23800", "Q34370", "Q39804", "Q705377", "Q745700",
+				"Q1044059", "Q1052823", "Q1327429", "Q1430652", "Q14552001"} {
 				if !strings.Contains(q, "wd:"+qid+" ") {
 					t.Errorf("label query leaves out %s: %s", qid, q)
 				}
@@ -64,11 +65,23 @@ func fakeWDQS(t *testing.T, fail *atomic.Bool) (url string, queries *atomic.Int6
 }
 
 var wantWikidata = map[uint32]*wikidataShip{
-	9404314: {ID: "Q1052819", Builder: "Meyer Werft", YearBuilt: 2010, GrossTonnage: 121878, Deadweight: 9500, Length: 317.2, Beam: 36.8, Registry: "Malta"},
+	9404314: {ID: "Q1052819", ShipType: "cruise ship", Builder: "Meyer Werft", YardNumber: "677", YearBuilt: 2010, GrossTonnage: 121878,
+		Deadweight: 9500, Length: 317.2, Beam: 36.8, Draught: 8.62, Registry: "Malta", HomePort: "Valletta", Operator: "Celebrity Cruises",
+		Wikipedia:       "https://en.wikipedia.org/wiki/Celebrity_Eclipse",
+		CommonsCategory: "https://commons.wikimedia.org/wiki/Category:Celebrity_Eclipse_%28ship%2C_2010%29",
+		Image:           "https://commons.wikimedia.org/wiki/File:Celebrity_Eclipse_leaving_Southampton.jpg"},
 	// Q2109568 and Q83569204 both carry IMO 9208617; the lower QID wins.
-	9208617: {ID: "Q2109568", Builder: "Fincantieri", YearBuilt: 2001, GrossTonnage: 59925, Length: 215.45, Beam: 31.88, Registry: "Netherlands"},
-	5358206: {ID: "Q52296707", Builder: "Jansen-Werft", YearBuilt: 1958, Length: 53.01, Registry: "Honduras",
-		FormerNames: []string{"Thekla", "Heimar", "Delice", "Valery"}},
+	9208617: {ID: "Q2109568", Builder: "Fincantieri", YardNumber: "6065", YearBuilt: 2001, GrossTonnage: 59925, Length: 215.45, Beam: 31.88,
+		Draught: 6.05, Registry: "Netherlands", HomePort: "Rotterdam", Wikipedia: "https://en.wikipedia.org/wiki/Pride_of_Rotterdam",
+		CommonsCategory: "https://commons.wikimedia.org/wiki/Category:IMO_9208617", Image: "https://commons.wikimedia.org/wiki/File:PrideofRotterdam.png"},
+	5358206: {ID: "Q52296707", Builder: "Jansen-Werft", YardNumber: "38", YearBuilt: 1958, Length: 53.01, Registry: "Honduras",
+		FormerNames: []string{"Thekla", "Heimar", "Delice", "Valery"}, CommonsCategory: "https://commons.wikimedia.org/wiki/Category:IMO_5358206"},
+	// Two operators are in force; the lower QID wins.
+	9192363: {ID: "Q488014", ShipType: "cruise ship", Builder: "Fincantieri", YardNumber: "6051", YearBuilt: 2002, GrossTonnage: 108977,
+		Length: 289.51, Beam: 36, Draught: 8.45, Registry: "Bermuda", HomePort: "London", Owner: "Carnival Corporation", Operator: "Princess Cruises",
+		Wikipedia:       "https://en.wikipedia.org/wiki/Carnival_Encounter",
+		CommonsCategory: "https://commons.wikimedia.org/wiki/Category:IMO_9192363",
+		Image:           "https://commons.wikimedia.org/wiki/File:Star_Princess_Tendering.jpg"},
 }
 
 func TestFetchWikidata(t *testing.T) {
@@ -102,7 +115,7 @@ func TestWikidataSync(t *testing.T) {
 	}
 
 	fail.Store(false)
-	if !p.syncWikidataIfDue(now, url) || p.wikidata.ships.Load() != 3 {
+	if !p.syncWikidataIfDue(now, url) || p.wikidata.ships.Load() != 4 {
 		t.Fatalf("sync: ships %d", p.wikidata.ships.Load())
 	}
 	before := queries.Load()
@@ -113,7 +126,7 @@ func TestWikidataSync(t *testing.T) {
 		t.Error("no sync after a week")
 	}
 
-	got, err := p.store.wikidataShips([]uint32{9404314, 9208617, 5358206, 1234567})
+	got, err := p.store.wikidataShips([]uint32{9404314, 9208617, 5358206, 9192363, 1234567})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +153,7 @@ func TestWikidataStatsOnBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := get(t, p, "/metrics").Body.String()
-	for _, want := range []string{"aiscast_wikidata_ships 3\n", fmt.Sprintf("aiscast_wikidata_last_success_timestamp_seconds %d\n", at.Unix())} {
+	for _, want := range []string{"aiscast_wikidata_ships 4\n", fmt.Sprintf("aiscast_wikidata_last_success_timestamp_seconds %d\n", at.Unix())} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/metrics lacks %q", want)
 		}
@@ -158,7 +171,7 @@ func TestReplaceWikidataRefusesAShortSync(t *testing.T) {
 	// A first sync has no stored set to compare with, only the minimum.
 	fresh := storePipeline(t)
 	defer func(n int) { wikidataMinShips = n }(wikidataMinShips)
-	wikidataMinShips = 4
+	wikidataMinShips = len(wantWikidata) + 1
 	if err := fresh.store.replaceWikidata(wantWikidata, time.Now()); err == nil {
 		t.Error("a first sync under the minimum was stored")
 	}
@@ -221,7 +234,10 @@ func TestVesselWikidata(t *testing.T) {
 	}
 	if w["id"] != "Q1052819" || w["url"] != "https://www.wikidata.org/wiki/Q1052819" || w["license"] != "CC0-1.0" ||
 		w["builder"] != "Meyer Werft" || w["year_built"] != 2010.0 || w["gross_tonnage"] != 121878.0 || w["deadweight"] != 9500.0 ||
-		w["length"] != 317.2 || w["beam"] != 36.8 || w["registry"] != "Malta" || w["former_names"] != nil {
+		w["length"] != 317.2 || w["beam"] != 36.8 || w["registry"] != "Malta" || w["former_names"] != nil ||
+		w["ship_type"] != "cruise ship" || w["draught"] != 8.62 || w["home_port"] != "Valletta" || w["operator"] != "Celebrity Cruises" ||
+		w["owner"] != nil || w["yard_number"] != "677" || w["wikipedia"] != "https://en.wikipedia.org/wiki/Celebrity_Eclipse" ||
+		w["image"] != "https://commons.wikimedia.org/wiki/File:Celebrity_Eclipse_leaving_Southampton.jpg" {
 		t.Errorf("wikidata: %v", w)
 	}
 	for _, mmsi := range []string{"257000002", "257000003"} {

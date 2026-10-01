@@ -1,14 +1,16 @@
 package main
 
-// Vessel particulars from Wikidata, found by IMO number (P458): builder, year built, tonnage, registered
-// dimensions, country of registry, and former names. A bot import gave most IMO-registered ships an item,
-// and Wikidata is CC0, so the particulars are served without a credit line.
+// Vessel particulars from Wikidata, found by IMO number (P458): type, builder, year built, tonnage,
+// registered dimensions, registry and home port, owner and operator, former names, and links to the ship's
+// Wikipedia article and its photos on Commons. A bot import gave most IMO-registered ships an item, and
+// Wikidata is CC0, so the particulars are served without a credit line. The photos the links lead to carry
+// their own licenses.
 //
 // Once a week a sync reads every item with an IMO from the Wikidata Query Service and replaces the wikidata
 // table in the vessel record. Requests read that table and never Wikidata. One query per field keeps each
 // in the seconds; one query for everything takes half a minute, close to the service's 60-second limit.
-// Builders and registries are named last, in queries over their items alone: joining labels onto every
-// ship's statement runs past the limit.
+// Properties whose values are items, such as the builder or the owner, are named last, in queries over
+// those items alone: joining labels onto every ship's statement runs past the limit.
 
 import (
 	"context"
@@ -48,17 +50,26 @@ var wikidataClient = &http.Client{Timeout: 3 * time.Minute}
 
 // wikidataShip is what the API and MCP serve for one vessel.
 type wikidataShip struct {
-	ID           string   `json:"id" jsonschema:"Wikidata item ID"`
-	URL          string   `json:"url" jsonschema:"the item's page on Wikidata"`
-	License      string   `json:"license" jsonschema:"CC0-1.0: public domain, no credit required"`
-	Builder      string   `json:"builder,omitempty" jsonschema:"shipyard or builder"`
-	YearBuilt    int      `json:"year_built,omitempty" jsonschema:"year the vessel entered service"`
-	GrossTonnage int      `json:"gross_tonnage,omitempty"`
-	Deadweight   int      `json:"deadweight,omitempty" jsonschema:"deadweight, tonnes"`
-	Length       float64  `json:"length,omitempty" jsonschema:"length as registered, metres; may differ from the AIS length"`
-	Beam         float64  `json:"beam,omitempty" jsonschema:"beam as registered, metres"`
-	Registry     string   `json:"registry,omitempty" jsonschema:"country of registry, in English"`
-	FormerNames  []string `json:"former_names,omitempty" jsonschema:"names the vessel has carried before, oldest first"`
+	ID              string   `json:"id" jsonschema:"Wikidata item ID"`
+	URL             string   `json:"url" jsonschema:"the item's page on Wikidata"`
+	License         string   `json:"license" jsonschema:"CC0-1.0: public domain, no credit required; the photos image and commons_category lead to carry their own licenses"`
+	ShipType        string   `json:"ship_type,omitempty" jsonschema:"kind of ship, e.g. bulk carrier, container ship, oil tanker, ferry"`
+	Builder         string   `json:"builder,omitempty" jsonschema:"shipyard or builder"`
+	YardNumber      string   `json:"yard_number,omitempty" jsonschema:"the builder's hull number"`
+	YearBuilt       int      `json:"year_built,omitempty" jsonschema:"year the vessel entered service"`
+	GrossTonnage    int      `json:"gross_tonnage,omitempty"`
+	Deadweight      int      `json:"deadweight,omitempty" jsonschema:"deadweight, tonnes"`
+	Length          float64  `json:"length,omitempty" jsonschema:"length as registered, metres; may differ from the AIS length"`
+	Beam            float64  `json:"beam,omitempty" jsonschema:"beam as registered, metres"`
+	Draught         float64  `json:"draught,omitempty" jsonschema:"design draught, metres; AIS reports the draught on the current voyage"`
+	Registry        string   `json:"registry,omitempty" jsonschema:"country of registry, in English"`
+	HomePort        string   `json:"home_port,omitempty" jsonschema:"port of registry"`
+	Owner           string   `json:"owner,omitempty"`
+	Operator        string   `json:"operator,omitempty"`
+	FormerNames     []string `json:"former_names,omitempty" jsonschema:"names the vessel has carried before, oldest first"`
+	Wikipedia       string   `json:"wikipedia,omitempty" jsonschema:"the ship's English Wikipedia article"`
+	CommonsCategory string   `json:"commons_category,omitempty" jsonschema:"the category of the ship's photos on Wikimedia Commons"`
+	Image           string   `json:"image,omitempty" jsonschema:"the Commons page of a photo of the ship, which shows its license and credit"`
 }
 
 // wikidataStats is read by /metrics.
@@ -92,6 +103,10 @@ type wikidataItem struct {
 	ship        wikidataShip
 	builder     wikidataRef
 	registry    wikidataRef
+	shipType    wikidataRef
+	homePort    wikidataRef
+	owner       wikidataRef
+	operator    wikidataRef
 	formerNames []formerName
 }
 
@@ -158,6 +173,41 @@ var wikidataQueries = []struct {
 	// A registry statement with an end time is one the vessel has left.
 	{"registry", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P8047 ?s . ?s a wikibase:BestRank; ps:P8047 ?v . OPTIONAL { ?s pq:P582 ?end } }`,
 		func(it *wikidataItem, b wikidataBinding) { it.registry.take(b) }},
+	{"home_port", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P532 ?s . ?s a wikibase:BestRank; ps:P532 ?v . OPTIONAL { ?s pq:P582 ?end } }`,
+		func(it *wikidataItem, b wikidataBinding) { it.homePort.take(b) }},
+	{"owner", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P127 ?s . ?s a wikibase:BestRank; ps:P127 ?v . OPTIONAL { ?s pq:P582 ?end } }`,
+		func(it *wikidataItem, b wikidataBinding) { it.owner.take(b) }},
+	{"operator", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P137 ?s . ?s a wikibase:BestRank; ps:P137 ?v . OPTIONAL { ?s pq:P582 ?end } }`,
+		func(it *wikidataItem, b wikidataBinding) { it.operator.take(b) }},
+	// Every item is an instance of ship (Q11446), and three in five say no more, so that one is left out.
+	{"ship_type", `SELECT ?item ?v WHERE { ?item wdt:P458 []; wdt:P31 ?v . FILTER(?v != wd:Q11446) }`,
+		func(it *wikidataItem, b wikidataBinding) { it.shipType.take(b) }},
+	{"yard_number", `SELECT ?item ?v WHERE { ?item wdt:P458 []; wdt:P617 ?v }`,
+		func(it *wikidataItem, b wikidataBinding) { least(&it.ship.YardNumber, strings.TrimSpace(b.V.Value)) }},
+	{"draught", `SELECT ?item ?v WHERE { ?item wdt:P458 []; p:P2262 ?s . ?s a wikibase:BestRank; psn:P2262/wikibase:quantityAmount ?v }`,
+		func(it *wikidataItem, b wikidataBinding) {
+			it.ship.Draught = max(it.ship.Draught, math.Round(number(b.V.Value)*100)/100)
+		}},
+	{"wikipedia", `SELECT ?item ?v WHERE { ?item wdt:P458 [] . ?v schema:about ?item; schema:isPartOf <https://en.wikipedia.org/> }`,
+		func(it *wikidataItem, b wikidataBinding) {
+			if strings.HasPrefix(b.V.Value, "https://en.wikipedia.org/wiki/") {
+				least(&it.ship.Wikipedia, b.V.Value)
+			}
+		}},
+	{"commons_category", `SELECT ?item ?v WHERE { ?item wdt:P458 []; wdt:P373 ?v }`,
+		func(it *wikidataItem, b wikidataBinding) {
+			least(&it.ship.CommonsCategory, commonsPage("Category:", b.V.Value))
+		}},
+	// An image is a Special:FilePath URL, which serves the original file, often many megabytes. The file's
+	// page is served instead: it has the license and credit the photo needs, and thumbnails.
+	{"image", `SELECT ?item ?v WHERE { ?item wdt:P458 []; wdt:P18 ?v }`,
+		func(it *wikidataItem, b wikidataBinding) {
+			if _, file, ok := strings.Cut(b.V.Value, "/Special:FilePath/"); ok {
+				if name, err := url.PathUnescape(file); err == nil {
+					least(&it.ship.Image, commonsPage("File:", name))
+				}
+			}
+		}},
 	// Official names (P1448) with an end time are the former ones.
 	{"former_names", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P1448 ?s . ?s ps:P1448 ?v; pq:P582 ?end . MINUS { ?s wikibase:rank wikibase:DeprecatedRank } }`,
 		func(it *wikidataItem, b wikidataBinding) {
@@ -165,6 +215,22 @@ var wikidataQueries = []struct {
 				it.formerNames = append(it.formerNames, formerName{name, b.End.Value})
 			}
 		}},
+}
+
+// least keeps the least of the values a property has, so every sync picks the same.
+func least(dst *string, v string) {
+	if v != "" && (*dst == "" || v < *dst) {
+		*dst = v
+	}
+}
+
+// commonsPage is the URL of a page on Wikimedia Commons, such as Category:IMO 9404314.
+func commonsPage(namespace, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	return "https://commons.wikimedia.org/wiki/" + namespace + url.PathEscape(strings.ReplaceAll(name, " ", "_"))
 }
 
 func number(s string) float64 {
@@ -241,7 +307,7 @@ func fetchWikidata(ctx context.Context, endpoint string) (map[uint32]*wikidataSh
 				byIMO[imo] = it
 			}
 		}
-		for _, r := range []wikidataRef{it.builder, it.registry} {
+		for _, r := range []wikidataRef{it.builder, it.registry, it.shipType, it.homePort, it.owner, it.operator} {
 			if r.qid != 0 {
 				named[r.qid] = true
 			}
@@ -277,7 +343,8 @@ func fetchWikidata(ctx context.Context, endpoint string) (map[uint32]*wikidataSh
 	for imo, it := range byIMO {
 		s := it.ship
 		s.ID = "Q" + strconv.Itoa(it.qid)
-		s.Builder, s.Registry = labels[it.builder.qid], labels[it.registry.qid]
+		s.Builder, s.Registry, s.ShipType = labels[it.builder.qid], labels[it.registry.qid], labels[it.shipType.qid]
+		s.HomePort, s.Owner, s.Operator = labels[it.homePort.qid], labels[it.owner.qid], labels[it.operator.qid]
 		sort.SliceStable(it.formerNames, func(i, j int) bool { return it.formerNames[i].end < it.formerNames[j].end })
 		seen := map[string]bool{}
 		for _, n := range it.formerNames {
@@ -321,17 +388,23 @@ func sparql(ctx context.Context, endpoint, query string) ([]wikidataBinding, err
 }
 
 // wikidataFields names what wikidataCounts and wikidataCountSQL count, in their order.
-var wikidataFields = [...]string{"ships", "builder", "year_built", "gross_tonnage", "deadweight", "length", "beam", "registry", "former_names"}
+var wikidataFields = [...]string{"ships", "builder", "year_built", "gross_tonnage", "deadweight", "length", "beam", "registry",
+	"former_names", "ship_type", "yard_number", "draught", "home_port", "owner", "operator", "wikipedia", "commons_category", "image"}
 
 const wikidataCountSQL = `SELECT count(*), coalesce(sum(builder != ''), 0), coalesce(sum(year_built > 0), 0),
 	coalesce(sum(gross_tonnage > 0), 0), coalesce(sum(deadweight > 0), 0), coalesce(sum(length > 0), 0),
-	coalesce(sum(beam > 0), 0), coalesce(sum(registry != ''), 0), coalesce(sum(former_names != ''), 0) FROM wikidata`
+	coalesce(sum(beam > 0), 0), coalesce(sum(registry != ''), 0), coalesce(sum(former_names != ''), 0),
+	coalesce(sum(ship_type != ''), 0), coalesce(sum(yard_number != ''), 0), coalesce(sum(draught > 0), 0),
+	coalesce(sum(home_port != ''), 0), coalesce(sum(owner != ''), 0), coalesce(sum(operator != ''), 0),
+	coalesce(sum(wikipedia != ''), 0), coalesce(sum(commons_category != ''), 0), coalesce(sum(image != ''), 0) FROM wikidata`
 
 // wikidataCounts is the ships in a sync and how many have each field.
 func wikidataCounts(ships map[uint32]*wikidataShip) (n [len(wikidataFields)]int) {
 	for _, w := range ships {
 		for i, set := range [...]bool{true, w.Builder != "", w.YearBuilt > 0, w.GrossTonnage > 0, w.Deadweight > 0,
-			w.Length > 0, w.Beam > 0, w.Registry != "", len(w.FormerNames) > 0} {
+			w.Length > 0, w.Beam > 0, w.Registry != "", len(w.FormerNames) > 0, w.ShipType != "", w.YardNumber != "",
+			w.Draught > 0, w.HomePort != "", w.Owner != "", w.Operator != "", w.Wikipedia != "", w.CommonsCategory != "",
+			w.Image != ""} {
 			if set {
 				n[i]++
 			}
@@ -372,8 +445,8 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 	if _, err := tx.Exec(`DELETE FROM wikidata`); err != nil {
 		return err
 	}
-	st, err := tx.Prepare(`INSERT INTO wikidata (imo, qid, builder, year_built, gross_tonnage, deadweight, length, beam, registry, former_names)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	st, err := tx.Prepare(`INSERT INTO wikidata (` + wikidataCols + `)
+		VALUES (?` + strings.Repeat(", ?", strings.Count(wikidataCols, ",")) + `)`)
 	if err != nil {
 		return err
 	}
@@ -384,7 +457,8 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 			b, _ := json.Marshal(w.FormerNames)
 			names = string(b)
 		}
-		if _, err := st.Exec(imo, w.ID, w.Builder, w.YearBuilt, w.GrossTonnage, w.Deadweight, w.Length, w.Beam, w.Registry, names); err != nil {
+		if _, err := st.Exec(imo, w.ID, w.Builder, w.YearBuilt, w.GrossTonnage, w.Deadweight, w.Length, w.Beam, w.Registry, names,
+			w.ShipType, w.YardNumber, w.Draught, w.HomePort, w.Owner, w.Operator, w.Wikipedia, w.CommonsCategory, w.Image); err != nil {
 			return err
 		}
 	}
@@ -394,6 +468,9 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 	}
 	return tx.Commit()
 }
+
+const wikidataCols = `imo, qid, builder, year_built, gross_tonnage, deadweight, length, beam, registry, former_names,
+	ship_type, yard_number, draught, home_port, owner, operator, wikipedia, commons_category, image`
 
 // wikidataShips is the stored particulars for each IMO that has them.
 func (s *store) wikidataShips(imos []uint32) (map[uint32]*wikidataShip, error) {
@@ -405,8 +482,7 @@ func (s *store) wikidataShips(imos []uint32) (map[uint32]*wikidataShip, error) {
 	for i, n := range imos {
 		args[i] = n
 	}
-	rows, err := s.db.Query(`SELECT imo, qid, builder, year_built, gross_tonnage, deadweight, length, beam, registry, former_names
-		FROM wikidata WHERE imo IN (?`+strings.Repeat(",?", len(imos)-1)+`)`, args...)
+	rows, err := s.db.Query(`SELECT `+wikidataCols+` FROM wikidata WHERE imo IN (?`+strings.Repeat(",?", len(imos)-1)+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +491,8 @@ func (s *store) wikidataShips(imos []uint32) (map[uint32]*wikidataShip, error) {
 		var imo uint32
 		var names string
 		w := &wikidataShip{License: wikidataLicense}
-		if err := rows.Scan(&imo, &w.ID, &w.Builder, &w.YearBuilt, &w.GrossTonnage, &w.Deadweight, &w.Length, &w.Beam, &w.Registry, &names); err != nil {
+		if err := rows.Scan(&imo, &w.ID, &w.Builder, &w.YearBuilt, &w.GrossTonnage, &w.Deadweight, &w.Length, &w.Beam, &w.Registry, &names,
+			&w.ShipType, &w.YardNumber, &w.Draught, &w.HomePort, &w.Owner, &w.Operator, &w.Wikipedia, &w.CommonsCategory, &w.Image); err != nil {
 			return nil, err
 		}
 		w.URL = "https://www.wikidata.org/wiki/" + w.ID

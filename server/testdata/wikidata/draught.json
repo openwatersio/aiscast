@@ -15,7 +15,18 @@
     "v": {
      "datatype": "http://www.w3.org/2001/XMLSchema#decimal",
      "type": "literal",
-     "value": "121878"
+     "value": "8.62"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1052819"
+    },
+    "v": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+     "type": "literal",
+     "value": "8.3"
     }
    },
    {
@@ -26,7 +37,7 @@
     "v": {
      "datatype": "http://www.w3.org/2001/XMLSchema#decimal",
      "type": "literal",
-     "value": "59925"
+     "value": "6.05"
     }
    },
    {
@@ -37,18 +48,7 @@
     "v": {
      "datatype": "http://www.w3.org/2001/XMLSchema#decimal",
      "type": "literal",
-     "value": "108977"
-    }
-   },
-   {
-    "item": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q83569204"
-    },
-    "v": {
-     "datatype": "http://www.w3.org/2001/XMLSchema#decimal",
-     "type": "literal",
-     "value": "59925"
+     "value": "8.45"
     }
    }
   ]

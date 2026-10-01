@@ -13,8 +13,8 @@
      "value": "http://www.wikidata.org/entity/Q488014"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q1327429"
+     "type": "literal",
+     "value": "6051"
     }
    },
    {
@@ -23,8 +23,8 @@
      "value": "http://www.wikidata.org/entity/Q1052819"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q705377"
+     "type": "literal",
+     "value": "677"
     }
    },
    {
@@ -33,8 +33,8 @@
      "value": "http://www.wikidata.org/entity/Q2109568"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q1327429"
+     "type": "literal",
+     "value": "6065"
     }
    },
    {
@@ -43,8 +43,8 @@
      "value": "http://www.wikidata.org/entity/Q52296707"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q14552001"
+     "type": "literal",
+     "value": "38"
     }
    }
   ]

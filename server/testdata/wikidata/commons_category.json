@@ -2,8 +2,7 @@
  "head": {
   "vars": [
    "item",
-   "v",
-   "end"
+   "v"
   ]
  },
  "results": {
@@ -11,11 +10,21 @@
    {
     "item": {
      "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q488014"
+    },
+    "v": {
+     "type": "literal",
+     "value": "IMO 9192363"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
      "value": "http://www.wikidata.org/entity/Q1052819"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q233"
+     "type": "literal",
+     "value": "Celebrity Eclipse (ship, 2010)"
     }
    },
    {
@@ -24,18 +33,18 @@
      "value": "http://www.wikidata.org/entity/Q2109568"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q55"
+     "type": "literal",
+     "value": "IMO 9208617"
     }
    },
    {
     "item": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q488014"
+     "value": "http://www.wikidata.org/entity/Q2109568"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q23635"
+     "type": "literal",
+     "value": "Pride of Rotterdam (ship, 2001)"
     }
    },
    {
@@ -44,8 +53,8 @@
      "value": "http://www.wikidata.org/entity/Q52296707"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q783"
+     "type": "literal",
+     "value": "IMO 5358206"
     }
    },
    {
@@ -54,8 +63,8 @@
      "value": "http://www.wikidata.org/entity/Q83569204"
     },
     "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q55"
+     "type": "literal",
+     "value": "IMO 9208617"
     }
    }
   ]

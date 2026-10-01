@@ -730,20 +730,29 @@
       },
       "VesselWikidata": {
         "type": "object",
-        "description": "Particulars as registered, from the Wikidata item that carries the vessel's IMO number (P458). Present on `/v1/vessels/{mmsi}` when the IMO from the vessel's static data has a valid check digit and an item. Refreshed weekly. Wikidata is CC0, so no credit line is required. Registered dimensions can differ from the ones AIS reports. Each field other than `id`, `url`, and `license` is present only when the item has it.",
+        "description": "Particulars as registered, from the Wikidata item that carries the vessel's IMO number (P458). Present on `/v1/vessels/{mmsi}` when the IMO from the vessel's static data has a valid check digit and an item. Refreshed weekly. Wikidata is CC0, so no credit line is required; the photos `image` and `commons_category` lead to carry their own licenses. Registered dimensions can differ from the ones AIS reports. Where a property has several current values, such as two operators, a value without an end time wins, then the lowest item ID. Each field other than `id`, `url`, and `license` is present only when the item has it.",
         "required": ["id", "url", "license"],
         "properties": {
           "id": { "type": "string", "description": "Wikidata item ID.", "example": "Q1052819" },
           "url": { "type": "string", "format": "uri", "description": "The item's page on Wikidata." },
           "license": { "type": "string", "const": "CC0-1.0" },
+          "ship_type": { "type": "string", "description": "Kind of ship, such as `bulk carrier`, `container ship`, `oil tanker`, or `ferry` (P31). Items that say only `ship` leave it out." },
           "builder": { "type": "string", "description": "Shipyard or builder (P176)." },
+          "yard_number": { "type": "string", "description": "The builder's hull number (P617)." },
           "year_built": { "type": "integer", "description": "Year the vessel entered service (P729)." },
           "gross_tonnage": { "type": "integer", "description": "Gross tonnage (P1093)." },
           "deadweight": { "type": "integer", "description": "Deadweight in tonnes (P4519)." },
           "length": { "type": "number", "description": "Length in meters (P2043)." },
           "beam": { "type": "number", "description": "Beam in meters (P2261)." },
+          "draught": { "type": "number", "description": "Design draught in meters (P2262). The `draught` in the vessel's properties is the one AIS reports for the current voyage." },
           "registry": { "type": "string", "description": "Country of registry, its English name (P8047)." },
-          "former_names": { "type": "array", "items": { "type": "string" }, "description": "Names the vessel carried before, oldest first (P1448 with an end time)." }
+          "home_port": { "type": "string", "description": "Port of registry, its English name (P532)." },
+          "owner": { "type": "string", "description": "Owner, its English name (P127)." },
+          "operator": { "type": "string", "description": "Operator, its English name (P137)." },
+          "former_names": { "type": "array", "items": { "type": "string" }, "description": "Names the vessel carried before, oldest first (P1448 with an end time)." },
+          "wikipedia": { "type": "string", "format": "uri", "description": "The ship's English Wikipedia article." },
+          "commons_category": { "type": "string", "format": "uri", "description": "The category of the ship's photos on Wikimedia Commons (P373). The photos carry their own licenses." },
+          "image": { "type": "string", "format": "uri", "description": "The Wikimedia Commons page of a photo of the ship (P18), which shows the photo's license and credit and links its thumbnails. The photo is not CC0." }
         }
       },
       "VesselUSCG": {

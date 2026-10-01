@@ -2,7 +2,8 @@
  "head": {
   "vars": [
    "item",
-   "v"
+   "v",
+   "end"
   ]
  },
  "results": {
@@ -10,21 +11,11 @@
    {
     "item": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q488014"
-    },
-    "v": {
-     "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q1327429"
-    }
-   },
-   {
-    "item": {
-     "type": "uri",
      "value": "http://www.wikidata.org/entity/Q1052819"
     },
     "v": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q705377"
+     "value": "http://www.wikidata.org/entity/Q23800"
     }
    },
    {
@@ -34,17 +25,17 @@
     },
     "v": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q1327429"
+     "value": "http://www.wikidata.org/entity/Q34370"
     }
    },
    {
     "item": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q52296707"
+     "value": "http://www.wikidata.org/entity/Q488014"
     },
     "v": {
      "type": "uri",
-     "value": "http://www.wikidata.org/entity/Q14552001"
+     "value": "http://www.wikidata.org/entity/Q84"
     }
    }
   ]

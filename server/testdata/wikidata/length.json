@@ -43,6 +43,17 @@
    {
     "item": {
      "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q488014"
+    },
+    "v": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+     "type": "literal",
+     "value": "289.51"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
      "value": "http://www.wikidata.org/entity/Q52296707"
     },
     "v": {
