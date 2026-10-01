@@ -982,8 +982,11 @@ export function createMap(
 
   /** Square degrees this client may subscribe to: 0 is unlimited, below 0 is MMSI-only. */
   function areaCap(): number {
-    const area = stream.limits?.area;
-    return typeof area === "number" ? area : DEFAULT_AREA_CAP;
+    // The welcome leaves area out for a token without a cap, so only a stream yet to be welcomed
+    // falls back to the anonymous default.
+    if (!stream.limits) return DEFAULT_AREA_CAP;
+    const area = stream.limits.area;
+    return typeof area === "number" ? area : 0;
   }
 
   function updateView() {
