@@ -44,7 +44,7 @@
   },
   "dependencies": {
     "@canboat/ts-pgns": "^1.11.18",
-    "@signalk/nmea0183-signalk": "^3.22.1",
+    "@signalk/nmea0183-signalk": "^3.20.1",
     "ggencoder": "^1.0.12",
     "ws": "^8.22.0"
   },
