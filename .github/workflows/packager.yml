@@ -5,7 +5,8 @@ name: packager
 # packages a range of days, one job per day, five at a time. Day order does not matter: ais.vessels
 # merges each field on its own time, and a day whose vessels commit races another's merges again.
 # With replay on, each day is first rebuilt from the raw archive by the server at this commit, so a
-# fix to decoding, dedupe, or staleness reaches history.
+# fix to decoding, dedupe, or staleness reaches history. With tracks_only on, each day's ais.tracks is
+# rolled up again from its packaged positions. The nightly run also compacts closed months of ais.tracks.
 on:
   schedule:
     # hour files upload when the next hour's traffic rotates them (~01:00), so earlier would run
@@ -30,6 +31,10 @@ on:
         description: Upload replayed hours and write the lake (off is a dry run on the runner, packaged into a throwaway warehouse)
         type: boolean
         default: true
+      tracks_only:
+        description: Only roll each day's packaged positions up into ais.tracks again
+        type: boolean
+        default: false
 
 # One run at a time, so a nightly run and a range never stack their parallel days.
 concurrency:
@@ -47,10 +52,13 @@ jobs:
           FROM: ${{ inputs.from }}
           TO: ${{ inputs.to }}
           REPLAY: ${{ inputs.replay }}
+          TRACKS_ONLY: ${{ inputs.tracks_only }}
         run: |
+          [ "$REPLAY" != true ] || [ "$TRACKS_ONLY" != true ] || { echo "::error::replay and tracks_only do not combine"; exit 1; }
           # an empty entry is the nightly past-week run
           if [ -z "$FROM" ]; then
             [ "$REPLAY" != true ] || { echo "::error::replay needs a from day"; exit 1; }
+            [ "$TRACKS_ONLY" != true ] || { echo "::error::tracks_only needs a from day"; exit 1; }
             echo 'days=[""]' >> "$GITHUB_OUTPUT"; exit 0
           fi
           TO=${TO:-$FROM}
@@ -94,7 +102,7 @@ jobs:
       fail-fast: false
       matrix:
         day: ${{ fromJSON(needs.days.outputs.days) }}
-    name: ${{ inputs.replay && 'rebuild' || 'package' }} ${{ matrix.day || 'past week' }}
+    name: ${{ inputs.replay && 'rebuild' || inputs.tracks_only && 'tracks' || 'package' }} ${{ matrix.day || 'past week' }}
     env:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -173,11 +181,12 @@ jobs:
           LAKE_CATALOG_TOKEN: ${{ secrets.LAKE_CATALOG_TOKEN }}
           # a dry-run replay packages its own output; everything else reads the bucket
           LOCAL: ${{ inputs.replay && !inputs.write && '/mnt/work/rep' || '' }}
+          TRACKS_ONLY: ${{ inputs.tracks_only && '1' || '' }}
         run: |
           # sample the staging directory and free memory every 30 s so the run reports its peaks
           (while sleep 30; do echo "$(du -sm "$PACKAGER_HOME" | cut -f1) $(free -m | awk '/Mem:/{print $7}')"; done) > /tmp/usage.log &
           /usr/bin/time -v uv run --script packager/packager.py ${DAY:+--date "$DAY"} ${LOCAL:+--normalized "$LOCAL"} \
-            --min-hours "$MIN_HOURS" 2> >(tee /tmp/time.log >&2)
+            ${TRACKS_ONLY:+--tracks-only} --min-hours "$MIN_HOURS" 2> >(tee /tmp/time.log >&2)
       - name: Usage
         if: always()
         run: |
