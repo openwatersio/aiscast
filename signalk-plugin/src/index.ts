@@ -28,9 +28,6 @@ export interface Config {
   share?: { targets?: boolean; ownShip?: boolean; position?: boolean };
   receive?: { mode?: ReceiveMode; radiusNm?: number; nmea0183out?: boolean };
   advanced?: { server?: string; token?: string };
-  // Pre-"Advanced" layout, still honoured when read.
-  server?: string;
-  token?: string;
 }
 
 export default function (app: ServerAPI): Plugin {
@@ -172,12 +169,8 @@ export default function (app: ServerAPI): Plugin {
   };
 
   async function startAsync(config: Config, gen: number): Promise<void> {
-    const server = (
-      config.advanced?.server ||
-      config.server ||
-      DEFAULT_SERVER
-    ).replace(/\/+$/, "");
-    const configuredToken = config.advanced?.token || config.token;
+    const server = (config.advanced?.server || DEFAULT_SERVER).replace(/\/+$/, "");
+    const configuredToken = config.advanced?.token;
     const wsBase = server.replace(/^http/, "ws");
     const shareTargets = config.share?.targets ?? true;
     const shareOwn = config.share?.ownShip ?? true;
