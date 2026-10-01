@@ -109,6 +109,27 @@ func TestCoverageLabel(t *testing.T) {
 	}
 }
 
+// Rows of one receiver that heard the same vessel contribute its newest position, whichever row heard it.
+func TestCoveragePointUsesNewestPositionAcrossRows(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	for i := range 2 {
+		p.stations.event(&Event{Station: "station:ed25519:x", Source: "station:ed25519:x", Time: now, MMSI: uint32(366000001 + i), HasPos: true, Lat: 34.0, Lon: -118.5, Type: "PositionReport"})
+	}
+	moved := uint32(366000009) // heard first on the base row far away, then on /n2k near the others
+	p.stations.event(&Event{Station: "station:ed25519:x", Source: "station:ed25519:x", Time: now.Add(-time.Hour), MMSI: moved, HasPos: true, Lat: 10, Lon: 10, Type: "PositionReport"})
+	p.stations.event(&Event{Station: "station:ed25519:x/n2k", Source: "station:ed25519:x", Time: now, MMSI: moved, HasPos: true, Lat: 34.0, Lon: -118.5, Type: "PositionReport"})
+	for _, m := range []uint32{366000010, 366000011} { // so the moved vessel decides the median
+		p.stations.event(&Event{Station: "station:ed25519:x/n2k", Source: "station:ed25519:x", Time: now, MMSI: m, HasPos: true, Lat: 10, Lon: 10, Type: "PositionReport"})
+	}
+	for range 20 { // map order must not matter
+		pt := p.stations.coveragePoints(now)["station:ed25519:x"]
+		if pt != [2]float64{34.0, -118.5} {
+			t.Fatalf("point %v", pt)
+		}
+	}
+}
+
 func TestOwnVesselName(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Now()

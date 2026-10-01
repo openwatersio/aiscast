@@ -316,10 +316,6 @@ func (s *stationStats) ownShips() map[string]map[uint32]int64 {
 // stationVesselTTL, its own ships aside, for those with at least labelMinPoints of them.
 func (s *stationStats) coveragePoints(now time.Time) map[string][2]float64 {
 	cutoff := now.Add(-stationVesselTTL).Unix()
-	type pts struct {
-		lats, lons []float64
-		seen       map[uint32]bool
-	}
 	s.mu.Lock()
 	own := map[string]map[uint32]bool{}
 	for id, st := range s.m {
@@ -331,31 +327,35 @@ func (s *stationStats) coveragePoints(now time.Time) map[string][2]float64 {
 			own[b][m] = true
 		}
 	}
-	by := map[string]*pts{}
+	by := map[string]map[uint32]heard{} // per base station, each vessel's newest position across its rows
 	for id, st := range s.m {
 		if !volunteer(st.Source) {
 			continue
 		}
 		b := baseStation(id)
-		p := by[b]
-		if p == nil {
-			p = &pts{seen: map[uint32]bool{}}
-			by[b] = p
+		latest := by[b]
+		if latest == nil {
+			latest = map[uint32]heard{}
+			by[b] = latest
 		}
 		for m, h := range st.vessels {
-			if h.pos && h.t >= cutoff && !own[b][m] && !p.seen[m] {
-				p.seen[m] = true
-				p.lats, p.lons = append(p.lats, float64(h.lat)), append(p.lons, float64(h.lon))
+			if h.pos && h.t >= cutoff && !own[b][m] && h.t > latest[m].t {
+				latest[m] = h
 			}
 		}
 	}
 	s.mu.Unlock()
 	out := map[string][2]float64{}
-	for b, p := range by {
-		if len(p.lats) >= labelMinPoints {
-			lat, lon := medianPoint(p.lats, p.lons)
-			out[b] = [2]float64{lat, lon}
+	for b, latest := range by {
+		if len(latest) < labelMinPoints {
+			continue
 		}
+		lats, lons := make([]float64, 0, len(latest)), make([]float64, 0, len(latest))
+		for _, h := range latest {
+			lats, lons = append(lats, float64(h.lat)), append(lons, float64(h.lon))
+		}
+		lat, lon := medianPoint(lats, lons)
+		out[b] = [2]float64{lat, lon}
 	}
 	return out
 }
