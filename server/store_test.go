@@ -570,7 +570,7 @@ func TestSearchAroundOrdersByDistance(t *testing.T) {
 	if got := getFC(t, p, "/v1/vessels?q=stray%20cat").Features[0]; got.ID == 367000001 || got.Properties["near"] != nil {
 		t.Errorf("without around, newest first and no place in open water: %v %v", got.ID, got.Properties["near"])
 	}
-	for _, target := range []string{"around=91,0", "around=0", "around=NaN,0", "around=0,181"} {
+	for _, target := range []string{"around=91,0", "around=0", "around=NaN,0", "around=0,181", "around=0,0junk", "around=0,0,1"} {
 		if w := get(t, p, "/v1/vessels?q=stray&"+target); w.Code != 400 {
 			t.Errorf("%s: %d", target, w.Code)
 		}

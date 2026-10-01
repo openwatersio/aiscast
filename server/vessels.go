@@ -994,8 +994,13 @@ func parseAround(s string) (*[2]float64, string) {
 	if s == "" {
 		return nil, ""
 	}
-	var lat, lon float64
-	if n, _ := fmt.Sscanf(s, "%f,%f", &lat, &lon); n != 2 || !(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) { // NaN fails every comparison
+	f := strings.Split(s, ",")
+	if len(f) != 2 {
+		return nil, "around=lat,lon"
+	}
+	lat, latErr := strconv.ParseFloat(f[0], 64)
+	lon, lonErr := strconv.ParseFloat(f[1], 64)
+	if latErr != nil || lonErr != nil || !(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) { // NaN fails every comparison
 		return nil, "around=lat,lon"
 	}
 	return &[2]float64{lat, lon}, ""
