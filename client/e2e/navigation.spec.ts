@@ -121,3 +121,20 @@ test("one map and one stream last through search, stations, a station, a vessel 
   expect(streams).toHaveLength(1);
   expect(streams[0]!.isClosed()).toBe(false);
 });
+
+test("the bar takes the page's title once the large title scrolls under its buttons", async ({ page }) => {
+  const { mmsi, name } = await namedVessel();
+  await page.goto(`/ais${vesselPath(mmsi, name)}`);
+  // Hydrated, so the scroll below is not undone by the page restoring its own.
+  await page.waitForFunction(() => window.aiscastMap);
+  const barTitle = page.getByText(name, { exact: true }).and(page.locator("span"));
+  await expect(barTitle).toHaveAttribute("aria-hidden", "true");
+
+  // The large title's top 10px under the buttons, which end 44px down, and the rest in sight.
+  await page.locator("[data-sheet-scroll]").evaluate((scroller) => {
+    const title = scroller.querySelector("h1")!;
+    scroller.scrollTop += title.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 34;
+  });
+  await expect(page.getByRole("heading", { level: 1 })).toBeInViewport();
+  await expect(barTitle).toHaveAttribute("aria-hidden", "false");
+});

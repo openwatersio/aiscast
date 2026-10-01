@@ -39,17 +39,34 @@ export function Panel({
     if (scroller.current) scroller.current.scrollTop = scrolled.get(key) ?? 0;
   }, [key]);
 
-  // Relative to the viewport, which counts the clipping of the sheet and of the scroller: the
-  // large title is out of sight when scrolled away and when the sheet is too low to show it.
-  // Only all of it counts as in sight; a lowered sheet can leave its top few pixels showing.
-  const observeTitle = useCallback((el: HTMLElement | null) => {
-    if (!el) return;
-    const io = new IntersectionObserver(([entry]) => setLargeTitleVisible(entry!.intersectionRatio > 0.99), {
-      threshold: [0, 0.99, 1],
-    });
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
+  // The large title is out of sight when the sheet is too low to show it, which only the
+  // viewport sees, and when it scrolls under the bar's buttons, which only the scroller less
+  // the bar sees. Only all of it counts as in sight; a lowered sheet can leave its top few
+  // pixels showing.
+  const observeTitle = useCallback(
+    (el: HTMLElement | null) => {
+      if (!el) return;
+      const inView = { viewport: true, scroller: true };
+      const watch = (key: keyof typeof inView, options: IntersectionObserverInit) => {
+        const io = new IntersectionObserver(
+          ([entry]) => {
+            inView[key] = entry!.intersectionRatio > 0.99;
+            setLargeTitleVisible(inView.viewport && inView.scroller);
+          },
+          { threshold: [0, 0.99, 1], ...options },
+        );
+        io.observe(el);
+        return io;
+      };
+      const observers = [
+        watch("viewport", {}),
+        // The bar's buttons and the space above them, as pt-11 below.
+        watch("scroller", { root: el.closest("[data-sheet-scroll]"), rootMargin: hasBar ? "-44px 0px 0px 0px" : "0px" }),
+      ];
+      return () => observers.forEach((io) => io.disconnect());
+    },
+    [hasBar],
+  );
 
   return (
     <TitleContext.Provider value={observeTitle}>
