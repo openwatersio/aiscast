@@ -7,18 +7,15 @@ type Detent = "peek" | "half" | "full";
 const panel = (page: Page) => page.getByRole("region", { name: "Panel" });
 const handle = (page: Page) => page.getByRole("button", { name: /^Panel height:/ });
 
-/** Where the sheet's top rests, once its transition has finished. */
+/**
+ * Where the sheet's top rests, once its transition has finished. getAnimations() brings styles
+ * up to date first, so a transition the new height has only just set off is among them.
+ */
 async function restingTop(page: Page): Promise<number> {
-  let last = NaN;
-  let top = NaN;
-  await expect
-    .poll(async () => {
-      last = top;
-      top = (await panel(page).boundingBox())!.y;
-      return Math.abs(top - last) < 0.5;
-    })
-    .toBe(true);
-  return top;
+  await panel(page).evaluate(async (el) => {
+    while (el.getAnimations().length) await Promise.all(el.getAnimations().map((a) => a.finished.catch(() => undefined)));
+  });
+  return (await panel(page).boundingBox())!.y;
 }
 
 /** The sheet is at `detent`: its handle says so, and its top is where that height puts it. */
