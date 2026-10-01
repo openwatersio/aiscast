@@ -24,9 +24,17 @@ import { stackStateFor } from "./ui/PanelHeader";
 interface ShellState {
   query: string;
   setQuery(q: string): void;
-  /** The search's filter chips. Clearing the search clears them. */
+  /** The search's filter chips. */
   filters: SearchFilters;
   setFilters(filters: SearchFilters): void;
+  /**
+   * Whether the panel is searching: from the field taking focus until `endSearch`. With
+   * nothing typed, it lists the vessels on the map.
+   */
+  searching: boolean;
+  startSearch(): void;
+  /** Leaves search, clearing the query and the filters. */
+  endSearch(): void;
   theme: ThemeChoice;
   setTheme(choice: ThemeChoice): void;
   /** The sheet's height on a phone. On a wider screen the panel ignores it. */
@@ -38,6 +46,9 @@ const ShellContext = createContext<ShellState>({
   setQuery: () => undefined,
   filters: NO_FILTERS,
   setFilters: () => undefined,
+  searching: false,
+  startSearch: () => undefined,
+  endSearch: () => undefined,
   theme: "system",
   setTheme: () => undefined,
   setDetent: () => undefined,
@@ -87,15 +98,22 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
   const [query, setQueryState] = useState("");
   const [filters, setFilters] = useState(NO_FILTERS);
-  useEffect(() => setQueryState(sessionStorage.getItem(SAVED_QUERY) ?? ""), []);
+  // Kept here rather than in the panel, so opening a vessel and coming back finds the same list.
+  const [searching, setSearching] = useState(false);
   const setQuery = useCallback((q: string) => {
     setQueryState(q);
+    // Text can arrive without the field taking focus, restored from the last visit or autofilled.
+    if (q.trim()) setSearching(true);
     if (q) sessionStorage.setItem(SAVED_QUERY, q);
-    else {
-      sessionStorage.removeItem(SAVED_QUERY);
-      setFilters(NO_FILTERS);
-    }
+    else sessionStorage.removeItem(SAVED_QUERY);
   }, []);
+  useEffect(() => setQuery(sessionStorage.getItem(SAVED_QUERY) ?? ""), [setQuery]);
+  const startSearch = useCallback(() => setSearching(true), []);
+  const endSearch = useCallback(() => {
+    setQuery("");
+    setFilters(NO_FILTERS);
+    setSearching(false);
+  }, [setQuery]);
 
   const { choice, theme, setChoice } = useTheme(initialTheme);
 
@@ -150,8 +168,19 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   }, [live, theme]);
 
   const state = useMemo(
-    () => ({ query, setQuery, filters, setFilters, theme: choice, setTheme: setChoice, setDetent }),
-    [query, setQuery, filters, choice, setChoice],
+    () => ({
+      query,
+      setQuery,
+      filters,
+      setFilters,
+      searching,
+      startSearch,
+      endSearch,
+      theme: choice,
+      setTheme: setChoice,
+      setDetent,
+    }),
+    [query, setQuery, filters, searching, startSearch, endSearch, choice, setChoice],
   );
 
   return (

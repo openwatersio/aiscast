@@ -60,6 +60,15 @@ export function MenuChip<T>({
   );
 }
 
+/** A chip that switches one filter on and off, tinted while on. */
+export function ToggleChip({ on, onChange, children }: { on: boolean; onChange(on: boolean): void; children: ReactNode }) {
+  return (
+    <button type="button" aria-pressed={on} onClick={() => onChange(!on)} className={chipClass(on)}>
+      {children}
+    </button>
+  );
+}
+
 // The menu's trigger, which Base UI hands its props and ref to.
 function ChipButton({ selected, children, className, ...props }: { selected: boolean } & ComponentProps<"button">) {
   return (

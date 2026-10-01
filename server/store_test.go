@@ -537,6 +537,46 @@ func TestSearchOrdersByTheNewestSeen(t *testing.T) {
 	}
 }
 
+// A boat heard last month near the reader outranks a hundred heard today across the world, and a search
+// near the antimeridian finds its neighbour across it.
+func TestSearchAroundOrdersByDistance(t *testing.T) {
+	p := storePipeline(t)
+	var bulk []record
+	for i := range 2*searchLimit + 5 {
+		v := newVessel()
+		v.Name, v.HasPos, v.Lat, v.Lon, v.Seen, v.PosAt = fmt.Sprintf("STRAY CAT %d", i), true, -30, 160, time.Now(), time.Now()
+		bulk = append(bulk, record{mmsi: uint32(503000000 + i), v: v})
+	}
+	month := time.Now().AddDate(0, -1, 0)
+	near := newVessel()
+	near.Name, near.HasPos, near.Lat, near.Lon, near.Seen, near.PosAt = "STRAY CAT", true, 34.005, -118.51, month, month
+	east := newVessel()
+	east.Name, east.HasPos, east.Lat, east.Lon, east.Seen, east.PosAt = "STRAY DOG", true, -17, 179.9, month, month
+	west := newVessel()
+	west.Name, west.HasPos, west.Lat, west.Lon, west.Seen, west.PosAt = "STRAY DOG", true, -17, 170, month, month
+	bulk = append(bulk, record{mmsi: 367000001, v: near}, record{mmsi: 512000001, v: east}, record{mmsi: 512000002, v: west})
+	p.store.upsert(bulk)
+
+	fc := getFC(t, p, "/v1/vessels?q=stray%20cat&around=34,-118.5")
+	if len(fc.Features) != searchLimit || fc.Features[0].ID != 367000001 {
+		t.Fatalf("nearest first: %d features, first %v", len(fc.Features), fc.Features[0].ID)
+	}
+	if got := fc.Features[0].Properties["near"]; got != "Santa Monica, CA" {
+		t.Errorf("place: %v", got)
+	}
+	if got := ids(getFC(t, p, "/v1/vessels?q=stray%20dog&around=-17,-179.9")); len(got) != 2 || got[0] != 512000001 {
+		t.Errorf("across the antimeridian: %v", got)
+	}
+	if got := getFC(t, p, "/v1/vessels?q=stray%20cat").Features[0]; got.ID == 367000001 || got.Properties["near"] != nil {
+		t.Errorf("without around, newest first and no place in open water: %v %v", got.ID, got.Properties["near"])
+	}
+	for _, target := range []string{"around=91,0", "around=0", "around=NaN,0", "around=0,181"} {
+		if w := get(t, p, "/v1/vessels?q=stray&"+target); w.Code != 400 {
+			t.Errorf("%s: %d", target, w.Code)
+		}
+	}
+}
+
 func TestFirstSeenBeforeTheFirstWrite(t *testing.T) {
 	p := storePipeline(t)
 	now := time.Now().Truncate(time.Second)

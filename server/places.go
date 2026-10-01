@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	_ "embed"
 	"log"
@@ -33,6 +34,7 @@ const (
 	labelMinPoints = 5   // vessels with positions a station needs before its median means anything
 )
 
+// places are ordered by latitude, so a lookup reads only the band within a degree of its point.
 var places = sync.OnceValue(func() []place {
 	zr, err := gzip.NewReader(bytes.NewReader(placesGz))
 	if err != nil {
@@ -51,6 +53,7 @@ var places = sync.OnceValue(func() []place {
 		lon, _ := strconv.ParseFloat(f[4], 64)
 		out = append(out, place{label: f[0], region: f[1], pop: pop, lat: lat, lon: lon})
 	}
+	slices.SortFunc(out, func(a, b place) int { return cmp.Compare(a.lat, b.lat) })
 	return out
 })
 
@@ -69,9 +72,13 @@ func nearLabel(lat, lon float64) string {
 	var largest, nearest *place
 	nearestKM := math.Inf(1)
 	ps := places()
-	for i := range ps {
+	// A degree of latitude is about 111 km, past labelRegionKM.
+	first, _ := slices.BinarySearchFunc(ps, lat-1, func(p place, t float64) int { return cmp.Compare(p.lat, t) })
+	// The same distance east or west, widened toward the poles; never wider than the globe.
+	lonBand := 1 / max(math.Cos(lat*math.Pi/180), 1.0/180)
+	for i := first; i < len(ps) && ps[i].lat <= lat+1; i++ {
 		p := &ps[i]
-		if math.Abs(p.lat-lat) > 1 { // about 111 km: cheap rejection before the trigonometry
+		if math.Abs(math.Remainder(p.lon-lon, 360)) > lonBand {
 			continue
 		}
 		d := distKM(lat, lon, p.lat, p.lon)

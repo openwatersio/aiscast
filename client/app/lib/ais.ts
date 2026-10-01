@@ -377,6 +377,28 @@ export function bearing([lon1, lat1]: [number, number], [lon2, lat2]: [number, n
   return (Math.atan2(y, x) / rad + 360) % 360;
 }
 
+/** Great-circle distance between two [lat, lon] positions, in nautical miles. */
+export function distanceNM([lat1, lon1]: [number, number], [lat2, lon2]: [number, number]): number {
+  const rad = Math.PI / 180;
+  const a =
+    Math.sin(((lat2 - lat1) * rad) / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lon2 - lon1) * rad) / 2) ** 2;
+  return 2 * 3440.065 * Math.asin(Math.sqrt(a));
+}
+
+/** "0.4 nm" close by, "37 nm" and "8,400 nm" further off. */
+export function formatDistance(nm: number): string {
+  return nm < 10 ? `${nm.toFixed(1)} nm` : `${Math.round(nm).toLocaleString("en-US")} nm`;
+}
+
+/** An age short enough for the edge of a list row: "45s", "12m", "18h", then days past two of them. */
+export function shortAge(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 48 * 3600) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
 /**
  * Whether a number passes the IMO check: the seventh digit is the sum of the first six
  * weighted 7 down to 2, mod 10. AIS static data carries a fair share of mistyped IMOs, and

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from "react";
-import type { MapController } from "./map.client";
+import type { MapController, MapView } from "./map.client";
 import type { Stream, Vessel } from "./stream";
 
 /** The map and the stream, built once in the browser and kept for the life of the page. */
@@ -58,4 +58,23 @@ export function useNow(intervalMs = 1000): number {
     return () => clearInterval(t);
   }, [intervalMs]);
   return now;
+}
+
+/**
+ * What the map shows, kept current as it moves. Undefined until the map has been built. The
+ * same view keeps the same object, so it can key a search.
+ */
+export function useMapView(): MapView | undefined {
+  const live = useLive();
+  const [view, setView] = useState<MapView | undefined>(() => live?.ctl.view());
+  useEffect(() => {
+    if (!live) return;
+    const read = () => {
+      const next = live.ctl.view();
+      setView((prev) => (prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    };
+    read();
+    return live.ctl.onViewChange(read);
+  }, [live]);
+  return view;
 }

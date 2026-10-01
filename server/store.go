@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -248,7 +249,8 @@ type recordQuery struct {
 	since    time.Time
 	before   time.Time
 	hasPos   bool
-	byName   bool // order by name then MMSI, as the MCP tools page, instead of most recently heard first
+	byName   bool        // order by name then MMSI, as the MCP tools page, instead of most recently heard first
+	around   *[2]float64 // order by distance from this latitude and longitude, nearest first
 	filter   *vesselFilter
 	now      time.Time // the filter's clock
 	limit    int
@@ -428,6 +430,11 @@ func (q recordQuery) sql() (text string, args []any, none bool, err error) {
 	switch {
 	case q.byName:
 		text += " ORDER BY search, mmsi"
+	case q.around != nil:
+		// The cosine of the great-circle angle, which falls as the distance grows and wraps the antimeridian.
+		φ, λ := q.around[0]*math.Pi/180, q.around[1]
+		text += " ORDER BY sin(radians(lat))*? + cos(radians(lat))*?*cos(radians(lon - ?)) DESC, seen DESC"
+		args = append(args, math.Sin(φ), math.Cos(φ), λ)
 	case byCell:
 		text += " ORDER BY +seen DESC"
 	default:
