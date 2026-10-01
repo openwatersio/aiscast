@@ -35,6 +35,8 @@ interface ShellState {
   startSearch(): void;
   /** Leaves search, clearing the query and the filters. */
   endSearch(): void;
+  /** Shows the panel's loading bar until the returned function is called. */
+  startLoading(): () => void;
   theme: ThemeChoice;
   setTheme(choice: ThemeChoice): void;
   /** The sheet's height on a phone. On a wider screen the panel ignores it. */
@@ -49,6 +51,7 @@ const ShellContext = createContext<ShellState>({
   searching: false,
   startSearch: () => undefined,
   endSearch: () => undefined,
+  startLoading: () => () => undefined,
   theme: "system",
   setTheme: () => undefined,
   setDetent: () => undefined,
@@ -56,6 +59,24 @@ const ShellContext = createContext<ShellState>({
 
 export function useShell(): ShellState {
   return useContext(ShellContext);
+}
+
+// How long a search may take before the loading bar says it is still going. Searching as you
+// type answers in well under this, and a bar on every key pressed is only noise.
+const SLOW_MS = 1000;
+
+/** Shows the panel's loading bar once `active` has lasted longer than a search usually takes. */
+export function useLoading(active: boolean) {
+  const { startLoading } = useShell();
+  useEffect(() => {
+    if (!active) return;
+    let stop: (() => void) | undefined;
+    const t = setTimeout(() => (stop = startLoading()), SLOW_MS);
+    return () => {
+      clearTimeout(t);
+      stop?.();
+    };
+  }, [active, startLoading]);
 }
 
 // Survives opening a vessel, which remounts the search panel, and a reload of the tab. A map
@@ -109,6 +130,17 @@ export function Shell({ initialTheme, visitor }: { initialTheme: ThemeChoice; vi
   }, []);
   useEffect(() => setQuery(sessionStorage.getItem(SAVED_QUERY) ?? ""), [setQuery]);
   const startSearch = useCallback(() => setSearching(true), []);
+  // A count, so two lists loading at once keep the bar until both are done.
+  const [loading, setLoading] = useState(0);
+  const startLoading = useCallback(() => {
+    setLoading((n) => n + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      setLoading((n) => n - 1);
+    };
+  }, []);
   const endSearch = useCallback(() => {
     setQuery("");
     setFilters(NO_FILTERS);
@@ -176,11 +208,12 @@ export function Shell({ initialTheme, visitor }: { initialTheme: ThemeChoice; vi
       searching,
       startSearch,
       endSearch,
+      startLoading,
       theme: choice,
       setTheme: setChoice,
       setDetent,
     }),
-    [query, setQuery, filters, searching, startSearch, endSearch, choice, setChoice],
+    [query, setQuery, filters, searching, startSearch, endSearch, startLoading, choice, setChoice],
   );
 
   return (
@@ -194,11 +227,11 @@ export function Shell({ initialTheme, visitor }: { initialTheme: ThemeChoice; vi
         <StatusChip />
 
         <Sheet detent={detent} onDetentChange={setDetent}>
-          {/* While the next entry loads. Most navigations answer before its delay runs out,
+          {/* While the next entry loads, or a search. Most answer before its delay runs out,
               so it shows only for the slow ones, such as a large station's vessel list. */}
           <div
             aria-hidden
-            data-active={navigation.state !== "idle" || undefined}
+            data-active={navigation.state !== "idle" || loading > 0 || undefined}
             className="pending-bar pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden opacity-0 transition-opacity data-active:opacity-100 data-active:delay-150"
           />
           {/* Keyed by route, so a navigation is this entry leaving and the next arriving. React

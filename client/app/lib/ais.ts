@@ -457,6 +457,21 @@ export function viewBoxes(south: number, west: number, north: number, east: numb
   return e <= 180 ? [[s, w, n, e]] : [[s, w, n, 180], [s, -180, n, e - 360]];
 }
 
+/**
+ * The largest box around a [lat, lon] that an area cap of `cap` square degrees allows, as the
+ * boxes `viewBoxes` gives. It is square on the ground, so it widens in longitude toward the poles,
+ * and is cut a little short so rounding never takes it over the cap.
+ */
+export function centerBoxes([lat, lon]: [number, number], cap: number): Array<[number, number, number, number]> {
+  const area = cap * 0.98;
+  const squeeze = Math.max(Math.cos((lat * Math.PI) / 180), 0.05);
+  const height = Math.min(Math.sqrt(area * squeeze), 180);
+  const width = Math.min(area / height, 360);
+  const south = Math.max(-90, lat - height / 2);
+  const north = Math.min(90, south + height);
+  return viewBoxes(south, lon - width / 2, north, lon + width / 2);
+}
+
 // The source kinds people run: a receiver sending over UDP, HTTP or the stream with a token,
 // or identified by its own vessel's MMSI. Everything else is a government feed or a partner
 // aggregate, named by its upstream.

@@ -2,6 +2,7 @@ import { Antenna } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
+  centerBoxes,
   CLASS_LABELS,
   distanceNM,
   flagEmoji,
@@ -34,7 +35,7 @@ import {
 import { locate, useMyPosition } from "../lib/geolocation";
 import { useMedia } from "../lib/useMedia";
 import { cn } from "../lib/cn";
-import { useShell } from "./Shell";
+import { useLoading, useShell } from "./Shell";
 import { ChipRow, MenuChip } from "./ui/Chip";
 import { ClassDot, IconBadge, List, ListRow } from "./ui/List";
 import { Prompt } from "./ui/Prompt";
@@ -219,8 +220,6 @@ function Destinations() {
 }
 
 function Results({ q }: { q: string }) {
-  const live = useLive();
-  useStreamFrame();
   const now = useNow();
   const mapView = useMapView();
   const { filters } = useShell();
@@ -259,32 +258,30 @@ function Results({ q }: { q: string }) {
   }, [key, tooWide]);
 
   const hits = results.get(key);
-  // Before the server answers, show what this tab already holds rather than nothing, filtered
-  // and ordered as the server will.
-  const lower = q.toLowerCase();
   const passes = filterTest(filters, new Date(now), firstDayOfWeek(), view);
   const center = view.origin;
-  const order = rowOrder(filters, center);
-  const rows: Row[] = tooWide
+  // Until the server answers, the list keeps what it last showed, so it changes once per answer
+  // rather than with every key pressed: this query's answer for another view, or the last
+  // answer to any query.
+  const shown = useRef<Row[]>(undefined);
+  const rows: Row[] | undefined = tooWide
     ? []
-    : (hits ??
-      latest.get(baseKey)?.filter(passes).sort(order) ??
-      [...(live?.stream.vessels.values() ?? [])]
-        .filter((v) => (v.name?.toLowerCase().includes(lower) || String(v.mmsi).includes(q)) && passes(v))
-        .sort(order)
-        .slice(0, 50));
+    : (hits ?? latest.get(baseKey)?.filter(passes).sort(rowOrder(filters, center)) ?? shown.current);
+  if (hits) shown.current = hits;
+  useLoading(q.length >= 2 && !tooWide && !hits);
 
   if (tooWide) {
     return <p className="px-2 py-3 text-body text-fg-muted">Zoom in to search what&rsquo;s on the map.</p>;
   }
 
+  if (q.length < 2) return <p className="px-2 py-3 text-body text-fg-muted">Keep typing.</p>;
+  if (!rows) return null;
   if (!rows.length) {
-    if (hits && hasFilters(filters)) return <NoMatches />;
+    if (!hits) return null;
+    if (hasFilters(filters)) return <NoMatches />;
     return (
       <>
-        <p className="px-2 py-3 text-body text-fg-muted">
-          {hits ? "No vessel matches that name or MMSI." : q.length < 2 ? "Keep typing." : "Searching…"}
-        </p>
+        <p className="px-2 py-3 text-body text-fg-muted">No vessel matches that name or MMSI.</p>
         {hits && (
           <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mx-2">
             The network only knows vessels its receivers have heard.
@@ -318,14 +315,18 @@ function InView() {
   const me = useMyPosition();
   // Where is the list's own order, so changing it asks the server nothing.
   const baseKey = `view|${JSON.stringify({ ...filters, where: "" })}`;
-  const key = `${baseKey}|${JSON.stringify(mapView?.boxes)}`;
-  const tooWide = mapView != null && !mapView.fits;
+  // A view wider than this client may ask for lists the middle of it: the largest area the cap
+  // allows around the centre, which is where the nearest are anyway. Only an MMSI-only token
+  // has no area at all.
+  const partial = mapView != null && !mapView.fits;
+  const boxes = !mapView ? undefined : partial ? (mapView.cap > 0 ? centerBoxes(mapView.center, mapView.cap) : undefined) : mapView.boxes;
+  const key = `${baseKey}|${JSON.stringify(boxes)}`;
 
   useEffect(() => {
-    if (!mapView || tooWide || results.has(key)) return;
+    if (!boxes || results.has(key)) return;
     let current = true;
     const t = setTimeout(() => {
-      void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), mapView.boxes)).then((features) => {
+      void vesselsInArea(browserAuth(), areaParams(filters, new Date(), firstDayOfWeek(), boxes)).then((features) => {
         if (!features) {
           if (current) setFailed(key);
           return;
@@ -340,18 +341,20 @@ function InView() {
       current = false;
       clearTimeout(t);
     };
-    // tooWide as well: the stream's welcome can raise the area cap after a view was refused.
-  }, [key, tooWide, attempt]);
+  }, [key, attempt]);
+  useLoading(boxes != null && !results.has(key) && failed !== key);
 
   if (!mapView) return null;
-  if (tooWide) {
+  if (!boxes) {
     return <p className="px-2 py-3 text-body text-fg-muted">Zoom in to list the vessels on the map.</p>;
   }
 
   const hits = results.get(key);
   // Without an answer, what the stream holds, which is only what is live on the map.
   const unanswered = !hits && failed === key;
-  const passes = filterTest({ ...filters, where: "view" }, new Date(now), firstDayOfWeek(), mapView);
+  const inView = filterTest({ ...filters, where: "view" }, new Date(now), firstDayOfWeek(), mapView);
+  const inBoxes = filterTest({ ...NO_FILTERS, where: "view" }, new Date(now), firstDayOfWeek(), { boxes });
+  const passes = (v: Row) => inView(v) && inBoxes(v);
   const origin = filters.where === "me" && me ? me : mapView.center;
   // Ranked on the server's answer, and only then brought up to date from the stream: ranked on
   // live data, the list would reorder every time a vessel reported.
@@ -383,24 +386,33 @@ function InView() {
 
   if (!all.length) {
     if (unavailable) return unavailable;
-    if (!hits) return <p className="px-2 py-3 text-body text-fg-muted">Looking…</p>;
+    // The list fills in when the answer comes; the map already shows what is there.
+    if (!hits) return null;
     // With nothing typed the list is always the view's, so that is no filter to clear.
-    return hasFilters({ ...filters, where: "anywhere" }) ? (
-      <NoMatches onMap />
-    ) : (
-      <p className="px-2 py-3 text-body text-fg-muted">No vessels on the map. Zoom out or move the map to see more.</p>
-    );
+    if (hasFilters({ ...filters, where: "anywhere" })) return <NoMatches onMap />;
+    // Zoomed out over open water or inland, the map itself shows where the vessels are.
+    if (partial) return null;
+    return <p className="px-2 py-3 text-body text-fg-muted">No vessels on the map. Zoom out or move the map to see more.</p>;
   }
   return (
     <>
       {unavailable}
-      <ResultList rows={all.slice(0, IN_VIEW_LIMIT)} center={origin} byMMSI={false} />
-      {all.length > IN_VIEW_LIMIT && (
+      <ResultList
+        rows={all.slice(0, IN_VIEW_LIMIT)}
+        center={origin}
+        byMMSI={false}
+        ringAll={hasFilters({ ...filters, where: "anywhere" })}
+      />
+      {all.length > IN_VIEW_LIMIT ? (
         <p className="px-2 py-3 text-footnote text-fg-muted">
           {sortOf(filters) === "nearest" ? "The" : "The most recent"} {IN_VIEW_LIMIT} of {all.length.toLocaleString("en-US")}
           {sortOf(filters) === "recent" ? "" : filters.where === "me" ? " nearest you" : " nearest the middle of the map"}.
           Zoom in for the rest.
         </p>
+      ) : (
+        partial && (
+          <p className="px-2 py-3 text-footnote text-fg-muted">Only vessels near the middle of the map. Zoom in to list the rest.</p>
+        )
       )}
     </>
   );
@@ -433,12 +445,29 @@ function NoMatches({ onMap }: { onMap?: boolean }) {
   );
 }
 
-/** Result rows, with each result ringed on the map for as long as the list shows. */
-function ResultList({ rows, center, byMMSI }: { rows: Row[]; center?: [number, number]; byMMSI: boolean }) {
+/**
+ * Result rows, each ringed on the map for as long as the list shows, and the one under the
+ * pointer ringed brighter. A list of everything on the map rings only that one: ringing every
+ * vessel marks nothing out.
+ */
+function ResultList({
+  rows,
+  center,
+  byMMSI,
+  ringAll = true,
+}: {
+  rows: Row[];
+  center?: [number, number];
+  byMMSI: boolean;
+  ringAll?: boolean;
+}) {
   const live = useLive();
   const now = useNow();
+  const [hovered, setHovered] = useState<number>();
   useEffect(() => {
-    live?.ctl.setResults(rows.filter((r): r is Row & { lat: number; lon: number } => r.lat != null && r.lon != null));
+    const ringed = ringAll ? rows : rows.filter((r) => r.mmsi === hovered);
+    live?.ctl.setResults(ringed.filter((r): r is Row & { lat: number; lon: number } => r.lat != null && r.lon != null));
+    live?.ctl.highlightResult(hovered);
   });
   useEffect(() => () => live?.ctl.setResults([]), [live]);
   return (
@@ -449,7 +478,7 @@ function ResultList({ rows, center, byMMSI }: { rows: Row[]; center?: [number, n
           <ListRow
             key={v.mmsi}
             to={vesselPath(v.mmsi, v.name)}
-            onHover={(over) => live?.ctl.highlightResult(over ? v.mmsi : undefined)}
+            onHover={(over) => setHovered(over ? v.mmsi : undefined)}
             leading={<VesselThumb row={v} />}
             title={
               <>
