@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -316,18 +317,48 @@ func sparql(ctx context.Context, endpoint, query string) ([]wikidataBinding, err
 	return body.Results.Bindings, nil
 }
 
+// wikidataFields names what wikidataCounts and wikidataCountSQL count, in their order.
+var wikidataFields = [...]string{"ships", "builder", "year_built", "gross_tonnage", "deadweight", "length", "beam", "registry", "former_names"}
+
+const wikidataCountSQL = `SELECT count(*), coalesce(sum(builder != ''), 0), coalesce(sum(year_built > 0), 0),
+	coalesce(sum(gross_tonnage > 0), 0), coalesce(sum(deadweight > 0), 0), coalesce(sum(length > 0), 0),
+	coalesce(sum(beam > 0), 0), coalesce(sum(registry != ''), 0), coalesce(sum(former_names != ''), 0) FROM wikidata`
+
+// wikidataCounts is the ships in a sync and how many have each field.
+func wikidataCounts(ships map[uint32]*wikidataShip) (n [len(wikidataFields)]int) {
+	for _, w := range ships {
+		for i, set := range [...]bool{true, w.Builder != "", w.YearBuilt > 0, w.GrossTonnage > 0, w.Deadweight > 0,
+			w.Length > 0, w.Beam > 0, w.Registry != "", len(w.FormerNames) > 0} {
+			if set {
+				n[i]++
+			}
+		}
+	}
+	return n
+}
+
 // replaceWikidata swaps the stored particulars for ships in one transaction, so a reader sees one sync or
-// the other. A sync that found fewer than half the ships already stored is refused: Wikidata does not lose
-// half its ships in a week, so the answer was cut short somewhere.
+// the other. A sync is refused when it has fewer than half the ships already stored, or any field set on
+// fewer than half as many: Wikidata does not lose half of anything in a week, so a query was cut short, and
+// each field comes from its own query.
 func (s *store) replaceWikidata(ships map[uint32]*wikidataShip) error {
 	// Counted before the transaction, which then opens with a write: in WAL a transaction that reads first
 	// fails to upgrade if the record's writer commits in between. Only the sync writes this table.
-	var have int
-	if err := s.db.QueryRow(`SELECT count(*) FROM wikidata`).Scan(&have); err != nil {
+	var have [len(wikidataFields)]int
+	dst := make([]any, len(have))
+	for i := range have {
+		dst[i] = &have[i]
+	}
+	if err := s.db.QueryRow(wikidataCountSQL).Scan(dst...); err != nil {
 		return err
 	}
-	if len(ships) == 0 || 2*len(ships) < have {
-		return fmt.Errorf("found %d ships where %d are stored; keeping the stored set", len(ships), have)
+	if len(ships) == 0 {
+		return errors.New("found no ships; keeping the stored set")
+	}
+	for i, got := range wikidataCounts(ships) {
+		if 2*got < have[i] {
+			return fmt.Errorf("found %s on %d ships where %d are stored; keeping the stored set", wikidataFields[i], got, have[i])
+		}
 	}
 	tx, err := s.db.Begin()
 	if err != nil {

@@ -136,8 +136,30 @@ func TestReplaceWikidataRefusesAShortSync(t *testing.T) {
 	if err := p.store.replaceWikidata(map[uint32]*wikidataShip{9404314: wantWikidata[9404314]}); err == nil {
 		t.Error("a sync with a third of the ships replaced the stored set")
 	}
-	if got, _ := p.store.wikidataShips([]uint32{5358206}); got[5358206] == nil {
-		t.Error("the stored set was lost")
+	// Every ship present, but one field's query came back short: the builders are gone.
+	noBuilders := map[uint32]*wikidataShip{}
+	for imo, w := range wantWikidata {
+		c := *w
+		c.Builder = ""
+		noBuilders[imo] = &c
+	}
+	if err := p.store.replaceWikidata(noBuilders); err == nil || !strings.Contains(err.Error(), "builder") {
+		t.Errorf("a sync that lost every builder: %v", err)
+	}
+	got, _ := p.store.wikidataShips([]uint32{5358206})
+	if got[5358206] == nil || got[5358206].Builder != "Jansen-Werft" {
+		t.Errorf("the stored set was lost: %+v", got[5358206])
+	}
+	// Losing one builder of three is under half, so it is taken as an edit on Wikidata.
+	oneLess := map[uint32]*wikidataShip{}
+	for imo, w := range wantWikidata {
+		oneLess[imo] = w
+	}
+	c := *wantWikidata[5358206]
+	c.Builder = ""
+	oneLess[5358206] = &c
+	if err := p.store.replaceWikidata(oneLess); err != nil {
+		t.Errorf("an ordinary sync was refused: %v", err)
 	}
 }
 
