@@ -6,6 +6,7 @@ The web client for aiscast at `openwaters.io/ais/`: a live map with vessel and s
 npm install                      # from the repo root; client/ is a workspace
 npm run dev -w client            # http://localhost:5173/ais/vessels, rendering in workerd
 npm test -w client               # unit tests
+npm run test:e2e -w client       # browser tests, against a local aiscast server
 npm run typecheck -w client      # generates the Worker and route types, then tsc
 npm run build -w client
 npm run preview -w client        # the built Worker, locally
@@ -25,9 +26,15 @@ Each route has a server `loader` for a document request and a `clientLoader` for
 
 The map, the stream, and the vessel cache are built once in [components/Shell.tsx](app/components/Shell.tsx) and outlive every navigation, because the stream is capped at two connections per network address and remounting would spend that budget. One panel floats over the map, a bottom sheet on a phone, and camera padding is measured from it, so a selected vessel centres in the part of the map you can see. The panel is one navigation stack. Back from vessels opened one after another on the map returns to the page they were opened over, while the browser's own back steps through each.
 
-[lib/map.client.ts](app/lib/map.client.ts) is browser-only, which keeps MapLibre out of the Worker. The vector tiles from `/v1/vessels/tiles` draw every vessel's last known position at every zoom. They reload when a pan starts, when the stream lets go of a vessel still in view, and every five minutes, or every 15 seconds past the stream's area cap, where nothing else updates them. Within the stream's area cap, `/v1/stream` draws the vessels it hears on top, and each one's tile copy is hidden with feature state so no vessel is drawn twice. The subscription asks for no snapshot: the tiles paint the starting picture and the stream says what changes. Triangles point along heading, falling back to course; colour is ship-type class; opacity fades with age, the same for both sources. The viewer extrapolates nothing: it draws a vessel where that vessel last reported. In dev builds the map is on `window.aiscastMap` for browser tests.
+[lib/map.client.ts](app/lib/map.client.ts) is browser-only, which keeps MapLibre out of the Worker. The vector tiles from `/v1/vessels/tiles` draw every vessel's last known position at every zoom. They reload when a pan starts, when the stream lets go of a vessel still in view, and every five minutes, or every 15 seconds past the stream's area cap, where nothing else updates them. Within the stream's area cap, `/v1/stream` draws the vessels it hears on top, and each one's tile copy is hidden with feature state so no vessel is drawn twice. The subscription asks for no snapshot: the tiles paint the starting picture and the stream says what changes. Triangles point along heading, falling back to course; colour is ship-type class; opacity fades with age, the same for both sources. The viewer extrapolates nothing: it draws a vessel where that vessel last reported. In dev builds and the browser tests' build the map is on `window.aiscastMap`.
 
 The design system is Tailwind utilities over the tokens in [app.css](app/app.css), and the shared components in [components/ui/](app/components/ui/). A component never names a CSS variable, and `npm run check:styles` fails CI if one does.
+
+## Browser tests
+
+[e2e/](e2e/) runs the app in Chromium with Playwright: the phone sheet on an emulated iPhone, back navigation, the one map and stream through a navigation loop, the server-rendered pages, and vessels drawn once between the tiles and the stream. [e2e/server.sh](e2e/server.sh) starts the aiscast server on `127.0.0.1:8787`, fed by Digitraffic alone, and builds it first unless `AISCAST_BIN` names one. The app is built for wrangler's `e2e` environment, which renders against that address, and served by `vite preview` on port 4173. Both ports must be free. Run `npx playwright install chromium` once.
+
+The data is Digitraffic's live feed, so the tests look up the vessels they open rather than naming them. A server that starts empty knows few vessel names at first, because names come with static data every few minutes, and the run waits until it has some. The server keeps its state in `e2e/.run`, so the next local run starts with the vessels the last one heard. Each run mints a partner token for the server, the Worker and the browser, because every request comes from one address and would otherwise run into its rate limit. The basemap is replaced with a blank style.
 
 ## Vessel pages
 
