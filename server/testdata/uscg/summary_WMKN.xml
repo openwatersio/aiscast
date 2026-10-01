@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><soap:Body><getVesselSummaryXMLStringResponse xmlns="https://cgmix.uscg.mil"><getVesselSummaryXMLStringResult>&lt;NewDataSet&gt;
+  &lt;VesselSummary&gt;
+    &lt;VesselId&gt;1097015&lt;/VesselId&gt;
+    &lt;VesselName&gt;MAERSK KENSINGTON&lt;/VesselName&gt;
+    &lt;VesselCallSign&gt;WMKN&lt;/VesselCallSign&gt;
+    &lt;ServiceType&gt;Freight Ship&lt;/ServiceType&gt;
+    &lt;ConstructionCompletedYear&gt;2007&lt;/ConstructionCompletedYear&gt;
+    &lt;StatusLookupName&gt;Active&lt;/StatusLookupName&gt;
+    &lt;Identification&gt;1257726&lt;/Identification&gt;
+    &lt;ManufacturerHullNumber&gt;166&lt;/ManufacturerHullNumber&gt;
+    &lt;CountryLookupName&gt;UNITED STATES&lt;/CountryLookupName&gt;
+  &lt;/VesselSummary&gt;
+&lt;/NewDataSet&gt;</getVesselSummaryXMLStringResult></getVesselSummaryXMLStringResponse></soap:Body></soap:Envelope>

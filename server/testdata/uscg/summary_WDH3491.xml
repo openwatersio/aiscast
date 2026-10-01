@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><soap:Body><getVesselSummaryXMLStringResponse xmlns="https://cgmix.uscg.mil"><getVesselSummaryXMLStringResult>&lt;NewDataSet&gt;
+  &lt;VesselSummary&gt;
+    &lt;VesselId&gt;607128&lt;/VesselId&gt;
+    &lt;VesselName&gt;CONGRESSMAN ROBERT A. ROE&lt;/VesselName&gt;
+    &lt;VesselCallSign&gt;WDH3491&lt;/VesselCallSign&gt;
+    &lt;ServiceType&gt;Passenger (Inspected)&lt;/ServiceType&gt;
+    &lt;ConstructionCompletedYear&gt;2003&lt;/ConstructionCompletedYear&gt;
+    &lt;StatusLookupName&gt;Active&lt;/StatusLookupName&gt;
+    &lt;Identification&gt;1137118&lt;/Identification&gt;
+    &lt;HIN&gt;AMI36C780602&lt;/HIN&gt;
+    &lt;CountryLookupName&gt;UNITED STATES&lt;/CountryLookupName&gt;
+  &lt;/VesselSummary&gt;
+  &lt;VesselSummary&gt;
+    &lt;VesselId&gt;171966&lt;/VesselId&gt;
+    &lt;VesselName&gt;PAIGE MARIE&lt;/VesselName&gt;
+    &lt;VesselCallSign&gt;WDH3491&lt;/VesselCallSign&gt;
+    &lt;ServiceType&gt;Commercial Fishing Vessel&lt;/ServiceType&gt;
+    &lt;ConstructionCompletedYear&gt;1979&lt;/ConstructionCompletedYear&gt;
+    &lt;StatusLookupName&gt;Active&lt;/StatusLookupName&gt;
+    &lt;Identification&gt;607649&lt;/Identification&gt;
+    &lt;HIN&gt;SVA470301178&lt;/HIN&gt;
+    &lt;CountryLookupName&gt;UNITED STATES&lt;/CountryLookupName&gt;
+  &lt;/VesselSummary&gt;
+&lt;/NewDataSet&gt;</getVesselSummaryXMLStringResult></getVesselSummaryXMLStringResponse></soap:Body></soap:Envelope>

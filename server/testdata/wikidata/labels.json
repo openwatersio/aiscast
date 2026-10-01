@@ -1,0 +1,243 @@
+{
+ "head": {
+  "vars": [
+   "v",
+   "label"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q55"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Netherlands"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q84"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "London"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q783"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Honduras"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q233"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Malta"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q39804"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "cruise ship"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q23800"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Valletta"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q34370"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Rotterdam"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q34370"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Rotterdam"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q39804"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "cruise ship"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q705377"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Meyer Werft"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q745700"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Princess Cruises"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1044059"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Carnival Corporation"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1044059"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Carnival Corporation"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1052823"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Celebrity Cruises"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1327429"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Fincantieri"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q23635"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Bermuda"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q23635"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Bermuda"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1327429"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Fincantieri"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1430652"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "semi-submersible platform"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2043447"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "P&O Cruises Australia"
+    }
+   },
+   {
+    "v": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q14552001"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Jansen-Werft"
+    }
+   }
+  ]
+ }
+}

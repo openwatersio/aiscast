@@ -255,6 +255,32 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "aiscast_import_last_success_timestamp_seconds %d\n", t)
 		}
 	}
+	if p.store != nil {
+		metricHead(w, "aiscast_wikidata_syncs_total", "counter", "weekly syncs of vessel particulars from Wikidata")
+		fmt.Fprintf(w, "aiscast_wikidata_syncs_total %d\n", p.wikidata.runs.Load())
+		metricHead(w, "aiscast_wikidata_sync_failures_total", "counter", "Wikidata syncs that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_wikidata_sync_failures_total %d\n", p.wikidata.failures.Load())
+		metricHead(w, "aiscast_wikidata_ships", "gauge", "IMO numbers with particulars from Wikidata")
+		fmt.Fprintf(w, "aiscast_wikidata_ships %d\n", p.wikidata.ships.Load())
+		if t := p.wikidata.lastSuccess.Load(); t > 0 {
+			metricHead(w, "aiscast_wikidata_last_success_timestamp_seconds", "gauge", "when vessel particulars last synced from Wikidata")
+			fmt.Fprintf(w, "aiscast_wikidata_last_success_timestamp_seconds %d\n", t)
+		}
+		metricHead(w, "aiscast_uscg_syncs_total", "counter", "weekly listings of US-flag vessels from the Coast Guard's PSIX")
+		fmt.Fprintf(w, "aiscast_uscg_syncs_total %d\n", p.uscg.runs.Load())
+		metricHead(w, "aiscast_uscg_sync_failures_total", "counter", "PSIX listings that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_uscg_sync_failures_total %d\n", p.uscg.failures.Load())
+		metricHead(w, "aiscast_uscg_vessels", "gauge", "US-flag vessels with a call sign listed from PSIX")
+		fmt.Fprintf(w, "aiscast_uscg_vessels %d\n", p.uscg.vessels.Load())
+		metricHead(w, "aiscast_uscg_details_total", "counter", "matched vessels whose dimensions and tonnage were read from PSIX")
+		fmt.Fprintf(w, "aiscast_uscg_details_total %d\n", p.uscg.details.Load())
+		metricHead(w, "aiscast_uscg_detail_failures_total", "counter", "PSIX dimension and tonnage reads that failed; the round stops and the next resumes")
+		fmt.Fprintf(w, "aiscast_uscg_detail_failures_total %d\n", p.uscg.detailFailures.Load())
+		if t := p.uscg.lastSuccess.Load(); t > 0 {
+			metricHead(w, "aiscast_uscg_last_success_timestamp_seconds", "gauge", "when US-flag vessels were last listed from PSIX")
+			fmt.Fprintf(w, "aiscast_uscg_last_success_timestamp_seconds %d\n", t)
+		}
+	}
 
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")
 	streams := p.streams.snapshot()

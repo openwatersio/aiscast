@@ -15,13 +15,14 @@ import {
   vesselDimensions,
   vesselPath,
 } from "../lib/ais";
-import { publicApiBase, type VesselFeature } from "../lib/api";
+import { publicApiBase, type VesselFeature, type VesselUSCG, type VesselWikidata } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS, SIGNALK_PLUGIN } from "../lib/links";
 import { SITE } from "../lib/meta";
 import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
-import { mediaKey, type VesselMedia } from "../lib/media";
+import { mediaKey } from "../lib/media";
+import { uscgFacts, wikidataFacts } from "../lib/particulars";
 import { useMedia } from "../lib/useMedia";
 import { useStation } from "../lib/useStationTitle";
 import { useTrack } from "../lib/useTrack";
@@ -253,7 +254,8 @@ export function VesselDetail({
         ]}
       />
 
-      {media && <VesselParticulars media={media} />}
+      {p?.wikidata && <WikidataParticulars wikidata={p.wikidata} photos={media?.links.commonsCategory} />}
+      {p?.uscg && <CoastGuardParticulars uscg={p.uscg} name={name} />}
 
       <ContributePrompt ownBoat={cls === "pleasure" || /ClassB/.test(p?.msg_type ?? "")} volunteer={isVolunteer(source)} />
 
@@ -281,50 +283,59 @@ export function VesselDetail({
 }
 
 /**
- * The vessel as registered, from Wikidata, and where to read more about it. Absent for most
- * vessels: only ships with an IMO have an item, and not all of them.
+ * The vessel as registered, from its Wikidata item, and where to read more about it. Absent for
+ * most vessels: only ships with an IMO have an item, and not all of them. `photos` is the Commons
+ * category the photos came from.
  */
-function VesselParticulars({ media: { particulars: p, links } }: { media: VesselMedia }) {
-  const sources: Array<[string, string | undefined]> = [
-    ["Wikipedia", links.wikipedia],
-    ["Wikidata", links.wikidata],
-    ["Wikimedia Commons", links.commonsCategory],
+function WikidataParticulars({ wikidata: w, photos }: { wikidata: VesselWikidata; photos?: string }) {
+  const links: Array<[string, string | undefined]> = [
+    ["Wikipedia", w.wikipedia],
+    ["Wikidata", w.url],
+    // The item's category, else the one the photos above came from.
+    ["Wikimedia Commons", w.commons_category ?? photos],
   ];
-  const linked = sources.filter((s): s is [string, string] => !!s[1]);
-  if (!p && !linked.length) return null;
-  const m = (n: number | undefined) => (n != null ? `${n.toLocaleString("en-US")} m` : undefined);
   return (
-    <Section label="Particulars" bare={!p}>
-      {p && (
-        <Facts
-          items={[
-            ["In service", p.entered],
-            ["Builder", p.builder],
-            ["Yard number", p.yardNumber],
-            ["Length", m(p.length)],
-            ["Beam", m(p.beam)],
-            ["Draught", m(p.draught)],
-            ["Gross tonnage", p.grossTonnage?.toLocaleString("en-US")],
-            ["Call sign", p.callsign],
-            ["Registry", p.registry],
-            ["Operator", p.operator],
-            ["Owner", p.owner],
-          ]}
-        />
-      )}
-      {linked.length > 0 && (
-        <p className={cn("text-footnote text-fg-muted", p && "mt-3")}>
-          {linked.map(([label, href], i) => (
-            <Fragment key={label}>
-              {i > 0 && " · "}
-              <a href={href} target="_blank" rel="noopener">
-                {label}
-              </a>
-            </Fragment>
-          ))}
-        </p>
-      )}
+    <Section label="Particulars">
+      <Facts items={wikidataFacts(w)} />
+      <SourceLinks className="mt-3" links={links} />
     </Section>
+  );
+}
+
+/**
+ * A US-flag vessel as the Coast Guard documents it. The API matches it by call sign and name, and
+ * reads its dimensions and tonnage some time after it is first heard, so they can be missing at
+ * first. PSIX has no page per vessel to link, so the credit names the database.
+ */
+function CoastGuardParticulars({ uscg, name }: { uscg: VesselUSCG; name?: string }) {
+  return (
+    <Section label="US Coast Guard">
+      <Facts items={uscgFacts(uscg, name)} />
+      <p className="mt-3 text-footnote text-fg-muted">
+        From the Coast Guard&rsquo;s{" "}
+        <a href="https://cgmix.uscg.mil/psix/" target="_blank" rel="noopener">
+          Port State Information Exchange
+        </a>
+      </p>
+    </Section>
+  );
+}
+
+/** Where to read more, as one line of links; links without an address are left out. */
+function SourceLinks({ links, className }: { links: Array<[string, string | undefined]>; className?: string }) {
+  const linked = links.filter((l): l is [string, string] => !!l[1]);
+  if (!linked.length) return null;
+  return (
+    <p className={cn("text-footnote text-fg-muted", className)}>
+      {linked.map(([label, href], i) => (
+        <Fragment key={label}>
+          {i > 0 && " · "}
+          <a href={href} target="_blank" rel="noopener">
+            {label}
+          </a>
+        </Fragment>
+      ))}
+    </p>
   );
 }
 

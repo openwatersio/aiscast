@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><soap:Body><getVesselDimensionsXMLStringResponse xmlns="https://cgmix.uscg.mil"><getVesselDimensionsXMLStringResult>&lt;NewDataSet&gt;
+  &lt;VesselDimensions&gt;
+    &lt;VesselId&gt;872923&lt;/VesselId&gt;
+    &lt;DimensionTypeLookupId&gt;4&lt;/DimensionTypeLookupId&gt;
+    &lt;DimensionTypeLookupName&gt;Hull(Overall) Simplified&lt;/DimensionTypeLookupName&gt;
+    &lt;BreadthInFeet&gt;12.00&lt;/BreadthInFeet&gt;
+    &lt;DepthInFeet&gt;5.70&lt;/DepthInFeet&gt;
+    &lt;LengthInFeet&gt;33.80&lt;/LengthInFeet&gt;
+  &lt;/VesselDimensions&gt;
+  &lt;VesselDimensions&gt;
+    &lt;VesselId&gt;872923&lt;/VesselId&gt;
+    &lt;DimensionTypeLookupId&gt;10&lt;/DimensionTypeLookupId&gt;
+    &lt;DimensionTypeLookupName&gt;Hull(Overall) Formal&lt;/DimensionTypeLookupName&gt;
+    &lt;BreadthInFeet&gt;12.00&lt;/BreadthInFeet&gt;
+    &lt;DepthInFeet&gt;5.70&lt;/DepthInFeet&gt;
+    &lt;LengthInFeet&gt;33.80&lt;/LengthInFeet&gt;
+  &lt;/VesselDimensions&gt;
+  &lt;VesselDimensions&gt;
+    &lt;VesselId&gt;872923&lt;/VesselId&gt;
+    &lt;DimensionTypeLookupId&gt;11&lt;/DimensionTypeLookupId&gt;
+    &lt;DimensionTypeLookupName&gt;Length&lt;/DimensionTypeLookupName&gt;
+    &lt;LengthInFeet&gt;33.80&lt;/LengthInFeet&gt;
+  &lt;/VesselDimensions&gt;
+&lt;/NewDataSet&gt;</getVesselDimensionsXMLStringResult></getVesselDimensionsXMLStringResponse></soap:Body></soap:Envelope>

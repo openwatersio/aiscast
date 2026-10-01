@@ -67,6 +67,48 @@ CREATE INDEX IF NOT EXISTS vessels_seen ON vessels (seen);
 CREATE INDEX IF NOT EXISTS vessels_imo ON vessels (imo);
 CREATE INDEX IF NOT EXISTS vessels_first_seen ON vessels (first_seen);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- particulars from Wikidata by IMO, replaced whole by each weekly sync (wikidata.go)
+CREATE TABLE IF NOT EXISTS wikidata (
+	imo              INTEGER PRIMARY KEY,
+	qid              TEXT    NOT NULL,
+	builder          TEXT    NOT NULL DEFAULT '',
+	year_built       INTEGER NOT NULL DEFAULT 0,
+	gross_tonnage    INTEGER NOT NULL DEFAULT 0,
+	deadweight       INTEGER NOT NULL DEFAULT 0,  -- tonnes
+	length           REAL    NOT NULL DEFAULT 0,  -- metres
+	beam             REAL    NOT NULL DEFAULT 0,
+	registry         TEXT    NOT NULL DEFAULT '', -- country of registry, in English
+	former_names     TEXT    NOT NULL DEFAULT '', -- JSON array, oldest first
+	ship_type        TEXT    NOT NULL DEFAULT '',
+	yard_number      TEXT    NOT NULL DEFAULT '',
+	draught          REAL    NOT NULL DEFAULT 0,  -- design draught, metres
+	home_port        TEXT    NOT NULL DEFAULT '',
+	owner            TEXT    NOT NULL DEFAULT '',
+	operator         TEXT    NOT NULL DEFAULT '',
+	wikipedia        TEXT    NOT NULL DEFAULT '', -- URLs
+	commons_category TEXT    NOT NULL DEFAULT '',
+	image            TEXT    NOT NULL DEFAULT ''
+);
+-- US-flag vessels with a call sign from the Coast Guard's PSIX, listed weekly, with dimensions and tonnage
+-- read for the vessels AIS matches to them (uscg.go)
+CREATE TABLE IF NOT EXISTS uscg (
+	vessel_id       INTEGER PRIMARY KEY,         -- PSIX's id
+	callsign        TEXT    NOT NULL,
+	name            TEXT    NOT NULL,
+	identification  TEXT    NOT NULL DEFAULT '',
+	service         TEXT    NOT NULL DEFAULT '',
+	status          TEXT    NOT NULL DEFAULT '',
+	year_built      INTEGER NOT NULL DEFAULT 0,
+	length          REAL    NOT NULL DEFAULT 0,  -- metres
+	beam            REAL    NOT NULL DEFAULT 0,
+	depth           REAL    NOT NULL DEFAULT 0,
+	gross_tonnage   INTEGER NOT NULL DEFAULT 0,
+	net_tonnage     INTEGER NOT NULL DEFAULT 0,
+	tonnage_measure TEXT    NOT NULL DEFAULT '',
+	listed          INTEGER NOT NULL DEFAULT 0,  -- unix ms of the listing that last held the vessel
+	details_at      INTEGER NOT NULL DEFAULT 0   -- unix ms of the last dimensions and tonnage read; 0 before
+);
+CREATE INDEX IF NOT EXISTS uscg_callsign ON uscg (callsign);
 `
 
 // storeAddedCols are columns a file created by an earlier build lacks. SQLite has no ADD COLUMN IF NOT
