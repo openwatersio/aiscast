@@ -46,6 +46,7 @@ describe("plan", () => {
     const p = plan([view({ bbox: [OSLO], active: 2 }), view({ bbox: [HELSINKI], mmsi: [7], active: 1 })], { area: 1 });
     expect(p.mmsi).toEqual([7]);
     expect(p.served).toEqual([true, false]);
+    expect(p.following).toEqual([true, true]);
   });
 
   it("serves a tab with no boxes", () => {
@@ -54,7 +55,39 @@ describe("plan", () => {
 
   it("stops following at the key's limit, keeping the active tab's", () => {
     const p = plan([view({ mmsi: [1, 2], active: 1 }), view({ mmsi: [3], active: 2 })], { mmsis: 2 });
-    expect(p.mmsi).toEqual([3, 1]);
+    expect(p.mmsi).toEqual([3]);
+    expect(p.served).toEqual([false, true]);
+    expect(p.following).toEqual([false, true]);
+  });
+
+  it("leaves out the boxes of a tab whose follows do not fit", () => {
+    const p = plan([view({ bbox: [OSLO], mmsi: [1, 2], active: 1 }), view({ mmsi: [3], active: 2 })], { mmsis: 2 });
+    expect(p.bbox).toEqual([]);
+    expect(p.served).toEqual([false, true]);
+    expect(p.following).toEqual([false, true]);
+  });
+
+  it("still fits a later tab after one that did not", () => {
+    const p = plan([view({ mmsi: [1, 2, 3], active: 2 }), view({ mmsi: [4], active: 1 })], { mmsis: 2 });
+    expect(p.mmsi).toEqual([4]);
+    expect(p.following).toEqual([false, true]);
+  });
+
+  it("leaves out a tab whose follows do not all fit, even if some are in already", () => {
+    const p = plan([view({ mmsi: [1], active: 2 }), view({ mmsi: [1, 2], active: 1 })], { mmsis: 1 });
+    expect(p.mmsi).toEqual([1]);
+    expect(p.following).toEqual([true, false]);
+  });
+
+  it("follows for a tab with boxes on a key that may only follow", () => {
+    const p = plan([view({ bbox: [OSLO], mmsi: [1] })], { area: -1 });
+    expect(p).toEqual({ bbox: [], mmsi: [1], served: [false], following: [true] });
+  });
+
+  it("counts a vessel another tab follows once against the limit", () => {
+    const p = plan([view({ mmsi: [1], active: 2 }), view({ mmsi: [1], active: 1 })], { mmsis: 1 });
+    expect(p.mmsi).toEqual([1]);
+    expect(p.served).toEqual([true, true]);
   });
 
   it("has no cap without limits or with an area of 0", () => {
@@ -65,7 +98,7 @@ describe("plan", () => {
 });
 
 describe("wants", () => {
-  const tab = { ...view({ bbox: [OSLO], mmsi: [9] }), served: true };
+  const tab = { ...view({ bbox: [OSLO], mmsi: [9] }), served: true, following: true };
 
   it("takes positions inside its boxes, edges included", () => {
     expect(wants(tab, { mmsi: 1, lat: 59.5, lon: 10.5 })).toBe(true);
@@ -77,6 +110,12 @@ describe("wants", () => {
     expect(wants(tab, { mmsi: 9, lat: 0, lon: 0 })).toBe(true);
     expect(wants(tab, { mmsi: 9 })).toBe(true);
     expect(wants(tab, { mmsi: 1 })).toBe(false);
+  });
+
+  it("takes nothing it follows when its follows did not fit", () => {
+    const left = { ...tab, served: false, following: false };
+    expect(wants(left, { mmsi: 9, lat: 59.5, lon: 10.5 })).toBe(false);
+    expect(wants(left, { mmsi: 9 })).toBe(false);
   });
 
   it("takes only its follows when its boxes are not served", () => {
@@ -193,6 +232,36 @@ describe("Hub", () => {
     expect(a.last()).toMatchObject({ served: false });
     expect(ws.sent.at(-1)).toEqual({ type: "subscribe", bbox: [HELSINKI], mmsi: [] });
     ws.frame({ type: "event", mmsi: 1, lat: 59.5, lon: 10.5 });
+    expect(a.events()).toEqual([]);
+  });
+
+  it("tells a tab when its follows do not fit, and passes it none of them", () => {
+    const { a, b } = setup();
+    a.say({ type: "view", ...view({ mmsi: [1], active: 1 }) });
+    const ws = FakeSocket.all[0]!;
+    ws.open({ mmsis: 1 });
+    b.say({ type: "view", ...view({ mmsi: [2], active: 2 }) });
+    expect(a.last()).toMatchObject({ served: false });
+    expect(ws.sent.at(-1)).toEqual({ type: "subscribe", bbox: [], mmsi: [2] });
+    ws.frame({ type: "event", mmsi: 1 });
+    ws.frame({ type: "event", mmsi: 2 });
+    expect(a.events()).toEqual([]);
+    expect(b.events()).toEqual([2]);
+  });
+
+  it("tells a tab already left out when its follows stop fitting too", () => {
+    const { hub, a, b } = setup();
+    a.say({ type: "view", ...view({ bbox: [OSLO], mmsi: [1], active: 1 }) });
+    b.say({ type: "view", ...view({ bbox: [HELSINKI], active: 2 }) });
+    const ws = FakeSocket.all[0]!;
+    ws.open({ area: 1, mmsis: 2 });
+    expect(a.last()).toMatchObject({ served: false, following: true });
+    // A third tab, more recently active, takes both follows the key allows.
+    const c = new FakePort();
+    hub.add(c);
+    c.say({ type: "view", ...view({ mmsi: [2, 3], active: 3 }) });
+    expect(a.last()).toMatchObject({ served: false, following: false });
+    ws.frame({ type: "event", mmsi: 1 });
     expect(a.events()).toEqual([]);
   });
 

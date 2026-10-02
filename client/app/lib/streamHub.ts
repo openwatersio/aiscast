@@ -21,8 +21,11 @@ export type Limits = Record<string, unknown>;
 
 export type ToHub = ({ type: "view" } & TabView) | { type: "close" };
 export type ToTab =
-  /** `served` is false when this tab's boxes did not fit in the union; its follows still stream. */
-  | { type: "status"; state: HubState; served: boolean; limits?: Limits }
+  /**
+   * `served` is false when this tab's boxes or follows did not fit in the union. `following`
+   * says whether its follows did, which they can while its boxes do not.
+   */
+  | { type: "status"; state: HubState; served: boolean; following: boolean; limits?: Limits }
   /** The server's frame as it arrived, for the tab to parse. */
   | { type: "event"; data: string };
 
@@ -43,10 +46,14 @@ function covers(o: BBox, b: BBox): boolean {
  * The one subscription that serves these tabs, within the key's limits. The server sums the
  * boxes' areas against the cap, so a box another tab already covers is left out rather than
  * counted twice. Tabs are taken visible first, then most recently active, and a tab whose
- * boxes do not fit in what remains gets none of them: half a view would look live and miss
- * vessels.
+ * boxes or follows do not fit in what remains gets none of them: half a view would look live
+ * and miss vessels. A tab is served when all it asked for is in; one whose follows fit but
+ * whose boxes do not still follows, so the vessel it has open stays live.
  */
-export function plan(tabs: readonly TabView[], limits?: Limits): Subscription & { served: boolean[] } {
+export function plan(
+  tabs: readonly TabView[],
+  limits?: Limits,
+): Subscription & { served: boolean[]; following: boolean[] } {
   // 0 is unlimited and below 0 is MMSI-only, as in the welcome's limits.
   const area = typeof limits?.area === "number" ? limits.area : 0;
   const maxMmsi = typeof limits?.mmsis === "number" && limits.mmsis > 0 ? limits.mmsis : Infinity;
@@ -56,21 +63,24 @@ export function plan(tabs: readonly TabView[], limits?: Limits): Subscription & 
 
   const bbox: BBox[] = [];
   const mmsi = new Set<number>();
-  const served = tabs.map(() => true);
+  const served = tabs.map(() => false);
+  const following = tabs.map(() => false);
   let used = 0;
   for (const i of order) {
     const tab = tabs[i]!;
-    for (const m of tab.mmsi) if (mmsi.size < maxMmsi) mmsi.add(m);
+    const newMmsi = new Set(tab.mmsi.filter((m) => !mmsi.has(m)));
+    if (mmsi.size + newMmsi.size > maxMmsi) continue;
+    newMmsi.forEach((m) => mmsi.add(m));
+    following[i] = true;
     const extra = tab.bbox.filter((b) => !bbox.some((o) => covers(o, b)));
     const need = extra.reduce((sum, b) => sum + bboxArea(b), 0);
-    if (area === 0 || (area > 0 && used + need <= area)) {
+    if (!tab.bbox.length || area === 0 || (area > 0 && used + need <= area)) {
       bbox.push(...extra);
       used += need;
-    } else if (tab.bbox.length) {
-      served[i] = false;
+      served[i] = true;
     }
   }
-  return { bbox, mmsi: [...mmsi], served };
+  return { bbox, mmsi: [...mmsi], served, following };
 }
 
 interface EventFrame {
@@ -83,8 +93,8 @@ interface EventFrame {
  * Whether a tab asked for this event. The server fills a vessel's last known position into
  * every event it sends, static data included, so an event without one matched by MMSI alone.
  */
-export function wants(tab: TabView & { served: boolean }, ev: EventFrame): boolean {
-  if (tab.mmsi.includes(ev.mmsi)) return true;
+export function wants(tab: TabView & { served: boolean; following: boolean }, ev: EventFrame): boolean {
+  if (tab.following && tab.mmsi.includes(ev.mmsi)) return true;
   const { lat, lon } = ev;
   if (!tab.served || lat == null || lon == null) return false;
   return tab.bbox.some(([s, w, n, e]) => lat >= s && lat <= n && lon >= w && lon <= e);
@@ -101,6 +111,7 @@ type TabPort = Port<ToTab, ToHub>;
 
 interface Tab extends TabView {
   served: boolean;
+  following: boolean;
   heard: number;
 }
 
@@ -132,7 +143,7 @@ export class Hub {
   /** A tab counts from its first view, so a port that never says what it wants plans nothing. */
   add(port: TabPort) {
     port.onmessage = (e) => this.#onTab(port, e.data);
-    port.postMessage(this.#status(true));
+    port.postMessage(this.#status());
   }
 
   #onTab(port: TabPort, msg: ToHub) {
@@ -142,19 +153,28 @@ export class Hub {
     }
     const { bbox, mmsi, visible, active } = msg;
     const prev = this.#tabs.get(port);
-    this.#tabs.set(port, { bbox, mmsi, visible, active, served: prev?.served ?? true, heard: Date.now() });
+    this.#tabs.set(port, {
+      bbox,
+      mmsi,
+      visible,
+      active,
+      served: prev?.served ?? true,
+      following: prev?.following ?? true,
+      heard: Date.now(),
+    });
     // A reaped tab that wakes up is a new one, and needs the state it missed.
-    if (!prev) port.postMessage(this.#status(true));
+    if (!prev) port.postMessage(this.#status());
     if (!this.#ws && !this.#retry) this.#connect();
     this.#replan();
   }
 
-  #status(served: boolean): ToTab {
-    return { type: "status", state: this.state, served, limits: this.#limits };
+  #status(tab?: Tab): ToTab {
+    const { served = true, following = true } = tab ?? {};
+    return { type: "status", state: this.state, served, following, limits: this.#limits };
   }
 
   #broadcast() {
-    for (const [port, tab] of this.#tabs) port.postMessage(this.#status(tab.served));
+    for (const [port, tab] of this.#tabs) port.postMessage(this.#status(tab));
   }
 
   #replan() {
@@ -165,9 +185,10 @@ export class Hub {
       this.#limits,
     );
     entries.forEach(([port, tab], i) => {
-      if (tab.served === next.served[i]) return;
+      if (tab.served === next.served[i] && tab.following === next.following[i]) return;
       tab.served = next.served[i]!;
-      port.postMessage(this.#status(tab.served));
+      tab.following = next.following[i]!;
+      port.postMessage(this.#status(tab));
     });
     this.#send({ bbox: next.bbox, mmsi: next.mmsi });
   }

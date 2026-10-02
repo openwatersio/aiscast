@@ -80,7 +80,8 @@ export class Stream {
   readonly credits = new Map<string, string>();
   /**
    * `refused`: every stream this address may hold is open elsewhere, or this browser's stream
-   * cannot fit this tab's view beside another tab's under the area cap.
+   * cannot fit this tab's view beside other tabs' under the key's area cap or limit on
+   * followed vessels.
    */
   state: "connecting" | "live" | "reconnecting" | "capped" | "refused" = "connecting";
   eventsPerSec = 0;
@@ -102,8 +103,10 @@ export class Stream {
   /** When this tab last sent the hub its view. */
   #told = 0;
   #active = Date.now();
-  /** Whether the hub's subscription includes this tab's boxes. */
+  /** Whether the hub's subscription includes this tab's boxes and follows. */
   #served = true;
+  /** Whether it includes this tab's follows, which it can without the boxes. */
+  #following = true;
   #bbox: BBox[] = [];
   #mmsi = new Set<number>();
   #count = 0;
@@ -282,9 +285,11 @@ export class Stream {
     if (msg.type === "event") return this.#onEvent(JSON.parse(msg.data));
     // Another tab's view took the area this one needs, so the tiles carry it, as when refused.
     const state = msg.state === "live" && !msg.served ? "refused" : msg.state;
-    const served = this.#served;
+    const lost = (this.#served && !msg.served) || (this.#following && !(msg.following ?? msg.served));
     this.#served = msg.served;
-    if (served && !msg.served) this.#prune();
+    // A hub from an older build, kept alive across a deploy, sends no following.
+    this.#following = msg.following ?? msg.served;
+    if (lost) this.#prune();
     // Every heartbeat carries the status, and an unchanged one is not a new frame.
     if (state === this.state && JSON.stringify(msg.limits) === JSON.stringify(this.limits)) return;
     this.state = state;
@@ -368,6 +373,11 @@ export class Stream {
     }
   }
 
+  /** A vessel this tab follows and the hub still streams to it. */
+  #followed(mmsi: number): boolean {
+    return this.#following && this.#mmsi.has(mmsi);
+  }
+
   /**
    * Forgets vessels outside the subscription. The stream stops reporting a vessel once it is
    * out of view, so its last position here goes stale while the tile under it stays current.
@@ -375,7 +385,7 @@ export class Stream {
   #prune() {
     const boxes = this.#served ? this.#bbox : [];
     for (const [mmsi, v] of this.vessels) {
-      if (this.#mmsi.has(mmsi)) continue;
+      if (this.#followed(mmsi)) continue;
       const inView =
         v.lat != null &&
         v.lon != null &&
@@ -390,7 +400,7 @@ export class Stream {
   #sweep() {
     const cutoff = Date.now() - TTL;
     for (const [mmsi, v] of this.vessels) {
-      if (v.seen < cutoff && !this.#mmsi.has(mmsi)) {
+      if (v.seen < cutoff && !this.#followed(mmsi)) {
         this.vessels.delete(mmsi);
         this.#dirty = true;
       }
