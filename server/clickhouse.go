@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,10 +80,16 @@ type chWriter interface {
 	insert(ctx context.Context, token string, points []trackPoint) error
 }
 
-// chStore is the attached ClickHouse: the writer, the batch waiting to be sent again, and what /metrics
-// reports about it.
+// chReader reads one vessel's history; tests fake it.
+type chReader interface {
+	history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error)
+}
+
+// chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
+// /metrics reports about it.
 type chStore struct {
 	w chWriter
+	r chReader // nil keeps tracks on the lake
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -124,6 +131,71 @@ func openClickHouse(ctx context.Context, url string) (*chConn, error) {
 		}
 	}
 	return &chConn{conn: conn, db: db}, nil
+}
+
+// chRawKeep and chRollupKeep are how long positions and positions_15m hold their rows; the schema's TTLs.
+const (
+	chRawKeep    = 30 * 24 * time.Hour
+	chRollupKeep = 13 * 30 * 24 * time.Hour
+)
+
+// chTable is the table that answers a step, and its window: the coarsest that holds the range and whose window
+// divides the step. A rollup keeps the first position per window, which is what thinning every position keeps,
+// so a step of whole windows reads the same answer from it. A range older than every finer table reads the
+// rollup that holds it, at one position per window, which still keeps the step's at-most-one promise.
+func chTable(from time.Time, step time.Duration, now time.Time) (string, time.Duration) {
+	age := now.Sub(from)
+	switch {
+	case age < chRawKeep && (step < 15*time.Minute || step%(15*time.Minute) != 0):
+		return "positions", 0
+	case age < chRollupKeep && (step < time.Hour || step%time.Hour != 0):
+		return "positions_15m", 15 * time.Minute
+	}
+	return "positions_1h", time.Hour
+}
+
+// history reads the newest limit+1 positions, oldest first, so the caller can tell the limit cut the range.
+// Positions are thinned in the query by the same epoch buckets the caller thins by, a rollup's windows grouped
+// into the step, so the limit counts what the answer keeps and a long range never comes back whole.
+func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error) {
+	const row = "(ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source))"
+	if step < time.Millisecond { // the caller's buckets are milliseconds; under one, it keeps every position
+		step = 0
+	}
+	table, window := chTable(from, step, now)
+	var q string
+	var args []any
+	switch {
+	case window > 0:
+		// ponytail: a window that starts before from and whose first position is before from is left out, so a
+		// range not aligned to the window can miss positions in its first window
+		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMinMerge(first) AS f FROM " + c.db + "." + table +
+			" WHERE mmsi = ? AND slot >= ? AND slot <= ? GROUP BY intDiv(toUnixTimestamp(slot), ?)) WHERE f.1 >= ? AND f.1 <= ? ORDER BY f.1 DESC LIMIT ?"
+		args = []any{mmsi, from.Truncate(window), to, int64(max(step, window) / time.Second), from, to, limit + 1}
+	case step > 0:
+		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMin(" + row + ", ts) AS f FROM " + c.db +
+			".positions WHERE mmsi = ? AND ts >= ? AND ts <= ? GROUP BY intDiv(toUnixTimestamp64Milli(ts), ?)) ORDER BY f.1 DESC LIMIT ?"
+		args = []any{mmsi, from, to, step.Milliseconds(), limit + 1}
+	default:
+		q = "SELECT ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source) FROM " + c.db +
+			".positions WHERE mmsi = ? AND ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT ?"
+		args = []any{mmsi, from, to, limit + 1}
+	}
+	rows, err := c.conn.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var points []trackPoint
+	for rows.Next() {
+		pt := trackPoint{mmsi: mmsi}
+		if err := rows.Scan(&pt.ts, &pt.lat6, &pt.lon6, &pt.sog10, &pt.cog10, &pt.heading, &pt.navStatus, &pt.source); err != nil {
+			return nil, err
+		}
+		points = append(points, pt)
+	}
+	slices.Reverse(points)
+	return points, rows.Err()
 }
 
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
@@ -185,7 +257,7 @@ func (p *Pipeline) runClickHouse(url string) {
 		conn, err := openClickHouse(ctx, url)
 		cancel()
 		if err == nil {
-			p.attachClickHouse(&chStore{w: conn})
+			p.attachClickHouse(&chStore{w: conn, r: conn})
 			log.Printf("clickhouse: writing positions to %s", conn.db)
 			break
 		}

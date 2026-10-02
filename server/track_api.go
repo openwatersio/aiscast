@@ -41,9 +41,28 @@ type trackRequest struct {
 	limit    int
 }
 
-// trackMaxSpan is the longest range one request may ask for. Reads past the window are billed by the bytes
-// they scan, so a request's reach is bounded; a longer history pages back by moving to.
-const trackMaxSpan = 7 * 24 * time.Hour
+// trackMaxSpan is the longest range one request may ask for when history comes from the lake, whose reads are
+// billed by the bytes they scan; a longer history pages back by moving to. ClickHouse answers trackMaxSpanCH
+// from local disk.
+const (
+	trackMaxSpan   = 7 * 24 * time.Hour
+	trackMaxSpanCH = 366 * 24 * time.Hour
+)
+
+// historySpan is the longest range a request may ask for past the track store's window, 0 when nothing holds
+// history there.
+func (p *Pipeline) historySpan() time.Duration {
+	p.vmu.RLock()
+	ch := p.ch
+	p.vmu.RUnlock()
+	switch {
+	case ch != nil && ch.r != nil:
+		return trackMaxSpanCH
+	case p.lake != nil:
+		return trackMaxSpan
+	}
+	return 0
+}
 
 // canReachArchive reports whether a tier reads positions older than the track store's window. Those reads
 // scan the lake and cost money per request, which is why history is a feeder and commercial capability.
@@ -53,12 +72,13 @@ func canReachArchive(cl *Claims) bool {
 
 const trackArchiveTierMsg = "positions older than 48 hours need a feeder or commercial token; see https://openwaters.io/ais/"
 
-// parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. With the
-// lake and archive true, a range may reach before the track store's window, at most trackMaxSpan of it.
-// Otherwise the range is clamped to the window, and with the lake a range wholly before the window is refused
-// with a 403 that names the tier which reaches it. A range after now clamps to an empty one there, so the
-// answer is an empty track that says where it looked.
-func parseTrackRange(fromS, toS string, now time.Time, archive, lakeOn bool) (from, to time.Time, status int, msg string) {
+// parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. With
+// history (span above 0) and archive true, a range may reach before the track store's window, at most span of
+// it. Otherwise the range is clamped to the window, and with history a range wholly before the window is
+// refused with a 403 that names the tier which reaches it. A range after now clamps to an empty one there, so
+// the answer is an empty track that says where it looked.
+func parseTrackRange(fromS, toS string, now time.Time, archive bool, span time.Duration) (from, to time.Time, status int, msg string) {
+	lakeOn := span > 0
 	to = now
 	if toS != "" {
 		t, err := time.Parse(time.RFC3339, toS)
@@ -88,8 +108,8 @@ func parseTrackRange(fromS, toS string, now time.Time, archive, lakeOn bool) (fr
 		return clampTime(from, start, now).UTC(), clampTime(to, start, now).UTC(), 0, ""
 	}
 	to = clampTime(to, time.Time{}, now)
-	if to.Sub(from) > trackMaxSpan {
-		return from, to, http.StatusBadRequest, "a track covers at most 7 days per request; page back by moving to"
+	if to.Sub(from) > span {
+		return from, to, http.StatusBadRequest, fmt.Sprintf("a track covers at most %d days per request; page back by moving to", span/(24*time.Hour))
 	}
 	return clampTime(from, time.Time{}, now).UTC(), to.UTC(), 0, ""
 }
@@ -114,7 +134,7 @@ func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time)
 	vals := r.URL.Query()
 	var status int
 	var msg string
-	if q.from, q.to, status, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now, canReachArchive(cl), p.lake != nil); msg != "" {
+	if q.from, q.to, status, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now, canReachArchive(cl), p.historySpan()); msg != "" {
 		return q, status, msg
 	}
 	cap := trackLimit(cl)
@@ -177,16 +197,16 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 			return nil, nil, false, err
 		}
 	}
-	if more || p.lake == nil || !from.Before(start) {
+	if more || p.historySpan() == 0 || !from.Before(start) {
 		return hot, pointSources(hot), more, nil
 	}
-	// The lake holds whole days; keep its positions before the window, one per interval bucket, and none in
-	// the bucket the track store's first position already fills.
+	// Keep the positions before the window, one per interval bucket, and none in the bucket the track store's
+	// first position already fills.
 	lakeTo := to
 	if !lakeTo.Before(start) {
 		lakeTo = start.Add(-time.Millisecond)
 	}
-	days, err := p.lake.days(ctx, mmsi, from, lakeTo, now)
+	inRange, capped, err := p.historyPoints(ctx, mmsi, from, lakeTo, interval, limit-len(hot), now)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -200,16 +220,6 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 	if len(hot) > 0 && interval > 0 {
 		firstHot = bucket(hot[0].ts)
 	}
-	// A late report sits in the partition after its own day, so the positions are ordered before thinning.
-	var inRange []trackPoint
-	for _, d := range days {
-		for _, pt := range d.points {
-			if !pt.ts.Before(from) && !pt.ts.After(lakeTo) {
-				inRange = append(inRange, pt)
-			}
-		}
-	}
-	sort.SliceStable(inRange, func(i, j int) bool { return inRange[i].ts.Before(inRange[j].ts) })
 	var old []trackPoint
 	last := int64(-1)
 	for _, pt := range inRange {
@@ -223,11 +233,45 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 	// Judged after thinning, as the track store judges its own, and before the limit, so the limit counts
 	// only positions the answer keeps.
 	old = despike(old)
-	if room := limit - len(hot); len(old) > room {
-		old, more = old[len(old)-room:], true
+	if room := limit - len(hot); len(old) > room || capped {
+		old, more = old[max(len(old)-room, 0):], true
 	}
 	points = append(old, hot...)
 	return points, pointSources(points), more, nil
+}
+
+// historyPoints is one vessel's positions between from and to, oldest first, from before the track store's
+// window: ClickHouse's when it is attached, else the lake's. capped says ClickHouse stopped at limit with older
+// positions left, which the caller must report whatever its own filtering drops. When ClickHouse fails, the
+// lake answers a range it allows, trackMaxSpan; a longer one fails, since the lake's reads are billed by the
+// bytes they scan.
+func (p *Pipeline) historyPoints(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) (points []trackPoint, capped bool, err error) {
+	p.vmu.RLock()
+	ch := p.ch
+	p.vmu.RUnlock()
+	if ch != nil && ch.r != nil {
+		points, err := ch.r.history(ctx, mmsi, from, to, step, limit, now)
+		if err == nil || p.lake == nil || to.Sub(from) > trackMaxSpan {
+			if len(points) > limit {
+				return points[1:], true, err
+			}
+			return points, false, err
+		}
+	}
+	days, err := p.lake.days(ctx, mmsi, from, to, now)
+	if err != nil {
+		return nil, false, err
+	}
+	// A late report sits in the partition after its own day, so the positions are ordered after gathering.
+	for _, d := range days {
+		for _, pt := range d.points {
+			if !pt.ts.Before(from) && !pt.ts.After(to) {
+				points = append(points, pt)
+			}
+		}
+	}
+	sort.SliceStable(points, func(i, j int) bool { return points[i].ts.Before(points[j].ts) })
+	return points, false, nil
 }
 
 // pointSources is the source kinds that delivered points, the ones a track credits.
@@ -440,7 +484,7 @@ const mcpTrackDefaultLimit = 50
 
 type mcpTrackIn struct {
 	MMSI            uint32 `json:"mmsi" jsonschema:"the vessel's MMSI; use search_vessels_by_name first when you only have a name"`
-	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. Anonymous and personal calls reach back 48 hours; feeder and commercial tokens reach the archive, up to 7 days per call"`
+	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. Anonymous and personal calls reach back 48 hours; feeder and commercial tokens reach the archive, up to 366 days per call"`
 	To              string `json:"to,omitempty" jsonschema:"end, RFC 3339 UTC; default now"`
 	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the limit is spread over the range at a round spacing, reported as interval_s"`
 	Limit           int    `json:"limit,omitempty" jsonschema:"positions to return: default 50, maximum 200; when more match, the newest are kept"`
@@ -480,7 +524,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	limit = min(limit, trackLimit(cl))
 	now := time.Now()
-	from, to, _, msg := parseTrackRange(in.From, in.To, now, canReachArchive(cl), p.lake != nil)
+	from, to, _, msg := parseTrackRange(in.From, in.To, now, canReachArchive(cl), p.historySpan())
 	if msg != "" {
 		return nil, mcpTrack{}, errors.New(msg)
 	}
