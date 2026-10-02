@@ -20,11 +20,11 @@ func TestMergeParticulars(t *testing.T) {
 	want := &particulars{RegisteredName: "EXAMPLE", Identification: "1234567", Service: "Freight Ship", Status: "Active",
 		ShipType: "container ship", Builder: "Meyer Werft",
 		YearBuilt: 2011, Length: 299.5, Beam: 39.9, Depth: 20,
-		GrossTonnage: 99_000, NetTonnage: 50_000, TonnageMeasure: "Convention", Registry: "Malta"}
+		GrossTonnage: 99_000, NetTonnage: 50_000, TonnageMeasure: "Convention", Registry: "United States"}
 	if !reflect.DeepEqual(m, want) {
 		t.Errorf("merged: %+v, want %+v", m, want)
 	}
-	if prov["year_built"] != "uscg" || prov["builder"] != "wikidata" || prov["registry"] != "wikidata" || prov["gross_tonnage"] != "uscg" {
+	if prov["year_built"] != "uscg" || prov["builder"] != "wikidata" || prov["registry"] != "uscg" || prov["gross_tonnage"] != "uscg" {
 		t.Errorf("provenance: %v", prov)
 	}
 	if src["wikidata"].URL != wd.URL || src["uscg"].URL != "https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=42" ||

@@ -85,6 +85,9 @@ func mergeParticulars(wd *wikidataShip, cg *uscgVessel) (*particulars, map[strin
 		if prov["gross_tonnage"] == "uscg" || prov["net_tonnage"] == "uscg" {
 			str("tonnage_measure", "uscg", cg.TonnageMeasure, &m.TonnageMeasure)
 		}
+		// The match itself is the registry fact: PSIX documents US-flag vessels, so a stale country on
+		// the Wikidata item never wins over it.
+		str("registry", "uscg", "United States", &m.Registry)
 	}
 	if wd != nil {
 		str("ship_type", "wikidata", wd.ShipType, &m.ShipType)
@@ -106,10 +109,6 @@ func mergeParticulars(wd *wikidataShip, cg *uscgVessel) (*particulars, map[strin
 		str("wikipedia", "wikidata", wd.Wikipedia, &m.Wikipedia)
 		str("commons_category", "wikidata", wd.CommonsCategory, &m.CommonsCat)
 		str("image", "wikidata", wd.Image, &m.Image)
-	}
-	// A PSIX match is itself the registry fact for a vessel Wikidata does not know.
-	if cg != nil {
-		str("registry", "uscg", "United States", &m.Registry)
 	}
 	sources := map[string]sourceRef{}
 	if wd != nil {

@@ -41,7 +41,7 @@ The field vocabulary is the union of what the sources supply, each concept once:
 | `year_built`, `length`, `beam` | both | registry wins |
 | `gross_tonnage` | both | registry wins when measured by the Convention system; a Regulatory or Simplified figure is not the number readers expect, so Wikidata wins over those, and `tonnage_measure` always says how the served figure was measured when it came from PSIX |
 | `net_tonnage`, `depth` | uscg | |
-| `registry` | wikidata, or "United States" when PSIX matched | |
+| `registry` | both | a flag-state match is itself the registry fact, so it wins |
 
 Merge rules are per-field and deterministic: a flag-state registry outranks Wikidata for registered facts, empty values never win, and `provenance` records the winner. The raw stores stay as they are; the `wikidata` and `uscg` tables already keep each source's records verbatim, so the merge is a serving-time function and a policy change re-runs it for free.
 
