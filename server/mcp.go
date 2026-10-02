@@ -467,9 +467,18 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 		imos = append(imos, r.IMO)
 	}
 	wd := p.wikidataOf(imos...)
+	mmsis := make([]uint32, 0, len(out.Vessels))
+	for _, r := range out.Vessels {
+		mmsis = append(mmsis, r.MMSI)
+	}
+	fc := p.fccOf(mmsis...)
 	keys := make([]uscgKey, 0, len(out.Vessels))
 	for _, r := range out.Vessels {
-		keys = append(keys, uscgKey{r.MMSI, r.CallSign, r.Name})
+		k := uscgKey{mmsi: r.MMSI, callsign: r.CallSign, name: r.Name}
+		if lic := fc[r.MMSI]; lic != nil {
+			k.official = lic.Official
+		}
+		keys = append(keys, k)
 	}
 	cg := p.uscgOf(keys...)
 	fkeys := make([]fdirKey, 0, len(out.Vessels))
@@ -479,7 +488,7 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 	fd := p.fiskeridirOf(fkeys...)
 	for i, r := range out.Vessels {
 		out.Vessels[i].Particulars, out.Vessels[i].Provenance, out.Vessels[i].Sources =
-			mergeParticulars(wd[r.IMO], cg[r.MMSI], fd[r.MMSI])
+			mergeParticulars(wd[r.IMO], cg[r.MMSI], fd[r.MMSI], fc[r.MMSI])
 	}
 	for _, m := range in.MMSI {
 		if !known[m] {

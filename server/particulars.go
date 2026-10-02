@@ -46,8 +46,9 @@ type particulars struct {
 // mergeParticulars folds the sources into the served document. Per field, deterministically: a flag
 // state outranks Wikidata for registered facts, an empty value never wins, and provenance records the
 // winner by the field's JSON name. The flag states never meet: a vessel is US-flag or Norwegian, not both.
-func mergeParticulars(wd *wikidataShip, cg *uscgVessel, fd *fdirVessel) (*particulars, map[string]string, map[string]sourceRef) {
-	if wd == nil && cg == nil && fd == nil {
+// An FCC license ranks below PSIX, the vessel registry proper, and above Wikidata for what it documents.
+func mergeParticulars(wd *wikidataShip, cg *uscgVessel, fd *fdirVessel, fc *fccShip) (*particulars, map[string]string, map[string]sourceRef) {
+	if wd == nil && cg == nil && fd == nil && fc == nil {
 		return nil, nil, nil
 	}
 	m := &particulars{}
@@ -101,6 +102,12 @@ func mergeParticulars(wd *wikidataShip, cg *uscgVessel, fd *fdirVessel) (*partic
 		// The match itself is the registry fact, as a PSIX match is.
 		str("registry", "fiskeridir", "Norway", &m.Registry)
 	}
+	if fc != nil {
+		str("registered_name", "fcc", fc.Name, &m.RegisteredName)
+		str("identification", "fcc", fc.Official, &m.Identification)
+		// A ship station license is a US license, so the match is itself the registry fact.
+		str("registry", "fcc", "United States", &m.Registry)
+	}
 	if wd != nil {
 		str("ship_type", "wikidata", wd.ShipType, &m.ShipType)
 		str("builder", "wikidata", wd.Builder, &m.Builder)
@@ -132,6 +139,10 @@ func mergeParticulars(wd *wikidataShip, cg *uscgVessel, fd *fdirVessel) (*partic
 	}
 	if fd != nil {
 		sources["fiskeridir"] = sourceRef{Credit: "Norwegian Directorate of Fisheries", License: fdirLicense}
+	}
+	if fc != nil {
+		sources["fcc"] = sourceRef{Credit: "FCC ship station license", License: psixLicense,
+			URL: "https://wireless2.fcc.gov/UlsApp/UlsSearch/license.jsp?licKey=" + strconv.FormatInt(fc.USI, 10)}
 	}
 	return m, prov, sources
 }
