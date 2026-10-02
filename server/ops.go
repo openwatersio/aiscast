@@ -1,79 +1,44 @@
 package main
 
 import (
-	"encoding/json"
+	_ "embed"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
+//go:embed openapi.json
+var openapiJSON []byte
+
+// serveOpenAPI serves the hand-written OpenAPI document; openapi_test.go keeps it in sync with the mux.
+func serveOpenAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(openapiJSON)
+}
+
 const upstreamSilence = 2 * time.Minute
 
-// serveHealth: 503 when any configured upstream has been silent longer than upstreamSilence (the aisstream
-// failure mode was a healthy-looking empty service).
+// serveHealth: 503 when the loopback probe has received nothing for upstreamSilence, i.e. the stream itself
+// delivers no events to subscribers (the aisstream failure mode was a healthy-looking empty service). A single
+// silent source is not an outage while the others keep the stream flowing; per-source ages are in /metrics.
 func (p *Pipeline) serveHealth(w http.ResponseWriter, r *http.Request) {
-	var silent []string
-	for _, s := range p.upstreams {
-		if p.sourceAge(s) > upstreamSilence {
-			silent = append(silent, fmt.Sprintf("%s silent %s", s, p.sourceAge(s).Truncate(time.Second)))
-		}
-	}
 	if last := p.probeLast.Load(); last != 0 && time.Since(time.Unix(last, 0)) > upstreamSilence {
-		silent = append(silent, fmt.Sprintf("no events delivered to subscribers for %s", time.Since(time.Unix(last, 0)).Truncate(time.Second)))
-	}
-	if len(silent) > 0 {
-		http.Error(w, strings.Join(silent, "; "), http.StatusServiceUnavailable)
+		http.Error(w, fmt.Sprintf("no events delivered to subscribers for %s", time.Since(time.Unix(last, 0)).Truncate(time.Second)), http.StatusServiceUnavailable)
 		return
 	}
 	fmt.Fprintln(w, "ok")
 }
 
-// serveMetrics writes Prometheus text format by hand; no client library needed for a dozen series.
-func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	counter := func(name, help string, v int64) {
-		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", name, help, name, name, v)
-	}
-	counter("aiscast_events_total", "decoded, deduplicated AIS messages", p.stats.events.Load())
-	counter("aiscast_duplicates_total", "messages dropped as duplicates", p.stats.dup.Load())
-	counter("aiscast_parse_errors_total", "unparseable input lines", p.stats.parseErr.Load())
-	counter("aiscast_replayed_total", "buffered sentences archived without live emit (TAG time older than 60 s)", p.stats.replayed.Load())
-	counter("aiscast_decode_failures_total", "sentences that did not decode to an AIS message", p.stats.decodeFail.Load())
-	counter("aiscast_client_drops_total", "events dropped because a client queue was full", p.stats.clientDrops.Load())
-	counter("aiscast_ping_timeouts_total", "stream connections closed because the client stopped answering pings", p.stats.pingTimeouts.Load())
-	counter("aiscast_archive_drops_total", "receptions dropped because the archive queue was full", p.arch.drops.Load())
-	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
-	counter("aiscast_thinned_total", "events withheld from connections over their per-second rate", p.stats.thinned.Load())
-	counter("aiscast_implausible_total", "low-trust positions dropped for implying an impossible speed", p.stats.implausible.Load())
-	counter("aiscast_stale_total", "events withheld from the stream for being older than the vessel's newest", p.stats.stale.Load())
-	counter("aiscast_uncorroborated_total", "low-trust events kept local because no trusted source has heard the vessel", p.stats.uncorroborated.Load())
-
-	p.vmu.RLock()
-	nv := len(p.vessels)
-	p.vmu.RUnlock()
-	p.smu.RLock()
-	ns := len(p.subs)
-	p.smu.RUnlock()
-	fmt.Fprintf(w, "# TYPE aiscast_vessels gauge\naiscast_vessels %d\n# TYPE aiscast_clients gauge\naiscast_clients %d\n", nv, ns)
-
-	fmt.Fprintf(w, "# HELP aiscast_source_last_age_seconds seconds since the last event from each source\n# TYPE aiscast_source_last_age_seconds gauge\n")
-	var sources []string
-	p.lastBySource.Range(func(k, _ any) bool { sources = append(sources, k.(string)); return true })
-	sort.Strings(sources)
-	for _, s := range sources {
-		fmt.Fprintf(w, "aiscast_source_last_age_seconds{source=%q} %.0f\n", s, p.sourceAge(s).Seconds())
-	}
-	fmt.Fprintf(w, "# HELP aiscast_source_events_total events per source\n# TYPE aiscast_source_events_total counter\n")
-	p.stats.bySource.Range(func(k, v any) bool {
-		fmt.Fprintf(w, "aiscast_source_events_total{source=%q} %d\n", k.(string), v.(*counterT).Load())
-		return true
-	})
+// serveRobots keeps search engines off the API entirely: crawlers were finding /v1/vessels and
+// /v1/receive in the code samples on openwaters.io/ais/ and reporting the 4xx answers as site errors.
+func serveRobots(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, "User-agent: *\nDisallow: /\n")
 }
 
 // ---- rate limiting: fixed one-minute window per key. ponytail: token bucket if burst shape ever matters. ----
@@ -91,7 +56,10 @@ type window struct {
 
 func newLimiter(perMinute int) *limiter { return &limiter{max: perMinute, seen: map[string]*window{}} }
 
-func (l *limiter) allow(key string) bool {
+func (l *limiter) allow(key string) bool { return l.allowMax(key, l.max) }
+
+// allowMax is allow with a per-key max, for a token that carries its own limit.
+func (l *limiter) allowMax(key string, max int) bool {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -108,15 +76,17 @@ func (l *limiter) allow(key string) bool {
 		return true
 	}
 	w.n++
-	return w.n <= l.max
+	return w.n <= max
 }
 
 var (
 	wsConnectLimit = newLimiter(envInt("WS_CONNECTS_PER_MIN", 20)) // per address; a working client connects once; raise for load tests
-	httpLimit      = newLimiter(httpPerMinute)                     // per address, every HTTP GET endpoint
+	httpLimit      = newLimiter(httpPerMinute)                     // per address, every HTTP GET endpoint but tiles
+	tileLimit      = newLimiter(tilesPerMinute)                    // per address, /v1/vessels/tiles
 	udpLimit       = newLimiter(udpLinesPerMinute)                 // per source address
 	publishLimit   = newLimiter(6000)                              // /v1/stream publish sentences per key per minute (a single receiver hears <75/s)
 	receiveLimit   = newLimiter(600)                               // /v1/receive posts per feeder per minute (AIS-catcher posts ~4/min)
+	mqttAdmitLimit = newLimiter(200)                               // MQTT upgrades per address per minute before CONNECT names the token: a flood ceiling, loose enough that one egress can carry many feeders
 )
 
 func envInt(k string, def int) int {
@@ -159,58 +129,70 @@ func connectKey(c *Claims, r *http.Request) string {
 	return clientIP(r)
 }
 
-// rateLimited wraps a public HTTP handler with the per-address request limit.
-func (p *Pipeline) rateLimited(h http.HandlerFunc) http.HandlerFunc {
+// corsHeaders are the request headers a browser may send to the JSON endpoints: the token in Authorization,
+// so a page never has to put it on the query string where it lands in logs and the address bar, and
+// Content-Type for the JSON body /mcp takes.
+const corsHeaders = "Authorization, Content-Type"
+
+// preflight opens CORS on a public endpoint and answers a browser's preflight, returning true when it did so
+// and the handler is done. allow names the request headers the preflight permits. No Allow-Methods: GET and
+// POST are safelisted, and no endpoint takes another method.
+func preflight(w http.ResponseWriter, r *http.Request, allow string) bool {
+	hd := w.Header()
+	hd.Set("Access-Control-Allow-Origin", "*")
+	hd.Set("Access-Control-Allow-Headers", allow)
+	hd.Set("Access-Control-Max-Age", "86400")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	return false
+}
+
+// api wraps a public JSON handler with open CORS and the request limit: per address, or per token sub when
+// the token carries its own rpm. A token that does not verify is charged to its address and then refused, so
+// no endpoint answers it as anonymous. The preflight is answered before the limit, so a client at the limit sees
+// the 429 on its real request rather than an opaque CORS failure, and the 429 carries the origin header for the
+// same reason.
+func (p *Pipeline) api(allow string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if p.limited(w, httpLimit, clientIP(r)) {
+		if preflight(w, r, allow) {
 			return
 		}
-		h(w, r)
+		cl, err := p.socketClaims(r)
+		if rpm, ok := ownRPM(cl, err); ok {
+			if rpm > 0 && p.limitedMax(w, httpLimit, cl.Sub, rpm) {
+				return
+			}
+		} else if p.limited(w, httpLimit, clientIP(r)) {
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		h(w, withVerified(r, cl))
 	}
 }
 
+// ownRPM is the rpm claim of a token that verified, when it carries one. A token that did not verify has none,
+// so it counts against its address and the handler then refuses it.
+func ownRPM(c *Claims, err error) (int, bool) {
+	if err != nil || c == nil || c.RPM == nil {
+		return 0, false
+	}
+	return *c.RPM, true
+}
+
 func (p *Pipeline) limited(w http.ResponseWriter, l *limiter, key string) bool {
-	if l.allow(key) {
+	return p.limitedMax(w, l, key, l.max)
+}
+
+func (p *Pipeline) limitedMax(w http.ResponseWriter, l *limiter, key string, max int) bool {
+	if l.allowMax(key, max) {
 		return false
 	}
 	p.stats.rateLimited.Add(1)
 	http.Error(w, "rate limited", http.StatusTooManyRequests)
 	return true
-}
-
-// ---- vessel snapshot: restart without a blank map ----
-
-func (p *Pipeline) saveSnapshot(path string) error {
-	p.vmu.RLock()
-	b, err := json.Marshal(p.vessels)
-	p.vmu.RUnlock()
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func (p *Pipeline) loadSnapshot(path string) (int, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	var m map[uint32]*vessel
-	if err := json.Unmarshal(b, &m); err != nil {
-		return 0, err
-	}
-	cutoff := time.Now().Add(-vesselTTL)
-	p.vmu.Lock()
-	for mmsi, v := range m {
-		if v.Seen.After(cutoff) {
-			p.vessels[mmsi] = v
-		}
-	}
-	n := len(p.vessels)
-	p.vmu.Unlock()
-	return n, nil
 }

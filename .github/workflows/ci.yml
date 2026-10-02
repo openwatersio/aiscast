@@ -11,7 +11,8 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The box's release: the cgo build links the runner's glibc, which must not be newer than the box's.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: server
@@ -24,15 +25,25 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test ./...
-      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o aiscast-linux .
+      - run: npx --yes @redocly/cli@2.56.1 lint openapi.json
+      # cgo on: the lake reader links DuckDB. The runner is linux/amd64 like the box, so the build is native.
+      - run: go build -trimpath -o aiscast-linux .
       - uses: actions/upload-artifact@v7
         with:
           name: aiscast-linux
           path: server/aiscast-linux
           retention-days: 7
 
+  packager:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      # keep the --with list in sync with the script header in packager/packager.py
+      - run: uv run --with pytest --with duckdb --with pyarrow --with "pyiceberg[sql-sqlite,pyiceberg-core]" pytest -q packager/
+
   deploy:
-    needs: test
+    needs: [test, packager]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
@@ -49,13 +60,33 @@ jobs:
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-      - name: install and restart
-        run: |
-          scp aiscast-linux deploy@"$DEPLOY_HOST":/opt/aiscast/aiscast.new
-          scp server/deploy/Caddyfile deploy@"$DEPLOY_HOST":/etc/caddy/Caddyfile
-          ssh deploy@"$DEPLOY_HOST" 'chmod 755 /opt/aiscast/aiscast.new && mv /opt/aiscast/aiscast.new /opt/aiscast/aiscast && sudo systemctl restart aiscast && sudo systemctl reload caddy && sleep 3 && sudo systemctl is-active aiscast && sudo systemctl is-active caddy && curl -fsS localhost:8080/health'
+      - run: server/deploy/deploy.sh root@"$DEPLOY_HOST" aiscast-linux
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      # apply.sh's /health check proves only that the new process answers: /health fails after two
+      # minutes without an event, and a fresh process starts that clock at boot, so it passes with none.
+      # This check fails a deploy that leaves ingest stalled or thin. The rate is sampled every 30 s, so
+      # the first reading lands about a minute after the restart. Without AISHub the other feeds run
+      # near 100/s, so an AISHub outage during a deploy fails this too.
+      - name: check events are flowing
+        run: |
+          deadline=$((SECONDS + 120))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            rate=$(curl -fsS --max-time 10 https://ais.openwaters.io/v1/stats | jq -r '.events.per_second // 0') || rate=0
+            echo "events per second: $rate"
+            if awk -v r="$rate" 'BEGIN { exit !(r > 100) }'; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::events per second stayed at or below 100 for two minutes after the deploy"
+          exit 1
+
+  # The registry listing follows the deploy so it never advertises a version the server is not
+  # serving yet. It is a no-op unless server.json carries a version the registry lacks.
+  mcp-registry:
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/mcp-registry.yml
+    secrets: inherit
 
   signalk-plugin:
     runs-on: ubuntu-latest
@@ -73,3 +104,63 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npm pack --dry-run
+
+  client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run check:styles
+      - run: npm test
+      - run: npm run build
+
+  # The web client in a browser, against the server binary the test job built, fed by
+  # Digitraffic. client/e2e/ has the tests.
+  client-e2e:
+    needs: test
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/download-artifact@v8
+        with:
+          name: aiscast-linux
+          path: ${{ runner.temp }}/aiscast
+      - run: chmod +x "$RUNNER_TEMP/aiscast/aiscast-linux"
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p 'require("@playwright/test/package.json").version')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      # Downloads the browser only on a cache miss; the system libraries it needs are not cached.
+      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npm run test:e2e
+        env:
+          AISCAST_BIN: ${{ runner.temp }}/aiscast/aiscast-linux
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            client/playwright-report
+            client/test-results
+          retention-days: 7

@@ -1,0 +1,92 @@
+import { useState } from "react";
+import { PageTitle, Panel } from "../components/Panel";
+import { Antenna, Plus } from "lucide-react";
+import { ChipRow, MenuChip } from "../components/ui/Chip";
+import { iconButtonClass } from "../components/ui/IconButton";
+import { IconBadge, List, ListRow } from "../components/ui/List";
+import { formatAge, stationTitles } from "../lib/ais";
+import { browserAuth, getStations, type ApiAuth, type Station } from "../lib/api";
+import { serverEnv } from "../lib/context";
+import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
+import { pageMeta } from "../lib/meta";
+import type { Route } from "./+types/stations";
+
+async function load(auth: ApiAuth) {
+  const stations = await getStations(auth);
+  return { stations: stations?.sort((a, b) => b.events.last_24h - a.events.last_24h) };
+}
+
+export function loader({ context }: Route.LoaderArgs) {
+  return load(context.get(serverEnv));
+}
+
+export function clientLoader() {
+  return load(browserAuth());
+}
+
+export const meta = () =>
+  pageMeta({
+    title: "Receiving stations | Open Waters AIS",
+    description:
+      "Every receiver feeding the Open Waters AIS network: government feeds and volunteer stations, with message counts, vessels heard, and coverage.",
+    path: "/stations",
+  });
+
+const n = (v: number) => v.toLocaleString("en-US");
+
+type Sort = "messages" | "unique";
+const SORTS: Array<{ value: Sort; label: string; chip: string }> = [
+  { value: "messages", label: "Most messages today", chip: "Messages" },
+  { value: "unique", label: "Most unique vessels", chip: "Unique vessels" },
+];
+const unique = (s: Station) => s.vessels_exclusive_24h ?? 0;
+
+export default function Stations({ loaderData }: Route.ComponentProps) {
+  const [sort, setSort] = useState<Sort>("messages");
+  const stations =
+    sort === "unique" && loaderData.stations ? [...loaderData.stations].sort((a, b) => unique(b) - unique(a)) : loaderData.stations;
+  const titles = stationTitles(stations ?? []);
+  const active = stations?.filter((s) => s.last_age_s < 300).length ?? 0;
+  return (
+    <Panel
+      back="/vessels"
+      title="Stations"
+      actions={
+        <a href={CONTRIBUTE} aria-label={CONTRIBUTE_PROMPT} title={CONTRIBUTE_PROMPT} className={iconButtonClass(true)}>
+          <Plus className="size-4" aria-hidden />
+        </a>
+      }
+    >
+      <PageTitle>Stations</PageTitle>
+      <p className="mt-1 text-body text-fg-secondary">
+        {stations ? `${n(stations.length)} heard, ${n(active)} active in the last five minutes.` : "Station list unavailable."}{" "}
+        Open one to see where its traffic is now.
+      </p>
+      {stations && (
+        <ChipRow label="Sort stations" className="-mx-3 mt-4">
+          <MenuChip value={sort} options={SORTS} onChange={setSort} />
+        </ChipRow>
+      )}
+      {stations && (
+        <List className="mt-3">
+          {/* Pinned: the reader looking at who receives is the one most likely to join them. */}
+          <ListRow
+            href={CONTRIBUTE}
+            leading={<IconBadge icon={Antenna} />}
+            title={CONTRIBUTE_PROMPT}
+            subtitle="Share it, and get the whole feed back"
+          />
+          {stations.map((s) => (
+            <ListRow
+              key={s.station}
+              to={`/stations/${s.station}`}
+              title={titles.get(s.station)}
+              subtitle={`${n(s.events.last_24h)} messages today · ${n(s.vessels)} vessels · ${n(unique(s))} unique`}
+              trailing={formatAge(s.last_age_s)}
+            />
+          ))}
+        </List>
+      )}
+    </Panel>
+  );
+}

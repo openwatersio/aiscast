@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.6.0
+
+- Your station on aiscast takes your boat's name, the vessel name set in Signal K, while *Share my own ship* is on. Turning that switch off removes the name, so the station never says where the boat is. There is nothing to set up.
+- The plugin signs its token requests with the boat's key, so nobody else can get a token for your station. After the upgrade it requests a new token once.
+- Plugin Config shows the address of this boat's station page on openwaters.io under Advanced → Access token, to copy into a browser, so you can see what your receiver is contributing.
+- A pasted token that aiscast refuses now says how to fix it: clear Advanced → Access token and the plugin goes back to its own token. Tokens from openwaters.io/ais/token that are bound to a network address stop working when that address changes, as it does on Starlink and cellular. The plugin's own token works from any address.
+
+## 0.5.2
+
+- Works with aiscast's new names for contributing stations. aiscast now files every contribution as `station:<key>`, which 0.5.1 does not recognize, so it took its own reports coming back from the server for traffic from another station. The loop guard then held back the boat's receiver when it heard an identical report again, such as a nearby vessel's unchanged static data, and that report never reached aiscast. The plugin recognizes its own reports under the old and new names, and with an operator-issued token as well as one it minted itself.
+
+## 0.5.1
+
+- Chartplotters now show names, call signs, and dimensions for aiscast targets. aiscast sends a vessel's static data only when it changes, so for most aggregated targets the only copy arrives in the snapshot on connect, which the NMEA 0183 relay held back. The plugin now keeps the latest static data for each target, sends it right after the target's first live position, and repeats it with a position every 6 minutes while the target stays live.
+
+## 0.5.0
+
+- New Receive setting, on by default: *Send aiscast traffic to NMEA 0183 output*. Targets injected from aiscast are re-emitted as `!AIVDM` on the `nmea0183out` event, so chartplotters and tablet apps reading the server's NMEA 0183 connections see over-the-horizon traffic, not only the Signal K apps. Only aiscast-sourced targets are relayed, and in `Always` mode a target the local receiver already covers is left out, so nothing is duplicated. Turn it off if `signalk-vessels-to-ais` is doing the same conversion.
+- Position events older than 2 minutes are discarded before they reach Signal K or NMEA 0183. Static data is always injected into Signal K, but reaches NMEA 0183 only after that vessel has sent a live position, keeping the snapshot replay burst off slow serial connections. Remote `!AIVDO` is converted to `!AIVDM` before relay so it cannot replace the chartplotter's own-ship state.
+
+## 0.4.0
+
+- The offline queue writes far less to the SD card. Each queue file used to be rewritten from scratch every fifteen seconds as sentences were added to it, so a boat at anchor hearing a slow trickle of traffic wrote the same data to the card a dozen times over. Sentences are now appended to the end of a file and nothing is rewritten, which on a quiet anchorage cuts the writing to a fraction of what it was.
+- A replay the server only partly accepts no longer rewrites anything on disk, and a queue file damaged by a power cut costs one sentence instead of the five hundred it was sharing a file with.
+- The queue keeps working when the plugin cannot delete a file, as happens when an SD card turns read-only. A queue file that could neither be read nor removed used to stop the replay where it stood until the next reconnect, and files the server had already taken could be left behind in a way that made the 100 MB cap discard data that had not been sent yet. Files that will not delete are now set aside, retried in the background, and never replayed.
+
+## 0.3.1
+
+- Fixes a queue that never emptied. While the plugin was replaying a backlog to aiscast it wrote every sentence its receiver heard to a new queue file, so it traded one file for another and the replay never reached the end. On a boat that had been offline a while, the queue directory stayed at tens of thousands of files no matter how long the connection was up. A replay now carries up to a thousand sentences from as many files in one frame, and sentences heard mid-replay go out from memory.
+- The queue keeps far fewer files. Time offline used to leave one behind every fifteen seconds; the plugin now fills each file to 500 sentences before starting another, so the count follows how much is owed rather than how long the boat was out of range.
+- Sentences past the server's publish limit are no longer lost. aiscast accepts 6000 sentences a minute and quietly drops the rest, so a large replay used to arrive mostly empty while the plugin counted it as delivered. The plugin now paces a replay under the limit and keeps anything the server did not take.
+
 ## 0.3.0
 
 - Buddy boats: vessels on [signalk-buddylist-plugin](https://github.com/sbender9/signalk-buddylist-plugin)'s list are followed on aiscast wherever they are, far beyond VHF range, in every receive mode. The buddylist plugin keeps raising its buddy flag and proximity alerts, so Freeboard-SK's buddy icon and phone notifications work at any distance. The status line shows how many buddies have been heard from.

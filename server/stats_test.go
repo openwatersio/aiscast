@@ -34,8 +34,9 @@ func TestStats(t *testing.T) {
 			BySource      map[string]int `json:"by_source"`
 		}
 		Vessels struct {
-			Total        int
-			WithPosition int `json:"with_position"`
+			Total, Active int
+			WithPosition  int  `json:"with_position"`
+			Last24h       *int `json:"last_24h"`
 		}
 		Events struct {
 			Last24h    int64   `json:"last_24h"`
@@ -59,6 +60,9 @@ func TestStats(t *testing.T) {
 	if out.Stations.Total != 3 || out.Stations.Active != 3 || out.Stations.BySource["udp"] != 1 || out.Stations.BySource["kystverket"] != 1 {
 		t.Errorf("stations: %+v", out.Stations)
 	}
+	if out.Vessels.Active != 2 || out.Vessels.Last24h != nil { // without a record, total is the cache and there are no windows
+		t.Errorf("vessels without a record: %+v", out.Vessels)
+	}
 	if out.Vessels.Total != 2 || out.Events.Last24h != 2 || out.Events.Last7d != 2 || out.Events.Duplicates.Last24h != 2 || out.Events.PerSecond != 0.2 {
 		t.Errorf("vessels/events: %+v %+v", out.Vessels, out.Events)
 	}
@@ -74,6 +78,56 @@ func TestStats(t *testing.T) {
 	}
 	if u, k := out.Sources["udp"], out.Sources["kystverket"]; u.Events.Last24h != 1 || u.Vessels != 1 || u.VesselsExclusive != 0 || k.Events.Last7d != 1 || k.Vessels != 2 || k.VesselsExclusive != 1 {
 		t.Errorf("sources: %+v", out.Sources)
+	}
+}
+
+// recordSeed is a pipeline whose record holds vessels heard over the last 40 days, one of them still in the
+// cache, with its counts refreshed.
+func recordSeed(t *testing.T) *Pipeline {
+	t.Helper()
+	p := storePipeline(t)
+	now := time.Now()
+	put := func(mmsi uint32, seen time.Time, lat, lon float64) {
+		v := newVessel()
+		v.Seen, v.Source = seen, "aishub"
+		if lat != 0 {
+			v.HasPos, v.Lat, v.Lon, v.PosAt = true, lat, lon, seen
+		}
+		if err := p.store.upsert([]record{{mmsi: mmsi, v: v}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	day := 24 * time.Hour
+	put(257000001, now.Add(-40*day), 59.1, 10.1) // heard once, before every window
+	put(257000002, now.Add(-20*day), 0, 0)       // first heard 20 days ago...
+	put(257000002, now.Add(-time.Hour), 0, 0)    // ...and again today
+	put(257000003, now.Add(-3*day), 59.5, 10.5)  // first and last heard 3 days ago
+	put(257000004, now.Add(-time.Hour), 0, 0)    // first heard today
+	heardAgo(p, 257000005, "LIVE", 59.9, 10.7, time.Minute)
+	p.refreshRecordCounts(now)
+	return p
+}
+
+func TestStatsCountsTheRecord(t *testing.T) {
+	var out struct {
+		Vessels struct {
+			Total, Active int
+			Last24h       int `json:"last_24h"`
+			Last7d        int `json:"last_7d"`
+			Last30d       int `json:"last_30d"`
+			New           map[string]int
+		}
+	}
+	json.Unmarshal(get(t, recordSeed(t), "/v1/stats").Body.Bytes(), &out)
+	v := out.Vessels
+	if v.Total != 5 || v.Active != 1 {
+		t.Errorf("total is every vessel in the record, active the cache: %+v", v)
+	}
+	if v.Last24h != 3 || v.Last7d != 4 || v.Last30d != 4 {
+		t.Errorf("heard per window: %+v", v)
+	}
+	if v.New["last_24h"] != 2 || v.New["last_7d"] != 3 || v.New["last_30d"] != 4 {
+		t.Errorf("first heard per window: %+v", v.New)
 	}
 }
 
@@ -100,7 +154,7 @@ func TestUsageSurvivesRestart(t *testing.T) {
 	p.usage.events.add(now.Add(-8 * 24 * time.Hour)) // outside both
 	p.usage.source("kystverket").add(now)
 	p.usage.source("udp:gone").add(now.Add(-8 * 24 * time.Hour)) // silent for the whole window: pruned, not saved
-	path := usagePath(t.TempDir() + "/vessels.json")
+	path := t.TempDir() + "/vessels-usage.json"
 	if err := p.saveUsage(path); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +183,7 @@ func TestStationRingSurvivesRestart(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Now()
 	p.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
-	path := usagePath(t.TempDir() + "/vessels.json")
+	path := t.TempDir() + "/vessels-usage.json"
 	if err := p.saveUsage(path); err != nil {
 		t.Fatal(err)
 	}

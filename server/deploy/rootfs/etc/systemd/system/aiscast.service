@@ -1,0 +1,25 @@
+# /etc/systemd/system/aiscast.service — one aiscast per box. Binary at /opt/aiscast/aiscast, env in /etc/aiscast.env
+# (seeded from the repo's server/deploy/aiscast.env.example, which documents the variables; never ALLOW_ANON).
+[Unit]
+Description=aiscast AIS server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=aiscast
+Group=aiscast
+EnvironmentFile=/etc/aiscast.env
+WorkingDirectory=/var/lib/aiscast
+ExecStart=/opt/aiscast/aiscast
+Restart=always
+RestartSec=2
+# SIGTERM: snapshot + flush/upload open archive hours; give it time
+KillSignal=SIGTERM
+TimeoutStopSec=120
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aiscast
+
+[Install]
+WantedBy=multi-user.target

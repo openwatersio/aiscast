@@ -2,33 +2,70 @@ package main
 
 import (
 	"compress/gzip"
+	"errors"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// license tag per source; goes in the object path so consumers can filter by terms.
-// All volunteer receptions are CC0 per the contributor agreement and docs/policy.md.
+// license tag per source; goes in the object path so consumers can filter by terms, and on every /v1
+// event. All volunteer receptions are CC0 per the contributor agreement and docs/policy.md.
 var licenses = map[string]string{
 	"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
-	"v1": "CC0-1.0", "http": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
+	"station": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
+	// contributors were named by transport before station ids; raw hours from then still carry these
+	// sources, and replaying them must license their copies the same way
+	"http": "CC0-1.0", "v1": "CC0-1.0",
 }
 
-// licenseOf resolves a source's license tag: the full source name first, then its prefix (`v1:ed25519:...` → `v1`).
-func licenseOf(source string) string {
-	if lic := licenses[source]; lic != "" {
-		return lic
+// ownCredit opens every event's attribution: the only credit for volunteer stations, and the prefix to
+// the credit an upstream source's terms require.
+const ownCredit = "Open Waters AIS (https://openwaters.io/ais/)"
+
+// attributions: the further credit a source's terms require, appended to ownCredit on every /v1 event.
+// The strings are the ones the README's licensing table requires; the two tables must not drift.
+var attributions = map[string]string{
+	"kystverket":   "Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration.",
+	"barentswatch": "Data delivered by BarentsWatch. Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration.",
+	"digitraffic":  "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY",
+	"aishub":       "AISHub (https://www.aishub.net)",
+	"aisstream":    "aisstream.io",
+}
+
+// licenseOf resolves a source's license tag: the full source name first, then its prefix (`station:ed25519:...` → `station`).
+func licenseOf(source string) string { return bySource(licenses, source, "unspecified") }
+
+// attributionOf builds a source's credit line: ownCredit, plus the source's own required credit.
+func attributionOf(source string) string {
+	if extra := bySource(attributions, source, ""); extra != "" {
+		return ownCredit + ". " + extra
+	}
+	return ownCredit
+}
+
+func bySource(m map[string]string, source, def string) string {
+	if v := m[source]; v != "" {
+		return v
 	}
 	if i := strings.IndexByte(source, ':'); i > 0 {
-		if lic := licenses[source[:i]]; lic != "" {
-			return lic
+		if v := m[source[:i]]; v != "" {
+			return v
 		}
 	}
-	return "unspecified"
+	return def
+}
+
+// objectStore is the bucket as the archive uses it. *s3Client is the real one; tests supply a
+// store that can stall and reorder uploads.
+type objectStore interface {
+	put(key, path string) error
+	size(key string) (int64, error)
 }
 
 type hourFile struct {
@@ -39,18 +76,45 @@ type hourFile struct {
 }
 
 // archive writes every reception source-native to hourly gzip files per source, then uploads to R2 when rotated.
+// The normalized stream reuses it with keyFn and bare set: one merged file per hour, envelope-only lines.
 type archive struct {
 	dir     string
-	s3      *s3Client // nil = keep files local only
+	s3      objectStore                                // nil = keep files local only
+	keyFn   func(source string, hour time.Time) string // nil = per-source license-prefixed layout
+	bare    bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
 	ch      chan Reception
 	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
-	drops   atomic.Int64
 	uploads sync.WaitGroup
+	stopped sync.Once // shutdown runs once; the writer is gone after the first
+
+	// latest is the newest receive time the writer has seen and nextClose the earliest time any open
+	// hour may close; only run() touches them.
+	latest, nextClose time.Time
+
+	uploadFailures atomic.Int64
+	staged         atomic.Int64 // bytes on disk after the last sweep; grows when uploads fail
+
+	// holds counts the open writer and every in-flight upload per path; the sweep skips any path with
+	// a count. An hour stays open until receptions pass its grace, and deleting it out from under the
+	// writer would strand the gzip footer; rotation can close one hour twice, and the first upload to
+	// finish must not unprotect a file the second is still reading. One mutex covers every count, so
+	// a release reaching zero and a reopen cannot interleave. Zero value is usable, so tests can build
+	// an archive as a literal.
+	holdMu sync.Mutex
+	holds  map[string]int
+	// putLocks serializes uploads per object key. A reception queued across the hour boundary
+	// reopens that hour, so the same key is closed and uploaded more than once; unordered PUTs let
+	// the earlier, shorter file land last and leave the bucket holding a truncated hour. Bounded by
+	// the distinct hour keys one process touches: hours times sources.
+	putLocks sync.Map // key -> *sync.Mutex
 }
 
 // newArchive with an empty dir is a no-op archive (tests).
-func newArchive(dir string, s3 *s3Client) *archive {
-	a := &archive{dir: dir, s3: s3, ch: make(chan Reception, 8192), done: make(chan chan struct{})}
+func newArchive(dir string, s3 objectStore) *archive {
+	a := &archive{dir: dir, ch: make(chan Reception, 8192), done: make(chan chan struct{})}
+	if s3 != nil && !reflect.ValueOf(s3).IsNil() { // a typed-nil *s3Client must stay a nil store
+		a.s3 = s3
+	}
 	if dir != "" {
 		go a.run()
 	}
@@ -61,11 +125,10 @@ func (a *archive) write(rx Reception) {
 	if a.dir == "" {
 		return
 	}
-	select {
-	case a.ch <- rx:
-	default: // drop rather than stall ingest
-		a.drops.Add(1)
-	}
+	// Block rather than drop: raw and normalized must hold the same receptions for replay to
+	// regenerate the stream, and the writer only touches local disk (uploads run beside it), so a
+	// full queue means the disk has stalled and ingest waits for it.
+	a.ch <- rx
 }
 
 func (a *archive) run() {
@@ -74,54 +137,138 @@ func (a *archive) run() {
 	for {
 		select {
 		case rx := <-a.ch:
-			hour := rx.RecvTime.UTC().Truncate(time.Hour)
-			hf := files[rx.Source]
-			if hf != nil && !hf.hour.Equal(hour) {
-				a.close(hf)
-				hf = nil
-			}
-			if hf == nil {
-				hf = a.open(rx.Source, hour)
-				if hf == nil {
-					continue
-				}
-				files[rx.Source] = hf
-			}
-			// one record per line: recv time, station, body as received (JSON envelopes are single-line)
-			hf.gz.Write([]byte(rx.RecvTime.UTC().Format(time.RFC3339Nano) + "\t" + rx.Station + "\t" + strings.TrimRight(rx.Body, "\r\n") + "\n"))
+			a.handle(rx, files)
 		case <-flush.C:
 			for _, hf := range files {
-				hf.gz.Flush()
+				ioFatal(hf.gz.Flush())
 			}
 		case reply := <-a.done:
+			// drain: the select races queued records against shutdown, and the tail must not lose
+			for drained := false; !drained; {
+				select {
+				case rx := <-a.ch:
+					a.handle(rx, files)
+				default:
+					drained = true
+				}
+			}
 			for _, hf := range files {
 				a.close(hf)
 			}
-			a.uploads.Wait()
 			reply <- struct{}{}
 			return
 		}
 	}
 }
 
-// shutdown closes open hours (uploading them) and waits up to 90 s.
+// bufferedMark follows the station of a reception its sender marked as an offline backlog. Station
+// ids never contain a space, so the mark cannot collide with one.
+const bufferedMark = " buffered"
+
+// publishedMark follows the station of a line published over /v1/stream. Envelopes posted to
+// /v1/receive archive under the same station:<sub> source, and only the mark tells replay which
+// transport a record arrived on. When both marks apply, publishedMark comes first.
+const publishedMark = " published"
+
+// hourGrace is how long past its end an hour stays open. Receptions near a boundary arrive a little
+// out of receive-time order (a snapshot fetched just before the hour is ingested just after it), and
+// closing on each switch would upload a file still being written, over and over.
+const hourGrace = 5 * time.Minute
+
+func (a *archive) handle(rx Reception, files map[string]*hourFile) {
+	hour := rx.RecvTime.UTC().Truncate(time.Hour)
+	// one open file per stream and hour: the key with the hour zeroed is one stream per source raw,
+	// and one in total merged
+	fk := a.key(rx.Source, time.Time{}) + "\x00" + hour.Format(time.RFC3339)
+	hf := files[fk]
+	if hf == nil {
+		hf = a.open(rx.Source, hour)
+		if hf == nil {
+			return
+		}
+		files[fk] = hf
+		if c := hour.Add(time.Hour + hourGrace); a.nextClose.IsZero() || c.Before(a.nextClose) {
+			a.nextClose = c
+		}
+	}
+	defer a.rotate(rx.RecvTime, files)
+	// one record per line: recv time, station, body as received (JSON envelopes are single-line)
+	if a.bare {
+		_, err := hf.gz.Write([]byte(strings.TrimRight(rx.Body, "\r\n") + "\n"))
+		ioFatal(err)
+	} else {
+		station := rx.Station
+		if rx.Published {
+			station += publishedMark // replay needs it to take the body as a line, as live did
+		}
+		if rx.Buffered {
+			station += bufferedMark // replay needs it to suppress the same stale backlog live did
+		}
+		_, err := hf.gz.Write([]byte(rx.RecvTime.UTC().Format(time.RFC3339Nano) + "\t" + station + "\t" + strings.TrimRight(rx.Body, "\r\n") + "\n"))
+		ioFatal(err)
+	}
+}
+
+// ioFatal stops the process on an archive write it cannot make. Raw and normalized must hold the same
+// receptions for replay to regenerate the stream, and a full or failing disk would let ingest carry on
+// with one of them short. Stopping takes the stream down, which /health reports, and systemd restarts
+// the process once the disk recovers; files left open are uploaded by the next sweep.
+var ioFatal = func(err error) {
+	if err != nil {
+		log.Fatalf("archive: %v", err)
+	}
+}
+
+// rotate closes, and so uploads, every hour that ended more than hourGrace before the newest
+// receive time. It runs on the reception clock, so replay rotates where live did, and on the
+// reception that crosses an hour's close time, not some later one. A reception for an hour already
+// closed reopens it, appending, and that same reception closes it again.
+func (a *archive) rotate(recv time.Time, files map[string]*hourFile) {
+	if recv.After(a.latest) {
+		a.latest = recv
+	}
+	if a.nextClose.IsZero() || a.latest.Before(a.nextClose) {
+		return
+	}
+	a.nextClose = time.Time{}
+	for k, hf := range files {
+		c := hf.hour.Add(time.Hour + hourGrace)
+		if !c.After(a.latest) {
+			a.close(hf)
+			delete(files, k)
+		} else if a.nextClose.IsZero() || c.Before(a.nextClose) {
+			a.nextClose = c
+		}
+	}
+}
+
+// shutdown drains the queue to disk, closes open hours, and waits up to 45 s for their uploads.
 func (a *archive) shutdown() {
 	if a.dir == "" {
 		return
 	}
-	reply := make(chan struct{})
-	select {
-	case a.done <- reply:
+	a.stopped.Do(func() {
+		// No timeout on the drain: every queued reception reaches disk before the process exits, or
+		// systemd's stop timeout kills it with the disk as the reason. Uploads get a bound instead,
+		// since an hour left on disk is uploaded by the next process's sweep; both archives shut down
+		// in turn, and two bounds must fit inside TimeoutStopSec.
+		reply := make(chan struct{})
+		a.done <- reply
+		<-reply
+		uploaded := make(chan struct{})
+		go func() { a.uploads.Wait(); close(uploaded) }()
 		select {
-		case <-reply:
-		case <-time.After(90 * time.Second):
+		case <-uploaded:
+		case <-time.After(45 * time.Second):
 			log.Printf("archive: shutdown timed out waiting for uploads")
 		}
-	case <-time.After(5 * time.Second):
-	}
+	})
 }
 
 func (a *archive) key(source string, hour time.Time) string {
+	if a.keyFn != nil {
+		return a.keyFn(source, hour)
+	}
 	return filepath.Join(licenseOf(source), strings.ReplaceAll(source, ":", "/"), hour.Format("2006/01/02/15")+".gz")
 }
 
@@ -133,27 +280,153 @@ func (a *archive) open(source string, hour time.Time) *hourFile {
 	}
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Printf("archive: %v", err)
-		return nil
-	}
+	ioFatal(err)
+	a.hold(path)
 	return &hourFile{hour: hour, path: path, f: f, gz: gzip.NewWriter(f)} // appending gzip members is valid gzip
 }
 
 func (a *archive) close(hf *hourFile) {
-	hf.gz.Close()
-	hf.f.Close()
+	// The gzip footer and the close can be the first to hit a full disk. The hour stays on disk,
+	// held by no one, and the next process's sweep uploads it.
+	gzErr, fErr := hf.gz.Close(), hf.f.Close()
+	ioFatal(errors.Join(gzErr, fErr))
 	if a.s3 == nil {
+		a.release(hf.path)
 		return
 	}
 	rel, _ := filepath.Rel(a.dir, hf.path)
+	key := filepath.ToSlash(rel)
 	a.uploads.Add(1)
 	go func() {
 		defer a.uploads.Done()
-		if err := a.s3.put(filepath.ToSlash(rel), hf.path); err != nil {
-			log.Printf("archive: upload %s: %v", rel, err) // file stays on disk; ponytail: no retry queue yet
-			return
-		}
-		log.Printf("archive: uploaded %s", rel)
+		defer a.release(hf.path) // held until every upload of it is done, so no sweep deletes it mid-put
+		// One key at a time: put reads the file when its turn comes, so the last upload to run
+		// carries the newest bytes and a reopened hour cannot be overwritten by its earlier self.
+		a.withKey(key, func() {
+			if err := a.s3.put(key, hf.path); err != nil {
+				a.uploadFailures.Add(1)
+				log.Printf("archive: upload %s: %v", rel, err) // the next sweep retries it
+				return
+			}
+			log.Printf("archive: uploaded %s", rel)
+		})
 	}()
+}
+
+// dirPath is the local file an object key came from.
+func (a *archive) dirPath(key string) string { return filepath.Join(a.dir, filepath.FromSlash(key)) }
+
+// withKey runs fn holding the upload lock for one object key.
+func (a *archive) withKey(key string, fn func()) {
+	mu, _ := a.putLocks.LoadOrStore(key, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
+	fn()
+}
+
+// hold marks a path as owned by the writer or an upload; release drops it when the last owner is done.
+func (a *archive) hold(path string) {
+	a.holdMu.Lock()
+	defer a.holdMu.Unlock()
+	if a.holds == nil {
+		a.holds = map[string]int{}
+	}
+	a.holds[path]++
+}
+
+func (a *archive) release(path string) {
+	a.holdMu.Lock()
+	defer a.holdMu.Unlock()
+	if a.holds[path]--; a.holds[path] <= 0 {
+		delete(a.holds, path)
+	}
+}
+
+func (a *archive) isHeld(path string) bool {
+	a.holdMu.Lock()
+	defer a.holdMu.Unlock()
+	return a.holds[path] > 0
+}
+
+// archiveGrace is how long an hour file must sit untouched before a sweep may delete it. Rotation
+// does not delete: a Reception queued across the hour boundary reopens the hour it names, appending
+// to the file and uploading it again, so a file deleted at rotation would come back as a stub and
+// overwrite the complete object in the bucket. Receive time is our own clock, so nothing reopens an
+// hour this old. The grace period covers files a previous process left behind, which are on disk but
+// not held; files this process still owns are excluded by their hold count, not by their age.
+const archiveGrace = 2 * time.Hour
+
+// sweep reconciles the local tree with the bucket, which is where the archive actually lives; disk is
+// only staging. A file the bucket already holds at the same size is deleted, and a short or missing
+// one is uploaded first. An object larger than the local file is left alone: that is a stub over a
+// complete upload, and overwriting it would destroy the only good copy.
+func (a *archive) sweep() {
+	if a.dir == "" || a.s3 == nil {
+		return
+	}
+	cutoff := time.Now().Add(-archiveGrace)
+	var freed, kept, total int64
+	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += fi.Size()
+		if a.isHeld(path) || fi.ModTime().After(cutoff) {
+			return nil
+		}
+		rel, err := filepath.Rel(a.dir, path)
+		if err != nil {
+			return nil
+		}
+		key := filepath.ToSlash(rel)
+		stored, err := a.s3.size(key)
+		if err != nil {
+			log.Printf("archive: sweep head %s: %v", key, err)
+			kept += fi.Size()
+			return nil
+		}
+		switch {
+		case stored > fi.Size():
+			log.Printf("archive: %s is %d bytes in the bucket but %d on disk; keeping both for a human", key, stored, fi.Size())
+			kept += fi.Size()
+			return nil
+		case stored < fi.Size():
+			var err error
+			a.withKey(key, func() { err = a.s3.put(key, path) }) // never race a rotation upload of the same key
+			if err != nil {
+				a.uploadFailures.Add(1)
+				log.Printf("archive: sweep upload %s: %v", key, err)
+				kept += fi.Size()
+				return nil
+			}
+			log.Printf("archive: uploaded %s (sweep)", key)
+		}
+		// The upload took a while. Delete only the bytes that went up: anything else means a writer
+		// touched the file, and the next sweep can take another run at it.
+		if cur, err := os.Stat(path); err != nil || cur.Size() != fi.Size() || !cur.ModTime().Equal(fi.ModTime()) {
+			kept += fi.Size()
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			log.Printf("archive: sweep remove %s: %v", key, err)
+			kept += fi.Size()
+			return nil
+		}
+		freed += fi.Size()
+		return nil
+	})
+	a.staged.Store(total - freed)
+	log.Printf("archive: sweep freed %d MiB, kept %d MiB not yet reclaimed", freed>>20, kept>>20)
+}
+
+// sweepLoop reclaims on an interval, so a failed upload is retried without waiting for a restart.
+func (a *archive) sweepLoop() {
+	for {
+		a.sweep()
+		time.Sleep(time.Hour)
+	}
 }

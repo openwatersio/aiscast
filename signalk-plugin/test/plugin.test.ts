@@ -1,14 +1,22 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createPublicKey, verify } from "node:crypto";
 import { join } from "node:path";
 import type { Plugin } from "@signalk/server-api";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import createPlugin, { type Config } from "../src/index.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mintMessage } from "../src/identity.js";
+import createPlugin, { type Config, stationPageHelp } from "../src/index.js";
 import { fakeApp, type FakeApp } from "./fake-app.js";
 import { startFakeServer, type FakeServer } from "./fake-server.js";
 
 const VDM = "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"; // MMSI 227006760, position report
 const VDM2 = "!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43"; // MMSI 258857000, position report
 const VDO = "!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23";
+const STATIC = "!AIVDM,1,1,,A,H3noH:1@E=B1HE=<Dh000000000,2*46"; // MMSI 258857000, class B static report
+const TYPE5 = [
+  "!AIVDM,2,1,3,A,53HOI:02@GCdI77;?@1@E=B1HE=<Dh0000000016<Pj::4000D0PC52CClQ@,0*09",
+  "!AIVDM,2,2,3,A,00000000000,2*27",
+]; // MMSI 227006760, class A static and voyage data
+const STATIC_B = "!AIVDM,1,1,,A,H3noH:4U0000000<1ijkl00`5220,0*13"; // MMSI 258857000, class B static report part B
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until(cond: () => boolean | Promise<boolean>, ms = 5000): Promise<void> {
@@ -22,6 +30,12 @@ async function until(cond: () => boolean | Promise<boolean>, ms = 5000): Promise
 let server: FakeServer;
 let app: FakeApp;
 let plugin: Plugin;
+
+// The sentences one queue segment holds, newline-delimited as the uplink writes them.
+async function lines(name: string): Promise<string[]> {
+  const text = await readFile(join(app.dataDir, "queue", name), "utf8");
+  return text === "" ? [] : text.slice(0, -1).split("\n");
+}
 
 function start(config: Partial<Config> = {}): Promise<void> {
   plugin = createPlugin(app);
@@ -40,17 +54,72 @@ afterEach(async () => {
 });
 
 describe("identity", () => {
-  it("creates a keypair once and mints a personal token for it", async () => {
+  it("creates a keypair once and mints a personal token for it with a signed request", async () => {
     await start();
     const jwk = JSON.parse(await readFile(join(app.dataDir, "identity.json"), "utf8"));
     expect(jwk.crv).toBe("Ed25519");
-    expect(server.keyRequests).toEqual([{ pubkey: jwk.x }]);
+    expect(server.keyRequests).toHaveLength(1);
+    const req = server.keyRequests[0] as { pubkey: string; ts: number; sig: string; vessel_name: string };
+    expect(req.pubkey).toBe(jwk.x);
+    expect(Math.abs(req.ts - Date.now() / 1000)).toBeLessThan(10);
+    const pub = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: jwk.x }, format: "jwk" });
+    expect(verify(null, mintMessage(jwk.x, req.ts, false, "", req.vessel_name), pub, Buffer.from(req.sig, "base64url"))).toBe(true);
     expect(Buffer.from(jwk.x, "base64url")).toHaveLength(32);
     await plugin.stop!();
 
     await start(); // same key, cached token: no second /v1/keys call
     expect(server.keyRequests).toHaveLength(1);
     expect(JSON.parse(await readFile(join(app.dataDir, "identity.json"), "utf8")).x).toBe(jwk.x);
+  });
+
+  it("names the station after the boat while own-ship sharing is on, minting again when that changes", async () => {
+    app.self.name = "CERULEAN";
+    await start();
+    expect(server.keyRequests.at(-1)).toMatchObject({ vessel_name: "CERULEAN" });
+    await plugin.stop!();
+
+    await start(); // same name: the cached token stands
+    expect(server.keyRequests).toHaveLength(1);
+    await plugin.stop!();
+
+    app.self.name = "CERULEAN II";
+    await start();
+    await until(() => server.keyRequests.length === 2);
+    expect(server.keyRequests.at(-1)).toMatchObject({ vessel_name: "CERULEAN II" });
+    await plugin.stop!();
+
+    await start({ share: { ownShip: false } }); // private: the name is cleared
+    await until(() => server.keyRequests.length === 3);
+    expect(server.keyRequests.at(-1)).toMatchObject({ vessel_name: "" });
+    expect(server.keyRequests).toHaveLength(3);
+  });
+
+  it("replaces a token minted before requests were signed, once", async () => {
+    const jwk = JSON.parse(JSON.stringify((await import("node:crypto")).generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" })));
+    await writeFile(join(app.dataDir, "identity.json"), JSON.stringify(jwk));
+    await writeFile(join(app.dataDir, "token.json"), JSON.stringify({ token: "ak1.old", exp: 0, pubkey: jwk.x, server: server.url }));
+    await start();
+    expect(server.keyRequests).toHaveLength(1);
+    await plugin.stop!();
+    await start();
+    expect(server.keyRequests).toHaveLength(1);
+  });
+
+  it("mints again until the server confirms it checked the signature", async () => {
+    server.keysSigned = false; // a server from before signed requests: it ignores sig and issues a token anyway
+    await start();
+    await plugin.stop!();
+    await start();
+    await until(() => server.keyRequests.length === 2);
+    await plugin.stop!();
+
+    server.keysSigned = true; // the server is upgraded
+    await start();
+    await until(() => server.keyRequests.length === 3);
+    await plugin.stop!();
+    await start(); // confirmed: the cached token stands
+    await sleep(100);
+    expect(server.keyRequests).toHaveLength(3);
   });
 
   it("keeps receiving without a token when the server cannot mint one", async () => {
@@ -97,11 +166,11 @@ describe("uplink", () => {
     app.emit("nmea0183", VDM);
     app.emit("nmea0183", VDM2);
     await sleep(100);
-    // queue files are written on a timer; force the backlog through by restarting the plugin (stop flushes)
+    // segments are written on a timer; force the backlog through by restarting the plugin (stop flushes)
     await plugin.stop!();
     const files = await readdir(join(app.dataDir, "queue"));
     expect(files).toHaveLength(1);
-    expect(JSON.parse(await readFile(join(app.dataDir, "queue", files[0]), "utf8"))).toHaveLength(2);
+    expect(await lines(files[0])).toHaveLength(2);
 
     server = await startFakeServer(port);
     await start();
@@ -113,7 +182,7 @@ describe("uplink", () => {
 
   it("drains a pre-existing backlog before live sentences", async () => {
     await mkdir(join(app.dataDir, "queue"), { recursive: true });
-    await writeFile(join(app.dataDir, "queue", "1.json"), JSON.stringify([VDM2]));
+    await writeFile(join(app.dataDir, "queue", "1.log"), `${VDM2}\n`);
     await start();
     app.emit("nmea0183", VDM);
     await until(() => server.frames.filter((f) => f.type === "publish").length === 2);
@@ -124,7 +193,7 @@ describe("uplink", () => {
 
   it("keeps a file on disk when the socket drops mid-drain, without duplicating it", async () => {
     await mkdir(join(app.dataDir, "queue"), { recursive: true });
-    await writeFile(join(app.dataDir, "queue", "1.json"), JSON.stringify([VDM2]));
+    await writeFile(join(app.dataDir, "queue", "1.log"), `${VDM2}\n`);
     server.ack = false;
     await start();
     await server.waitForFrame((f) => f.type === "publish" && f.replay === true);
@@ -133,8 +202,8 @@ describe("uplink", () => {
     await sleep(100);
     await plugin.stop!(); // flushes anything the drain wrongly copied into memory
     const files = await readdir(join(app.dataDir, "queue"));
-    expect(files).toEqual(["1.json"]);
-    expect(JSON.parse(await readFile(join(app.dataDir, "queue", "1.json"), "utf8"))).toEqual([VDM2]);
+    expect(files).toEqual(["1.log"]);
+    expect(await lines("1.log")).toEqual([VDM2]);
   });
 
   it("re-encodes NMEA 2000 AIS PGNs as sentences tagged s:n2k", async () => {
@@ -164,7 +233,7 @@ describe("uplink", () => {
   it("never republishes a payload that came from aiscast", async () => {
     await start({ receive: { mode: "always" } });
     await server.waitForFrame((f) => f.type === "subscribe");
-    server.send({ type: "event", source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    server.send({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
     await until(() => app.deltas.length === 1);
     app.emit("nmea0183", VDM); // e.g. signalk-n2kais-to-nmea0183 re-emitting our injected target
     app.emit("nmea0183", VDM2);
@@ -196,7 +265,7 @@ describe("buddy boats", () => {
     await start({ receive: { mode: "off" } });
     const sub = await server.waitForFrame((f) => f.type === "subscribe");
     expect(sub).toEqual({ type: "subscribe", snapshot: true, mmsi: [258857000] });
-    server.send({ type: "event", source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    server.send({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
     await until(() => app.deltas.length === 1);
     expect(app.deltas[0].context).toBe("vessels.urn:mrn:imo:mmsi:258857000");
   });
@@ -228,6 +297,27 @@ describe("config UI", () => {
     expect(noMmsi.share.position["ui:disabled"]).toBe(true);
     expect(noMmsi.share.position["ui:help"]).toMatch(/MMSI/);
   });
+
+  it("links the boat's station page on openwaters.io, and only for the default server", async () => {
+    expect(stationPageHelp("https://ais.openwaters.io", "ed25519:abc")).toBe(
+      "This boat's station page: https://openwaters.io/ais/stations/station:ed25519:abc",
+    );
+    expect(stationPageHelp("https://ais.openwaters.io", null)).toBeNull();
+    expect(stationPageHelp(server.url, "ed25519:abc")).toBeNull();
+    type Ui = { advanced: { token: Record<string, unknown> } };
+    await start(); // the fake server is not the default, so no link
+    expect((plugin.uiSchema as () => Ui)().advanced.token["ui:help"]).toBeUndefined();
+  });
+});
+
+describe("configured token", () => {
+  it("says how to go back to the plugin's own token when aiscast refuses a pasted one", async () => {
+    await start({ advanced: { server: server.url, token: "ak1.pasted.token" } });
+    server.send({ type: "error", error: "token not valid from this address" });
+    await until(() => app.errors.length > 0);
+    expect(app.errors[0]).toMatch(/refused the configured token: token not valid from this address\. Clear Advanced → Access token/);
+    expect(server.keyRequests).toHaveLength(0);
+  });
 });
 
 describe("downlink", () => {
@@ -253,11 +343,11 @@ describe("downlink", () => {
   it("injects events through the server parser with its own $source and the event time, dropping self and echoes", async () => {
     await start({ receive: { mode: "always" } });
     await server.waitForFrame((f) => f.type === "subscribe");
-    const time = "2026-08-20T15:25:54.342871Z";
+    const time = new Date().toISOString();
     server.send({ type: "event", time, source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
     server.send({ type: "event", time, source: "kystverket", nmea: [VDM2], mmsi: 123456789, msg_type: "PositionReport", lat: 1, lon: 1 }); // self MMSI
     const pub = server.keyRequests[0].pubkey;
-    server.send({ type: "event", time, source: `v1:ed25519:${pub}`, nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // our echo
+    server.send({ type: "event", time, source: `station:ed25519:${pub}`, nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // our echo
     await until(() => app.deltas.length >= 1);
     await sleep(50);
     expect(app.deltas).toHaveLength(1);
@@ -270,6 +360,18 @@ describe("downlink", () => {
     expect(paths).toContain("navigation.position");
   });
 
+  it("drops echoes under an operator-issued token's own station", async () => {
+    const claims = Buffer.from(JSON.stringify({ sub: "st-1", role: "feeder" })).toString("base64url");
+    await start({ advanced: { server: server.url, token: `ak1.${claims}.sig` }, receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const time = new Date().toISOString();
+    server.send({ type: "event", time, source: "station:st-1", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 }); // our echo
+    server.send({ type: "event", time, source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length >= 1);
+    await sleep(50);
+    expect(app.deltas.map((d) => d.context)).toEqual(["vessels.urn:mrn:imo:mmsi:227006760"]);
+  });
+
   it("in always mode leaves a target alone that the local receiver updated recently", async () => {
     await start({ receive: { mode: "always" } });
     await server.waitForFrame((f) => f.type === "subscribe");
@@ -277,9 +379,142 @@ describe("downlink", () => {
       $source: "ais-receiver.AI",
       timestamp: new Date().toISOString(),
     };
-    server.send({ type: "event", source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
-    server.send({ type: "event", source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    const time = new Date().toISOString();
+    server.send({ type: "event", time, source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    server.send({ type: "event", time, source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
     await until(() => app.deltas.length === 1);
     expect(app.deltas[0].context).toBe("vessels.urn:mrn:imo:mmsi:258857000");
+  });
+
+  it("relays injected targets on nmea0183out, but not ones the local receiver already covers", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    app.model["vessels.urn:mrn:imo:mmsi:227006760.navigation.position"] = {
+      $source: "ais-receiver.AI",
+      timestamp: new Date().toISOString(),
+    };
+    const now = new Date().toISOString();
+    server.send({ type: "event", time: now, source: "kystverket", nmea: [`\\c:1755703554342*4B\\${VDM}`], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    server.send({ type: "event", time: now, source: "kystverket", nmea: [`\\c:1755703554342*4B\\${VDM2}`], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length === 1);
+    await sleep(50);
+    expect(out).toEqual([VDM2]); // TAG block stripped, VHF-fresh target not relayed
+  });
+
+  it("drops stale, missing-time, and future position events before injection", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const stale = new Date(Date.now() - 5 * 60_000).toISOString();
+    const future = new Date(Date.now() + 60_000).toISOString();
+    server.send({ type: "event", time: stale, source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    server.send({ type: "event", source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    server.send({ type: "event", time: future, source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await sleep(50);
+    expect(app.deltas).toEqual([]);
+    expect(out).toEqual([]);
+  });
+
+  it("holds snapshot statics until a live position, then repeats each one 6 minutes after it last went out", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const position = () => ({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+    const statik = (nmea: string, time?: string) => ({ type: "event", time, source: "kystverket", nmea: [nmea], mmsi: 258857000, msg_type: "StaticDataReport" });
+    const expectOut = async (expected: string[]) => {
+      await until(() => out.length >= expected.length);
+      await sleep(50);
+      expect(out.splice(0)).toEqual(expected);
+    };
+
+    const t0 = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(t0);
+      const stale = new Date(t0 - 5 * 60_000).toISOString();
+      server.send(statik(STATIC, stale));
+      server.send(statik(STATIC_B, stale));
+      await until(() => app.deltas.length === 2);
+      await sleep(50);
+      expect(out).toEqual([]); // snapshot statics injected, not relayed
+
+      server.send(position());
+      await expectOut([VDM2, STATIC, STATIC_B]); // both type 24 parts follow the first live position
+
+      vi.setSystemTime(t0 + 5 * 60_000);
+      server.send(position());
+      await expectOut([VDM2]); // nothing due yet
+      server.send(statik(STATIC, new Date().toISOString()));
+      await expectOut([STATIC]); // a live static goes straight out and restarts its own clock
+
+      vi.setSystemTime(t0 + 6 * 60_000);
+      server.send(position());
+      await expectOut([VDM2, STATIC_B]); // part A went out a minute ago, so only part B is due
+
+      vi.setSystemTime(t0 + 11 * 60_000);
+      server.send(position());
+      await expectOut([VDM2, STATIC]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds a replayed static that follows a live snapshot position until the next position", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const position = () => ({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM2], mmsi: 258857000, msg_type: "PositionReport", lat: 1, lon: 1 });
+
+    // The server's snapshot order: last position, then last static.
+    server.send(position());
+    server.send({ type: "event", time: new Date(Date.now() - 30 * 60_000).toISOString(), source: "kystverket", nmea: [STATIC], mmsi: 258857000, msg_type: "StaticDataReport" });
+    await until(() => app.deltas.length === 2);
+    await sleep(50);
+    expect(out).toEqual([VDM2]);
+
+    server.send(position());
+    await until(() => out.length === 3);
+    expect(out).toEqual([VDM2, VDM2, STATIC]);
+  });
+
+  it("relays a class A's two-sentence type 5 after its first live position", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    server.send({ type: "event", time: new Date(Date.now() - 5 * 60_000).toISOString(), source: "kystverket", nmea: TYPE5, mmsi: 227006760, msg_type: "ShipStaticData" });
+    await until(() => app.deltas.length === 1);
+    await sleep(50);
+    expect(out).toEqual([]);
+
+    server.send({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => out.length === 3);
+    expect(out).toEqual([VDM, ...TYPE5]);
+  });
+
+  it("converts relayed remote VDO sentences to VDM", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    server.send({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: ["!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21"], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length === 1);
+    expect(out).toEqual([VDM]);
+  });
+
+  it("does not relay on nmea0183out when the setting is off", async () => {
+    const out: string[] = [];
+    app.on("nmea0183out", (s: string) => out.push(s));
+    await start({ receive: { mode: "always", nmea0183out: false } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    server.send({ type: "event", time: new Date().toISOString(), source: "kystverket", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length === 1);
+    await sleep(50);
+    expect(out).toEqual([]);
   });
 });

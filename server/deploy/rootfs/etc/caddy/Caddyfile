@@ -1,0 +1,20 @@
+# Reloads and shutdown must not wait on in-flight requests, including open /v1/stream SSE
+# responses: close them after 10s and let clients reconnect. WebSockets are hijacked and not
+# covered by this; stream_close_delay below handles them.
+# `metrics` adds per-request series to the admin endpoint's /metrics on localhost:2019, which
+# Alloy scrapes. It needs Caddy 2.9 or later.
+{
+	grace_period 10s
+	metrics
+}
+
+# TLS for the hub. Let's Encrypt HTTP-01 works through the Cloudflare proxy; ACME retries until DNS points here.
+ais.openwaters.io {
+	@metrics path /metrics
+	respond @metrics 404
+	encode zstd gzip
+	reverse_proxy localhost:8080 {
+		# Stalled client blocks the reload, so close on a timer after a reload
+		stream_close_delay 30s
+	}
+}

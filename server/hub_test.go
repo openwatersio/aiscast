@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -70,7 +71,7 @@ func TestEventIDDerivation(t *testing.T) {
 	p.Ingest(Reception{Source: "test", Station: "test", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,H42O55lti4hhhilD3nink000?050,0*40"})
 	select {
 	case ev := <-sub.ch:
-		// Documented in docs/API.md; changing the hash, truncation, or inputs breaks every archived id.
+		// Documented in the API reference; changing the hash, truncation, or inputs breaks every archived id.
 		if want := "381c250991f87733bb5080209c16904d"; ev.ID != want {
 			t.Errorf("id=%s want %s", ev.ID, want)
 		}
@@ -145,7 +146,7 @@ func TestReceiveHTTP(t *testing.T) {
 	}
 	select {
 	case ev := <-sub.ch:
-		if ev.Source != "http:anon" || ev.MMSI != 227006760 { // ALLOW_ANON identity
+		if ev.Source != "station:anon" || ev.MMSI != 227006760 { // ALLOW_ANON identity
 			t.Errorf("unexpected event %+v", ev)
 		}
 	case <-time.After(time.Second):
@@ -224,12 +225,28 @@ func TestVesselsSnapshot(t *testing.T) {
 	if res, _ := http.Get(srv.URL + "/v1/vessels?bbox=junk"); res.StatusCode != 400 {
 		t.Errorf("bad bbox: %d", res.StatusCode)
 	}
-	if n := p.sweepVessels(time.Now().Add(time.Minute)); n != 0 {
+	res, err := http.Get(srv.URL + "/v1/vessels?bbox=49,0,50,1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fc struct{ Attribution map[string]string }
+	json.NewDecoder(res.Body).Decode(&fc)
+	if len(fc.Attribution) != 1 || fc.Attribution["t"] != ownCredit {
+		t.Errorf("attribution = %v", fc.Attribution)
+	}
+	p.vmu.Lock()
+	p.sweepLocked(time.Now().Add(time.Minute))
+	p.vmu.Unlock()
+	if n := p.vesselCount(); n != 0 {
 		t.Errorf("sweep left %d", n)
 	}
 }
 
 func TestUDPStationHidesIP(t *testing.T) {
+	// A fixed salt keeps the digest deterministic. With the random one an unset STATION_SALT
+	// generates, a hex digest containing "203" fails the leak check by luck about once in 350 runs.
+	defer func(old []byte) { stationSalt = old }(stationSalt)
+	stationSalt = []byte("aiscast-test")
 	a, b := udpStation("203.0.113.5"), udpStation("203.0.113.6")
 	if a == b || strings.Contains(a, "203") || len(a) != len("udp:")+12 || a != udpStation("203.0.113.5") {
 		t.Errorf("udp station ids: %s %s", a, b)
@@ -251,6 +268,37 @@ func TestUDPSenderKeyedByOwnMMSI(t *testing.T) {
 	want := []string{src, "mmsi:227006760", "mmsi:227006760"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("sources %v, want %v", got, want)
+	}
+}
+
+// The raw feed renders own-ship reports as VDM, because a raw consumer binds VDO to its own position instead of
+// plotting it (see ownShipToVDM). A /v1 event keeps the sentence as it arrived: that is what lets a peer
+// republishing it derive `synthesized` again, and dropping to VDM there would make the republished position
+// look like a real VHF reception and so eligible for the AISHub feed.
+func TestOwnShipRebroadcastAsVDM(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	body := `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`
+	p.Ingest(Reception{Source: "v1:t", Station: "t", RecvTime: time.Now(), Body: body})
+	ev := <-sub.ch
+	if !ev.Synthesized {
+		t.Errorf("s:self own-ship report not marked synthesized")
+	}
+	if len(ev.Sentences) != 1 || ev.Sentences[0] != body {
+		t.Errorf("sentences %q, want [%q]", ev.Sentences, body)
+	}
+	if nmea := renderV1(ev).NMEA; len(nmea) != 1 || nmea[0] != body {
+		t.Errorf("/v1 nmea %q, want [%q]", nmea, body)
+	}
+	if got := ev.nmeaText(); !strings.Contains(got, `\!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23`+"\r\n") {
+		t.Errorf("nmea frame %q", got)
+	}
+	// A peer that republishes the /v1 sentence still lands on a synthesized event, not a VHF reception.
+	p2 := testPipeline(t)
+	sub2 := p2.subscribe()
+	p2.Ingest(Reception{Source: "v1:peer", Station: "v1:peer", RecvTime: time.Now(), Body: renderV1(ev).NMEA[0]})
+	if ev2 := <-sub2.ch; !ev2.Synthesized || feedable(ev2) {
+		t.Errorf("republished own-ship report: synthesized=%v feedable=%v", ev2.Synthesized, feedable(ev2))
 	}
 }
 
@@ -436,7 +484,7 @@ func TestNMEAFeed(t *testing.T) {
 	defer c.CloseNow()
 	time.Sleep(50 * time.Millisecond)
 	p.Ingest(Reception{Source: "kystverket", Station: "kystverket/2573010", RecvTime: time.Unix(1787234980, 0), Body: `\s:2573010,c:1787234980*03\!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43`}) // outside bbox
-	p.Ingest(Reception{Source: "v1:t", Station: "t", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})                                                   // inside
+	p.Ingest(Reception{Source: "station:t", Station: "t", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})                                              // inside
 	_, msg, err := c.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -558,21 +606,23 @@ func TestV1SSERejections(t *testing.T) {
 	}{
 		{"?bbox=nonsense", 400},
 		{"?bbox=49,0,50", 400},
-		{"?bbox=49,0,200,1", 400},                 // out of range
-		{"?mmsi=nonsense", 400},                   // /v1/vessels would drop this silently
+		{"?bbox=49,0,200,1", 400}, // out of range
+		{"?mmsi=nonsense", 400},
 		{"", 400},                                 // everything, but the anonymous tier has an area cap
 		{"?bbox=0,0,50,50", 400},                  // 2500 square degrees over the anonymous 100
 		{"?bbox=0,0,50,50&bbox=0,0,-50,-50", 400}, // inverted second box must not subtract from the total
 		{"?mmsi=1,2,3,4,5,6,7,8,9,10,11", 400},    // over the anonymous mmsi cap of 10
 		{"?key=ak1.bogus.bogus&bbox=49,0,50,1", 401},
 	} {
-		res, err := http.Get(srv.URL + "/v1/stream" + tc.query)
-		if err != nil {
-			t.Fatal(err)
-		}
-		res.Body.Close()
-		if res.StatusCode != tc.want {
-			t.Errorf("%q: status %d, want %d", tc.query, res.StatusCode, tc.want)
+		for _, path := range []string{"/v1/stream", "/v1/vessels"} { // same filters, same caps
+			res, err := http.Get(srv.URL + path + tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			if res.StatusCode != tc.want {
+				t.Errorf("%s%s: status %d, want %d", path, tc.query, res.StatusCode, tc.want)
+			}
 		}
 	}
 
@@ -580,6 +630,31 @@ func TestV1SSERejections(t *testing.T) {
 		t.Fatal(err)
 	} else if res.Body.Close(); res.StatusCode != 405 {
 		t.Errorf("POST: status %d, want 405", res.StatusCode)
+	}
+}
+
+// Anonymous SSE and WebSocket connects share one per-address bucket, so a client cannot double its connect
+// allowance by alternating transports.
+func TestV1ConnectLimitSharedAcrossTransports(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	wsConnectLimit = newLimiter(1)
+	defer func() { wsConnectLimit = newLimiter(20) }()
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+
+	res, _ := sseGet(t, srv.URL+"/v1/stream?bbox=49,0,50,1") // the one connect this address gets
+	res.Body.Close()
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/stream", nil)
+	req.Header.Set("Upgrade", "websocket")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 429 {
+		t.Errorf("websocket connect after SSE connect: status %d, want 429", res.StatusCode)
 	}
 }
 
@@ -664,7 +739,7 @@ func TestV1SSESnapshotUnderLoad(t *testing.T) {
 		v := newVessel()
 		v.HasPos, v.Lat, v.Lon, v.Seen, v.PosAt = true, 49.5, 0.5, now, now
 		v.Name, v.Source, v.Station = "TESTVESSEL", "t", "t"
-		p.vessels[200000000+i] = v
+		p.putVesselLocked(200000000+i, v)
 	}
 	p.vmu.Unlock()
 
@@ -828,4 +903,60 @@ func TestV1SSEIdentityWhenNotRequested(t *testing.T) {
 		}
 	}
 	t.Fatalf("no frame: %v", sc.Err())
+}
+
+func TestParseUDPAddrs(t *testing.T) {
+	got, err := parseUDPAddrs(" legacy=2.29.0.215:10110, udp=[::]:10110 ,:10111,,")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][2]string{{"legacy", "2.29.0.215:10110"}, {"udp", "[::]:10110"}, {":10111", ":10111"}}
+	if len(got) != len(want) {
+		t.Fatalf("got %d listeners, want %d", len(got), len(want))
+	}
+	for _, bad := range []string{"legacy=", "10110", "udp=2.29.0.215", ":10110,legacy", "=:10110", "x=:10110,x=:10111", ":10110,:10110"} {
+		if _, err := parseUDPAddrs(bad); err == nil {
+			t.Errorf("parseUDPAddrs(%q) accepted a malformed entry", bad)
+		}
+	}
+	for i, l := range got {
+		if l.label != want[i][0] || l.addr != want[i][1] {
+			t.Errorf("listener %d = %s=%s, want %s=%s", i, l.label, l.addr, want[i][0], want[i][1])
+		}
+	}
+}
+
+// Each listener counts its own datagrams, so the operator can see which name feeders still send to.
+func TestUDPListenersCountApart(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	var conns []net.PacketConn
+	for _, label := range []string{"legacy", "udp"} {
+		l := &udpListener{label: label, addr: "127.0.0.1:0"}
+		pc, err := listenUDP(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pc.Close()
+		conns = append(conns, pc)
+		p.udp = append(p.udp, l)
+		go serveUDP(p, l, pc)
+	}
+	c, err := net.Dial("udp", conns[1].LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte("!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E\n"))
+	select {
+	case ev := <-sub.ch:
+		if !strings.HasPrefix(ev.Source, "udp:") {
+			t.Errorf("source %q, want udp:<hash>", ev.Source)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event from the datagram")
+	}
+	if a, b := p.udp[0].datagrams.Load(), p.udp[1].datagrams.Load(); a != 0 || b != 1 {
+		t.Errorf("datagrams legacy=%d udp=%d, want 0 and 1", a, b)
+	}
 }

@@ -1,25 +1,26 @@
 name: release
 
-# Publishes signalk-plugin/ to npm via trusted publishing (OIDC) when a GitHub release
-# is created with a tag like signalk-plugin-v1.2.3. Hub releases use other tags and are ignored.
+# Publishes signalk-plugin/ to npm when a signalk-plugin-v* tag is pushed, using trusted publishing over
+# OIDC with provenance. There is no npm token; the workflow needs `id-token: write`.
+#
+# The tag has to sit on a commit that already carries that version, so a release tag always describes the
+# tree it points at and the workflow never writes to the repository. Tags for other release tracks do not
+# match the prefix and never reach this workflow.
 on:
-  release:
-    types: [created]
+  push:
+    tags: ["signalk-plugin-v*"]
 
 jobs:
   npm:
-    if: startsWith(github.event.release.tag_name, 'signalk-plugin-v')
     runs-on: ubuntu-latest
     permissions:
       id-token: write # npm trusted publishing
-      contents: write # commit the version bump
+      contents: write # gh release create
     defaults:
       run:
         working-directory: signalk-plugin
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.release.target_commitish }}
 
       - uses: actions/setup-node@v7
         with:
@@ -28,21 +29,38 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      # Everything the release needs is checked before anything is published, because a publish cannot be
+      # taken back: a tag pushed at the wrong commit, or ahead of its changelog entry, has to fail here.
+      # The notes are written out now and used as-is later, so the step that creates the release cannot
+      # arrive at a different answer than the one checked here.
+      - name: Check the tag against the package and the changelog
+        run: |
+          version="${GITHUB_REF_NAME#signalk-plugin-v}"
+          packaged="$(node -p "require('./package.json').version")"
+          if [ "$version" != "$packaged" ]; then
+            echo "tag $GITHUB_REF_NAME wants $version, but package.json says $packaged" >&2
+            echo "Bump the version on main first, then tag that commit. See CONTRIBUTING.md." >&2
+            exit 1
+          fi
+          awk -v want="## $version" '$0 == want {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "CHANGELOG.md has nothing under a '## $version' heading" >&2
+            echo "Rename the '## Unreleased' heading to the version before tagging. See CONTRIBUTING.md." >&2
+            exit 1
+          fi
+
       - run: npm ci
       - run: npm test
-
-      - name: Set version from release tag
-        run: npm version "${TAG#signalk-plugin-v}" --no-git-tag-version --allow-same-version
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-
       - run: npm publish # prepack runs the build
 
-      # Only after a successful publish, so a failed release never mutates the repo
-      - name: Commit version bump
+      # The changelog entry is the release note; it is written for the people installing the plugin. A
+      # release made by hand for this tag wins, so this only guarantees one exists.
+      - name: Create the GitHub release
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git diff --quiet || { git commit -am "signalk-aiscast ${TAG#signalk-plugin-v}" && git push; }
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "signalk-aiscast ${GITHUB_REF_NAME#signalk-plugin-v}" \
+              --notes-file "$RUNNER_TEMP/notes.md"
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

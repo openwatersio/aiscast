@@ -1,11 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -93,7 +93,7 @@ func (r *hourRing) restore(s ringState) {
 }
 
 // usageCounters are the rolling counters behind /v1/stats. Totals since start are not kept: deploys restart the
-// server, so they would measure time since the last deploy. The rings persist in a JSON file next to the vessel snapshot.
+// server, so they would measure time since the last deploy. The rings persist in a JSON file, saved every minute and on shutdown.
 type usageCounters struct {
 	events   hourRing // deduplicated events
 	dups     hourRing // duplicates dropped
@@ -144,11 +144,6 @@ type usageFile struct {
 	Sources, Stations               map[string]ringState
 }
 
-// usagePath derives the usage file from the vessel snapshot path: vessels.json → vessels-usage.json.
-func usagePath(snapshot string) string {
-	return strings.TrimSuffix(snapshot, filepath.Ext(snapshot)) + "-usage.json"
-}
-
 func (p *Pipeline) saveUsage(path string) error {
 	u := &p.usage
 	out := usageFile{Events: u.events.state(), Dups: u.dups.state(), Streams: u.streams.state(), Requests: u.requests.state(), Sources: map[string]ringState{}}
@@ -189,20 +184,69 @@ func (p *Pipeline) loadUsage(path string) error {
 	return nil
 }
 
-// countRequests wraps the mux so API requests are counted once, whatever handler serves them.
+// recordWindows are the windows /v1/stats counts the vessel record over.
+var recordWindows = []struct {
+	key string
+	age time.Duration
+}{{"last_24h", 24 * time.Hour}, {"last_7d", 7 * 24 * time.Hour}, {"last_30d", 30 * 24 * time.Hour}}
+
+// recordCounts are the vessel record's counts: every vessel it holds, and per window those heard (by seen)
+// and first heard (by first_seen). The record reaches back through the lake import, so these cover every
+// vessel any archive holds.
+type recordCounts struct {
+	Total      int
+	Heard, New map[string]int // keyed as recordWindows
+}
+
+// runRecordCounts refreshes the record's counts once a minute, so /v1/stats and get_coverage read them
+// without a query: counting the whole record walks an index of every vessel ever heard.
+func (p *Pipeline) runRecordCounts() {
+	p.refreshRecordCounts(time.Now())
+	for now := range time.Tick(time.Minute) {
+		p.refreshRecordCounts(now)
+	}
+}
+
+func (p *Pipeline) refreshRecordCounts(now time.Time) {
+	c, err := p.store.counts(now)
+	if err != nil {
+		log.Printf("store: counts: %v", err)
+		return
+	}
+	p.recordCounts.Store(c)
+}
+
+// vesselTotal is every vessel the network has heard: the record's count, or the cache's without a record.
+// The cache can briefly hold a vessel the record has yet to count, so the larger wins.
+func (p *Pipeline) vesselTotal(active int) int {
+	if c := p.recordCounts.Load(); c != nil {
+		return max(c.Total, active)
+	}
+	return active
+}
+
+// countRequests wraps the mux so every request is counted once, whatever handler serves it: API requests in
+// the /v1/stats usage rings, and all of them by route and status in /metrics.
 func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v0/stream", "/v1/stream", "/v1/nmea", "/health", "/metrics":
 		default:
-			p.usage.requests.add(time.Now())
+			if r.Method != http.MethodOptions { // a browser's preflight, not a use of the API
+				p.usage.requests.add(time.Now())
+			}
 		}
-		h.ServeHTTP(w, r)
+		start, sw := time.Now(), &statusWriter{ResponseWriter: w}
+		h.ServeHTTP(sw, r)
+		route := r.Pattern // set by the mux as it routes; empty for a path no route matched
+		if route == "" {
+			route = "other"
+		}
+		p.requests.observe(route, cmp.Or(sw.status, http.StatusOK), time.Since(start))
 	})
 }
 
 func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 	now := time.Now()
 
@@ -229,6 +273,13 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 		byKind[v.Kind]++
 	}
 	p.vmu.RUnlock()
+	vessels := map[string]any{"total": p.vesselTotal(nv), "active": nv, "with_position": withPos, "by_kind": byKind}
+	if c := p.recordCounts.Load(); c != nil {
+		for _, w := range recordWindows {
+			vessels[w.key] = c.Heard[w.key]
+		}
+		vessels["new"] = c.New
+	}
 
 	p.smu.RLock()
 	streams := len(p.subs)
@@ -236,7 +287,7 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	clients := map[string]any{"streams": streams, "streams_opened": p.usage.streams.windows(now), "requests": p.usage.requests.windows(now)}
 
 	sources := map[string]any{}
-	vbs := p.stations.vesselsBySource()
+	vbs := p.stations.vesselsBySource(now)
 	names := map[string]bool{}
 	for _, k := range p.usage.sourceNames(now) {
 		names[k] = true
@@ -259,6 +310,9 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 		}
 		sources[k] = map[string]any{"events": p.usage.source(k).windows(now), "last_age_s": int64(a.Seconds()),
 			"vessels": vs[0], "vessels_exclusive": vs[1]} // distinct MMSIs heard in the last vesselTTL; exclusive = no other kind heard them
+		if d := p.delays.snapshot(k); d != nil {
+			sources[k].(map[string]any)["delay"] = d
+		}
 	}
 
 	p.rate.mu.Lock()
@@ -268,7 +322,7 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"time":     now.UTC(),
 		"stations": stations,
-		"vessels":  map[string]any{"total": nv, "with_position": withPos, "by_kind": byKind},
+		"vessels":  vessels,
 		"events":   map[string]any{"per_second": perSec, "last_24h": p.usage.events.sum(now, 24), "last_7d": p.usage.events.sum(now, 7*24), "duplicates": p.usage.dups.windows(now)},
 		"clients":  clients,
 		"sources":  sources,

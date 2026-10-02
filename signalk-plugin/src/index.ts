@@ -8,6 +8,7 @@ import {
   loadIdentity,
   loadToken,
   type Token,
+  tokenSub,
 } from "./identity.js";
 import { Link } from "./link.js";
 import { n2kToSentence } from "./n2k.js";
@@ -17,6 +18,7 @@ import { Uplink } from "./uplink.js";
 
 export const PLUGIN_ID = "signalk-aiscast";
 const DEFAULT_SERVER = "https://ais.openwaters.io";
+const STATION_PAGE = "https://openwaters.io/ais/stations/"; // the web client for DEFAULT_SERVER
 const STATUS_EVERY = 5_000;
 const TOKEN_CHECK_EVERY = 6 * 3600_000; // with a token: renew a few days before expiry
 const TOKEN_RETRY_MIN = 60_000; // without one (network not up yet at boot, server down): retry soon, backing off
@@ -24,23 +26,21 @@ const TOKEN_RETRY_MAX = 30 * 60_000;
 
 export interface Config {
   share?: { targets?: boolean; ownShip?: boolean; position?: boolean };
-  receive?: { mode?: ReceiveMode; radiusNm?: number };
+  receive?: { mode?: ReceiveMode; radiusNm?: number; nmea0183out?: boolean };
   advanced?: { server?: string; token?: string };
-  // Pre-"Advanced" layout, still honoured when read.
-  server?: string;
-  token?: string;
 }
 
 export default function (app: ServerAPI): Plugin {
   const events = app as unknown as EventEmitter;
   let generation = 0; // bumped by stop(); a start() still in its awaits checks it and gives up
   let teardown: (() => Promise<void>) | null = null;
+  let stationHelp: string | null = null; // the boat's station page, once a token names the station
 
   const plugin: Plugin = {
     id: PLUGIN_ID,
     name: "AIScast",
     description:
-      "Show nearby traffic without an AIS receiver and share your AIS data with the world.",
+      "Show nearby traffic without an AIS receiver and share what yours hears via the Open Waters AIS network",
     schema: {
       type: "object",
       description:
@@ -89,6 +89,11 @@ export default function (app: ServerAPI): Plugin {
               minimum: 5,
               maximum: 200,
             },
+            nmea0183out: {
+              type: "boolean",
+              title: "Send aiscast traffic to NMEA 0183 output",
+              default: true,
+            },
           },
         },
         advanced: {
@@ -104,7 +109,7 @@ export default function (app: ServerAPI): Plugin {
               type: "string",
               title: "Access token (optional)",
               description:
-                "Leave empty: the plugin creates a keypair on first start and requests its own personal token. Paste a token from the aiscast operator to publish with a named station and higher limits.",
+                "Leave empty: the plugin creates a keypair on first start and requests its own personal token, which works from any network address. Paste a token here only if the aiscast operator issued you one for a named station with higher limits.",
             },
           },
         },
@@ -133,8 +138,19 @@ export default function (app: ServerAPI): Plugin {
               "ui:help": "Needs an MMSI in Vessel settings.",
             },
       },
-      receive: { mode: { "ui:widget": "radio" } },
-      advanced: { token: { "ui:widget": "password" } },
+      receive: {
+        mode: { "ui:widget": "radio" },
+        nmea0183out: {
+          "ui:help":
+            "Relay aiscast targets as !AIVDM on the nmea0183out event, so chartplotters and tablet apps reading the server's NMEA 0183 connections see them. Turn off if another plugin (signalk-vessels-to-ais) already converts them.",
+        },
+      },
+      advanced: {
+        token: {
+          "ui:widget": "password",
+          ...(stationHelp && { "ui:help": stationHelp }),
+        },
+      },
     }),
 
     start(config: object) {
@@ -153,12 +169,8 @@ export default function (app: ServerAPI): Plugin {
   };
 
   async function startAsync(config: Config, gen: number): Promise<void> {
-    const server = (
-      config.advanced?.server ||
-      config.server ||
-      DEFAULT_SERVER
-    ).replace(/\/+$/, "");
-    const configuredToken = config.advanced?.token || config.token;
+    const server = (config.advanced?.server || DEFAULT_SERVER).replace(/\/+$/, "");
+    const configuredToken = config.advanced?.token;
     const wsBase = server.replace(/^http/, "ws");
     const shareTargets = config.share?.targets ?? true;
     const shareOwn = config.share?.ownShip ?? true;
@@ -166,6 +178,9 @@ export default function (app: ServerAPI): Plugin {
     const sharePosition = config.share?.position ?? false;
     if (sharePosition && !app.getSelfPath("mmsi")) app.debug("self-reported position is on but no MMSI is set; nothing will be synthesized");
     const mode = config.receive?.mode ?? "auto";
+    // On for configs saved before the setting existed, unlike the Share settings: this only decides where
+    // traffic the user already asked for is shown, and a plotter seeing nothing is the surprising default.
+    const relay0183 = config.receive?.nmea0183out ?? true;
     const radiusNm = Math.min(200, Math.max(5, config.receive?.radiusNm ?? 50));
     const dir = app.getDataDirPath();
     const log = (msg: string) => app.debug(msg);
@@ -185,7 +200,9 @@ export default function (app: ServerAPI): Plugin {
       errorShown = false;
       app.setPluginStatus(""); // an empty status deletes the entry, lastError included
     };
-    const selfSource = `v1:ed25519:${identity.pubkey}`;
+    // The station aiscast files our publishes under: the active token's sub, so an operator-issued token
+    // is recognized as well as a minted personal one.
+    let selfSub: string | null = null;
     const refreshToken = async (): Promise<void> => {
       if (configuredToken) {
         token = {
@@ -194,17 +211,25 @@ export default function (app: ServerAPI): Plugin {
           pubkey: identity.pubkey,
           server,
         };
-        return;
+      } else {
+        try {
+          // The station takes the boat's name only while own-ship sharing is on: that switch is how a boat
+          // keeps its whereabouts private, and its name beside the station's coverage label would give them away.
+          const name = app.getSelfPath("name");
+          const vesselName = shareOwn && typeof name === "string" ? name.trim() : "";
+          const t: Token & { nameError?: string } = await loadToken(dir, server, identity, vesselName);
+          if (t.nameError) log(`aiscast did not take the vessel name "${vesselName}": ${t.nameError}`);
+          token = t;
+          clearError();
+        } catch (err) {
+          token = null;
+          reportError(
+            `No token: ${describe(err)}. Receiving only; nothing is shared. Retrying.`,
+          );
+        }
       }
-      try {
-        token = await loadToken(dir, server, identity.pubkey);
-        clearError();
-      } catch (err) {
-        token = null;
-        reportError(
-          `No token: ${describe(err)}. Receiving only; nothing is shared. Retrying.`,
-        );
-      }
+      selfSub = token ? (tokenSub(token.token) ?? `ed25519:${identity.pubkey}`) : null;
+      stationHelp = stationPageHelp(server, selfSub);
     };
     await refreshToken();
     if (!live()) return;
@@ -225,8 +250,10 @@ export default function (app: ServerAPI): Plugin {
         mode,
         radiusNm,
         source: `${PLUGIN_ID}.net`,
-        selfSource,
+        selfSub: () => selfSub,
         onReceived: (s) => up.noteReceived(s),
+        // The plugin listens on `nmea0183`, never on `nmea0183out`, so this cannot feed back into the uplink.
+        onInjected: relay0183 ? (s) => events.emit("nmea0183out", s) : undefined,
       },
       log,
     );
@@ -248,8 +275,12 @@ export default function (app: ServerAPI): Plugin {
     });
     l.on("error", (message) => {
       if (/token/i.test(message) && !/publish/.test(message)) {
-        reportError(`aiscast refused the token: ${message}`);
-        if (!configuredToken) {
+        if (configuredToken) {
+          reportError(
+            `aiscast refused the configured token: ${message}. Clear Advanced → Access token and the plugin uses its own, which works from any network address.`,
+          );
+        } else {
+          reportError(`aiscast refused the token: ${message}`);
           const refused = token?.token;
           // A fresh token reconnects at once; the same token again waits out the refusal backoff.
           forgetToken(dir)
@@ -268,7 +299,7 @@ export default function (app: ServerAPI): Plugin {
         reportError(
           `aiscast refused the subscription: ${message} (reduce the radius)`,
         );
-      } else if (/mmsi/.test(message)) {
+      } else if (/mmsi/i.test(message)) {
         reportError(
           `aiscast refused the buddy list: ${message} (trim the buddy list)`,
         );
@@ -391,6 +422,11 @@ export default function (app: ServerAPI): Plugin {
   }
 
   return plugin;
+}
+
+// The station page exists only on the web client for DEFAULT_SERVER, so another server gets no help text.
+export function stationPageHelp(server: string, sub: string | null): string | null {
+  return server === DEFAULT_SERVER && sub ? `This boat's station page: ${STATION_PAGE}station:${sub}` : null;
 }
 
 // fetch's "fetch failed" hides the real reason (ECONNREFUSED, ENOTFOUND, a TLS error) in `cause`.

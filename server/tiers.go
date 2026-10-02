@@ -19,9 +19,11 @@ const (
 	anonMMSIs, personalMMSIs, feederMMSIs     = 10, 50, 200  // vessels that may be followed by MMSI per subscription
 	addrMaxStreams                            = 32           // concurrent streams per address across all tokens; roomy for a shared egress (CGNAT, marina wifi)
 	httpPerMinute, keysPerMinute              = 120, 10      // per address
+	tilesPerMinute                            = 600          // per address: a map view is ~20 tiles, refreshed every 10–30 s
 	udpLinesPerMinute                         = 30000        // ≈500 sentences/s per source address
 	corroborationWindow                       = time.Hour    // a low-trust position counts as corroborated this long after a trusted source heard the vessel
-	implausibleKnots                          = 120.0        // low-trust positions implying faster than this are dropped
+	implausibleKnots                          = 120.0        // positions implying faster than this are dropped
+	implausibleJumpNM                         = 10.0         // ...but only once the jump is this far; nearer than that, source jitter dominates
 )
 
 func anonymousClaims(ip string) *Claims {
@@ -44,10 +46,10 @@ func (p *Pipeline) effective(c *Claims) *Claims {
 	return &e
 }
 
-// contributed24h sums the last 24 h of events over the stations a token can own: its /v1 and HTTP stations,
-// and the UDP stations of any single addresses bound in its cidr claim.
+// contributed24h sums the last 24 h of events over the stations a token can own: its own station, and the
+// UDP stations of any single addresses bound in its cidr claim.
 func (p *Pipeline) contributed24h(c *Claims) int64 {
-	ids := []string{"v1:" + c.Sub, "http:" + c.Sub}
+	ids := []string{stationSource(c.Sub)}
 	for _, s := range c.CIDR {
 		if ip := net.ParseIP(strings.TrimSuffix(strings.TrimSuffix(s, "/32"), "/128")); ip != nil {
 			ids = append(ids, udpStation(ip.String()))

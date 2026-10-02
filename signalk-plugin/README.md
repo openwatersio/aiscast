@@ -1,13 +1,13 @@
 # signalk-aiscast
 
-Signal K plugin for [aiscast](https://github.com/openwatersio/aiscast), the open AIS network from [Open Waters](https://openwaters.io). It does two things over one connection:
+Signal K plugin for [aiscast](https://github.com/openwatersio/aiscast), the [Open Waters](https://openwaters.io) AIS network. It does two things over one connection:
 
 - **Share**: the plugin sends every AIS sentence your receiver hears to aiscast as it arrives (`!AIVDM` on NMEA 0183, or NMEA 2000 AIS PGNs re-encoded as sentences), so the places only boats can hear get coverage. The plugin also shares your own transponder's position (`!AIVDO`). When an AIS transponder is not available, the plugin builds class B reports from the Signal K position and marks them self-reported. Each part has its own checkbox.
 - **Receive**: when the boat hears no AIS of its own (no receiver, receiver off, server running ashore), the plugin subscribes to aiscast around your position. It injects the traffic as Signal K targets with `$source` `signalk-aiscast.net`, so Freeboard and friends show them. `Always` mode also adds traffic beyond VHF range, and locally heard targets win.
 
 It also follows your buddy boats worldwide: see [Buddy boats](#buddy-boats).
 
-No account. On first start the plugin generates an Ed25519 keypair in its data directory and requests its own access token from aiscast, sent as an `Authorization: Bearer` header. aiscast credits receptions to that key. Paste an operator-issued token into the config to publish as a named station with higher limits.
+No account. On first start the plugin generates an Ed25519 keypair in its data directory and requests its own access token from aiscast, signing the request with that key so nobody else can get a token for it. The token is sent as an `Authorization: Bearer` header and works from any network address, and aiscast credits receptions to that key. Advanced → Access token shows the address of the boat's station page on openwaters.io, as text to copy into a browser. Paste an operator-issued token into the config to publish as a named station with higher limits.
 
 ## Install
 
@@ -18,12 +18,13 @@ Signal K App Store → `signalk-aiscast`, or `npm install signalk-aiscast` in `~
 | Setting | Default | Meaning |
 |---|---|---|
 | Share → AIS targets I receive | on | publish AIS heard by the receiver (NMEA 0183 `!AIVDM`, NMEA 2000 AIS) |
-| Share → My own ship's AIS transponder data | on | forward what the transponder broadcasts (`!AIVDO`). Your position becomes public open data on aiscast, and the transponder already broadcasts it on VHF |
+| Share → My own ship's AIS transponder data | on | forward what the transponder broadcasts (`!AIVDO`). Your position becomes public open data on aiscast, and the transponder already broadcasts it on VHF. While this is on, your station on aiscast also takes the vessel name set in Signal K |
 | Share → Fallback to self-reported AIS position | on | when an AIS transponder is not available, build class B reports from Signal K: position every 60 s while moving, static data every 6 min, tagged `s:self`. Synthesis pauses for 5 min after any real `!AIVDO`. The setting stays disabled until an MMSI is set in Vessel settings |
 | Receive → Show traffic from aiscast | auto | `Off`, `Auto` (only while nothing is heard locally for 90 s), `Always` (also beyond local VHF range, and local reception wins per target) |
 | Receive → Radius | 50 nm | subscription box around the vessel (5–200) |
+| Receive → Send aiscast traffic to NMEA 0183 output | on | re-emit injected targets as `!AIVDM` on the `nmea0183out` event, so chartplotters and tablet apps see them too |
 | Advanced → Server | `https://ais.openwaters.io` | aiscast base URL |
-| Advanced → Access token | empty | optional operator-issued token. Empty = self-minted personal token |
+| Advanced → Access token | empty | optional operator-issued token. Empty = self-minted personal token, which works from any network address |
 
 ## Buddy boats
 
@@ -33,6 +34,7 @@ Install [signalk-buddylist-plugin](https://github.com/sbender9/signalk-buddylist
 - Buddies are followed in every receive mode, including `Off`: the whole point is traffic beyond local reception. Local reception still wins per target in `Always` mode.
 - The buddylist plugin raises `vessels.<urn>.buddy` and its `notifications.buddy.<urn>` proximity alert the moment positions arrive, so Freeboard's buddy icon, the buddies-only filter, and phone alerts via signalk-push-notifications all work at any distance.
 - The status line shows `buddies 2/3`: how many of the listed buddies aiscast has heard from in the last 10 minutes.
+- aiscast caps how many MMSIs one connection may follow (50 for the plugin's own personal token). A longer list is trimmed to the lowest MMSIs that fit, so the rest are not followed until the list shrinks.
 - A buddy only appears when some station or satellite feed hears them. Coastal coverage is good; mid-ocean gaps are real.
 
 Without the buddylist plugin installed, there are no buddies and nothing changes.
@@ -40,8 +42,12 @@ Without the buddylist plugin installed, there are no buddies and nothing changes
 ## Behaviour worth knowing
 
 - The plugin sends sentences as received, each stamped with a NMEA TAG block that carries the receive time. Anything unacknowledged, or heard while offline, waits in `<data dir>/queue/` (cap 100 MB) and replays oldest-first on reconnect. aiscast archives replayed sentences older than a minute and keeps them off the live map.
+- A replay is paced to stay under the server's publish limit of 6000 sentences a minute, since anything past it is dropped. A long backlog therefore takes a while to clear: roughly a minute for every 5400 sentences owed, with live sending held back until it is done. The status line counts the sentences still queued.
 - The plugin reconnects with jittered backoff (5 s → 5 min, and 30 min after a refusal) and a 60 s silence watchdog. The status line in Plugin Config shows the key prefix, send rate, queue depth, targets, and link state.
 - Injected targets come through the server's own AIS parser, so they are shaped exactly like VHF-received ones. The server's *Maximum age of inactive vessels* setting expires them. The plugin never injects your own vessel or echoes of your own receptions, and it never publishes payloads from aiscast back to aiscast.
+- Traffic from aiscast also goes out as NMEA 0183. Injected targets are re-emitted on `nmea0183out` with the TAG block stripped and remote own-ship `!AIVDO` normalized to `!AIVDM`, which the server's TCP 10110 interface and any connection with `nmea0183out` in its output events relays to chartplotters and tablets — the apps that do not speak Signal K. Two limits:
+  - Only aiscast-sourced targets. What the local receiver hears already reaches those outputs through its own connection, and in `Always` mode a target the receiver covers is suppressed here as well as in the data model. Turn the setting off if `signalk-vessels-to-ais` is installed, since it converts network-injected targets back to 0183 itself.
+  - Only positions received in the last 2 minutes. Older snapshot, aggregate, and satellite positions are discarded before injection. Names and dimensions are always injected into Signal K. On NMEA 0183 they follow a vessel's first live position and repeat with a position every 6 minutes, so a plotter learns names that aiscast sent only in the snapshot, and the snapshot never bursts onto a 4800-baud serial line.
 - NMEA 2000 AIS needs nothing extra. The plugin re-encodes PGNs 129038/129039/129041/129794/129809/129810 to `!AIVDM` (own ship to `!AIVDO`) and tags them `s:n2k`, since N2K carries decoded fields rather than the VHF bits. The plugin works without `signalk-n2kais-to-nmea0183` and ignores its output.
 - The self-reported position fallback does for aiscast what `@signalk/aisreporter` does for MarineTraffic. Position comes from `navigation.position`, with SOG, COG, and heading (true, or magnetic plus variation) when present, and the AIS "not available" values when absent. Name, callsign, ship type, and dimensions come from `name`, `communication.callsignVhf`, `design.aisShipType`, `design.length`/`design.beam`, and `sensors.gps.fromBow`/`fromCenter`. aiscast marks these events `synthesized: true`, keeps them out of its AISHub feed, and shows them apart from VHF receptions. The plugin sends nothing without a fix, while the GPS sits at Null Island, or while the position stays unchanged.
 

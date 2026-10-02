@@ -1,0 +1,919 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "aiscast API",
+    "version": "1.0.0",
+    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket JSON frames, MQTT over WebSocket for feeders, or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, no sign-in, the same tiers as `/v1/vessels`. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
+    "contact": {
+      "name": "aiscast",
+      "url": "https://github.com/openwatersio/aiscast"
+    },
+    "termsOfService": "https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    }
+  },
+  "servers": [{ "url": "https://ais.openwaters.io" }],
+  "tags": [
+    { "name": "Authentication", "description": "Create a token over HTTP. Feeder, peer, partner, and admin tokens are issued by the operator." },
+    { "name": "Vessels and stations", "description": "The current picture, for a map or a lookup. No token needed, 120 requests per minute per address. A token can carry its own limit. For continuous updates, use a stream instead of polling." },
+    { "name": "Contributing", "description": "Send what your receiver hears. Everything you feed is credited to your station, and 1,000 messages a day earns a personal token the feeder tier." },
+    { "name": "Status", "description": "For status pages and monitors. No token needed." }
+  ],
+  "paths": {
+    "/v1/vessels": {
+      "get": {
+        "operationId": "getVessels",
+        "tags": ["Vessels and stations"],
+        "summary": "Vessels",
+        "description": "Vessel positions as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.\n\nAn area answers with last known positions: every vessel heard in it in the last 30 minutes, and those last heard up to 7 days ago whose last report was stationary, meaning moored, at anchor, aground, under 1 knot, or an aid to navigation or base station. A vessel is usually still where it stopped when its receiver goes offline or it switches AIS off at its berth, while one last heard under way has moved on. `max_age` changes the 7 days and `max_age_moving` the 30 minutes for moving vessels. Past 30 minutes the answer takes at most 500 vessels, newest first, and sets `truncated` when there were more. A vessel named in `mmsi` answers with its last known position however long ago it was heard, moving or not, unless `max_age` or `max_age_moving` is given. The vector tiles answer by the same rules. Every feature carries `seen`, so an old position reads as where the vessel was.\n\n`q` searches instead: vessels whose name starts with it, or whose MMSI does when it is digits, most recently heard first, at most 50. Each result carries `near`, the town or region nearest its position. `around` orders a search nearest first. `bbox`, `mmsi`, and `max_age` narrow a search, and it needs neither. `kind`, `class`, `type`, `min_sog`, and `max_age_moving` filter an area, a list, or a search, as they filter the vector tiles. A search refuses parameters it does not know, so a filter added later never changes an earlier answer.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/bbox" },
+          { "$ref": "#/components/parameters/mmsi" },
+          {
+            "name": "max_age",
+            "in": "query",
+            "required": false,
+            "description": "Oldest last report to include: whole seconds, a duration such as `90m` or `24h`, or `all`. Defaults to 7 days for an area and to `all` for vessels named in `mmsi`.",
+            "schema": { "type": "string" },
+            "example": "24h"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Search: a name prefix, case-insensitive, or an MMSI prefix when all digits. At least 2 characters.",
+            "schema": { "type": "string", "minLength": 2 },
+            "example": "CERUL"
+          },
+          {
+            "name": "around",
+            "in": "query",
+            "required": false,
+            "description": "`lat,lon`. Orders a search by distance from this point, nearest first, before the cap of 50 cuts it. Search only.",
+            "schema": { "type": "string" },
+            "example": "38.97,-76.49"
+          },
+          { "$ref": "#/components/parameters/kind" },
+          { "$ref": "#/components/parameters/class" },
+          { "$ref": "#/components/parameters/type" },
+          { "$ref": "#/components/parameters/min_sog" },
+          { "$ref": "#/components/parameters/max_age_moving" }
+        ],
+        "responses": {
+          "200": {
+            "description": "GeoJSON FeatureCollection of vessel positions.",
+            "content": {
+              "application/geo+json": {
+                "schema": { "$ref": "#/components/schemas/FeatureCollection" },
+                "example": {
+                  "type": "FeatureCollection",
+                  "features": [
+                    {
+                      "type": "Feature",
+                      "id": 368168720,
+                      "geometry": { "type": "Point", "coordinates": [-70.63165, 41.680075] },
+                      "properties": {
+                        "mmsi": 368168720,
+                        "kind": "vessel",
+                        "name": "CERULEAN",
+                        "type": 36,
+                        "cog": 237.4,
+                        "sog": 0,
+                        "heading": 237,
+                        "nav_status": 0,
+                        "seen": "2026-08-20T19:12:31Z",
+                        "source": "udp:84a377dcf41b",
+                        "station": "udp:84a377dcf41b",
+                        "msg_type": "StaticDataReport"
+                      }
+                    }
+                  ],
+                  "attribution": { "udp": "Open Waters AIS (https://openwaters.io/ais/)" }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": {
+            "description": "A search on a server running without the vessel record.",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/v1/vessels/{mmsi}": {
+      "get": {
+        "operationId": "getVessel",
+        "tags": ["Vessels and stations"],
+        "summary": "One vessel",
+        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is the earliest report of the vessel the network holds, from live traffic or its archive. `attribution` carries the credit line for the source of its last message. `properties.wikidata` holds the vessel's particulars as registered, from its Wikidata item, when its IMO number has one. `properties.uscg` holds a US-flag vessel's particulars as documented with the US Coast Guard, when its call sign and name match a vessel there.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          {
+            "name": "mmsi",
+            "in": "path",
+            "required": true,
+            "description": "The vessel's MMSI.",
+            "schema": { "type": "integer" },
+            "example": 368168720
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The vessel.",
+            "content": {
+              "application/geo+json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/VesselFeature" },
+                    {
+                      "type": "object",
+                      "required": ["attribution"],
+                      "properties": {
+                        "attribution": {
+                          "type": "object",
+                          "description": "Credit line for the source kind of the vessel's last message, keyed as in a FeatureCollection.",
+                          "additionalProperties": { "type": "string" }
+                        },
+                        "properties": {
+                          "type": "object",
+                          "properties": {
+                            "wikidata": { "$ref": "#/components/schemas/VesselWikidata" },
+                            "uscg": { "$ref": "#/components/schemas/VesselUSCG" }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "No vessel with this MMSI has been heard.",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/vessels/{mmsi}/track": {
+      "get": {
+        "operationId": "getVesselTrack",
+        "tags": ["Vessels and stations"],
+        "summary": "Where a vessel has been",
+        "description": "The positions the network heard from one vessel, as a GeoJSON Feature or a GPX 1.1 track. Anonymous and personal requests reach the last 48 hours; feeder and commercial tokens reach packaged history before that, up to 7 days per request, and for the other tiers a range that overlaps the last 48 hours is clamped to them, while one wholly before them is a `403`. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. When more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "name": "mmsi", "in": "path", "required": true, "description": "The vessel's MMSI.", "schema": { "type": "integer" }, "example": 368168720 },
+          { "name": "from", "in": "query", "required": false, "description": "Start, RFC 3339. Defaults to 24 hours before `to`. At most 7 days before `to`.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "to", "in": "query", "required": false, "description": "End, RFC 3339. Defaults to now.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "interval", "in": "query", "required": false, "description": "At most one position per interval, the first in each: whole seconds or a duration such as `5m`, or `0` for every position heard. Defaults to the round step, from 5 seconds to a day, that spreads `limit` positions over the whole range, so a dense range is thinned rather than cut to its newest positions. The answer reports the interval used.", "schema": { "type": "string" }, "example": "5m" },
+          { "name": "limit", "in": "query", "required": false, "description": "Most positions to return. Defaults to 1,000 and is capped by tier: 200 anonymous, 1,000 with a personal token, 5,000 for feeder and above.", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "format", "in": "query", "required": false, "description": "`geojson`, the default, or `gpx`.", "schema": { "type": "string", "enum": ["geojson", "gpx"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The track.",
+            "content": {
+              "application/geo+json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["type", "id", "geometry", "properties", "attribution"],
+                  "properties": {
+                    "type": { "type": "string", "const": "Feature" },
+                    "id": { "type": "integer", "description": "MMSI." },
+                    "geometry": { "type": ["object", "null"], "description": "`LineString` of `[longitude, latitude]` positions, oldest first; `Point` for one position; `null` for none." },
+                    "properties": {
+                      "type": "object",
+                      "required": ["mmsi", "from", "to", "interval", "points", "truncated", "times", "sog", "cog", "heading", "nav_status"],
+                      "properties": {
+                        "mmsi": { "type": "integer" },
+                        "name": { "type": "string", "description": "Present when known." },
+                        "from": { "type": "string", "format": "date-time", "description": "Start of the range covered, after clamping." },
+                        "to": { "type": "string", "format": "date-time", "description": "End of the range covered." },
+                        "interval": { "type": "integer", "description": "Seconds between positions at most, as requested or chosen by default; `0` is every position heard." },
+                        "points": { "type": "integer" },
+                        "truncated": { "type": "boolean", "description": "More positions matched than `limit`; the newest were kept." },
+                        "times": { "type": "array", "items": { "type": "string", "format": "date-time" } },
+                        "sog": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Speed over ground, knots." },
+                        "cog": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Course over ground, degrees." },
+                        "heading": { "type": "array", "items": { "type": ["integer", "null"] }, "description": "True heading, degrees." },
+                        "nav_status": { "type": "array", "items": { "type": ["integer", "null"] }, "description": "AIS navigational status." }
+                      }
+                    },
+                    "attribution": { "type": "object", "additionalProperties": { "type": "string" } }
+                  }
+                }
+              },
+              "application/gpx+xml": { "schema": { "type": "string" } }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "No vessel with this MMSI has been heard.",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
+          },
+          "403": {
+            "description": "The range ends more than 48 hours ago and the token's tier does not reach the archive.",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": {
+            "description": "A server running without the track store.",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/v1/vessels/tiles.json": {
+      "get": {
+        "operationId": "getVesselTileJSON",
+        "tags": ["Vessels and stations"],
+        "summary": "Vessel tiles for maps",
+        "description": "Live vessel positions as vector tiles, for MapLibre GL JS, OpenLayers, or any map that reads TileJSON. Point a vector source at this URL. It supplies the tile URLs, the zoom range, and the attribution. Filters and `key` added to this URL are passed on to every tile.\n\nA tile shows the same vessels as `/v1/vessels` for an area: every vessel heard in the last 30 minutes, and vessels that were stationary when last heard up to 7 days ago. In crowded areas at low zoom, a tile keeps one vessel in each few pixels.\n\nTiles are snapshots, rebuilt at most every 10 seconds. Reload them on a timer to keep the map current:\n\n```js\nmap.on(\"load\", () => {\n  map.addSource(\"vessels\", {\n    type: \"vector\",\n    url: \"https://ais.openwaters.io/v1/vessels/tiles.json\",\n  });\n  map.addLayer({\n    id: \"vessels\",\n    type: \"circle\",\n    source: \"vessels\",\n    \"source-layer\": \"vessels\",\n    paint: { \"circle-radius\": 4, \"circle-color\": \"#1565c0\" },\n  });\n  // Reload the tiles every 15 seconds. The old ones stay on screen until the new ones arrive.\n  setInterval(() => map.refreshTiles(\"vessels\"), 15000);\n});\n```\n\n#### Properties\n\nEach vessel is a point in the `vessels` layer, with its MMSI as the feature id. A property is left out when the vessel has not reported it.\n\n- `mmsi` and `name`\n- `kind`: `vessel`, `aton` (aid to navigation), `base` (base station), or `sar` (search and rescue aircraft)\n- `type`: the ITU ship and cargo type code, or for an `aton` the aid-to-navigation type\n- `sog` in knots, and `cog` and `heading` in degrees\n- `hdg`: the heading, or the course over ground when there is no heading. Use it for `icon-rotate`.\n- `nav_status`, `class` (`A` or `B`), `flag`, `length`, and `beam`\n- `age_s`: seconds since the vessel was last heard. Use it to fade old positions.\n- `source` and `station`: who heard it\n\n`/v1/vessels/{mmsi}` has the rest, such as destination and ETA.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/tileMMSI" },
+          { "$ref": "#/components/parameters/kind" },
+          { "$ref": "#/components/parameters/class" },
+          { "$ref": "#/components/parameters/type" },
+          { "$ref": "#/components/parameters/min_sog" },
+          { "$ref": "#/components/parameters/max_age_moving" },
+          { "$ref": "#/components/parameters/tileMaxAge" }
+        ],
+        "responses": {
+          "200": {
+            "description": "TileJSON.",
+            "content": { "application/json": { "schema": { "type": "object", "required": ["tilejson", "tiles", "attribution", "vector_layers"] } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/vessels/tiles/{z}/{x}/{y}": {
+      "get": {
+        "operationId": "getVesselTile",
+        "tags": ["Vessels and stations"],
+        "summary": "Vessel tile by z/x/y",
+        "description": "One vector tile, at the URL template that `/v1/vessels/tiles.json` points to. Most maps should use the TileJSON instead. Use this template directly only for a client that takes a tile URL rather than TileJSON. It takes the same parameters and returns the same `vessels` layer. Tiles have their own rate limit of 600 requests per minute per address.",
+        "security": [{}, { "token": [] }],
+        "parameters": [
+          { "name": "z", "in": "path", "required": true, "description": "Zoom, 0–22. TileJSON advertises 14 as the maximum, and clients overzoom past it.", "schema": { "type": "integer", "minimum": 0, "maximum": 22 } },
+          { "name": "x", "in": "path", "required": true, "description": "Column, 0 to 2^z−1.", "schema": { "type": "integer", "minimum": 0 } },
+          { "name": "y", "in": "path", "required": true, "description": "Row, 0 to 2^z−1, from the north.", "schema": { "type": "integer", "minimum": 0 } },
+          { "$ref": "#/components/parameters/tileMMSI" },
+          { "$ref": "#/components/parameters/kind" },
+          { "$ref": "#/components/parameters/class" },
+          { "$ref": "#/components/parameters/type" },
+          { "$ref": "#/components/parameters/min_sog" },
+          { "$ref": "#/components/parameters/max_age_moving" },
+          { "$ref": "#/components/parameters/tileMaxAge" }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tile, gzipped when the request accepts gzip. An empty tile has an empty `vessels` layer.",
+            "content": { "application/vnd.mapbox-vector-tile": { "schema": { "type": "string", "format": "binary" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/stations": {
+      "get": {
+        "operationId": "listStations",
+        "tags": ["Vessels and stations"],
+        "summary": "Stations",
+        "description": "Every receiving station heard since the server started, with what it contributes. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes and `vessels_24h` in the last 24 hours. `vessels_exclusive_24h` counts the vessels no other station heard in those 24 hours, the gap a station fills. `bbox` is the extent of positions heard, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "All stations, sorted by id.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Station" } },
+                "example": [
+                  {
+                    "station": "kystverket/2573010",
+                    "source": "kystverket",
+                    "events": { "last_24h": 41812, "last_7d": 280112 },
+                    "duplicates": 40,
+                    "vessels": 61,
+                    "vessels_24h": 212,
+                    "vessels_exclusive_24h": 17,
+                    "positions": 1500,
+                    "first_seen": "2026-08-20T16:57:47Z",
+                    "last_seen": "2026-08-21T03:10:32Z",
+                    "last_age_s": 2,
+                    "bbox": [59.41, 10.31, 59.93, 10.78]
+                  },
+                  {
+                    "station": "station:ed25519:9BEqQjPRE0sZse-EbW1xUJa0K2iTBTV3TCqz1sPS7Fk",
+                    "source": "station:ed25519:9BEqQjPRE0sZse-EbW1xUJa0K2iTBTV3TCqz1sPS7Fk",
+                    "events": { "last_24h": 18230, "last_7d": 120412 },
+                    "duplicates": 512,
+                    "vessels": 14,
+                    "vessels_24h": 61,
+                    "vessels_exclusive_24h": 9,
+                    "positions": 15904,
+                    "first_seen": "2026-08-20T16:57:47Z",
+                    "last_seen": "2026-08-21T03:10:31Z",
+                    "last_age_s": 3,
+                    "bbox": [41.38, -70.94, 41.62, -70.51],
+                    "name": "Quissett Harbor",
+                    "name_from": "operator",
+                    "near": "Falmouth, MA"
+                  }
+                ]
+              }
+            }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/stations/{id}": {
+      "get": {
+        "operationId": "getStation",
+        "tags": ["Vessels and stations"],
+        "summary": "Station detail",
+        "description": "One station's statistics plus a GeoJSON FeatureCollection of the vessels it was the latest to hear. Ids can contain slashes, such as `kystverket/2573010`.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Station id as reported by `/v1/stations`.",
+            "schema": { "type": "string" },
+            "example": "kystverket/2573010"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The station and its vessels.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["station", "vessels"],
+                  "properties": {
+                    "station": { "$ref": "#/components/schemas/Station" },
+                    "vessels": { "$ref": "#/components/schemas/FeatureCollection" }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown station id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                },
+                "example": { "error": "unknown station" }
+              }
+            }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/stats": {
+      "get": {
+        "operationId": "getStats",
+        "tags": ["Status"],
+        "summary": "Stats",
+        "description": "A summary for status pages and growth tracking: stations, vessels, event rates, client counts, and a breakdown by source kind. Vessel counts come from the vessel record, which holds every vessel any archive has heard. The other counts are rolling 24-hour and 7-day windows that survive restarts, never since-start totals.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The current summary.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Stats" },
+                "example": {
+                  "time": "2026-08-21T13:40:12Z",
+                  "stations": { "total": 14, "active": 11, "by_source": { "kystverket": 1, "digitraffic": 1, "station": 5, "udp": 7 } },
+                  "vessels": { "total": 332255, "active": 4812, "with_position": 4790, "by_kind": { "vessel": 4701, "aton": 88, "base": 19, "sar": 4 }, "last_24h": 96267, "last_7d": 176687, "last_30d": 312480, "new": { "last_24h": 2115, "last_7d": 19485, "last_30d": 101240 } },
+                  "events": { "per_second": 212.4, "last_24h": 18230411, "last_7d": 121004312, "duplicates": { "last_24h": 2210560, "last_7d": 15320011 } },
+                  "clients": { "streams": 9, "streams_opened": { "last_24h": 410, "last_7d": 2822 }, "requests": { "last_24h": 28310, "last_7d": 190412 } },
+                  "sources": {
+                    "kystverket": { "events": { "last_24h": 9120033, "last_7d": 61233190 }, "last_age_s": 0, "vessels": 2411, "vessels_exclusive": 180, "delay": { "n": 512, "p50": 0.6, "p99": 1.1 } }
+                  }
+                }
+              }
+            }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/keys": {
+      "post": {
+        "operationId": "mintKey",
+        "tags": ["Authentication"],
+        "summary": "Create a personal token",
+        "description": "Create a personal token for an Ed25519 key you generate. It never expires. Generate a key and print its public half in the form `pubkey` expects:\n\n```\nopenssl genpkey -algorithm ed25519 -out ais-key.pem\nPUB=$(openssl pkey -in ais-key.pem -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=')\n```\n\nSign the request with the same key, so nobody else can mint a token for it. The signature covers six lines joined by newlines, with no newline at the end: `aiscast-key`, `pubkey`, `ts`, `1` or `0` for `bind_ip`, `name`, and `vessel_name`, with an empty line for a name left out:\n\n```\nTS=$(date +%s)\nprintf 'aiscast-key\\n%s\\n%s\\n0\\n\\n' \"$PUB\" \"$TS\" > msg\nSIG=$(openssl pkeyutl -sign -inkey ais-key.pem -rawin -in msg | base64 | tr '+/' '-_' | tr -d '=\\n')\ncurl -d \"{\\\"pubkey\\\":\\\"$PUB\\\",\\\"ts\\\":$TS,\\\"sig\\\":\\\"$SIG\\\"}\" https://ais.openwaters.io/v1/keys\n```\n\nOnce a key has signed a request, every later request for it must be signed, and a request that names the station must be signed. Unsigned requests are still accepted for keys that have never signed, for clients that do not sign yet.\n\nTiers and limits are in [docs/limits.md](https://github.com/openwatersio/aiscast/blob/main/docs/limits.md).",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["pubkey"],
+                "properties": {
+                  "pubkey": {
+                    "type": "string",
+                    "description": "The raw 32-byte Ed25519 public key, base64url-encoded without padding (43 characters). Not PEM or DER."
+                  },
+                  "bind_ip": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Bind the token to the requesting address, so a receiver sending UDP from that address counts toward this token's feeder tier, and takes this request's names. The token then only works from that address."
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "The station's public name, up to 40 characters of letters, digits, spaces, and `. , ' - & ( ) / #`. Unique among stations. An empty string clears it. Needs `sig`. Generating again with a new name renames the station, and tokens already issued keep working."
+                  },
+                  "vessel_name": {
+                    "type": "string",
+                    "description": "The name of the boat the station is on, from a client that knows it, such as the Signal K plugin. Same rules as `name`, except that two stations may share it. Shown when there is no `name`. Needs `sig`."
+                  },
+                  "ts": { "type": "integer", "description": "Unix seconds, within 5 minutes of the server clock and later than the last signed request for this key." },
+                  "sig": { "type": "string", "description": "Ed25519 signature by `pubkey` over the signed lines, base64url without padding." }
+                }
+              },
+              "example": { "pubkey": "9BEqQjPRE0sZse-EbW1xUJa0K2iTBTV3TCqz1sPS7Fk", "bind_ip": false, "name": "Quissett Harbor", "ts": 1790000000, "sig": "2Wq…" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The token and the claims it carries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["token", "claims"],
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "description": "Ed25519-signed claim token, `ak1.<base64url claims>.<base64url signature>`, about 200 characters."
+                    },
+                    "claims": { "$ref": "#/components/schemas/Claims" },
+                    "signed": { "type": "boolean", "description": "`true` when the request's signature was checked and accepted. A client can wait for it before treating its key as locked to signed requests." },
+                    "name_error": { "type": "string", "description": "Why a requested name was not stored. The token is issued anyway." }
+                  }
+                },
+                "example": {
+                  "token": "ak1.eyJraWQiOiJr...In0.X2lnbmF0dXJl...",
+                  "claims": { "kid": "k1", "sub": "ed25519:9BEqQjPRE0sZse-EbW1xUJa0K2iTBTV3TCqz1sPS7Fk", "role": "personal", "iat": 1755691200, "conns": 2, "rate": 50, "area": 400 }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON, or `pubkey` is not a base64url Ed25519 public key.",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "403": { "description": "The request is not signed and must be, or its signature, `ts`, or key does not check out. The body says which." },
+          "501": {
+            "description": "This server has no personal-token issuer configured.",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/v1/receive": {
+      "post": {
+        "operationId": "receive",
+        "tags": ["Contributing"],
+        "summary": "Contributing over HTTP",
+        "description": "Contributing over HTTP with AIS-catcher's `-H` output or your own client:\n\n```\nAIS-catcher -H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on INTERVAL 15\n```\n\nThe body is AIS-catcher's `jsonaiscatcher` envelope or plain newline-separated NMEA, optionally gzipped, up to 1 MB. Needs a token, whose `sub` becomes the station name. 600 posts per minute per station. Feeding data is acceptance of the contributor agreement, linked from every response's `Link: rel=\"terms-of-service\"` header.",
+        "security": [{ "token": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "AIS-catcher `jsonaiscatcher` envelope.",
+                "properties": {
+                  "msgs": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "nmea": { "type": "array", "items": { "type": "string" } },
+                        "rxtime": { "type": "string", "description": "YYYYMMDDHHMMSS UTC; used as the message time when within 30 s of arrival." },
+                        "channel": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              },
+              "example": { "msgs": [{ "nmea": ["!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"], "rxtime": "20260820111900", "channel": "A" }] }
+            },
+            "text/plain": {
+              "schema": { "type": "string", "description": "Newline-separated NMEA sentences, TAG blocks allowed." },
+              "example": "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Accepted. The body is empty." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "413": {
+            "description": "Body larger than 1 MB (before or after gzip decompression).",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/nmea": {
+      "get": {
+        "operationId": "nmeaStream",
+        "tags": ["Contributing"],
+        "summary": "Deduplicated NMEA feed",
+        "description": "The raw NMEA WebSocket, documented at [openwaters.io/api/ais](https://openwaters.io/api/ais/). The responses below are what a request receives when it is refused before the WebSocket upgrade.",
+        "security": [{ "token": [] }],
+        "parameters": [
+          {
+            "name": "bbox",
+            "in": "query",
+            "required": false,
+            "description": "`minLat,minLon,maxLat,maxLon`. Repeatable; boxes are ORed. Must fit inside the token's `bbox` and `area` claims.",
+            "schema": { "type": "string" },
+            "example": "58.5,9.5,60.5,11.5"
+          }
+        ],
+        "responses": {
+          "101": { "description": "Switching to the WebSocket protocol." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "tags": ["Status"],
+        "summary": "Health",
+        "description": "`ok` while data is reaching subscribers. 503 after two minutes of nothing. One silent source is not an outage while the others keep the stream flowing.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Healthy.",
+            "content": { "text/plain": { "schema": { "type": "string" }, "example": "ok" } }
+          },
+          "503": {
+            "description": "Nothing is reaching subscribers.",
+            "content": { "text/plain": { "schema": { "type": "string" }, "example": "no events delivered to subscribers for 3m20s" } }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenAPI",
+        "tags": ["Status"],
+        "summary": "OpenAPI specification",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI description of this server.",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "token": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An aiscast claim token (`ak1....`), created by `POST /v1/keys` or issued by the operator. Besides `Authorization: Bearer`, the token is accepted as an HTTP Basic password (`anything:<token>`, which is what AIS-catcher's USERPWD sends) or as `?key=<token>` on the URL. A token that is present but invalid, expired, revoked, used outside its `cidr`, or lacking the role for the action is refused; it never degrades to anonymous access."
+      }
+    },
+    "parameters": {
+      "bbox": {
+        "name": "bbox",
+        "in": "query",
+        "required": false,
+        "description": "`minLat,minLon,maxLat,maxLon`. Latitude −90…90, longitude −180…180. Repeatable: the boxes are ORed and their total area counts against the token's area cap.",
+        "schema": { "type": "string" },
+        "example": "41.2,-71.2,42.0,-70.0"
+      },
+      "mmsi": {
+        "name": "mmsi",
+        "in": "query",
+        "required": false,
+        "description": "Comma-separated MMSIs. ORed with `bbox` when both are given. An unparseable entry is a `400`.",
+        "schema": { "type": "string" },
+        "example": "368168720,257090090"
+      },
+      "tileMMSI": { "name": "mmsi", "in": "query", "required": false, "description": "Comma-separated MMSIs: only these vessels. The MMSI cap applies, as on `/v1/vessels`.", "schema": { "type": "string" }, "example": "368168720,257090090" },
+      "kind": { "name": "kind", "in": "query", "required": false, "description": "Comma-separated: `vessel`, `aton` (aids to navigation), `base` (base stations), `sar` (search and rescue aircraft).", "schema": { "type": "string" }, "example": "vessel,sar" },
+      "class": { "name": "class", "in": "query", "required": false, "description": "`A` or `B`, the transponder class from the position reports. A vessel whose class is not yet known is left out.", "schema": { "type": "string", "enum": ["A", "B"] } },
+      "type": { "name": "type", "in": "query", "required": false, "description": "Comma-separated ITU ship and cargo type codes or ranges, such as `70-89` for cargo and tankers or `36,37` for sailing and pleasure craft. For an aid to navigation, the AtoN type. A vessel whose type is not yet known is type 0.", "schema": { "type": "string" }, "example": "70-89" },
+      "min_sog": { "name": "min_sog", "in": "query", "required": false, "description": "Only vessels at least this fast, in knots. A vessel with no known speed is left out.", "schema": { "type": "number", "minimum": 0 }, "example": 0.5 },
+      "tileMaxAge": { "name": "max_age", "in": "query", "required": false, "description": "Oldest last report to include: whole seconds, a duration such as `24h`, or `all`. Defaults to 7 days, or to `all` when `mmsi` is given.", "schema": { "type": "string" }, "example": "24h" },
+      "max_age_moving": { "name": "max_age_moving", "in": "query", "required": false, "description": "Oldest last report to include for a vessel whose last report was under way, that is, not stationary as `/v1/vessels` defines it: whole seconds, a duration such as `2h`, or `all`. Defaults to 30 minutes for an area and to `all` for vessels named in `mmsi`.", "schema": { "type": "string" }, "example": "all" }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed parameter or body. The plain-text body says which.",
+        "content": { "text/plain": { "schema": { "type": "string" } } }
+      },
+      "Unauthorized": {
+        "description": "Missing, invalid, expired, or revoked token, or the token lacks the role for this action. The plain-text body gives the reason.",
+        "content": { "text/plain": { "schema": { "type": "string" } } }
+      },
+      "RateLimited": {
+        "description": "Over the per-address or per-station request limit.",
+        "content": { "text/plain": { "schema": { "type": "string" }, "example": "rate limited" } }
+      }
+    },
+    "schemas": {
+      "FeatureCollection": {
+        "type": "object",
+        "description": "GeoJSON FeatureCollection of vessels.",
+        "required": ["type", "features", "attribution"],
+        "properties": {
+          "type": { "type": "string", "const": "FeatureCollection" },
+          "features": { "type": "array", "items": { "$ref": "#/components/schemas/VesselFeature" } },
+          "attribution": {
+            "type": "object",
+            "description": "Credit lines to display, one per source kind present in the features. The key is a feature's `source` value up to the first `:`. Every credit opens with \"Open Waters AIS (https://openwaters.io/ais/)\"; sources with their own terms add their credit after it.",
+            "additionalProperties": { "type": "string" }
+          },
+          "truncated": { "type": "boolean", "const": true, "description": "Present when a cap cut the list: a search past 50 matches, or an area past 500 vessels older than 30 minutes." }
+        }
+      },
+      "VesselFeature": {
+        "type": "object",
+        "description": "One vessel and its last known position.",
+        "required": ["type", "id", "geometry", "properties"],
+        "properties": {
+          "type": { "type": "string", "const": "Feature" },
+          "id": { "type": "integer", "description": "MMSI." },
+          "geometry": {
+            "type": ["object", "null"],
+            "description": "The last known position. Always present in a FeatureCollection; `null` from `/v1/vessels/{mmsi}` for a vessel whose position was never heard.",
+            "required": ["type", "coordinates"],
+            "properties": {
+              "type": { "type": "string", "const": "Point" },
+              "coordinates": {
+                "type": "array",
+                "description": "`[longitude, latitude]`.",
+                "items": { "type": "number" },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          },
+          "properties": {
+            "type": "object",
+            "required": ["mmsi", "kind", "seen", "source", "station", "msg_type"],
+            "properties": {
+              "mmsi": { "type": "integer" },
+              "kind": { "type": "string", "enum": ["vessel", "aton", "base", "sar"] },
+              "name": { "type": "string", "description": "Present only when known." },
+              "type": { "type": "integer", "description": "AIS ship/cargo code, or AtoN type. Present only when known." },
+              "cog": { "type": "number", "description": "Course over ground, degrees. Present only when known." },
+              "sog": { "type": "number", "description": "Speed over ground, knots. Present only when known." },
+              "heading": { "type": "integer", "description": "True heading, degrees. Present only when known." },
+              "nav_status": { "type": "integer", "description": "AIS navigational status. Present only when known." },
+              "near": { "type": "string", "description": "The town or region nearest the position, such as `Santa Monica, CA` or `Munster, Ireland`. On `q` searches only, and absent more than 100 km from a town of 5,000. Place names from GeoNames, CC BY 4.0." },
+              "flag": { "type": "string", "description": "ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits. Present only when the MID is known." },
+              "imo": { "type": "integer", "description": "IMO number from the vessel's static data. Present only when sent." },
+              "callsign": { "type": "string", "description": "Radio call sign. Present only when sent." },
+              "destination": { "type": "string", "description": "Destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful. Present only when sent." },
+              "eta": { "type": "string", "description": "Estimated arrival as sent, `MM-DD HH:MM` UTC, or `MM-DD` when the time is not available. AIS carries no year. Present only when sent." },
+              "draught": { "type": "number", "description": "Maximum static draught, metres. Present only when sent." },
+              "length": { "type": "integer", "description": "Overall length, metres, from the dimension fields. Present only when sent." },
+              "beam": { "type": "integer", "description": "Beam, metres. Present only when sent." },
+              "to_bow": { "type": "integer", "description": "Metres from the AIS antenna (the vessel's reference point) to the bow; 511 means 511 or more. `to_bow` and `to_stern` add up to `length` and are present together once known, and 0 can be a real value: a vessel that does not know where its antenna sits sends 0 to the bow and its length to the stern." },
+              "to_stern": { "type": "integer", "description": "Metres from the AIS antenna to the stern; 511 means 511 or more. Present together with `to_bow`." },
+              "to_port": { "type": "integer", "description": "Metres from the AIS antenna to the port side; 63 means 63 or more. `to_port` and `to_starboard` add up to `beam` and are present together once known; a vessel that does not know where its antenna sits sends 0 to port and its beam to starboard." },
+              "to_starboard": { "type": "integer", "description": "Metres from the AIS antenna to the starboard side; 63 means 63 or more. Present together with `to_port`." },
+              "first_seen": { "type": "string", "format": "date-time", "description": "The earliest report of the vessel the network holds, from live traffic or its archive. On `/v1/vessels/{mmsi}` only." },
+              "seen": { "type": "string", "format": "date-time", "description": "Time of the last message that updated the vessel." },
+              "source": { "type": "string", "description": "Source of that message: an upstream name, `station:<sub>` for an authenticated contributor (whatever transport it fed over), `udp:<hash>`, or `mmsi:<n>`." },
+              "station": { "type": "string", "description": "Station that delivered that message." },
+              "msg_type": { "type": "string", "description": "aisstream-style type name of that message." }
+            }
+          }
+        }
+      },
+      "VesselWikidata": {
+        "type": "object",
+        "description": "Particulars as registered, from the Wikidata item that carries the vessel's IMO number (P458). Present on `/v1/vessels/{mmsi}` when the IMO from the vessel's static data has a valid check digit and an item. Refreshed weekly. Wikidata is CC0, so no credit line is required; the photos `image` and `commons_category` lead to carry their own licenses. Registered dimensions can differ from the ones AIS reports. Where a property has several current values, such as two operators, a value without an end time wins, then the lowest item ID. Each field other than `id`, `url`, and `license` is present only when the item has it.",
+        "required": ["id", "url", "license"],
+        "properties": {
+          "id": { "type": "string", "description": "Wikidata item ID.", "example": "Q1052819" },
+          "url": { "type": "string", "format": "uri", "description": "The item's page on Wikidata." },
+          "license": { "type": "string", "const": "CC0-1.0" },
+          "ship_type": { "type": "string", "description": "Kind of ship, such as `bulk carrier`, `container ship`, `oil tanker`, or `ferry` (P31). Items that say only `ship` leave it out." },
+          "builder": { "type": "string", "description": "Shipyard or builder (P176)." },
+          "yard_number": { "type": "string", "description": "The builder's hull number (P617)." },
+          "year_built": { "type": "integer", "description": "Year the vessel entered service (P729)." },
+          "gross_tonnage": { "type": "integer", "description": "Gross tonnage (P1093)." },
+          "deadweight": { "type": "integer", "description": "Deadweight in tonnes (P4519)." },
+          "length": { "type": "number", "description": "Length in meters (P2043)." },
+          "beam": { "type": "number", "description": "Beam in meters (P2261)." },
+          "draught": { "type": "number", "description": "Design draught in meters (P2262). The `draught` in the vessel's properties is the one AIS reports for the current voyage." },
+          "registry": { "type": "string", "description": "Country of registry, its English name (P8047)." },
+          "home_port": { "type": "string", "description": "Port of registry, its English name (P532)." },
+          "owner": { "type": "string", "description": "Owner, its English name (P127)." },
+          "operator": { "type": "string", "description": "Operator, its English name (P137)." },
+          "former_names": { "type": "array", "items": { "type": "string" }, "description": "Names the vessel carried before, oldest first (P1448 with an end time)." },
+          "wikipedia": { "type": "string", "format": "uri", "description": "The ship's English Wikipedia article." },
+          "commons_category": { "type": "string", "format": "uri", "description": "The category of the ship's photos on Wikimedia Commons (P373). The photos carry their own licenses." },
+          "image": { "type": "string", "format": "uri", "description": "The Wikimedia Commons page of a photo of the ship (P18), which shows the photo's license and credit and links its thumbnails. The photo is not CC0." }
+        }
+      },
+      "VesselUSCG": {
+        "type": "object",
+        "description": "Particulars from the US Coast Guard's Port State Information Exchange (PSIX), a weekly public snapshot of its MISLE database. Present on `/v1/vessels/{mmsi}` for a US-flag vessel whose call sign and name both match a vessel PSIX lists; names match through abbreviations and misspellings, and a call sign alone never does. The listing is refreshed weekly. Dimensions and tonnage are read for each matched vessel after it is first heard, a request a second, and refreshed every 90 days, so a vessel can carry the other fields before them. A US government work, in the public domain, so no credit line is required. Each field other than `id`, `license`, and `name` is present only when PSIX has it.",
+        "required": ["id", "license", "name"],
+        "properties": {
+          "id": { "type": "integer", "description": "The vessel's ID in PSIX.", "example": 1097015 },
+          "license": { "type": "string", "const": "public domain (U.S. government work)" },
+          "name": { "type": "string", "description": "Name as documented, which can differ from the AIS name." },
+          "identification": { "type": "string", "description": "The official number of a documented vessel, else its state registration." },
+          "service": { "type": "string", "description": "Service type, such as `Towing Vessel`, `Passenger (Inspected)`, `Commercial Fishing Vessel`, or `Recreational`." },
+          "status": { "type": "string", "description": "Coast Guard status, such as `Active` or `Laid Up`." },
+          "year_built": { "type": "integer" },
+          "length": { "type": "number", "description": "Registered length in meters." },
+          "beam": { "type": "number", "description": "Registered breadth in meters." },
+          "depth": { "type": "number", "description": "Registered depth in meters." },
+          "gross_tonnage": { "type": "integer" },
+          "net_tonnage": { "type": "integer" },
+          "tonnage_measure": { "type": "string", "enum": ["Convention", "Regulatory", "Simplified"], "description": "How the tonnage was measured: `Convention` is the international system, `Regulatory` the older US system in register tons, and `Simplified` the method for small vessels. Convention is reported when a vessel has more than one." }
+        }
+      },
+      "Station": {
+        "type": "object",
+        "required": ["station", "source", "events", "duplicates", "vessels", "vessels_24h", "vessels_exclusive_24h", "positions", "first_seen", "last_seen", "last_age_s"],
+        "properties": {
+          "station": { "type": "string", "description": "Station id. Volunteer UDP stations are a keyed hash of the sender, never an address. A feed's TAG `s:` adds a path naming one of its receivers, such as `barentswatch/terra`; a volunteer's station is its `source`, whatever its sentences' TAG `s:` says." },
+          "source": { "type": "string" },
+          "events": { "$ref": "#/components/schemas/Windows" },
+          "duplicates": { "type": "integer", "description": "Messages another station delivered first, since this station was first heard after the last restart." },
+          "vessels": { "type": "integer", "description": "Distinct MMSIs heard in the last 30 minutes." },
+          "vessels_24h": { "type": "integer", "description": "Distinct MMSIs heard in the last 24 hours, including the station's own vessel." },
+          "vessels_exclusive_24h": { "type": "integer", "description": "Of `vessels_24h`, the vessels no other station heard. A vessel counts whether this station delivered a message first or as a duplicate. Rows that share a station id before `/` count as one station, and a station's own vessel is left out." },
+          "name": { "type": "string", "description": "What to call the station: the name its operator chose when minting its token, else the name of the boat it is on. Absent when it has neither, or when moderation has locked it. Rows that share a station id before `/` share a name." },
+          "name_from": { "type": "string", "enum": ["operator", "vessel"], "description": "Where `name` came from." },
+          "mmsi": { "type": "integer", "description": "The station's own vessel, from the `!AIVDO` sentences it sends." },
+          "near": { "type": "string", "description": "The town or region nearest the traffic the station hears, such as `Santa Monica, CA` or `Munster, Ireland`. Volunteer stations only. Place names from GeoNames, CC BY 4.0." },
+          "positions": { "type": "integer", "description": "Position messages since first heard after the last restart." },
+          "first_seen": { "type": "string", "format": "date-time" },
+          "last_seen": { "type": "string", "format": "date-time" },
+          "last_age_s": { "type": "integer", "description": "Seconds since the last message." },
+          "bbox": {
+            "type": "array",
+            "description": "`[minLat, minLon, maxLat, maxLon]` extent of positions heard, a rough coverage footprint. Absent until a position has been heard.",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        }
+      },
+      "Windows": {
+        "type": "object",
+        "description": "A rolling counter: hourly buckets, kept across restarts.",
+        "required": ["last_24h", "last_7d"],
+        "properties": {
+          "last_24h": { "type": "integer" },
+          "last_7d": { "type": "integer" }
+        }
+      },
+      "Stats": {
+        "type": "object",
+        "required": ["time", "stations", "vessels", "events", "clients", "sources"],
+        "properties": {
+          "time": { "type": "string", "format": "date-time" },
+          "stations": {
+            "type": "object",
+            "properties": {
+              "total": { "type": "integer", "description": "Stations heard since the server started." },
+              "active": { "type": "integer", "description": "Stations heard in the last 5 minutes." },
+              "by_source": {
+                "type": "object",
+                "description": "Station counts grouped by source kind: `station` (authenticated contributors), `udp`, `mmsi`, or the upstream name.",
+                "additionalProperties": { "type": "integer" }
+              }
+            }
+          },
+          "vessels": {
+            "type": "object",
+            "description": "`total` and the windows count the vessel record, refreshed once a minute. `active`, `with_position`, and `by_kind` describe the vessels heard in the last 30 minutes. A server running without the record reports `total` as `active` and leaves out the windows.",
+            "properties": {
+              "total": { "type": "integer", "description": "Every vessel the network has heard." },
+              "active": { "type": "integer", "description": "Vessels heard in the last 30 minutes." },
+              "with_position": { "type": "integer", "description": "Active vessels with a position." },
+              "by_kind": { "type": "object", "description": "Active vessels by kind.", "additionalProperties": { "type": "integer" } },
+              "last_24h": { "type": "integer", "description": "Vessels heard in the last 24 hours." },
+              "last_7d": { "type": "integer", "description": "Vessels heard in the last 7 days." },
+              "last_30d": { "type": "integer", "description": "Vessels heard in the last 30 days." },
+              "new": {
+                "type": "object",
+                "description": "Vessels first heard in each window.",
+                "properties": {
+                  "last_24h": { "type": "integer" },
+                  "last_7d": { "type": "integer" },
+                  "last_30d": { "type": "integer" }
+                }
+              }
+            }
+          },
+          "events": {
+            "type": "object",
+            "properties": {
+              "per_second": { "type": "number", "description": "Deduplicated event rate over the last 30 s." },
+              "last_24h": { "type": "integer" },
+              "last_7d": { "type": "integer" },
+              "duplicates": { "$ref": "#/components/schemas/Windows" }
+            }
+          },
+          "clients": {
+            "type": "object",
+            "properties": {
+              "streams": { "type": "integer", "description": "Open WebSocket subscriptions." },
+              "streams_opened": { "$ref": "#/components/schemas/Windows" },
+              "requests": { "$ref": "#/components/schemas/Windows" }
+            }
+          },
+          "sources": {
+            "type": "object",
+            "description": "Keyed by source kind: each upstream by name, every authenticated contributor as `station`, all UDP senders as `udp`.",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "events": { "$ref": "#/components/schemas/Windows" },
+                "last_age_s": { "type": "integer", "description": "Seconds since any member last produced an event." },
+                "vessels": { "type": "integer", "description": "Distinct MMSIs heard in the last 30 minutes." },
+                "vessels_exclusive": { "type": "integer", "description": "Of those, MMSIs no other source kind heard in that window." },
+                "delay": {
+                  "type": "object",
+                  "description": "Seconds from broadcast to arrival at aiscast over the last 512 position reports from this kind. The broadcast time is the report's UTC-second field placed in the minute of the event's canonical time, so delays of 55 s or more wrap. Absent until a position report with a valid second has been heard.",
+                  "required": ["n", "p50", "p99"],
+                  "properties": {
+                    "n": { "type": "integer", "description": "Samples in the window, at most 512." },
+                    "p50": { "type": "number" },
+                    "p99": { "type": "number" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "Claims": {
+        "type": "object",
+        "description": "The claims a token carries. Absent limits mean unlimited.",
+        "properties": {
+          "kid": { "type": "string", "description": "Issuer key id." },
+          "sub": { "type": "string", "description": "Who: a station name, partner name, or `ed25519:<pubkey>` / `mmsi:<n>` for a device." },
+          "role": { "type": "string", "enum": ["personal", "feeder", "peer", "partner", "admin"] },
+          "iat": { "type": "integer", "description": "Issued at, unix seconds." },
+          "exp": { "type": "integer", "description": "Expiry, unix seconds. Absent on personal tokens, which never expire." },
+          "bbox": {
+            "type": "array",
+            "description": "Boxes every subscription must fit inside, each `[minLat, minLon, maxLat, maxLon]`.",
+            "items": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }
+          },
+          "cidr": { "type": "array", "description": "Source CIDRs/IPs the token may be used from.", "items": { "type": "string" } },
+          "conns": { "type": "integer", "description": "Concurrent WebSocket cap for this `sub`." },
+          "rate": { "type": "integer", "description": "Messages per second per connection; excess is thinned." },
+          "area": { "type": "integer", "description": "Total subscribed bounding-box area in square degrees. Negative means MMSI-only subscriptions." },
+          "mmsis": { "type": "integer", "description": "Vessels followed by MMSI per subscription." }
+        }
+      }
+    }
+  }
+}

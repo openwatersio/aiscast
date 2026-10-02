@@ -1,5 +1,12 @@
 .wrangler/
 .env
+.dev.vars
 node_modules/
 signalk-plugin/dist/
+client/build/
+client/.react-router/
+client/worker-configuration.d.ts
 spec
+client/e2e/.run/
+client/test-results/
+client/playwright-report/

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,7 +21,14 @@ import (
 
 const maxPublishFrame = 1000 // sentences per publish frame; the rest are dropped and counted
 
+// Context takeover keeps each connection's 32 KB deflate window, about 1.2 MB of compressor state per
+// connection. It pays for itself: a /v1 frame is ~800 bytes and compresses about 1.5x on its own but
+// about 5.5x against the frames before it, and no takeover also costs more CPU per frame, since the
+// compressor resets for every message. BenchmarkCompression* measures the three modes.
 var wsOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover}
+
+// v1Opts also offers the mqtt subprotocol: /v1/stream carries MQTT for a client that asks for it (mqtt.go).
+var v1Opts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover, Subprotocols: []string{"mqtt"}}
 
 // Vars so tests can shrink them; atomic because a handler's pingLoop can outlive its test and read while
 // the next test writes.
@@ -183,6 +191,10 @@ func (ev *Event) renderV0() []byte {
 
 func wsWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	b, _ := json.Marshal(v)
+	return wsWrite(ctx, c, b)
+}
+
+func wsWrite(ctx context.Context, c *websocket.Conn, b []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return c.Write(ctx, websocket.MessageText, b)
@@ -227,6 +239,9 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 			var err error
 			if release, err = acquireStream(cl, ip); err != nil {
 				msg = "concurrent connections per user exceeded" // aisstream's wording
+			} else {
+				untrack, rel := p.streams.open("v0", cl), release
+				release = func() { rel(); untrack() }
 			}
 			pace.n = cl.Rate
 		}
@@ -266,12 +281,11 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 				p.stats.thinned.Add(1)
 				continue
 			}
-			wctx, wc := context.WithTimeout(ctx, 10*time.Second)
-			err := c.Write(wctx, websocket.MessageText, ev.renderV0())
-			wc()
-			if err != nil {
+			b := ev.renderV0()
+			if wsWrite(ctx, c, b) != nil {
 				return
 			}
+			p.fanout.v0.add(len(b))
 		}
 	}
 }
@@ -288,6 +302,12 @@ type v1Frame struct {
 	Snapshot bool     `json:"snapshot,omitempty"` // subscribe: first replay the last known events for vessels already tracked
 	Pubkey   string   `json:"pubkey,omitempty"`   // register: base64url ed25519 public key
 	BindIP   bool     `json:"bind_ip,omitempty"`  // register: bind the token to this connection's address (as /v1/keys bind_ip)
+
+	// register, as on /v1/keys: names for the station, and the signature proving the key
+	Name       *string `json:"name,omitempty"`
+	VesselName *string `json:"vessel_name,omitempty"`
+	TS         int64   `json:"ts,omitempty"`
+	Sig        string  `json:"sig,omitempty"`
 }
 
 // v1Welcome is the first frame on every /v1/stream socket: the tier in effect for this connection, so a
@@ -323,6 +343,8 @@ type v1Event struct {
 	ID          string     `json:"id,omitempty"` // absent on synthesized snapshot reconstructions
 	Time        time.Time  `json:"time"`
 	Source      string     `json:"source"`
+	License     string     `json:"license"`     // the source's license tag, as in the archive layout
+	Attribution string     `json:"attribution"` // credit line the consumer must display; always opens with the Open Waters AIS credit
 	Station     string     `json:"station"`
 	Channel     string     `json:"channel"`
 	NMEA        []string   `json:"nmea,omitempty"` // absent on synthesized snapshot reconstructions
@@ -335,6 +357,9 @@ type v1Event struct {
 }
 
 func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
+	// Terms with every response, as on /v1/receive. The JSON welcome frame repeats them; an MQTT session
+	// has no equivalent frame, so the header is the only place it can receive them.
+	w.Header().Set("Link", "<"+termsURL+`>; rel="terms-of-service"`)
 	// Not an upgrade: same URL, same claims and caps, one-way over SSE. This test only routes; the real
 	// handshake validation is websocket.Accept's, which answers a malformed one with 400. Requiring GET is
 	// what stops a POST from opening an unbounded stream.
@@ -349,10 +374,18 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	// Anonymous sockets may subscribe (the viewer), never publish. A supplied token must verify, and its
 	// claims (cidr, conns, bbox) bind the socket whatever its role; publishing needs a publish role.
 	cl, claimsErr := p.socketClaims(r)
-	if p.limited(w, wsConnectLimit, connectKey(cl, r)) {
+	// An MQTT socket without a request token identifies itself in CONNECT, after the upgrade, so its
+	// connect limit is applied there, keyed by token like everyone else's. Until then it is an unidentified
+	// socket waiting up to the CONNECT deadline, so a looser address-keyed ceiling bounds those.
+	connectChecked := cl != nil || !offersMQTT(r)
+	lim := wsConnectLimit
+	if !connectChecked {
+		lim = mqttAdmitLimit
+	}
+	if p.limited(w, lim, connectKey(cl, r)) {
 		return
 	}
-	c, err := websocket.Accept(w, r, wsOpts)
+	c, err := websocket.Accept(w, r, v1Opts)
 	if err != nil {
 		return
 	}
@@ -361,19 +394,17 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	go p.pingLoop(ctx, c, cancel)
+	if c.Subprotocol() == "mqtt" {
+		p.serveMQTT(ctx, c, r, cl, claimsErr)
+		return
+	}
 
 	if err := claimsErr; err != nil {
 		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
 		c.Close(websocket.StatusPolicyViolation, "invalid token")
 		return
 	}
-	if cl == nil {
-		if allowAnon {
-			cl = &Claims{Sub: "anon", Role: "admin"}
-		} else {
-			cl = anonymousClaims(clientIP(r)) // personal-tier limits, keyed by address
-		}
-	}
+	cl = orAnonymous(cl, r)
 	ip := clientIP(r)
 	relSub, relAddr, err := acquireStreamSlots(cl, ip)
 	if err != nil {
@@ -382,9 +413,17 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	}
 	// The exit release runs before cancel()/CloseNow() (defer LIFO), so the reader can be mid-register;
 	// the mutex + closed flag make release-old and release-at-exit exactly-once.
+	untrack := p.streams.open("v1", cl)
 	var slotMu sync.Mutex
 	closed := false
-	defer func() { slotMu.Lock(); closed = true; relSub(); relAddr(); slotMu.Unlock() }()
+	defer func() {
+		slotMu.Lock()
+		closed = true
+		relSub()
+		relAddr()
+		untrack()
+		slotMu.Unlock()
+	}()
 	canPublish := cl.may("publish")
 	sendWelcome := func() error { return wsWriteJSON(ctx, c, welcomeFor(cl, canPublish)) }
 	if sendWelcome() != nil {
@@ -437,7 +476,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				subscription.Store(s)
 				if f.Snapshot { // replay after storing the live sub: a duplicate is possible, a gap is not
 					for _, ev := range p.snapshotEvents(s) { // unpaced; bounded by the area claim like /v1/vessels
-						if wsWriteJSON(ctx, c, renderV1(ev)) != nil {
+						if wsWrite(ctx, c, ev.renderV1JSON()) != nil {
 							return
 						}
 					}
@@ -450,14 +489,14 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				now := time.Now()
-				src := "v1:" + cl.Sub
+				src := stationSource(cl.Sub)
 				n := 0
 				for _, line := range f.NMEA {
 					if n >= maxPublishFrame || !publishLimit.allow(cl.Sub) {
 						p.stats.rateLimited.Add(1)
 						break
 					}
-					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line, Buffered: f.Replay})
+					p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line, Buffered: f.Replay, Published: true})
 					n++
 				}
 				wsWriteJSON(ctx, c, map[string]any{"type": "ack", "n": n})
@@ -474,9 +513,9 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					errf("rate limited")
 					continue
 				}
-				tok, nc, msg := mintPersonal(ip, f.Pubkey, f.BindIP)
-				if msg != "" {
-					errf(msg)
+				tok, nc, nameErr, err := p.mintPersonal(ip, mintRequest{Pubkey: f.Pubkey, BindIP: f.BindIP, Name: f.Name, VesselName: f.VesselName, TS: f.TS, Sig: f.Sig})
+				if err != nil {
+					errf(err.Error())
 					continue
 				}
 				ncl := p.effective(&nc) // an already-feeding bound station earns the feeder tier now, as a reconnect would
@@ -494,10 +533,19 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				}
 				relSub()
 				relSub = rel
+				untrack()
+				untrack = p.streams.open("v1", ncl)
 				slotMu.Unlock()
 				cl, canPublish = ncl, ncl.may("publish")
 				pace.Store(&pacer{n: cl.Rate})
-				wsWriteJSON(ctx, c, map[string]any{"type": "key", "token": tok, "claims": nc})
+				key := map[string]any{"type": "key", "token": tok, "claims": nc}
+				if f.Sig != "" { // verified, as on /v1/keys
+					key["signed"] = true
+				}
+				if nameErr != "" {
+					key["name_error"] = nameErr
+				}
+				wsWriteJSON(ctx, c, key)
 				if sendWelcome() != nil {
 					return
 				}
@@ -525,9 +573,11 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				p.stats.thinned.Add(1)
 				continue
 			}
-			if err := wsWriteJSON(ctx, c, renderV1(ev)); err != nil {
+			b := ev.renderV1JSON()
+			if wsWrite(ctx, c, b) != nil {
 				return
 			}
+			p.fanout.v1.add(len(b))
 		}
 	}
 }
@@ -555,9 +605,16 @@ func (s *v1Sub) match(ev *Event) bool {
 	return false
 }
 
+// renderV1JSON is the event's /v1 frame, marshaled once per event on first use; every subscriber then
+// sends the same bytes.
+func (ev *Event) renderV1JSON() []byte {
+	ev.v1Once.Do(func() { ev.v1, _ = json.Marshal(renderV1(ev)) })
+	return ev.v1
+}
+
 func renderV1(ev *Event) v1Event {
-	out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, Station: ev.Station, Channel: channelString(ev.Channel),
-		NMEA: ev.Sentences, MMSI: ev.MMSI, MsgType: ev.Type, Message: ev.Packet, Synthesized: ev.Synthesized}
+	out := v1Event{Type: "event", ID: ev.ID, Time: ev.Time.UTC(), Source: ev.Source, License: licenseOf(ev.Source), Attribution: attributionOf(ev.Source),
+		Station: ev.Station, Channel: channelString(ev.Channel), NMEA: ev.Sentences, MMSI: ev.MMSI, MsgType: ev.Type, Message: ev.Packet, Synthesized: ev.Synthesized}
 	if ev.HasPos {
 		out.Lat, out.Lon = &ev.Lat, &ev.Lon
 	}
@@ -585,12 +642,18 @@ func welcomeFor(cl *Claims, canPublish bool) v1Welcome {
 	return v1Welcome{Type: "welcome", Sub: cl.Sub, Role: cl.Role, Feeder: cl.Feeder, Terms: termsURL, Limits: lim}
 }
 
-// parseSSESub builds the fixed subscription from the query string. Malformed input is refused rather than
-// dropped the way /v1/vessels drops it: on a connection held open for hours a typo'd mmsi is
-// indistinguishable from a subscription that legitimately never matches.
+// parseSSESub builds the fixed subscription from the query string, for /v1/stream over SSE and for
+// /v1/vessels. Malformed input is refused rather than dropped: on a connection held open for hours a typo'd
+// mmsi is indistinguishable from a subscription that legitimately never matches.
 func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
+	return parseSub(r.URL.Query(), cl, true)
+}
+
+// parseSub reads bbox and mmsi from a query string and checks them against the claims. needFilter refuses
+// a request with neither from a key with an area limit; a search, capped by its own row limit, passes false.
+func parseSub(vals url.Values, cl *Claims, needFilter bool) (*v1Sub, string) {
 	s := &v1Sub{}
-	for _, q := range r.URL.Query()["bbox"] {
+	for _, q := range vals["bbox"] {
 		var v [4]float64
 		if n, _ := fmt.Sscanf(q, "%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3]); n != 4 {
 			return nil, "bbox=minLat,minLon,maxLat,maxLon"
@@ -606,7 +669,7 @@ func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
 		}
 		s.boxes = append(s.boxes, b)
 	}
-	if q := r.URL.Query().Get("mmsi"); q != "" {
+	if q := vals.Get("mmsi"); q != "" {
 		s.mmsi = map[uint32]bool{}
 		for _, f := range strings.Split(q, ",") {
 			n, err := strconv.ParseUint(strings.TrimSpace(f), 10, 32)
@@ -617,7 +680,7 @@ func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
 		}
 	}
 	s.everything = len(s.boxes) == 0 && len(s.mmsi) == 0
-	if s.everything && cl.Area != 0 {
+	if s.everything && cl.Area != 0 && needFilter {
 		return nil, "bbox or mmsi required for this key"
 	}
 	if !cl.allowsArea(s.boxes) {
@@ -640,13 +703,7 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, claimsErr.Error(), http.StatusUnauthorized)
 		return
 	}
-	if cl == nil {
-		if allowAnon {
-			cl = &Claims{Sub: "anon", Role: "admin"}
-		} else {
-			cl = anonymousClaims(clientIP(r))
-		}
-	}
+	cl = orAnonymous(cl, r)
 	// Parsed and checked before any slot or subscription is taken, so a rejected request is cheap.
 	s, msg := parseSSESub(r, cl)
 	if msg != "" {
@@ -659,6 +716,7 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { relSub(); relAddr() }()
+	defer p.streams.open("sse", cl)()
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -729,7 +787,12 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 			p.stats.thinned.Add(1)
 			return true
 		}
-		return send(renderV1(ev)) == nil
+		b := ev.renderV1JSON()
+		if write("data: ", b) != nil {
+			return false
+		}
+		p.fanout.sse.add(len(b))
+		return true
 	}
 	for {
 		if len(snap) > 0 {
@@ -746,7 +809,7 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			default:
-				if send(renderV1(snap[0])) != nil { // unpaced, like the socket's snapshot frame
+				if write("data: ", snap[0].renderV1JSON()) != nil { // unpaced, like the socket's snapshot frame
 					return
 				}
 				snap = snap[1:]

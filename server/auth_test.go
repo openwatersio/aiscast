@@ -459,7 +459,7 @@ func TestTiersAndTrust(t *testing.T) {
 		t.Errorf("personal before feeding: %+v", e)
 	}
 	for i := 0; i < feederMinEvents24h; i++ {
-		p.stations.event(&Event{Station: "v1:ed25519:dev1", Source: "v1:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
+		p.stations.event(&Event{Station: "station:ed25519:dev1", Source: "station:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
 	}
 	if e := p.effective(&personal); !e.Feeder || e.Conns != feederConns || e.Rate != feederRate || e.Area != 0 || !e.mayRaw() {
 		t.Errorf("personal after feeding: %+v", e)
@@ -467,7 +467,7 @@ func TestTiersAndTrust(t *testing.T) {
 	// events older than 24 h do not count
 	old := Claims{Sub: "ed25519:dev2", Role: "personal"}
 	for i := 0; i < feederMinEvents24h; i++ {
-		p.stations.event(&Event{Station: "v1:ed25519:dev2", Source: "v1:ed25519:dev2", Time: now.Add(-30 * time.Hour), MMSI: 1})
+		p.stations.event(&Event{Station: "station:ed25519:dev2", Source: "station:ed25519:dev2", Time: now.Add(-30 * time.Hour), MMSI: 1})
 	}
 	if e := p.effective(&old); e.Feeder {
 		t.Error("stale contribution earned the tier")
@@ -533,9 +533,10 @@ func TestTiersAndTrust(t *testing.T) {
 		<-sub.ch
 	}
 	// a UDP report putting the same vessel 3,000 nm away three seconds later is implausible: dropped, not
-	// emitted (three, not two: rebuilt events must advance the vessel's clock by more than a second first)
+	// emitted (three, not two: rebuilt events must advance the vessel's clock by more than a second first).
+	// Not (0,0) any more: that is discarded as a GPS default before the implausibility check sees it.
 	before := p.stats.implausible.Load()
-	p.ingestPacket(udp, udp, now.Add(3*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 0, Longitude: 0, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	p.ingestPacket(udp, udp, now.Add(3*time.Second), now.Add(3*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: -0.52, Longitude: 0.13, Cog: 360, Sog: 102.3, TrueHeading: 511})
 	if p.stats.implausible.Load() != before+1 || len(sub.ch) != 0 {
 		t.Errorf("implausible jump: count %d→%d, events %d", before, p.stats.implausible.Load(), len(sub.ch))
 	}
@@ -548,7 +549,7 @@ func TestTiersAndTrust(t *testing.T) {
 	for len(sub.ch) > 0 {
 		<-sub.ch
 	}
-	p.ingestPacket(udp, udp, now.Add(10*time.Minute), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.5, Longitude: 0.2, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	p.ingestPacket(udp, udp, now.Add(10*time.Minute), now.Add(10*time.Minute), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.5, Longitude: 0.2, Cog: 360, Sog: 102.3, TrueHeading: 511})
 	if len(sub.ch) != 1 {
 		t.Fatalf("plausible UDP report not emitted (events=%d)", len(sub.ch))
 	}
@@ -573,7 +574,7 @@ func TestDedupedTrustedCopyCorroborates(t *testing.T) {
 	if len(sub.ch) != 0 {
 		t.Fatal("duplicate was emitted")
 	}
-	p.ingestPacket(udp, udp, now.Add(30*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.476, Longitude: 0.132, Cog: 360, Sog: 102.3, TrueHeading: 511})
+	p.ingestPacket(udp, udp, now.Add(30*time.Second), now.Add(30*time.Second), ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006760}, Valid: true, Latitude: 49.476, Longitude: 0.132, Cog: 360, Sog: 102.3, TrueHeading: 511})
 	if ev := <-sub.ch; !ev.Corroborated {
 		t.Error("UDP report after a deduplicated trusted copy should be corroborated")
 	}
@@ -676,5 +677,22 @@ func TestMMSIOnlyKey(t *testing.T) {
 	}
 	if r := reply(`{"type":"subscribe","mmsi":[1,2,3]}`); strings.Contains(r, "error") {
 		t.Errorf("mmsi subscribe on an mmsi-only key: %s", r)
+	}
+}
+
+// A feeding station keeps the tier across a restart: its client reconnects before it publishes again.
+func TestFeederSurvivesRestart(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: "station:ed25519:dev1", Source: "station:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
+	}
+	q := testPipeline(t)
+	q.stations.restoreRings(p.stations.rings(now))
+	if e := q.effective(&Claims{Sub: "ed25519:dev1", Role: "personal"}); !e.Feeder {
+		t.Error("restored station lost the feeder tier before it published")
+	}
+	if e := q.effective(&Claims{Sub: "ed25519:dev2", Role: "personal"}); e.Feeder {
+		t.Error("unknown station earned the feeder tier")
 	}
 }

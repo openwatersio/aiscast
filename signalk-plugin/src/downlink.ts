@@ -1,7 +1,7 @@
 import type { Delta, ServerAPI } from "@signalk/server-api";
 import { Parser } from "@signalk/nmea0183-signalk";
 import type { Frame, Link } from "./link.js";
-import { stripTag } from "./nmea.js";
+import { stripTag, xorChecksum } from "./nmea.js";
 import { ownPosition } from "./ownship.js";
 
 export type ReceiveMode = "off" | "auto" | "always";
@@ -10,8 +10,9 @@ export interface DownlinkOptions {
   mode: ReceiveMode;
   radiusNm: number;
   source: string; // $source on injected deltas
-  selfSource: string | null; // aiscast `source` of our own publishes, dropped on the way back
+  selfSub: () => string | null; // our token's sub: aiscast files our own publishes under it, and they are dropped on the way back
   onReceived?: (sentence: string) => void; // loop guard hook
+  onInjected?: (sentence: string) => void; // relay to NMEA 0183 output, for chartplotters and tablets
 }
 
 export interface DownlinkStats {
@@ -48,6 +49,8 @@ export class Downlink {
   private subscribed = false;
   private timer: NodeJS.Timeout | null = null;
   private targets = new Map<string, number>();
+  private relayed = new Set<string>(); // contexts whose positions go out on NMEA 0183
+  private statics = new Map<string, Map<string, CachedStatic>>(); // context → latest static per kind
   private buddies: number[] = [];
   private sentMmsi = "";
   private mmsiCap = Infinity; // from the welcome frame's limits; the server refuses a too-long list as a whole frame
@@ -190,10 +193,12 @@ export class Downlink {
     // Own-vessel echoes (our publishes, or another station hearing our transmission) skip the loop guard:
     // marking them seen would swallow our own future uplink of an identical payload (re-synthesized s:self
     // position, type 24 rebroadcast unchanged every few minutes). Self is never injected, so there is no loop.
-    if (this.opts.selfSource && ev.source === this.opts.selfSource) return;
+    const self = this.opts.selfSub();
+    if (self && sourceSub(ev.source) === self) return;
     if (!ev.mmsi || String(ev.mmsi) === this.selfMmsi) return;
     for (const s of ev.nmea) this.opts.onReceived?.(s);
-    if (POSITION_TYPES.has(ev.msg_type ?? "") && (ev.lat == null || ev.lon == null)) return; // aiscast rejected the position
+    const isPosition = POSITION_TYPES.has(ev.msg_type ?? "");
+    if (isPosition && (!isLive(ev.time) || ev.lat == null || ev.lon == null)) return;
 
     let delta: Delta | null = null;
     for (const s of ev.nmea) {
@@ -214,10 +219,41 @@ export class Downlink {
       if (ev.time) u.timestamp = ev.time as Delta["updates"][number]["timestamp"];
     }
     this.app.handleMessage(this.opts.source, delta);
+    if (this.opts.onInjected) this.relay(delta.context, ev, isPosition);
     this.stats.events++;
     this.targets.set(delta.context, Date.now());
     if (this.stats.events % 100 === 0) this.pruneTargets();
     this.stats.targets = this.targets.size;
+  }
+
+  // A target reaches NMEA 0183 with its first live position. Statics are cached from any event, snapshot
+  // included, and follow a relayed position every STATIC_EVERY: aiscast sends an aggregate's statics only
+  // when they change, so without the cache a plotter would never learn the name. Gating on the position
+  // keeps the snapshot burst off slow serial lines. A replayed static waits for the next position too: the
+  // snapshot sends each vessel's position before its static, so the position alone may already be live.
+  private relay(context: string, ev: AisEvent, isPosition: boolean, now = Date.now()): void {
+    const send = (nmea: string[]) => {
+      for (const s of nmea) this.opts.onInjected!(asVDM(stripTag(s)));
+    };
+    const kind = staticKind(ev);
+    const sendNow = this.relayed.has(context) && (!kind || isLive(ev.time, now));
+    if (kind) {
+      const cached = this.statics.get(context) ?? new Map<string, CachedStatic>();
+      cached.set(kind, { nmea: ev.nmea!, sentAt: sendNow ? now : 0 }); // sendNow: sent just below
+      this.statics.set(context, cached);
+    }
+    if (!isPosition) {
+      if (sendNow) send(ev.nmea!);
+      return;
+    }
+    send(ev.nmea!);
+    this.relayed.add(context);
+    // Per kind: type 24 parts A and B arrive as separate events and fall due separately.
+    for (const s of this.statics.get(context)?.values() ?? []) {
+      if (now - s.sentAt < STATIC_EVERY) continue;
+      send(s.nmea);
+      s.sentAt = now;
+    }
   }
 
   // Another source (the boat's receiver) updated this target recently: do not overwrite it.
@@ -229,7 +265,12 @@ export class Downlink {
 
   private pruneTargets(): void {
     const cutoff = Date.now() - TARGET_TTL;
-    for (const [k, t] of this.targets) if (t < cutoff) this.targets.delete(k);
+    for (const [k, t] of this.targets) {
+      if (t >= cutoff) continue;
+      this.targets.delete(k);
+      this.relayed.delete(k);
+      this.statics.delete(k);
+    }
   }
 }
 
@@ -242,6 +283,41 @@ interface AisEvent {
   msg_type?: string;
   lat?: number;
   lon?: number;
+}
+
+interface CachedStatic {
+  nmea: string[];
+  sentAt: number; // last time it went out on NMEA 0183, 0 if never
+}
+
+const LIVE_POSITION_FOR = 120_000;
+const STATIC_EVERY = 6 * 60_000; // a class A's own static interval
+
+// Cache key for a static event: type 5, or type 24 part A/B, which arrive as separate events.
+// sourceSub is the station behind a `source`: what follows the kind before the first colon.
+function sourceSub(source: string | undefined): string {
+  return source ? source.slice(source.indexOf(":") + 1) : "";
+}
+
+function staticKind(ev: AisEvent): string | null {
+  if (ev.msg_type === "ShipStaticData") return "5";
+  if (ev.msg_type !== "StaticDataReport") return null;
+  const payload = stripTag(ev.nmea![0]).split(",")[5] ?? "";
+  const c = payload.charCodeAt(6) - 48;
+  return `24${((c > 40 ? c - 8 : c) >> 2) & 3}`;
+}
+
+function isLive(time: string | undefined, now = Date.now()): boolean {
+  const t = time ? Date.parse(time) : NaN;
+  const age = now - t;
+  return age >= 0 && age < LIVE_POSITION_FOR;
+}
+
+function asVDM(sentence: string): string {
+  const vdm = sentence.replace(/^([!$][A-Z]{2})VDO,/, "$1VDM,");
+  if (vdm === sentence) return sentence;
+  const body = vdm.split("*", 1)[0];
+  return `${body}*${xorChecksum(body.slice(1))}`;
 }
 
 const POSITION_TYPES = new Set([

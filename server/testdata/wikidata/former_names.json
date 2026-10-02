@@ -1,0 +1,77 @@
+{
+ "head": {
+  "vars": [
+   "item",
+   "v",
+   "end"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q52296707"
+    },
+    "v": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Thekla"
+    },
+    "end": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "1958-01-01T00:00:00Z"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q52296707"
+    },
+    "v": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Valery"
+    },
+    "end": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "1979-01-01T00:00:00Z"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q52296707"
+    },
+    "v": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Delice"
+    },
+    "end": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "1977-01-01T00:00:00Z"
+    }
+   },
+   {
+    "item": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q52296707"
+    },
+    "v": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Heimar"
+    },
+    "end": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "1968-01-01T00:00:00Z"
+    }
+   }
+  ]
+ }
+}

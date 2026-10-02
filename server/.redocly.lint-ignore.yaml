@@ -1,0 +1,7 @@
+# This file instructs Redocly's linter to ignore the rules contained for specific parts of your API.
+# See https://redocly.com/docs/cli/ for more information.
+openapi.json:
+  operation-2xx-response:
+    - '#/paths/~1v1~1nmea/get/responses' # upgrades to WebSocket; success is 101
+  operation-4xx-response:
+    - '#/paths/~1health/get/responses' # answers 200 or 503, nothing else

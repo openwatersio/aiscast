@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -20,13 +21,14 @@ import (
 // can mint broad tokens; the CLI (cmd/aiscast-key) does. Format: "ak1.<b64url claims JSON>.<b64url signature>".
 //
 //	{"kid":"2026-08","sub":"station-42","role":"feeder","exp":1787000000,"iat":...,
-//	 "bbox":[[s,w,n,e]],"cidr":["203.0.113.0/24"],"conns":2,"rate":50,"area":400}
+//	 "bbox":[[s,w,n,e]],"cidr":["203.0.113.0/24"],"conns":2,"rate":50,"area":400,"rpm":600}
 //
 // Roles: personal (subscribe, small limits), feeder (publish/receive), peer (publish+subscribe), partner
 // (subscribe, negotiated limits), admin (everything). bbox limits what may be subscribed; cidr limits where
 // from; conns caps concurrent WebSockets per sub; rate thins each connection to n msg/s; area caps the total
 // subscribed bbox area in square degrees (negative = no bbox subscriptions at all, only MMSI lists). Unset claims
-// are unlimited; personal tokens get 2/50/400.
+// are unlimited; personal tokens get 2/50/400. rpm is the exception: unset leaves the token's HTTP requests on the
+// per-address limit, a positive value counts them per sub at that many a minute, and 0 lifts the limit.
 
 const tokenPrefix = "ak1."
 
@@ -42,6 +44,7 @@ type Claims struct {
 	Rate  int      `json:"rate,omitempty"`  // messages per second per connection; excess is thinned, not disconnected
 	Area  float64  `json:"area,omitempty"`  // max total subscribed bbox area, square degrees; 0 = unlimited, <0 = MMSI-only
 	MMSIs int      `json:"mmsis,omitempty"` // max vessels followed by MMSI per subscription (0 = unlimited)
+	RPM   *int     `json:"rpm,omitempty"`   // HTTP requests per minute per sub (nil = per-address default, 0 = unlimited)
 
 	Feeder bool `json:"-"` // earned for this connection: the token's station is feeding (see tiers.go)
 }
@@ -233,7 +236,17 @@ func requestToken(r *http.Request) string {
 // authorize: token from the request, verified, role allows action, IP allowed. With ALLOW_ANON a missing or
 // bad token yields an anonymous admin identity (local development only).
 func (p *Pipeline) authorize(r *http.Request, action string) (*Claims, error) {
-	tok := requestToken(r)
+	return p.authorizeToken(requestToken(r), clientIP(r), action)
+}
+
+// forbiddenError marks a token that verified but may not do this, here or from this address, as distinct
+// from one that did not verify at all; MQTT CONNECT answers the two with different return codes.
+type forbiddenError struct{ msg string }
+
+func (e forbiddenError) Error() string { return e.msg }
+
+// authorizeToken is authorize for a token that did not arrive in an HTTP request (MQTT CONNECT).
+func (p *Pipeline) authorizeToken(tok, ip, action string) (*Claims, error) {
 	c, err := p.auth.verify(tok, time.Now())
 	if err != nil {
 		if allowAnon {
@@ -243,17 +256,28 @@ func (p *Pipeline) authorize(r *http.Request, action string) (*Claims, error) {
 	}
 	c = p.effective(c)
 	if !c.may(action) {
-		return nil, fmt.Errorf("role %s may not %s", c.Role, action)
+		return nil, forbiddenError{fmt.Sprintf("role %s may not %s", c.Role, action)}
 	}
-	if !c.allowsIP(clientIP(r)) {
-		return nil, errors.New("token not valid from this address")
+	if !c.allowsIP(ip) {
+		return nil, forbiddenError{"token not valid from this address"}
 	}
 	return c, nil
+}
+
+// verifiedKey holds the claims api() already verified for a request, nil for a tokenless one, so the handler
+// it wraps does not verify the same token again. api() refuses a token that did not verify, so no error is kept.
+type verifiedKey struct{}
+
+func withVerified(r *http.Request, c *Claims) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), verifiedKey{}, c))
 }
 
 // socketClaims verifies the token on a WebSocket request. No token → anonymous (nil, nil). A token that is
 // present but invalid, or not valid from this address, is an error: it must never degrade to anonymous access.
 func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
+	if c, ok := r.Context().Value(verifiedKey{}).(*Claims); ok {
+		return c, nil
+	}
 	tok := requestToken(r)
 	if tok == "" {
 		return nil, nil
@@ -269,6 +293,27 @@ func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
 		return nil, errors.New("token not valid from this address")
 	}
 	return p.effective(c), nil
+}
+
+// orAnonymous fills in the anonymous tier for a tokenless request. Handlers with a connect limit apply it
+// after that check, so anonymous connects stay keyed by address across every endpoint.
+func orAnonymous(cl *Claims, r *http.Request) *Claims {
+	if cl != nil {
+		return cl
+	}
+	if allowAnon {
+		return &Claims{Sub: "anon", Role: "admin"}
+	}
+	return anonymousClaims(clientIP(r))
+}
+
+// requestClaims is socketClaims with the anonymous tier filled in, for handlers without a connect limit.
+func (p *Pipeline) requestClaims(r *http.Request) (*Claims, error) {
+	cl, err := p.socketClaims(r)
+	if err != nil {
+		return nil, err
+	}
+	return orAnonymous(cl, r), nil
 }
 
 // ---- personal tokens: POST /v1/keys {"pubkey": "<base64 ed25519 public key>"} ----
@@ -290,65 +335,104 @@ var personalIssuer = func() (string, ed25519.PrivateKey) {
 
 var keysLimit = newLimiter(keysPerMinute) // personal-token requests per address per minute: one is all a client needs
 
+// mintRequest asks for a personal token, over POST /v1/keys or the /v1/stream register frame. ts and sig prove
+// the requester holds the key: sig signs mintSignature with it. A request that names the station must be
+// signed, and once a key has signed, every later request for it must be too.
+type mintRequest struct {
+	Pubkey     string  `json:"pubkey"`
+	BindIP     bool    `json:"bind_ip"`               // also bind the requester's address, so its UDP station counts as this token's
+	Name       *string `json:"name,omitempty"`        // the operator's name for the station; "" clears it
+	VesselName *string `json:"vessel_name,omitempty"` // the boat's name, from the Signal K plugin; "" clears it
+	TS         int64   `json:"ts,omitempty"`          // unix seconds
+	Sig        string  `json:"sig,omitempty"`         // base64url ed25519 signature by pubkey
+}
+
+// mintError is a refused mint: the message is safe to show the client, and status is what /v1/keys answers.
+type mintError struct {
+	status int
+	msg    string
+}
+
+func (e *mintError) Error() string { return e.msg }
+
 // mintPersonal is the one mint path behind both POST /v1/keys and /v1/stream's register frame, so the two
-// transports cannot drift (same claims, same bind_ip behaviour, same client-safe error strings).
-func mintPersonal(ip, pubkey string, bindIP bool) (token string, c Claims, errMsg string) {
+// transports cannot drift (same claims, same bind_ip behaviour, same client-safe error strings). nameErr says
+// why a requested name was not stored; the token is issued regardless.
+func (p *Pipeline) mintPersonal(ip string, req mintRequest) (token string, c Claims, nameErr string, err error) {
 	kid, priv := personalIssuer()
 	if priv == nil {
-		return "", Claims{}, "personal tokens not enabled"
+		return "", Claims{}, "", &mintError{http.StatusNotImplemented, "personal tokens not enabled"}
 	}
-	pk, err := base64.RawURLEncoding.DecodeString(pubkey)
-	if err != nil || len(pk) != ed25519.PublicKeySize {
-		return "", Claims{}, "pubkey must be a base64url ed25519 public key"
+	pk, derr := base64.RawURLEncoding.DecodeString(req.Pubkey)
+	if derr != nil || len(pk) != ed25519.PublicKeySize {
+		return "", Claims{}, "", &mintError{http.StatusBadRequest, "pubkey must be a base64url ed25519 public key"}
 	}
-	// ponytail: no proof of possession yet; the token is a bearer token whose sub names the device key
-	c = personalClaims(kid, "ed25519:"+pubkey, time.Now())
-	if bindIP {
+	now := time.Now()
+	if cerr := p.names.checkMint(req, now); cerr != nil {
+		return "", Claims{}, "", &mintError{http.StatusForbidden, cerr.Error()}
+	}
+	c = personalClaims(kid, "ed25519:"+req.Pubkey, now)
+	if req.BindIP {
 		c.CIDR = []string{ip}
 	}
-	token, err = signToken(priv, c)
-	if err != nil {
-		return "", Claims{}, err.Error()
+	if req.Sig != "" {
+		ids := []string{stationSource(c.Sub)}
+		if req.BindIP {
+			ids = append(ids, udpStation(ip))
+		}
+		nameErr = p.names.applyNames(ids, req, now)
+		// The lock and the replay guard are saved before the token exists: a crash between the two must not
+		// leave a token whose key the next process would let mint unsigned. Without a store (STORE=off) they
+		// last as long as the process.
+		if werr := p.names.write(ids); werr != nil {
+			log.Printf("stations: %v", werr)
+			return "", Claims{}, "", &mintError{http.StatusInternalServerError, "could not save the station; try again"}
+		}
 	}
-	return token, c, ""
+	token, serr := signToken(priv, c)
+	if serr != nil { // a signing failure is ours, not the client's
+		return "", Claims{}, "", &mintError{http.StatusInternalServerError, serr.Error()}
+	}
+	if req.Sig == "" {
+		p.stats.keysUnsigned.Add(1)
+	} else {
+		p.stats.keysSigned.Add(1)
+	}
+	return token, c, nameErr, nil
 }
 
 func (p *Pipeline) serveKeys(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == http.MethodOptions {
+	if preflight(w, r, corsHeaders) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST {\"pubkey\": \"<base64url ed25519 public key>\"}", http.StatusMethodNotAllowed)
+		http.Error(w, "POST {\"pubkey\": \"<base64url ed25519 public key>\", \"ts\": <unix seconds>, \"sig\": \"<base64url signature>\"}", http.StatusMethodNotAllowed)
 		return
 	}
 	if p.limited(w, keysLimit, clientIP(r)) {
 		return
 	}
-	var req struct {
-		Pubkey string
-		BindIP bool `json:"bind_ip"` // also bind the requester's address, so its UDP station counts as this token's
-	}
+	var req mintRequest
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req) != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	tok, c, msg := mintPersonal(clientIP(r), req.Pubkey, req.BindIP)
-	switch msg {
-	case "":
-	case "personal tokens not enabled":
-		http.Error(w, msg, http.StatusNotImplemented)
-		return
-	case "pubkey must be a base64url ed25519 public key":
-		http.Error(w, msg, http.StatusBadRequest)
-		return
-	default: // a signing failure is ours, not the client's
-		http.Error(w, msg, http.StatusInternalServerError)
+	tok, c, nameErr, err := p.mintPersonal(clientIP(r), req)
+	if err != nil {
+		var me *mintError
+		errors.As(err, &me)
+		http.Error(w, me.msg, me.status)
 		return
 	}
+	out := map[string]any{"token": tok, "claims": c}
+	if req.Sig != "" { // verified, or the mint would have been refused: lets a client tell this server from one that ignores sig
+		out["signed"] = true
+	}
+	if nameErr != "" {
+		out["name_error"] = nameErr
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"token": tok, "claims": c})
+	json.NewEncoder(w).Encode(out)
 }
 
 // newIssuerKey makes an issuer keypair; used by the CLI and tests.

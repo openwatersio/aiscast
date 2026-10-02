@@ -4,7 +4,9 @@ This document states what aiscast re-serves, under what terms, what it refuses, 
 
 ## Licensing is per source
 
-Each reception carries its license. Each output shows that license. Licenses are never merged. aiscast does not relicense the aggregate: each event is re-served under the terms of its source. For this reason, `source` is on every event, every vessel, and every archived hour.
+Each reception carries its license. Each output shows that license. Licenses are never merged. aiscast does not relicense the aggregate: each event is re-served under the terms of its source. For this reason, `source` is on every event, every vessel, and every archived hour, and every `/v1` event carries `license` and `attribution` fields. The consumer's obligation is one sentence: display the attribution message included with each event.
+
+Map tiles are the one output that credits the sources together. A tile holds whichever sources heard the vessels in it, and that changes by the second, so the tiles carry a single credit, "Open Waters AIS", linked to the [license section](https://openwaters.io/ais/#license) that lists every source's license and attribution. This is how web maps attribute data from many sources, and CC BY 4.0 allows attribution in any reasonable manner for the medium. Every other output keeps its per-source credits.
 
 This arrangement is what ODbL calls a collective database. The [ODbL preamble](https://opendatacommons.org/licenses/odbl/1-0/) describes it: "If the contents have multiple sets of different rights, Licensors should describe what rights govern what contents together in the individual record or in some other way that clarifies what rights apply." Share-alike attaches only to the volunteer aggregate (ODbL §4.5(a)). It never reaches the other sources served alongside it.
 
@@ -52,7 +54,7 @@ The public-facing statement is [docs/privacy-policy.md](privacy-policy.md). The 
 
 - **Vessel opt-out**: a documented request path and a suppression list applied at fan-out and in history queries. The stated default is to publish all and honor opt-outs. Opt-outs cover small craft tied to an identifiable person, which is the GDPR Article 21 objection path that legitimate interest requires. Commercial traffic is excluded, because its AIS carriage is mandated. Norway's open feed excludes fishing vessels under 15 m and leisure craft under 45 m, which shows the same dial set differently.
 - **Retention**: receptions from open-licensed sources are kept indefinitely. Volunteer-contributed receptions are kept per the contributor agreement. A deletion procedure removes opt-out vessels from history.
-- **Station locations**: never asked for, and derived locations are shown only coarse. A feed that includes own-vessel (`!AIVDO`) sentences publishes its own position, and the station is then identified by that MMSI. UDP stations without own-vessel sentences are identified by a keyed hash of the address, never by the address itself.
+- **Station locations**: never asked for, and derived locations are shown only coarse. Each station is labeled with the town or region nearest the traffic it hears, using towns of at least 5,000 people. A feed that includes own-vessel (`!AIVDO`) sentences publishes its own position, and the station is then identified and named by that vessel. UDP stations without own-vessel sentences are identified by a keyed hash of the address, never by the address itself.
 - **Own-ship position** from a boat's own transponder is shared once the Signal K plugin is enabled. The plugin ships disabled, so enabling it is the consent. Own-ship sharing also has its own switch.
 - **Abuse response**: per-key revocation, per-IP limits, and a published contact address.
 - **GDPR basis** for Class B small-craft data is legitimate interest in broadcast data. It is reviewed alongside the contributor agreement.

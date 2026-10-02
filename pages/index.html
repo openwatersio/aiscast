@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The map has moved | Open Waters AIS</title>
+<link rel="canonical" href="https://openwaters.io/ais/vessels">
+<meta http-equiv="refresh" content="0; url=https://openwaters.io/ais/vessels">
+<script>
+  // GitHub Pages cannot send a redirect, so the page makes one. The query goes along, so
+  // ?station= still reaches its station, and so does the map position: this viewer's hash
+  // was #zoom/lat/lng, which the app reads as #map=zoom/lat/lng.
+  const hash = /^#\d/.test(location.hash) ? "#map=" + location.hash.slice(1) : location.hash;
+  location.replace("https://openwaters.io/ais/vessels" + location.search + hash);
+</script>
+<p>The map has moved to <a href="https://openwaters.io/ais/vessels">openwaters.io/ais/vessels</a>.</p>
