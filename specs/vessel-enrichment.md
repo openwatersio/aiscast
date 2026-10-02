@@ -51,7 +51,7 @@ Identifiers stay where they are: `imo`, `callsign`, and `mmsi` are already top-l
 
 ## Client
 
-The vessel page renders one Particulars section from `particulars`, in place of the two per-source sections, with the same formatting rules it has now (Convention tonnage plain, other measures labelled; the documented name only when it differs from the AIS name). A footer line under the facts names the sources from `sources`, each linking its `url`: "Source: Wikidata · U.S. Coast Guard". CC0 and public domain require no credit; the line is provenance for the reader, not a license obligation.
+The vessel page renders one Particulars section from `particulars`, in place of the two per-source sections, with the same formatting rules it has now (Convention tonnage plain, other measures labelled; the documented name only when it differs from the AIS name). A footer line under the facts names the sources from `sources`, each linking its `url`: "Source: Wikidata · U.S. Coast Guard". CC0 and public domain require no credit, and for an NLOD source the line doubles as the credit the license asks for.
 
 ## Work
 

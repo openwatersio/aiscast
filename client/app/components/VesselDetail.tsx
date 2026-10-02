@@ -287,8 +287,9 @@ export function VesselDetail({
  * The vessel as registered, one section merged from the enrichment sources, and where to read
  * more about it. Absent for most vessels: Wikidata knows ships with an IMO, the Coast Guard
  * US-flag vessels it matches by call sign and name. The footer links each source's own page for
- * the vessel, provenance for the reader rather than a license requirement: every current source
- * is CC0 or public domain. `photos` is the Commons category the photos above came from.
+ * the vessel. For CC0 and public-domain sources the footer is provenance for the reader; for an
+ * NLOD-licensed register it is also the credit the license asks for. `photos` is the Commons
+ * category the photos above came from.
  */
 function Particulars({
   particulars: m,

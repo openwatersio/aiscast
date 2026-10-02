@@ -731,7 +731,7 @@
       },
       "Particulars": {
         "type": "object",
-        "description": "Particulars as registered, merged from the enrichment sources into one vocabulary. Present on `/v1/vessels/{mmsi}` when a source knows the vessel: Wikidata by the IMO from its static data, when the IMO has a valid check digit and an item, and the US Coast Guard's PSIX for a US-flag vessel whose call sign and name both match a vessel it lists. Merging is per field: a flag state outranks Wikidata for registered facts, an empty value never wins, and `provenance` beside this object names each field's source. Registered dimensions can differ from the ones AIS reports. Every field is present only when a source has it.",
+        "description": "Particulars as registered, merged from the enrichment sources into one vocabulary. Present on `/v1/vessels/{mmsi}` when a source knows the vessel: Wikidata by the IMO from its static data, when the IMO has a valid check digit and an item; the US Coast Guard's PSIX for a US-flag vessel whose call sign and name both match a vessel it lists; and the Norwegian Directorate of Fisheries' fishing vessel register (NLOD 2.0), matched the same way for a Norwegian vessel. Merging is per field: a flag state outranks Wikidata for registered facts, an empty value never wins, and `provenance` beside this object names each field's source. Registered dimensions can differ from the ones AIS reports. Every field is present only when a source has it.",
         "properties": {
           "registered_name": { "type": "string", "description": "Name as documented with the flag state, which can differ from the AIS name." },
           "identification": { "type": "string", "description": "The flag state's number for the vessel: the official number of a documented vessel, else its state registration." },
@@ -761,7 +761,7 @@
       },
       "SourceRef": {
         "type": "object",
-        "description": "One enrichment source's credit: how to name it and where its record of this vessel is. `sources` maps each contributing source's key, such as `wikidata` or `uscg`, to one of these, and `provenance` maps each `particulars` field to a key of `sources`.",
+        "description": "One enrichment source's credit: how to name it and where its record of this vessel is. `sources` maps each contributing source's key, such as `wikidata`, `uscg`, or `fiskeridir`, to one of these, and `provenance` maps each `particulars` field to a key of `sources`.",
         "required": ["credit", "license"],
         "properties": {
           "credit": { "type": "string", "description": "Display credit for the source.", "example": "Wikidata" },

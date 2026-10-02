@@ -768,7 +768,8 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 		f.Properties.FirstSeen = first.UTC().Format(time.RFC3339)
 	}
 	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources =
-		mergeParticulars(p.wikidataOf(cur.IMO)[cur.IMO], p.uscgOf(uscgKey{mmsi, cur.CallSign, cur.Name})[mmsi])
+		mergeParticulars(p.wikidataOf(cur.IMO)[cur.IMO], p.uscgOf(uscgKey{mmsi, cur.CallSign, cur.Name})[mmsi],
+			p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi])
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
 	// allocation.

@@ -43,11 +43,11 @@ type particulars struct {
 	Image          string   `json:"image,omitempty" jsonschema:"the Commons page of a photo of the ship, which shows its license and credit"`
 }
 
-// mergeParticulars folds the sources into the served document. Per field, deterministically: the flag
+// mergeParticulars folds the sources into the served document. Per field, deterministically: a flag
 // state outranks Wikidata for registered facts, an empty value never wins, and provenance records the
-// winner by the field's JSON name.
-func mergeParticulars(wd *wikidataShip, cg *uscgVessel) (*particulars, map[string]string, map[string]sourceRef) {
-	if wd == nil && cg == nil {
+// winner by the field's JSON name. The flag states never meet: a vessel is US-flag or Norwegian, not both.
+func mergeParticulars(wd *wikidataShip, cg *uscgVessel, fd *fdirVessel) (*particulars, map[string]string, map[string]sourceRef) {
+	if wd == nil && cg == nil && fd == nil {
 		return nil, nil, nil
 	}
 	m := &particulars{}
@@ -89,6 +89,18 @@ func mergeParticulars(wd *wikidataShip, cg *uscgVessel) (*particulars, map[strin
 		// the Wikidata item never wins over it.
 		str("registry", "uscg", "United States", &m.Registry)
 	}
+	if fd != nil {
+		str("registered_name", "fiskeridir", fd.Name, &m.RegisteredName)
+		str("identification", "fiskeridir", fd.Registration, &m.Identification)
+		num("year_built", "fiskeridir", &fd.YearBuilt, &m.YearBuilt)
+		flt("length", "fiskeridir", &fd.Length, &m.Length)
+		flt("beam", "fiskeridir", &fd.Beam, &m.Beam)
+		// The register's London Convention figure; its 1947 measures were dropped at sync.
+		num("gross_tonnage", "fiskeridir", &fd.GrossTonnage, &m.GrossTonnage)
+		str("owner", "fiskeridir", fd.Owner, &m.Owner)
+		// The match itself is the registry fact, as a PSIX match is.
+		str("registry", "fiskeridir", "Norway", &m.Registry)
+	}
 	if wd != nil {
 		str("ship_type", "wikidata", wd.ShipType, &m.ShipType)
 		str("builder", "wikidata", wd.Builder, &m.Builder)
@@ -117,6 +129,9 @@ func mergeParticulars(wd *wikidataShip, cg *uscgVessel) (*particulars, map[strin
 	if cg != nil {
 		sources["uscg"] = sourceRef{Credit: "U.S. Coast Guard PSIX", License: psixLicense,
 			URL: "https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=" + strconv.Itoa(cg.ID)}
+	}
+	if fd != nil {
+		sources["fiskeridir"] = sourceRef{Credit: "Norwegian Directorate of Fisheries", License: fdirLicense}
 	}
 	return m, prov, sources
 }
