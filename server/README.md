@@ -115,13 +115,13 @@ Positions older than the window come from the lake, packaged daily into R2 Data 
 
 ## Access log
 
-Every HTTP request is one JSON line in the access log, written when the response finishes, so a stream is logged once, when it closes. Lines go into hourly gzip files under `ACCESS_DIR` and upload to `access/v1/YYYY/MM/DD/HH.gz` in `ACCESS_BUCKET`, through the same rotation, shutdown flush, and disk sweep as the archive. It is a private bucket of its own and never the archive's, because the raw archive is meant to become publicly mirrorable and R2 makes a whole bucket public at once. Its keys have the shape of raw hours, so `aiscast replay` and the packager's replay job skip `access/` by name if a copy ever lands beside the raw archive.
+Every HTTP request is one JSON line in the access log, written when the response finishes, so a stream is logged once, when it closes. A stream still open when the server stops is not logged. Lines go into hourly gzip files under `ACCESS_DIR` and upload to `access/v1/YYYY/MM/DD/HH.gz` in `ACCESS_BUCKET`, through the same rotation, shutdown flush, and disk sweep as the archive. It is a private bucket of its own and never the archive's, because the raw archive is meant to become publicly mirrorable and R2 makes a whole bucket public at once. Its keys have the shape of raw hours, so `aiscast replay` and the packager's replay job skip `access/` by name if a copy ever lands beside the raw archive.
 
 A line holds:
 
 - `t`: when the response finished, UTC.
 - `id`: Caddy's request id, which its own access log on the box records too.
-- `method`, `route` (the mux pattern, or `other`), `path`, and `query` without `key`. Coordinates in `around` (a search ranked from the visitor's own position) and `bbox` (the view) are rounded to 0.1°, and a tile deeper than z12 is logged as the z12 tile holding it, with the requested zoom in `z`: about 10 km either way, so a line shows where load falls without placing a home or a berth.
+- `method`, `route` (the mux pattern, or `other`), `path`, and `query`: only the parameters the server reads, so a token sent under any other name is dropped, and any token in the path or a header is redacted. Coordinates in `around` (a search ranked from the visitor's own position) and `bbox` (the view) are rounded to 0.1°, and a tile deeper than z12 is logged as the z12 tile holding it, with the requested zoom in `z`: about 10 km either way, so a line shows where load falls without placing a home or a berth.
 - `status`, `ms`, and `bytes` of body written. A WebSocket's frames bypass the writer, so a socket logs its handshake bytes only.
 - `net`: the client's /24 or /48. `client`: a keyed hash of its address, from `STATION_SALT` under a label of its own, so the hash cannot be matched against UDP station ids. The key is stable, so one client's requests group across days and weeks for following abuse. Whoever holds the key can recover an address from its /24, so the lines are personal data, kept 90 days.
 - `sub` and `role` of a token that verified. An anonymous request has neither.

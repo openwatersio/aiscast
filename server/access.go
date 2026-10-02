@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -80,8 +81,13 @@ func withAccessNote(r *http.Request) (*http.Request, *accessNote) {
 
 // accessLineFor builds a finished request's line.
 func accessLineFor(r *http.Request, n *accessNote, route string, status int, bytes int64, start, end time.Time) []byte {
-	vals := r.URL.Query()
-	vals.Del("key")
+	// Only the parameters the server reads are kept: any other may be a token under another name.
+	vals := url.Values{}
+	for k, vs := range r.URL.Query() {
+		if accessParams[k] {
+			vals[k] = vs
+		}
+	}
 	for _, k := range []string{"around", "bbox"} {
 		for i, v := range vals[k] {
 			vals[k][i] = coarseCoords(v)
@@ -92,13 +98,9 @@ func accessLineFor(r *http.Request, n *accessNote, route string, status int, byt
 		Status: status, Ms: float64(end.Sub(start).Microseconds()) / 1000, Bytes: bytes, Sub: n.sub, Role: n.role,
 		UA: r.Header.Get("User-Agent"), Origin: r.Header.Get("Origin"), Referer: stripQuery(r.Header.Get("Referer")),
 	}
-	if z, x, y, ok := tileCoords(r); ok && route == "/v1/vessels/tiles/{z}/{x}/{y}" {
-		l.Z = z
-		if z > accessTileZoom {
-			x, y = x>>(z-accessTileZoom), y>>(z-accessTileZoom)
-			z = accessTileZoom
-		}
-		l.Path = fmt.Sprintf("/v1/vessels/tiles/%d/%d/%d", z, x, y)
+	l.Path, l.Z = coarseTilePath(l.Path)
+	for _, s := range []*string{&l.Path, &l.Query, &l.UA, &l.Origin, &l.Referer} {
+		*s = tokenPattern.ReplaceAllString(*s, tokenPrefix+"REDACTED")
 	}
 	if viaProxy(r) {
 		l.ID = r.Header.Get("X-Request-Id")
@@ -126,8 +128,45 @@ func clientNet(ip string) (network, hash string) {
 	return pfx.String(), hex.EncodeToString(m.Sum(nil)[:8])
 }
 
+// accessParams are the query parameters the access log keeps: those the server reads, less key.
+var accessParams = map[string]bool{"around": true, "bbox": true, "class": true, "format": true, "from": true,
+	"interval": true, "kind": true, "limit": true, "max_age": true, "max_age_moving": true, "min_sog": true,
+	"mmsi": true, "q": true, "snapshot": true, "to": true, "type": true}
+
+// tokenPattern is an access token wherever it turns up: a path segment, a pasted URL, a user agent.
+var tokenPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(tokenPrefix) + `[^\s/?&#"]*`)
+
 // accessTileZoom is the deepest tile the access log names: a z12 tile is about 10 km across.
 const accessTileZoom = 12
+
+// coarseTilePath logs a tile request no deeper than accessTileZoom, with the requested zoom, whatever the
+// route made of it: a tile URL with an extension (.pbf, .mvt) fails to route as a tile and is still logged
+// coarse. A tile path whose numbers do not parse is logged without them.
+func coarseTilePath(path string) (string, int) {
+	const prefix = "/v1/vessels/tiles/"
+	rest, ok := strings.CutPrefix(path, prefix)
+	if !ok || rest == "" || strings.HasPrefix(rest, "tiles.json") || path == "/v1/vessels/tiles.json" {
+		return path, 0
+	}
+	parts := strings.SplitN(rest, "/", 3)
+	nums := make([]int, 0, 3)
+	for _, p := range parts {
+		digits := p[:len(p)-len(strings.TrimLeft(p, "0123456789"))]
+		n, err := strconv.Atoi(digits)
+		if err != nil {
+			break
+		}
+		nums = append(nums, n)
+	}
+	if len(nums) != 3 || nums[0] < 0 || nums[0] > 30 {
+		return prefix + "invalid", 0
+	}
+	z, x, y := nums[0], nums[1], nums[2]
+	if z > accessTileZoom {
+		x, y = x>>(z-accessTileZoom), y>>(z-accessTileZoom)
+	}
+	return fmt.Sprintf("%s%d/%d/%d", prefix, min(z, accessTileZoom), x, y), z
+}
 
 // coarseCoords rounds each number in a comma-separated coordinate list to 0.1°. A part that is not a
 // number is dropped, so nothing precise survives a malformed value.
@@ -166,14 +205,15 @@ func accessDir() string {
 	return ""
 }
 
-// accessStoreFromEnv is ACCESS_BUCKET, in the raw archive's account and with its keys: never R2_BUCKET
-// itself, even when ACCESS_BUCKET is unset or names it.
+// accessStoreFromEnv is ACCESS_BUCKET, in the raw archive's account and with its keys: never R2_BUCKET or
+// NORMALIZED_BUCKET, even when ACCESS_BUCKET names one of them.
 func accessStoreFromEnv() *s3Client {
-	if b := os.Getenv("ACCESS_BUCKET"); b != os.Getenv("R2_BUCKET") || b == "" {
-		return s3BucketFromEnv(b)
+	b := os.Getenv("ACCESS_BUCKET")
+	if b != "" && (b == os.Getenv("R2_BUCKET") || b == os.Getenv("NORMALIZED_BUCKET")) {
+		log.Printf("ACCESS_BUCKET is the archive's bucket; the access log stays on disk")
+		return nil
 	}
-	log.Printf("ACCESS_BUCKET is the archive's bucket; the access log stays on disk")
-	return nil
+	return s3BucketFromEnv(b)
 }
 
 // accessPrefix is the access log's top-level directory. Its hour keys have the shape of raw ones, so replay
@@ -188,7 +228,7 @@ const accessRetention = 90 * 24 * time.Hour
 // newAccessArchive is the archive writer configured for the access log: one file per hour, a line per request.
 func newAccessArchive(dir string, s3 *s3Client) *archive {
 	a := newArchive(dir, s3)
-	a.bare, a.keepFor = true, accessRetention
+	a.bare, a.keepFor, a.keepUnder = true, accessRetention, accessPrefix
 	a.keyFn = func(_ string, hour time.Time) string {
 		return filepath.Join(accessPrefix, "v1", hour.Format("2006/01/02/15")+".gz")
 	}

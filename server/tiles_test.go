@@ -361,6 +361,12 @@ func TestTileRecordsThinLikeTheCache(t *testing.T) {
 	if len(want) >= len(rows) || !slices.Equal(got, want) {
 		t.Fatalf("record tile kept %d, cache tile %d, of %d", len(got), len(want), len(rows))
 	}
+	// and the record read only the cells' winners, not every row
+	now2 := now
+	read, err := rec.tileRecords(recordQuery{boxes: []bbox{box}, since: now2.Add(-areaWindow), before: now2.Add(-vesselTTL), hasPos: true, filter: &rules.area, now: now2}, z, x, y)
+	if err != nil || len(read) >= len(rows) || len(read) > tileCols*tileCols {
+		t.Fatalf("read %d of %d rows (%v); want at most one per cell", len(read), len(rows), err)
+	}
 }
 
 // A few vessels in one cell are not thinned, so the record answers with all of them.

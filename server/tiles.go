@@ -299,7 +299,9 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 // was last heard, and only the newest in each cell is read from the record. When no more match than a tile
 // holds, nothing is thinned and every match is read. The record holds only vessels unheard for 30 minutes and
 // the cache only those heard since, so a cached vessel always wins its cell, and the newest record vessel in
-// each cell is all the thinning can keep. vesselTile applies the filters again to the rows it reads, which
+// each cell is all the thinning can keep. The one exception lasts a flush: a vessel heard again after 30
+// minutes is cached while its row is still old, and if it was a cell's winner and has moved on, that cell
+// shows no record vessel until the next build. vesselTile applies the filters again to the rows it reads, which
 // can be a second newer than the index.
 func (p *Pipeline) tileRecords(q recordQuery, z, x, y int) ([]record, error) {
 	type pick struct {

@@ -139,6 +139,44 @@ func TestAccessLogCoarsensLocations(t *testing.T) {
 	}
 }
 
+// No token reaches the log under another parameter name, in a path, or in a header, and a tile URL that
+// fails to route (an extension, junk) is logged coarse or not at all.
+func TestAccessLogLeaksNothing(t *testing.T) {
+	p := testPipeline(t)
+	dir := t.TempDir()
+	p.access = newAccessArchive(dir, nil)
+	h := httpHandler(p)
+	const tok = "ak1.eyJzdWIiOiJsZWFrIn0.c2ln"
+	for _, target := range []string{
+		"/v1/vessels?bbox=59,10,60,11&token=" + tok + "&Key=" + tok + "&api_key=" + tok,
+		"/v1/vessels/" + tok,
+		"/v1/vessels/tiles/15/17361/9530.pbf",
+		"/v1/vessels/tiles/15/17361/9530/",
+		"/v1/vessels/tiles/fifteen/x/y",
+	} {
+		r := httptest.NewRequest("GET", target, nil)
+		r.Header.Set("User-Agent", "client/1 key="+tok)
+		r.Header.Set("Origin", "https://"+tok+".example")
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	lines, raw := readAccess(t, p, dir)
+	for _, leak := range []string{"eyJzdWIiOiJsZWFrIn0", "17361", "9530", "token=", "Key=", "api_key="} {
+		if strings.Contains(raw, leak) {
+			t.Errorf("%s reached the log:\n%s", leak, raw)
+		}
+	}
+	paths := map[string]int{}
+	for _, l := range lines {
+		paths[l.Path] = l.Z
+	}
+	if z, ok := paths["/v1/vessels/tiles/12/2170/1191"]; !ok || z != 15 {
+		t.Errorf("a .pbf tile was not logged coarse: %v", paths)
+	}
+	if _, ok := paths["/v1/vessels/tiles/invalid"]; !ok {
+		t.Errorf("a junk tile path was not logged as invalid: %v", paths)
+	}
+}
+
 func TestClientNet(t *testing.T) {
 	for ip, want := range map[string]string{
 		"203.0.113.77":        "203.0.113.0/24",
@@ -166,7 +204,8 @@ func TestAccessLogNeverUsesTheArchiveBucket(t *testing.T) {
 	t.Setenv("R2_ACCESS_KEY_ID", "id")
 	t.Setenv("R2_SECRET_ACCESS_KEY", "secret")
 	t.Setenv("R2_BUCKET", "ais-archive")
-	for bucket, want := range map[string]string{"": "", "ais-archive": "", "ais-access": "ais-access"} {
+	t.Setenv("NORMALIZED_BUCKET", "ais-normalized")
+	for bucket, want := range map[string]string{"": "", "ais-archive": "", "ais-normalized": "", "ais-access": "ais-access"} {
 		t.Setenv("ACCESS_BUCKET", bucket)
 		got := ""
 		if c := accessStoreFromEnv(); c != nil {
@@ -189,7 +228,14 @@ func TestAccessLogExpiresWithoutABucket(t *testing.T) {
 	}
 	stale := time.Now().Add(-accessRetention - time.Hour)
 	os.Chtimes(old, stale, stale)
+	other := filepath.Join(dir, "CC0-1.0", "station", "x", "old.gz") // another archive's hour, should ACCESS_DIR cover it
+	os.MkdirAll(filepath.Dir(other), 0o755)
+	os.WriteFile(other, []byte("x"), 0o644)
+	os.Chtimes(other, stale, stale)
 	a.sweep()
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("expiry reached outside access/: %v", err)
+	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Error("an hour past retention survived the sweep")
 	}

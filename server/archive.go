@@ -83,10 +83,13 @@ type archive struct {
 	keyFn   func(source string, hour time.Time) string // nil = per-source license-prefixed layout
 	bare    bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
 	keepFor time.Duration                              // with no bucket, the sweep deletes closed hours older than this; 0 keeps them
-	ch      chan Reception
-	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
-	uploads sync.WaitGroup
-	stopped sync.Once // shutdown runs once; the writer is gone after the first
+	// keepUnder confines that deletion to one directory under dir, so a dir set over another archive's
+	// never loses that archive's hours.
+	keepUnder string
+	ch        chan Reception
+	done      chan chan struct{} // shutdown request; replied to when files are closed and uploaded
+	uploads   sync.WaitGroup
+	stopped   sync.Once // shutdown runs once; the writer is gone after the first
 
 	// offersClosed turns offer away once shutdown begins, so a record offered after the last drain is
 	// refused and counted rather than left in a queue nothing reads. offerMu keeps an offer that passed the
@@ -380,11 +383,11 @@ func (a *archive) isHeld(path string) bool {
 // expire deletes the closed hours older than keepFor, for an archive with no bucket whose records must not
 // outlive their retention on disk.
 func (a *archive) expire() {
-	if a.keepFor <= 0 {
+	if a.keepFor <= 0 || a.keepUnder == "" {
 		return
 	}
 	cutoff := time.Now().Add(-a.keepFor)
-	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
+	filepath.WalkDir(filepath.Join(a.dir, a.keepUnder), func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") || a.isHeld(path) {
 			return nil
 		}
