@@ -160,6 +160,24 @@ func TestClientNet(t *testing.T) {
 	}
 }
 
+// The access log uploads to a bucket of its own, never the archive's, which is meant to become public.
+func TestAccessLogNeverUsesTheArchiveBucket(t *testing.T) {
+	t.Setenv("R2_ACCOUNT_ID", "acct")
+	t.Setenv("R2_ACCESS_KEY_ID", "id")
+	t.Setenv("R2_SECRET_ACCESS_KEY", "secret")
+	t.Setenv("R2_BUCKET", "ais-archive")
+	for bucket, want := range map[string]string{"": "", "ais-archive": "", "ais-access": "ais-access"} {
+		t.Setenv("ACCESS_BUCKET", bucket)
+		got := ""
+		if c := accessStoreFromEnv(); c != nil {
+			got = c.bucket
+		}
+		if got != want {
+			t.Errorf("ACCESS_BUCKET=%q uploads to %q, want %q", bucket, got, want)
+		}
+	}
+}
+
 // A full queue drops lines rather than holding up the request.
 func TestAccessLogDropsWhenBehind(t *testing.T) {
 	p := testPipeline(t)

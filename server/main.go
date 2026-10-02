@@ -40,7 +40,7 @@ func main() {
 	go norm.sweepLoop()
 	p := newPipeline(arch)
 	p.norm = norm
-	p.access = newAccessArchive(accessDir(), s3FromEnv())
+	p.access = newAccessArchive(accessDir(), accessStoreFromEnv())
 	go p.access.sweepLoop()
 
 	// The record restores the vessel cache, so a restart resumes the map the last process left. A record

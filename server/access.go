@@ -1,8 +1,9 @@
 package main
 
 // The access log: one JSON line per HTTP request, written when the response finishes, in hourly gzip files
-// uploaded beside the archive under access/v1/. It answers who asked for what and what it cost, after the
-// fact: the load behind a latency spike, and how clients use the API.
+// uploaded under access/v1/ to ACCESS_BUCKET. It answers who asked for what and what it cost, after the
+// fact: the load behind a latency spike, and how clients use the API. It has a bucket of its own, never the
+// archive's: the raw archive is meant to become publicly mirrorable, and R2 opens a whole bucket at once.
 //
 // A line never holds a token, a full address, or a precise location. It names a verified token by its
 // subject, and a client by its network (the /24 or /48) and a keyed hash of the address, so one client's
@@ -19,11 +20,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -161,8 +164,19 @@ func accessDir() string {
 	return ""
 }
 
-// accessPrefix is the access log's top-level directory in the archive bucket. Its hour keys have the shape
-// of raw ones, so replay and the replay job's sync skip it by name, as they skip normPrefix.
+// accessStoreFromEnv is ACCESS_BUCKET, in the raw archive's account and with its keys: never R2_BUCKET
+// itself, even when ACCESS_BUCKET is unset or names it.
+func accessStoreFromEnv() *s3Client {
+	if b := os.Getenv("ACCESS_BUCKET"); b != os.Getenv("R2_BUCKET") || b == "" {
+		return s3BucketFromEnv(b)
+	}
+	log.Printf("ACCESS_BUCKET is the archive's bucket; the access log stays on disk")
+	return nil
+}
+
+// accessPrefix is the access log's top-level directory. Its hour keys have the shape of raw ones, so replay
+// and the replay job's sync skip it by name, as they skip normPrefix, should a copy ever share a tree with
+// the raw archive.
 const accessPrefix = "access"
 
 // newAccessArchive is the archive writer configured for the access log: one file per hour, a line per request.
