@@ -1,7 +1,5 @@
 # Open Waters AIS privacy policy
 
-Effective [LAUNCH DATE].
-
 Open Water Software, LLC ("we") runs Open Waters AIS: the map at openwaters.io/ais/vessels, the API at ais.openwaters.io, and the network of stations that feed it. This policy says what personal data the service handles, why, how long we keep it, and what you can ask us to do. Write to hello@openwaters.io with any question or request. A person reads it.
 
 ## Summary
