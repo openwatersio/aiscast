@@ -157,6 +157,9 @@ func TestAccessLogLeaksNothing(t *testing.T) {
 		"/ais/v1/vessels/tiles/15/17361/9530.pbf",
 		"/v1/vessels/tiles/tiles.json15/17361/9530.pbf",
 		"/v1/vessels/59.91234,10.73456",
+		"/v1/stations/15/17361/9530",
+		"/v1/stations/station:ed25519:abc/n2k",
+		"/59.91234,10.73456/x",
 	} {
 		r := httptest.NewRequest("GET", target, nil)
 		r.Header.Set("User-Agent", "client/1 key="+tok)
@@ -179,8 +182,10 @@ func TestAccessLogLeaksNothing(t *testing.T) {
 	if _, ok := paths["/v1/vessels/tiles/invalid"]; !ok {
 		t.Errorf("a junk tile path was not logged as invalid: %v", paths)
 	}
-	if _, ok := paths["/v1/vessels/x"]; !ok {
-		t.Errorf("a non-numeric MMSI was not logged as x: %v", paths)
+	for _, want := range []string{"/v1/vessels/x", "/v1/stations/x", "/x", "/v1/stations/station:ed25519:abc/n2k"} {
+		if _, ok := paths[want]; !ok {
+			t.Errorf("no line for %s: %v", want, paths)
+		}
 	}
 }
 

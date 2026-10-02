@@ -136,6 +136,14 @@ var accessParams = map[string]bool{"around": true, "bbox": true, "class": true, 
 // tokenPattern is an access token wherever it turns up: a path segment, a pasted URL, a user agent.
 var tokenPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(tokenPrefix) + `[^\s/?&#"]*`)
 
+// knownSegments are the first path segments an unmatched path keeps; any other is logged as x.
+var knownSegments = map[string]bool{"": true, "v0": true, "v1": true, "mcp": true, "health": true, "metrics": true,
+	"openapi.json": true, "robots.txt": true, "favicon.ico": true}
+
+// stationIDShape is what a station id looks like (udp:<hex>, station:ed25519:<key>[/n2k], mmsi:<n>), so a
+// path such as a tile's numbers under /v1/stations/ is logged as x.
+var stationIDShape = regexp.MustCompile(`^(?:station|udp|mmsi):[A-Za-z0-9:_./-]{1,120}$`)
+
 // accessTileZoom is the deepest tile the access log names: a z12 tile is about 10 km across.
 const accessTileZoom = 12
 
@@ -143,14 +151,23 @@ const accessTileZoom = 12
 // are plain numbers (an MMSI, a tile's coordinates, coarsened), and x for anything else, so coordinates or
 // a token put where a number belongs never reach the log. A path no route matched keeps its first segment.
 func canonicalPath(r *http.Request, route string) (string, int) {
-	if route == "other" {
+	switch {
+	case route == "other":
 		first, _, _ := strings.Cut(strings.TrimLeft(r.URL.Path, "/"), "/")
+		if !knownSegments[first] {
+			first = "x"
+		}
 		return "/" + first, 0
+	case route == "/{$}":
+		return "/", 0
 	}
 	if route == "/v1/vessels/tiles/{z}/{x}/{y}" {
 		return coarseTilePath(r.PathValue("z"), r.PathValue("x"), r.PathValue("y"))
 	}
 	if strings.HasSuffix(route, "/") { // a subtree route: the rest of the path is its argument, a public station id
+		if rest := strings.TrimPrefix(r.URL.Path, route); !stationIDShape.MatchString(rest) {
+			return route + "x", 0
+		}
 		return r.URL.Path, 0
 	}
 	parts := strings.Split(route, "/")

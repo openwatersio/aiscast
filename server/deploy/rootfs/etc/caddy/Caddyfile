@@ -24,8 +24,8 @@ ais.openwaters.io {
 			roll_keep_for 288h
 		}
 		format filter {
-			# the usual token parameter names, around and bbox, and a token anywhere in the URI, percent-encoded too
-			request>uri regexp "(?i)([?&](?:key|token|api_?key|access_token|around|bbox)=)[^&]*|ak(?:1|%31)(?:\.|%2e)[^&/?]*" "${1}REDACTED"
+			# the usual token parameter names, around and bbox, and a token anywhere in the URI, in the usual encodings
+			request>uri regexp "(?i)([?&](?:key|token|api_?key|access_token|around|bbox)=)[^&]*|(?:a|%61)(?:k|%6b)(?:1|%31)(?:\.|%2e)[^&/?]*" "${1}REDACTED"
 			# every request header: a token can arrive under any header name, and aiscast's log keeps the user
 			# agent and origin with tokens redacted
 			request>headers delete
