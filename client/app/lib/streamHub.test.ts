@@ -318,6 +318,52 @@ describe("Hub", () => {
     expect(third.sent).toEqual([{ type: "subscribe", bbox: [OSLO], mmsi: [] }]);
   });
 
+  it("holds no timers once its last tab goes, and starts again with the next", () => {
+    const { a } = setup();
+    expect(vi.getTimerCount()).toBe(0);
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    FakeSocket.all[0]!.open();
+    expect(vi.getTimerCount()).toBe(1);
+    a.say({ type: "close" });
+    expect(vi.getTimerCount()).toBe(0);
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    expect(FakeSocket.all).toHaveLength(2);
+    const before = a.got.length;
+    vi.advanceTimersByTime(5e3);
+    expect(a.got.length).toBe(before + 1);
+  });
+
+  it("keeps one heartbeat while any tab remains", () => {
+    const { a, b } = setup();
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    b.say({ type: "view", ...view({ bbox: [HELSINKI] }) });
+    FakeSocket.all[0]!.open();
+    expect(vi.getTimerCount()).toBe(1);
+    a.say({ type: "close" });
+    expect(vi.getTimerCount()).toBe(1);
+    // A tab that goes quiet is reaped while the other keeps talking.
+    b.say({ type: "close" });
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    b.say({ type: "view", ...view({ bbox: [HELSINKI] }) });
+    for (let i = 0; i < 12; i++) {
+      vi.advanceTimersByTime(20e3);
+      b.say({ type: "view", ...view({ bbox: [HELSINKI] }) });
+    }
+    expect(vi.getTimerCount()).toBe(1);
+    const before = b.got.length;
+    vi.advanceTimersByTime(5e3);
+    expect(b.got.length).toBe(before + 1);
+  });
+
+  it("holds no timers when its last tab is reaped", () => {
+    const { a } = setup();
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    FakeSocket.all[0]!.open();
+    vi.advanceTimersByTime(4 * 60e3);
+    expect(FakeSocket.all[0]!.readyState).toBe(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("tells its tabs it is alive", () => {
     const { a } = setup();
     a.say({ type: "view", ...view() });

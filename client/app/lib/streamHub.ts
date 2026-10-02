@@ -127,6 +127,8 @@ export class Hub {
   #socket: (url: string) => WebSocket;
   #ws: WebSocket | undefined;
   #retry: ReturnType<typeof setTimeout> | undefined;
+  /** Runs while the hub has tabs, so an idle hub holds nothing that keeps it alive. */
+  #heartbeat: ReturnType<typeof setInterval> | undefined;
   #backoff = 1000;
   #welcomed = false;
   #limits: Limits | undefined;
@@ -137,7 +139,6 @@ export class Hub {
   constructor(url: string, socket = (u: string) => new WebSocket(u)) {
     this.#url = url;
     this.#socket = socket;
-    setInterval(() => this.#tick(), HUB_HEARTBEAT);
   }
 
   /** A tab counts from its first view, so a port that never says what it wants plans nothing. */
@@ -164,6 +165,7 @@ export class Hub {
     });
     // A reaped tab that wakes up is a new one, and needs the state it missed.
     if (!prev) port.postMessage(this.#status());
+    this.#heartbeat ??= setInterval(() => this.#tick(), HUB_HEARTBEAT);
     if (!this.#ws && !this.#retry) this.#connect();
     this.#replan();
   }
@@ -209,6 +211,8 @@ export class Hub {
   #idle() {
     clearTimeout(this.#retry);
     this.#retry = undefined;
+    clearInterval(this.#heartbeat);
+    this.#heartbeat = undefined;
     const ws = this.#ws;
     this.#ws = undefined;
     this.#welcomed = false;
