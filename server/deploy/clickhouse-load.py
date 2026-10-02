@@ -14,8 +14,12 @@ for it; apply.sh does not install uv, so a box needs it once first:
     ./clickhouse-load.py 2026-08-20 2026-10-01
 
 Each day of ais.positions is exported to Parquet with DuckDB and inserted with clickhouse-client, in the
-encodings the server writes. Inserting into positions fills the rollups. A day loaded twice is in
-positions twice: TRUNCATE the tables before loading again.
+encodings the server writes, into the database CLICKHOUSE_URL names, or aiscast. clickhouse-client connects
+with its defaults, localhost:9000 as the default user, which is where the box runs ClickHouse. Inserting into positions
+fills the rollups. Load through the day the server started writing to ClickHouse, so the rollups have all
+of it: the part of that day written live is in positions twice until it expires, and the rollups keep one
+first position per window either way. A day loaded again may be in positions twice, so TRUNCATE the tables
+before reloading.
 """
 
 import os
@@ -23,11 +27,12 @@ import subprocess
 import sys
 import tempfile
 from datetime import date, timedelta
+from urllib.parse import urlparse
 
 import duckdb
 
 first, last = (date.fromisoformat(a) for a in sys.argv[1:3])
-db = os.environ.get("CLICKHOUSE_DB", "aiscast")
+db = urlparse(os.environ.get("CLICKHOUSE_URL", "")).path.strip("/") or "aiscast"
 acct, bucket = os.environ["R2_ACCOUNT_ID"], os.environ.get("LAKE_BUCKET", "ais-lake")
 
 con = duckdb.connect()

@@ -52,7 +52,8 @@ CREATE TABLE positions (
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(ts)
 ORDER BY (mmsi, ts)
-TTL toDateTime(ts) + INTERVAL 30 DAY DELETE;
+TTL toDateTime(ts) + INTERVAL 30 DAY DELETE
+SETTINGS non_replicated_deduplication_window = 1000;
 ```
 
 Sorted by vessel and time, one vessel's range is a few granules in each part it touches. Repeated positions from a moored vessel compress to almost nothing under the delta codecs, so the rollups keep every slot and need no rule for dropping repeats.
@@ -70,7 +71,7 @@ ORDER BY (mmsi, slot)
 TTL slot + INTERVAL 13 MONTH DELETE;
 
 CREATE MATERIALIZED VIEW positions_15m_mv TO positions_15m AS
-SELECT mmsi, toStartOfInterval(ts, INTERVAL 15 MINUTE) AS slot,
+SELECT mmsi, toDateTime(toStartOfInterval(ts, INTERVAL 15 MINUTE), 'UTC') AS slot,
        argMinState((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), ts) AS first
 FROM positions GROUP BY mmsi, slot;
 ```
@@ -91,7 +92,7 @@ The box has 126 GB free on local disk. If the spike's bytes per row run high, `p
 
 ## Writes
 
-The server already queues each accepted position for the track store under the cache lock it holds. A second writer drains the same positions into ClickHouse once a second as one batch over the native protocol (`clickhouse-go`). ClickHouse being slow or down never blocks ingest: the queue is bounded, a full queue drops new positions, and drops are counted in `/metrics`, as the track store counts its own. A failed batch is sent again whole under the same `insert_deduplication_token`, and `positions` keeps a deduplication window, because an insert can fail after ClickHouse committed it. `CLICKHOUSE_URL` unset keeps the server as it is.
+The server already queues each accepted position for the track store under the cache lock it holds. A second writer drains the same positions into ClickHouse once a second as one batch over the native protocol (`clickhouse-go`). ClickHouse being slow or down never blocks ingest: the queue is bounded, a full queue drops new positions, and drops are counted in `/metrics`, as the track store counts its own. A failed batch is sent again whole under the same `insert_deduplication_token`, and `positions` keeps a deduplication window, because an insert can fail after ClickHouse committed it. A batch ClickHouse keeps refusing for 10 minutes is dropped and counted, so one it refuses every time cannot stop the ones behind it, while overload, which ClickHouse also answers with refusals, has time to pass. Lost connections and timeouts never drop a batch. Shutdown sends a failed batch and then the queue. The deploy installs ClickHouse once, restarts it only when its config changes, and never fails because of it, since the server runs without it. `CLICKHOUSE_URL` unset keeps the server as it is.
 
 ## Reads
 

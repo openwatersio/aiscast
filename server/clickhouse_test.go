@@ -11,10 +11,12 @@ import (
 	"time"
 )
 
-// fakeCH records every batch and token it is handed, and fails the first `fail` of them.
+// fakeCH records every batch and token it is handed, and fails the first `fail` of them: with a refusal when
+// refuse is set, else as a lost connection.
 type fakeCH struct {
 	mu      sync.Mutex
 	fail    int
+	refuse  bool
 	tokens  []string
 	batches [][]trackPoint
 }
@@ -26,6 +28,9 @@ func (f *fakeCH) insert(_ context.Context, token string, points []trackPoint) er
 	f.batches = append(f.batches, append([]trackPoint(nil), points...))
 	if f.fail > 0 {
 		f.fail--
+		if f.refuse {
+			return chRefused{errors.New("too many partitions")}
+		}
 		return errors.New("clickhouse is down")
 	}
 	return nil
@@ -117,6 +122,23 @@ func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A clock far off spreads a batch over more daily partitions than an insert takes by default.
+	spread := make([]trackPoint, 120)
+	for i := range spread {
+		spread[i] = early
+		spread[i].mmsi = 257000002
+		spread[i].ts = slot.Add(-time.Duration(i) * 24 * time.Hour)
+	}
+	if err := conn.insert(context.Background(), "spread", spread); err != nil {
+		t.Fatalf("a batch over 120 days: %v", err)
+	}
+
+	// An error ClickHouse itself returns counts as a refusal, toward dropping the batch.
+	missing := &chConn{conn: conn.conn, db: db + "_missing"}
+	if err := missing.insert(context.Background(), "missing", []trackPoint{early}); !errors.As(err, new(chRefused)) {
+		t.Errorf("an insert into a missing database is a refusal: %v", err)
+	}
+
 	ctx := context.Background()
 	var n uint64
 	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions WHERE mmsi = 257000001").Scan(&n); err != nil || n != 3 {
@@ -166,5 +188,50 @@ func TestClickHouseFlushesOneAtATime(t *testing.T) {
 	wg.Wait()
 	if s.max != 1 {
 		t.Errorf("%d inserts in flight at once", s.max)
+	}
+}
+
+func TestClickHouseKeepsABatchThroughAnOutage(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{fail: 30}})
+	ingestAt(p, 257000001, time.Now().Add(-time.Hour), 59.90)
+	for range 31 {
+		p.flushClickHouse()
+	}
+	if p.ch.dropped.Load() != 0 || p.ch.written.Load() != 1 {
+		t.Errorf("a lost connection is waited out: dropped %d written %d", p.ch.dropped.Load(), p.ch.written.Load())
+	}
+}
+
+func TestClickHouseDropsABatchItCannotWrite(t *testing.T) {
+	p := testPipeline(t)
+	f := &fakeCH{fail: 3, refuse: true}
+	p.attachClickHouse(&chStore{w: f})
+	ingestAt(p, 257000001, time.Now().Add(-time.Hour), 59.90)
+	p.flushClickHouse()
+	p.flushClickHouse()
+	if p.ch.dropped.Load() != 0 {
+		t.Fatal("refusals inside the window are retried, as overload may pass")
+	}
+	p.ch.refused = time.Now().Add(-chRefuseFor)
+	p.flushClickHouse()
+	if p.ch.dropped.Load() != 1 || p.ch.failed != nil {
+		t.Fatalf("refused for %v, the batch goes, counted: dropped %d", chRefuseFor, p.ch.dropped.Load())
+	}
+	ingestAt(p, 257000001, time.Now(), 59.91)
+	if err := p.flushClickHouse(); err != nil || p.ch.written.Load() != 1 {
+		t.Errorf("the next batch writes: %v, written %d", err, p.ch.written.Load())
+	}
+}
+
+func TestClickHouseShutdownSendsTheFailedBatchAndTheQueue(t *testing.T) {
+	p := testPipeline(t)
+	f := &fakeCH{fail: 1}
+	p.attachClickHouse(&chStore{w: f})
+	ingestAt(p, 257000001, time.Now().Add(-time.Hour), 59.90)
+	p.flushClickHouse()
+	ingestAt(p, 257000001, time.Now(), 59.91)
+	if err := p.drainClickHouse(); err != nil || p.ch.written.Load() != 2 {
+		t.Errorf("both reach ClickHouse: %v, written %d", err, p.ch.written.Load())
 	}
 }

@@ -31,7 +31,11 @@ fi
 echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=$(dpkg --print-architecture)] https://packages.clickhouse.com/deb lts main" >/etc/apt/sources.list.d/clickhouse.list
 apt-get update -q
 # confold: rootfs/ owns config files such as /etc/alloy/config.alloy, so a package upgrade must not stop to ask.
-apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy clickhouse-client clickhouse-server curl fail2ban jq unattended-upgrades
+apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy curl fail2ban jq unattended-upgrades
+# ClickHouse is installed once and upgraded by hand, so a deploy never changes the database under live data.
+if ! command -v clickhouse-server >/dev/null; then
+	apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold clickhouse-client clickhouse-server
+fi
 
 id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
 
@@ -76,7 +80,21 @@ fi
 systemctl daemon-reload
 systemctl restart systemd-journald
 systemctl enable aiscast caddy clickhouse-server fail2ban
-systemctl restart clickhouse-server
+# ClickHouse restarts only when its own files differ from the ones it last restarted with, recorded in a
+# stamp, so a deploy does not interrupt it for nothing and one that stopped partway is caught up by the next.
+# aiscast runs without ClickHouse, so a ClickHouse that will not start warns and never fails the deploy;
+# --no-block keeps a slow start from holding it up.
+ch_sum=$(cat /etc/clickhouse-server/config.d/aiscast.xml /etc/systemd/system/clickhouse-server.service.d/10-aiscast.conf | md5sum)
+ch_stamp=/var/lib/aiscast/clickhouse-config.md5
+if [ "$ch_sum" != "$(cat "$ch_stamp" 2>/dev/null)" ]; then
+	if systemctl --no-block restart clickhouse-server; then
+		echo "$ch_sum" >"$ch_stamp"
+	else
+		echo 'clickhouse-server did not restart' >&2
+	fi
+else
+	systemctl --no-block start clickhouse-server || echo 'clickhouse-server did not start' >&2
+fi
 systemctl reload-or-restart fail2ban
 caddy validate --config /etc/caddy/Caddyfile
 # The Caddyfile's stream_close_delay keeps the reload from blocking on open WebSockets; the
@@ -105,7 +123,6 @@ systemctl restart aiscast
 sleep 3
 systemctl is-active aiscast
 systemctl is-active caddy
-systemctl is-active clickhouse-server
 # A boot that loads a large vessel record can take longer than the sleep before it listens.
 curl -fsS --retry 20 --retry-connrefused --retry-delay 1 localhost:8080/health
 if [ -n "$alloy" ]; then

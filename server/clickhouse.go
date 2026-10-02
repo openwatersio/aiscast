@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -83,9 +84,10 @@ type chWriter interface {
 type chStore struct {
 	w chWriter
 
-	mu     sync.Mutex // one flush at a time, so a resend never races the batch it repeats
-	failed []trackPoint
-	token  string
+	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
+	failed  []trackPoint
+	token   string
+	refused time.Time // when ClickHouse first refused the failed batch; zero until it does
 
 	written, failures, dropped atomic.Int64
 	writeNanos                 atomic.Int64
@@ -125,22 +127,48 @@ func openClickHouse(ctx context.Context, url string) (*chConn, error) {
 }
 
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"insert_deduplication_token": token}))
+	// A report whose clock is far off can spread one batch over more daily partitions than ClickHouse allows in
+	// an insert by default; it warns instead of refusing the batch.
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"insert_deduplication_token":               token,
+		"throw_on_max_partitions_per_insert_block": 0,
+	}))
 	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".positions")
 	if err != nil {
-		return err
+		return refusal(err)
 	}
 	for _, pt := range points {
 		if err := batch.Append(pt.mmsi, pt.ts, pt.lat6, pt.lon6, pt.sog10, pt.cog10, pt.heading, pt.navStatus, pt.source); err != nil {
 			batch.Abort()
-			return err
+			return chRefused{err}
 		}
 	}
-	return batch.Send()
+	return refusal(batch.Send())
 }
 
 // chInsertTimeout bounds one batch, so a stalled server costs a flush, not the writer.
 const chInsertTimeout = 30 * time.Second
+
+// chRefuseFor is how long ClickHouse may keep refusing a batch before it is dropped, so one it refuses every
+// time cannot stop every batch after it. It is long enough to outlast overload, which ClickHouse also answers
+// with refusals such as a full memory budget or too many parts. Lost connections and timeouts never count:
+// through an outage the batch waits, and the queue behind it buffers.
+const chRefuseFor = 10 * time.Minute
+
+// chRefused is a batch ClickHouse answered with an error, or one the client could not encode: sending it again
+// may well fail the same way.
+type chRefused struct{ error }
+
+func (e chRefused) Unwrap() error { return e.error }
+
+// refusal marks err as a refusal when ClickHouse itself returned it.
+func refusal(err error) error {
+	var ex *clickhouse.Exception
+	if errors.As(err, &ex) {
+		return chRefused{err}
+	}
+	return err
+}
 
 func (p *Pipeline) attachClickHouse(c *chStore) {
 	p.vmu.Lock()
@@ -165,10 +193,18 @@ func (p *Pipeline) runClickHouse(url string) {
 		time.Sleep(time.Minute)
 	}
 	for range time.Tick(time.Second) {
+		p.flushClickHouse()
+	}
+}
+
+// drainClickHouse sends a failed batch and then the queue behind it, for shutdown.
+func (p *Pipeline) drainClickHouse() error {
+	for range 2 {
 		if err := p.flushClickHouse(); err != nil {
-			log.Printf("clickhouse: %v", err)
+			return err
 		}
 	}
+	return nil
 }
 
 // flushClickHouse writes one batch: the one that failed last time, unchanged and under its token, or else
@@ -192,16 +228,34 @@ func (p *Pipeline) flushClickHouse() error {
 		if len(points) == 0 {
 			return nil
 		}
-		c.failed, c.token = points, newDedupeToken()
+		c.failed, c.token, c.refused = points, newDedupeToken(), time.Time{}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), chInsertTimeout)
 	start := time.Now()
 	err := c.w.insert(ctx, c.token, c.failed)
 	cancel()
 	c.writeNanos.Add(int64(time.Since(start)))
-	c.failing.Store(err != nil)
+	// Logged when writes start failing and when they recover, not once a second through an outage.
+	if was := c.failing.Swap(err != nil); was != (err != nil) {
+		if err != nil {
+			log.Printf("clickhouse: %v; positions queue until a batch is written", err)
+		} else {
+			log.Printf("clickhouse: writing again")
+		}
+	}
 	if err != nil {
 		c.failures.Add(1)
+		if !errors.As(err, new(chRefused)) {
+			return err
+		}
+		if c.refused.IsZero() {
+			c.refused = time.Now()
+		}
+		if time.Since(c.refused) >= chRefuseFor {
+			log.Printf("clickhouse: dropped a batch of %d positions refused for %v: %v", len(c.failed), chRefuseFor, err)
+			c.dropped.Add(int64(len(c.failed)))
+			c.failed = nil
+		}
 		return err
 	}
 	c.written.Add(int64(len(c.failed)))

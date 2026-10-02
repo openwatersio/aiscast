@@ -255,7 +255,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_clickhouse_write_failures_total %d\n", c.failures.Load())
 		metricHead(w, "aiscast_clickhouse_write_seconds_total", "counter", "time spent writing batches to ClickHouse")
 		fmt.Fprintf(w, "aiscast_clickhouse_write_seconds_total %.3f\n", float64(c.writeNanos.Load())/1e9)
-		metricHead(w, "aiscast_clickhouse_points_dropped_total", "counter", "positions dropped because the ClickHouse writer fell behind by more than its queue holds")
+		metricHead(w, "aiscast_clickhouse_points_dropped_total", "counter", "positions dropped because the ClickHouse writer fell behind by more than its queue holds, or in a batch ClickHouse refused for 10 minutes")
 		fmt.Fprintf(w, "aiscast_clickhouse_points_dropped_total %d\n", c.dropped.Load())
 	}
 	if l := p.lake; l != nil {

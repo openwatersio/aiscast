@@ -194,7 +194,7 @@ func main() {
 		if err := p.closeStore(); err != nil {
 			log.Printf("store: %v", err)
 		}
-		if err := p.flushClickHouse(); err != nil {
+		if err := p.drainClickHouse(); err != nil {
 			log.Printf("clickhouse: %v", err)
 		}
 		os.Exit(0)
