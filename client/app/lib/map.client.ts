@@ -15,6 +15,7 @@ import {
   viewBoxes,
 } from "./ais";
 import { publicApiBase } from "./api";
+import { PRIVACY } from "./links";
 import type { BBox, Stream } from "./stream";
 import type { Theme } from "./theme";
 
@@ -528,6 +529,7 @@ export function createMap(
         (u) => `<a href="${u}" rel="noopener">${u}</a>`,
       ),
     );
+    custom.push(`<a href="${PRIVACY}">Privacy</a>`);
     attribution = new maplibregl.AttributionControl({
       compact: true,
       customAttribution: custom,
