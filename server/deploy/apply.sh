@@ -24,9 +24,14 @@ if [ ! -f /etc/apt/keyrings/grafana.asc ]; then
 	curl -fsSL https://apt.grafana.com/gpg.key -o /etc/apt/keyrings/grafana.asc
 fi
 echo 'deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main' >/etc/apt/sources.list.d/grafana.list
+# ClickHouse's own apt repository, on its long-term-support releases.
+if [ ! -f /usr/share/keyrings/clickhouse-keyring.gpg ]; then
+	curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
+fi
+echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=$(dpkg --print-architecture)] https://packages.clickhouse.com/deb lts main" >/etc/apt/sources.list.d/clickhouse.list
 apt-get update -q
 # confold: rootfs/ owns config files such as /etc/alloy/config.alloy, so a package upgrade must not stop to ask.
-apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy curl fail2ban jq unattended-upgrades
+apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy clickhouse-client clickhouse-server curl fail2ban jq unattended-upgrades
 
 id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
 
@@ -70,7 +75,8 @@ fi
 
 systemctl daemon-reload
 systemctl restart systemd-journald
-systemctl enable aiscast caddy fail2ban
+systemctl enable aiscast caddy clickhouse-server fail2ban
+systemctl restart clickhouse-server
 systemctl reload-or-restart fail2ban
 caddy validate --config /etc/caddy/Caddyfile
 # The Caddyfile's stream_close_delay keeps the reload from blocking on open WebSockets; the
@@ -99,6 +105,7 @@ systemctl restart aiscast
 sleep 3
 systemctl is-active aiscast
 systemctl is-active caddy
+systemctl is-active clickhouse-server
 # A boot that loads a large vessel record can take longer than the sleep before it listens.
 curl -fsS --retry 20 --retry-connrefused --retry-delay 1 localhost:8080/health
 if [ -n "$alloy" ]; then

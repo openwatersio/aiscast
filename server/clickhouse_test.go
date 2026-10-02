@@ -1,0 +1,118 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// fakeCH records the batches it is handed and fails the first `fail` of them.
+type fakeCH struct {
+	mu      sync.Mutex
+	fail    int
+	batches [][]trackPoint
+}
+
+func (f *fakeCH) insert(_ context.Context, points []trackPoint) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail > 0 {
+		f.fail--
+		return errors.New("clickhouse is down")
+	}
+	f.batches = append(f.batches, append([]trackPoint(nil), points...))
+	return nil
+}
+
+func ingestAt(p *Pipeline, mmsi uint32, at time.Time, lat float64) {
+	p.ingestPacket("kystverket", "kystverket", at, at, posReport(mmsi, lat, 10.7))
+}
+
+func TestClickHouseRetriesAFailedBatchInOrder(t *testing.T) {
+	p := testPipeline(t)
+	f := &fakeCH{fail: 1}
+	p.attachClickHouse(&chStore{w: f})
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	ingestAt(p, 257000001, start, 59.90)
+	if err := p.flushClickHouse(); err == nil {
+		t.Fatal("the first batch should fail")
+	}
+	ingestAt(p, 257000001, start.Add(time.Minute), 59.91)
+	if err := p.flushClickHouse(); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.batches) != 1 || len(f.batches[0]) != 2 || !f.batches[0][0].ts.Equal(start) {
+		t.Fatalf("the failed position goes again, ahead of the one after it: %+v", f.batches)
+	}
+	if p.ch.failures.Load() != 1 || p.ch.written.Load() != 2 {
+		t.Errorf("failures %d written %d", p.ch.failures.Load(), p.ch.written.Load())
+	}
+}
+
+func TestClickHouseDropsWhatItsQueueCannotHold(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	p.vmu.Lock()
+	p.chQueue = make([]trackPoint, maxPending)
+	p.vmu.Unlock()
+	ingestAt(p, 257000001, time.Now(), 59.9)
+	if p.ch.dropped.Load() != 1 {
+		t.Errorf("a full queue drops the newest position and counts it: %d", p.ch.dropped.Load())
+	}
+}
+
+// TestClickHouseWritesPositionsAndRollups runs against a real server named by CLICKHOUSE_TEST_URL, such as
+// clickhouse://127.0.0.1:9000, in a database of its own that it drops afterward.
+func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(context.Background(), strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	if _, err := openClickHouse(context.Background(), strings.TrimRight(url, "/")+"/"+db); err != nil {
+		t.Fatalf("the schema applies again over itself: %v", err)
+	}
+
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: conn})
+	slot := time.Now().Add(-2 * time.Hour).Truncate(15 * time.Minute)
+	ingestAt(p, 257000001, slot.Add(2*time.Minute), 59.90)
+	ingestAt(p, 257000001, slot.Add(9*time.Minute), 59.91)
+	if err := p.flushClickHouse(); err != nil {
+		t.Fatal(err)
+	}
+	// The pipeline withholds a report older than the vessel's last as stale, but history loaded later from the
+	// lake arrives out of order: an earlier position written after the others still wins its window.
+	early := trackPoint{mmsi: 257000001, ts: slot.Add(time.Minute), lat6: int32(59.89 * 600000), lon6: int32(10.7 * 600000),
+		sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "kystverket"}
+	if err := conn.insert(context.Background(), []trackPoint{early}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	var n uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions WHERE mmsi = 257000001").Scan(&n); err != nil || n != 3 {
+		t.Fatalf("every position: %d %v", n, err)
+	}
+	for _, rollup := range []string{"positions_15m", "positions_1h"} {
+		var first time.Time
+		var lat6 int32
+		q := "SELECT tupleElement(argMinMerge(first), 1), tupleElement(argMinMerge(first), 2) FROM " + db + "." + rollup + " WHERE mmsi = 257000001"
+		if err := conn.conn.QueryRow(ctx, q).Scan(&first, &lat6); err != nil {
+			t.Fatal(rollup, err)
+		}
+		if !first.Equal(slot.Add(time.Minute)) || lat6 != int32(59.89*600000) {
+			t.Errorf("%s keeps the earliest position in its window: %v %d", rollup, first, lat6)
+		}
+	}
+}

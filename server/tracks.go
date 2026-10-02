@@ -422,16 +422,26 @@ func (p *Pipeline) attachTracks(t *trackStore) {
 	p.vmu.Unlock()
 }
 
-// notePosition queues an accepted position for the track store. The caller holds vmu.
+// notePosition queues an accepted position for the track store and for ClickHouse. The caller holds vmu.
 func (p *Pipeline) notePosition(mmsi uint32, ts time.Time, u *vessel, source string) {
-	if p.trackQueue == nil {
+	if p.trackQueue == nil && p.chQueue == nil {
 		return
 	}
-	if len(p.trackQueue) >= maxPending {
-		p.tracks.dropped.Add(1)
-		return
+	pt := newTrackPoint(mmsi, ts, u, source)
+	if p.trackQueue != nil {
+		if len(p.trackQueue) >= maxPending {
+			p.tracks.dropped.Add(1)
+		} else {
+			p.trackQueue = append(p.trackQueue, pt)
+		}
 	}
-	p.trackQueue = append(p.trackQueue, newTrackPoint(mmsi, ts, u, source))
+	if p.chQueue != nil {
+		if len(p.chQueue) >= maxPending {
+			p.ch.dropped.Add(1)
+		} else {
+			p.chQueue = append(p.chQueue, pt)
+		}
+	}
 }
 
 func (p *Pipeline) flushTracks() error {

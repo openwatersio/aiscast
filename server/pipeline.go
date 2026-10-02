@@ -108,6 +108,8 @@ type Pipeline struct {
 	fiskeridir fdirStats                      // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
 	fcc        fccStats                       // the weekly sync of FCC ship station licenses (fcc.go)
 	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
+	ch         *chStore                       // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
+	chQueue    []trackPoint                   // positions folded since the last flush to ClickHouse; guarded by vmu
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
 	storesClosed bool       // set by closeStore; flushes after it do nothing
