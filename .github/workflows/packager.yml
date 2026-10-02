@@ -156,7 +156,7 @@ jobs:
           # the day's raw hours, and the whole previous day for replay's lead-in (90 minutes, but it is
           # the server's constant to change, and a short lead-in would silently weaken the replay)
           s3 sync "s3://$NORMALIZED_BUCKET" /mnt/work/raw --exclude "*" --include "*/$dir/*.gz" \
-            --include "*/$prev/*.gz" --exclude "normalized/*"
+            --include "*/$prev/*.gz" --exclude "normalized/*" --exclude "access/*"
           /mnt/work/aiscast replay -archive /mnt/work/raw -out /mnt/work/rep -from "$DAY" -to "$next"
           rm -rf /mnt/work/raw
           # What the rebuild changes, against the hours the bucket holds now. Two sample hours, a night

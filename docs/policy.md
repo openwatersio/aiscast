@@ -54,6 +54,7 @@ The agreement guards against the failure mode of the ADS-B Exchange sale and the
 - **Retention**: receptions from open-licensed sources are kept indefinitely. Volunteer-contributed receptions are kept per the contributor agreement. A deletion procedure removes opt-out vessels from history.
 - **Station locations**: never asked for, and derived locations are shown only coarse. Each station is labeled with the town or region nearest the traffic it hears, using towns of at least 5,000 people. A feed that includes own-vessel (`!AIVDO`) sentences publishes its own position, and the station is then identified and named by that vessel. UDP stations without own-vessel sentences are identified by a keyed hash of the address, never by the address itself.
 - **Own-ship position** from a boat's own transponder is shared once the Signal K plugin is enabled. The plugin ships disabled, so enabling it is the consent. Own-ship sharing also has its own switch.
+- **Request logs**: every API request is logged with the client's network (the /24 or /48), a keyed hash of its address, and the subject of its token, never the address or the token itself. The logs are kept to investigate load and abuse and to learn how the API is used. The web server keeps full addresses in its own log for two weeks, for abuse response, and then deletes them.
 - **Abuse response**: per-key revocation, per-IP limits, and a published contact address.
 - **GDPR basis** for Class B small-craft data is legitimate interest in broadcast data. It is reviewed alongside the contributor agreement.
 

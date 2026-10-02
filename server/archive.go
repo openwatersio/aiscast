@@ -131,6 +131,20 @@ func (a *archive) write(rx Reception) {
 	a.ch <- rx
 }
 
+// offer is write without the wait: false when the queue is full. For records worth less than holding up
+// whoever produced them.
+func (a *archive) offer(rx Reception) bool {
+	if a.dir == "" {
+		return true
+	}
+	select {
+	case a.ch <- rx:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *archive) run() {
 	files := map[string]*hourFile{}
 	flush := time.NewTicker(5 * time.Second)

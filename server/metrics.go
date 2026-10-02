@@ -121,10 +121,12 @@ func (m *requestMetrics) observe(route string, status int, d time.Duration) {
 	h.sum += s
 }
 
-// statusWriter records the status a handler sends. Unwrap keeps WebSocket hijacking and SSE flushing working.
+// statusWriter records the status a handler sends and the body bytes it writes. Unwrap keeps WebSocket
+// hijacking and SSE flushing working.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	bytes  int64
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -138,7 +140,9 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(b)
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
 }
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -182,7 +186,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	archives := []struct {
 		name string
 		a    *archive
-	}{{"raw", p.arch}, {"normalized", p.norm}}
+	}{{"raw", p.arch}, {"normalized", p.norm}, {"access", p.access}}
 	metricHead(w, "aiscast_udp_datagrams_total", "counter", "raw NMEA datagrams received, per UDP listener")
 	for _, l := range p.udp {
 		fmt.Fprintf(w, "aiscast_udp_datagrams_total{listener=%q} %d\n", l.label, l.datagrams.Load())
@@ -192,6 +196,8 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	for _, a := range archives {
 		fmt.Fprintf(w, "aiscast_archive_upload_failures_total{archive=%q} %d\n", a.name, a.a.uploadFailures.Load())
 	}
+	metricHead(w, "aiscast_access_dropped_total", "counter", "access log lines dropped because the writer fell behind the requests")
+	fmt.Fprintf(w, "aiscast_access_dropped_total %d\n", p.accessDropped.Load())
 	metricHead(w, "aiscast_archive_staged_bytes", "gauge", "archive bytes on local disk at the last hourly sweep, not yet reclaimed after upload")
 	for _, a := range archives {
 		fmt.Fprintf(w, "aiscast_archive_staged_bytes{archive=%q} %d\n", a.name, a.a.staged.Load())

@@ -26,7 +26,7 @@ fi
 echo 'deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main' >/etc/apt/sources.list.d/grafana.list
 apt-get update -q
 # confold: rootfs/ owns config files such as /etc/alloy/config.alloy, so a package upgrade must not stop to ask.
-apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy curl fail2ban unattended-upgrades
+apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy curl fail2ban jq unattended-upgrades
 
 id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
 
