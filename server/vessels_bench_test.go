@@ -96,7 +96,8 @@ func BenchmarkTileZ4Skagerrak(b *testing.B) { benchTile(b, 4, 8, 4) }
 func BenchmarkTileZ8Oslofjord(b *testing.B) { benchTile(b, 8, 135, 74) }
 
 // benchTileRecord adds 300,000 record rows heard over the last two weeks, half of them last reported
-// stationary, to the 60,000-vessel cache: the low-zoom tiles read most of them.
+// stationary, to the 60,000-vessel cache, placed as benchFleet places vessels: the low-zoom tiles read most of
+// them, and a busy mid-zoom tile tens of thousands.
 func benchTileRecord(b *testing.B, z, x, y int) {
 	p := testPipeline(nil)
 	benchFleet(p, 60000)
@@ -106,12 +107,19 @@ func benchTileRecord(b *testing.B, z, x, y int) {
 	}
 	defer st.close()
 	p.attachStore(st)
+	busy := []bbox{{57, 5, 62, 12}, {53, 3, 56, 9}, {59, 18, 61, 30}, {35, 120, 40, 125}, {25, -95, 30, -80}}
 	r := rand.New(rand.NewPCG(3, 4))
 	now := time.Now()
 	var rows []record
 	for i := range 300000 {
 		v := newVessel()
-		v.Lat, v.Lon, v.HasPos = r.Float64()*140-70, r.Float64()*360-180, true
+		if i%10 < 7 {
+			bb := busy[i%len(busy)]
+			v.Lat, v.Lon = bb[0]+r.Float64()*(bb[2]-bb[0]), bb[1]+r.Float64()*(bb[3]-bb[1])
+		} else {
+			v.Lat, v.Lon = r.Float64()*140-70, r.Float64()*360-180
+		}
+		v.HasPos = true
 		v.Seen = now.Add(-time.Duration(r.Int64N(int64(14 * 24 * time.Hour))))
 		v.PosAt, v.Name, v.Source, v.ShipType = v.Seen, "BENCH RECORD", "aishub", 70
 		if i%2 == 0 {
@@ -134,4 +142,39 @@ func benchTileRecord(b *testing.B, z, x, y int) {
 }
 
 func BenchmarkTileRecordZ0(b *testing.B)          { benchTileRecord(b, 0, 0, 0) }
+func BenchmarkTileRecordZ4Skagerrak(b *testing.B) { benchTileRecord(b, 4, 8, 4) }
 func BenchmarkTileRecordZ8Oslofjord(b *testing.B) { benchTileRecord(b, 8, 135, 74) }
+
+// BenchmarkStoreFlush times one second's flush at production's write rate: 650 vessels with new positions
+// upserted into a record of 300,000, every index moving with them.
+func BenchmarkStoreFlush(b *testing.B) {
+	st, err := openStore(b.TempDir() + "/aiscast.db")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.close()
+	r := rand.New(rand.NewPCG(7, 8))
+	now := time.Now()
+	row := func(i int, at time.Time) record {
+		v := newVessel()
+		v.Lat, v.Lon, v.HasPos, v.Seen, v.PosAt, v.Sog = r.Float64()*140-70, r.Float64()*360-180, true, at, at, 11.2
+		return record{mmsi: uint32(300000000 + i), v: v, firstSeen: at}
+	}
+	var rows []record
+	for i := range 300000 {
+		rows = append(rows, row(i, now.Add(-time.Duration(r.Int64N(int64(14*24*time.Hour))))))
+	}
+	if err := st.upsert(rows); err != nil {
+		b.Fatal(err)
+	}
+	flush := make([]record, 650)
+	for b.Loop() {
+		now = now.Add(time.Second)
+		for k := range flush {
+			flush[k] = row(r.IntN(300000), now)
+		}
+		if err := st.upsert(flush); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

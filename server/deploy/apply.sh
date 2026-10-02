@@ -99,7 +99,8 @@ systemctl restart aiscast
 sleep 3
 systemctl is-active aiscast
 systemctl is-active caddy
-curl -fsS localhost:8080/health
+# A boot that loads a large vessel record can take longer than the sleep before it listens.
+curl -fsS --retry 20 --retry-connrefused --retry-delay 1 localhost:8080/health
 if [ -n "$alloy" ]; then
 	systemctl is-active alloy
 fi

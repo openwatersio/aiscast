@@ -182,6 +182,7 @@ type record struct {
 type store struct {
 	db   *sql.DB
 	path string
+	idx  *recordIndex // the record's positions in memory, refreshed after every write (recindex.go)
 
 	// read by /metrics
 	flushes, flushFailures, rowsWritten atomic.Int64
@@ -208,7 +209,12 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
-	return &store{db: db, path: path}, nil
+	s := &store{db: db, path: path}
+	if s.idx, err = loadRecordIndex(s); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return s, nil
 }
 
 // storeConns bounds the vessel record's connections: the writer and the requests reading beside it.
@@ -276,7 +282,23 @@ func (s *store) upsert(rows []record) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.refreshIndex(len(rows), func(i int) uint32 { return rows[i].mmsi })
+	return nil
+}
+
+// refreshIndex files again the n rows just written. A failure leaves those vessels a write behind in the
+// index, until their next write, and never fails the write itself.
+func (s *store) refreshIndex(n int, mmsi func(int) uint32) {
+	mmsis := make([]uint32, n)
+	for i := range mmsis {
+		mmsis[i] = mmsi(i)
+	}
+	if err := s.idx.refresh(s, mmsis); err != nil {
+		log.Printf("record index: %v", err)
+	}
 }
 
 // recordQuery selects rows. Every set filter must hold; boxes and mmsis match any of their members.

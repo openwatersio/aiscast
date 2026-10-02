@@ -32,7 +32,9 @@ const (
 	tileMaxZoom = 14  // advertised in TileJSON; clients overzoom past it, though deeper tiles are served too
 	tileCap     = 2000
 	tileGrid    = 64 // past tileCap vessels, a tile keeps the newest in each 8 px cell
+	tileCols    = (tileExtent + 2*tileBuffer) / tileGrid
 	tileTTL     = 10 * time.Second
+	tileBuilds  = 4 // tiles built at once, half the box's CPUs; the rest queue, so a burst of tiles leaves room for /v1/vessels
 	tileLayer   = "vessels"
 	mercatorLat = 85.0511287798066
 )
@@ -188,9 +190,7 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 	n := float64(uint(1) << z)
 	box := tileBox(z, x, y)
 	// The cache answers for the last 30 minutes and the record for what it no longer holds. A record that
-	// fails leaves the tile to the cache rather than blanking the map. ponytail: a z0-z3 tile decodes every
-	// matching row in its area, ~400 ms for 75,000 (BenchmarkTileRecordZ0), at most once per tileTTL; pick
-	// the newest row per cell in SQL at low zooms if the route's latency histogram says so.
+	// fails leaves the tile to the cache rather than blanking the map.
 	var recs []record
 	if age, vf := f.rule(f.mmsi != nil); p.store != nil && (age == 0 || age > vesselTTL) {
 		q := recordQuery{boxes: []bbox{box}, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, filter: vf, now: now}
@@ -198,7 +198,7 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 			q.mmsis = slices.Collect(maps.Keys(f.mmsi))
 		}
 		var err error
-		if recs, err = p.store.find(q); err != nil {
+		if recs, err = p.tileRecords(q, z, x, y); err != nil {
 			log.Printf("store: %v", err)
 		}
 	}
@@ -207,10 +207,8 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if math.Abs(v.Lat) > mercatorLat || !f.match(mmsi, v, now) {
 			return
 		}
-		φ := v.Lat * math.Pi / 180
-		px := ((v.Lon+180)/360*n - float64(x)) * tileExtent
-		py := ((1-math.Log(math.Tan(φ)+1/math.Cos(φ))/math.Pi)/2*n - float64(y)) * tileExtent
-		if px < -tileBuffer || py < -tileBuffer || px >= tileExtent+tileBuffer || py >= tileExtent+tileBuffer {
+		px, py := tilePixel(v.Lat, v.Lon, n, x, y)
+		if !inTile(px, py) {
 			return
 		}
 		pts = append(pts, tilePoint{mmsi: mmsi, x: int32(math.Round(px)), y: int32(math.Round(py)), seen: v.Seen,
@@ -232,8 +230,7 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 	if len(pts) > tileCap {
 		best := map[int32]int{}
 		for i, pt := range pts {
-			const cols = (tileExtent + 2*tileBuffer) / tileGrid
-			c := (pt.y+tileBuffer)/tileGrid*cols + (pt.x+tileBuffer)/tileGrid
+			c := tileCell(pt.x, pt.y)
 			if j, ok := best[c]; !ok || pt.seen.After(pts[j].seen) {
 				best[c] = i
 			}
@@ -297,11 +294,74 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 	return l.tile()
 }
 
+// tileRecords reads a tile's records. Past tileCap vessels a tile keeps the newest in each cell, and a
+// low-zoom tile matches a week of vessels across its area, so the record index answers where and when each
+// was last heard, and only the newest in each cell is read from the record. When no more match than a tile
+// holds, nothing is thinned and every match is read. The record holds only vessels unheard for 30 minutes and
+// the cache only those heard since, so a cached vessel always wins its cell, and the newest record vessel in
+// each cell is all the thinning can keep. vesselTile applies the filters again to the rows it reads, which
+// can be a second newer than the index.
+func (p *Pipeline) tileRecords(q recordQuery, z, x, y int) ([]record, error) {
+	type pick struct {
+		mmsi uint32
+		seen int64
+	}
+	n := float64(uint(1) << z)
+	newest := map[int32]pick{}
+	var all []uint32
+	inside := 0
+	p.store.idx.each(tileBox(z, x, y), q, func(mmsi uint32, e *recEntry) {
+		px, py := tilePixel(e.lat, e.lon, n, x, y)
+		if math.Abs(e.lat) > mercatorLat || !inTile(px, py) {
+			return
+		}
+		inside++
+		if inside <= tileCap+1 {
+			all = append(all, mmsi)
+		}
+		// ties go to the lower MMSI, as vesselTile's thinning breaks them
+		c := tileCell(int32(math.Round(px)), int32(math.Round(py)))
+		if b, ok := newest[c]; !ok || e.seen > b.seen || e.seen == b.seen && mmsi < b.mmsi {
+			newest[c] = pick{mmsi, e.seen}
+		}
+	})
+	if inside == 0 {
+		return nil, nil
+	}
+	if inside <= tileCap {
+		return p.store.find(recordQuery{mmsis: all})
+	}
+	keep := make([]uint32, 0, len(newest))
+	for _, k := range newest {
+		keep = append(keep, k.mmsi)
+	}
+	return p.store.find(recordQuery{mmsis: keep})
+}
+
+// tilePixel is where lat, lon falls in tile x, y, in tile units, at a zoom with n tiles a side.
+func tilePixel(lat, lon, n float64, x, y int) (px, py float64) {
+	φ := lat * math.Pi / 180
+	px = ((lon+180)/360*n - float64(x)) * tileExtent
+	py = ((1-math.Log(math.Tan(φ)+1/math.Cos(φ))/math.Pi)/2*n - float64(y)) * tileExtent
+	return px, py
+}
+
+// inTile reports a tile-unit position inside the tile or its buffer.
+func inTile(px, py float64) bool {
+	return px >= -tileBuffer && py >= -tileBuffer && px < tileExtent+tileBuffer && py < tileExtent+tileBuffer
+}
+
+// tileCell numbers the 8 px thinning cell of a position inside the tile or its buffer.
+func tileCell(x, y int32) int32 {
+	return (y+tileBuffer)/tileGrid*tileCols + (x+tileBuffer)/tileGrid
+}
+
 // ---- tile cache: one build per tile and filter per tileTTL, however many clients ask ----
 
 type tileCache struct {
-	mu sync.Mutex
-	m  map[string]*tileEntry
+	mu    sync.Mutex
+	m     map[string]*tileEntry
+	slots chan struct{} // one per build in progress, tileBuilds at most
 }
 
 type tileEntry struct {
@@ -315,7 +375,7 @@ type tileEntry struct {
 const tileCacheMax = 10000
 
 // get returns the entry for key, building it when missing or expired. Concurrent requests for one tile wait
-// on the same build.
+// on the same build, and builds past tileBuilds wait for a slot.
 func (c *tileCache) get(key string, now time.Time, build func() []byte) []byte {
 	c.mu.Lock()
 	e := c.m[key]
@@ -336,8 +396,16 @@ func (c *tileCache) get(key string, now time.Time, build func() []byte) []byte {
 		e = &tileEntry{at: now}
 		c.m[key] = e
 	}
+	if c.slots == nil {
+		c.slots = make(chan struct{}, tileBuilds)
+	}
+	slots := c.slots
 	c.mu.Unlock()
-	e.once.Do(func() { e.b = build() })
+	e.once.Do(func() {
+		slots <- struct{}{}
+		defer func() { <-slots }()
+		e.b = build()
+	})
 	return e.b
 }
 
