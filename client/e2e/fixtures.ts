@@ -1,5 +1,5 @@
-import { test as base, expect, type Page } from "@playwright/test";
-import { e2eAuth } from "./auth";
+import { test as base, expect, type BrowserContext, type Page } from "@playwright/test";
+import { e2eAuth, oneStreamToken } from "./auth";
 import { API, MAP_HASH } from "./data";
 
 // The basemap is OpenFreeMap's, and nothing these tests check depends on it. A blank style in
@@ -31,10 +31,11 @@ export const test = base.extend({
 
 export { expect };
 
-/** The map, as dev and e2e builds expose it. */
+/** The map and the stream, as dev and e2e builds expose them. */
 declare global {
   interface Window {
     aiscastMap?: import("maplibre-gl").Map;
+    aiscastStream?: import("../app/lib/stream").Stream;
   }
 }
 
@@ -133,4 +134,19 @@ export async function openVesselOnMap(page: Page, exclude: number[] = []) {
   await page.mouse.click(x, y);
   await expect(page).toHaveURL(new RegExp(`/ais/vessels/${mmsi}(-|#|$)`));
   return mmsi;
+}
+
+/** The chip over the map that says whether it is live. Search has a status of its own. */
+export function mapStatus(page: Page) {
+  return page.locator(".status-dock");
+}
+
+/** Has every page in this context use a token of its own that may hold only one stream. */
+export async function useOneStreamToken(context: BrowserContext) {
+  await context.addInitScript((token) => {
+    // about:blank has no storage of its own.
+    try {
+      localStorage.setItem("aiscast.token", JSON.stringify({ token }));
+    } catch {}
+  }, oneStreamToken());
 }
