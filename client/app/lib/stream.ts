@@ -1,4 +1,5 @@
 import { publicApiBase, storedToken, type VesselProps } from "./api";
+import { reportError } from "./report";
 import { Hub, HUB_HEARTBEAT, type HubState, type Limits, type Port, type ToHub, type ToTab } from "./streamHub";
 
 // One connection for the whole browser. Anonymous clients get two concurrent streams per
@@ -283,6 +284,7 @@ export class Stream {
     this.#heard = Date.now();
     this.#spoke = true;
     if (msg.type === "event") return this.#onEvent(JSON.parse(msg.data));
+    if (msg.fault) reportError("stream", new Error(msg.fault));
     // Another tab's view took the area this one needs, so the tiles carry it, as when refused.
     const state = msg.state === "live" && !msg.served ? "refused" : msg.state;
     const lost = (this.#served && !msg.served) || (this.#following && !(msg.following ?? msg.served));

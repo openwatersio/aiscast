@@ -15,6 +15,7 @@ import {
   viewBoxes,
 } from "./ais";
 import { publicApiBase } from "./api";
+import { reportError } from "./report";
 import type { BBox, Stream } from "./stream";
 import type { Theme } from "./theme";
 
@@ -215,8 +216,13 @@ export function createMap(
   let styleLoaded = false;
   map.on("error", (e) => {
     console.error("[map]", e.error ?? e);
-    if (!styleLoaded) mapError = e.error?.message ?? "basemap failed to load";
+    if (styleLoaded) return;
+    mapError = e.error?.message ?? "basemap failed to load";
+    reportError("map", e.error ?? mapError);
   });
+  // MapLibre restores the map when the context comes back. A mobile browser drops it under
+  // memory pressure; a count of these is how a leak or a driver fault would show.
+  map.on("webglcontextlost", () => reportError("webgl", new Error("WebGL context lost")));
   map.on("style.load", () => {
     styleLoaded = true;
     mapError = "";

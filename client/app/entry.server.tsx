@@ -1,7 +1,18 @@
 import { isbot } from "isbot";
 import { renderToReadableStream } from "react-dom/server";
-import type { EntryContext } from "react-router";
-import { ServerRouter } from "react-router";
+import type { EntryContext, HandleErrorFunction } from "react-router";
+import { isRouteErrorResponse, ServerRouter } from "react-router";
+import { logServerError } from "./lib/report.server";
+
+/** Loader, action and render errors, in place of React Router's own console.error. */
+export const handleError: HandleErrorFunction = (error, { request }) => {
+  // A reader who navigated away, or a request the app refuses, such as a POST to a page, is
+  // not a fault in the app.
+  if (request.signal.aborted || (isRouteErrorResponse(error) && error.status < 500)) return;
+  // A 5xx response React Router made from a thrown error keeps it, untyped, as `error`.
+  const cause = isRouteErrorResponse(error) ? (error as { error?: unknown }).error : undefined;
+  logServerError("request", cause ?? error, request);
+};
 
 export default async function handleRequest(
   request: Request,
@@ -18,8 +29,9 @@ export default async function handleRequest(
     progressiveChunkSize: Number.POSITIVE_INFINITY,
     onError(error: unknown) {
       status = 500;
-      // Errors before the shell renders reject and are logged by React Router.
-      if (shellRendered) console.error(error);
+      // Errors before the shell renders reject, and React Router passes them to handleError.
+      // A reader who leaves mid-stream aborts every pending boundary, which is not a fault.
+      if (shellRendered && !request.signal.aborted) logServerError("render", error, request);
     },
   });
   shellRendered = true;

@@ -25,7 +25,19 @@ export type ToTab =
    * `served` is false when this tab's boxes or follows did not fit in the union. `following`
    * says whether its follows did, which they can while its boxes do not.
    */
-  | { type: "status"; state: HubState; served: boolean; following: boolean; limits?: Limits }
+  | {
+      type: "status";
+      state: HubState;
+      served: boolean;
+      following: boolean;
+      limits?: Limits;
+      /**
+       * Once, on the status after the stream fails in a way worth reporting. A worker cannot
+       * send a beacon, so the tab reports it. On the status, not a message of its own, so a
+       * tab from another build reads it as a status and ignores the field.
+       */
+      fault?: string;
+    }
   /** The server's frame as it arrived, for the tab to parse. */
   | { type: "event"; data: string };
 
@@ -117,6 +129,10 @@ interface Tab extends TabView {
 
 /** How often the hub tells its tabs it is alive, which is how a tab notices it has gone. */
 export const HUB_HEARTBEAT = 5e3;
+// Closes in a row without a welcome before the stream counts as broken: about 30 seconds of
+// backoff, past a blip in a phone's connection.
+const FAILURES_REPORTED = 5;
+
 // A tab hidden for five minutes has its timers held to one a minute, and a frozen one has
 // none, so this is generous. A frozen tab's view leaving the union is what should happen.
 const TAB_SILENCE = 3 * 60e3;
@@ -130,6 +146,7 @@ export class Hub {
   /** Runs while the hub has tabs, so an idle hub holds nothing that keeps it alive. */
   #heartbeat: ReturnType<typeof setInterval> | undefined;
   #backoff = 1000;
+  #failures = 0;
   #welcomed = false;
   #limits: Limits | undefined;
   #tabs = new Map<TabPort, Tab>();
@@ -175,8 +192,13 @@ export class Hub {
     return { type: "status", state: this.state, served, following, limits: this.#limits };
   }
 
-  #broadcast() {
-    for (const [port, tab] of this.#tabs) port.postMessage(this.#status(tab));
+  /** A fault goes to one tab, so a browser with many tabs open reports it once. */
+  #broadcast(fault?: string) {
+    let first = true;
+    for (const [port, tab] of this.#tabs) {
+      port.postMessage({ ...this.#status(tab), ...(first && fault && { fault }) });
+      first = false;
+    }
   }
 
   #replan() {
@@ -230,8 +252,15 @@ export class Hub {
       this.#ws = undefined;
       this.#welcomed = false;
       this.#sent = "";
-      if (this.state !== "refused") this.state = "reconnecting";
-      this.#broadcast();
+      let fault: string | undefined;
+      if (this.state !== "refused") {
+        this.state = "reconnecting";
+        // An offline device is not a broken stream. A worker without the flag counts as online.
+        if (++this.#failures === FAILURES_REPORTED && globalThis.navigator?.onLine !== false) {
+          fault = `no welcome after ${FAILURES_REPORTED} attempts`;
+        }
+      }
+      this.#broadcast(fault);
       if (!this.#tabs.size) return;
       this.#retry = setTimeout(() => this.#connect(), this.#backoff);
       this.#backoff = Math.min(this.#backoff * 2, 30e3);
@@ -251,6 +280,7 @@ export class Hub {
       // Not on open: the server accepts the socket before it checks the per-address stream
       // limit, then refuses and closes it. Resetting there retried every second forever.
       this.#backoff = 1000;
+      this.#failures = 0;
       this.#welcomed = true;
       this.#limits = ev.limits;
       this.state = "live";
@@ -266,6 +296,9 @@ export class Hub {
       } else if (/concurrent/i.test(ev.error ?? "")) {
         this.state = "refused";
         this.#broadcast();
+      } else if (!/token|rate limited|too slow|already registered/i.test(ev.error ?? "")) {
+        // The rest are the reader's: a stale token, a slow device. Anything else is the app's.
+        this.#broadcast(`server error: ${ev.error ?? "unknown"}`);
       }
       return;
     }

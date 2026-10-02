@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { isRouteErrorResponse } from "react-router";
 import { pageMeta } from "../lib/meta";
+import { reportError } from "../lib/report";
 import { PageTitle, Panel } from "./Panel";
 
 const isNotFound = (error: unknown) => isRouteErrorResponse(error) && error.status === 404;
@@ -19,10 +21,14 @@ export function routeErrorHeaders({ errorHeaders }: { errorHeaders?: Headers }):
 /**
  * A page that could not load, in the panel, so the map and the rest of the app stay put.
  * A 404 is an address with nothing at it; anything else, most often the API being
- * unavailable, is worth trying again.
+ * unavailable, is worth trying again. Only a thrown error is reported: a thrown response is
+ * the page saying what it meant to.
  */
 export function RouteError({ error }: { error: unknown }) {
   const notFound = isNotFound(error);
+  useEffect(() => {
+    if (!isRouteErrorResponse(error)) reportError("boundary", error);
+  }, [error]);
   return (
     <Panel back="/vessels" title={notFound ? "Not found" : "Unavailable"}>
       <PageTitle className="text-large-title">{notFound ? "Not found" : "Unavailable"}</PageTitle>
