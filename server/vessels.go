@@ -394,8 +394,11 @@ type vesselProps struct {
 	ToStarboard *uint8        `json:"to_starboard,omitempty"`
 	ToStern     *uint16       `json:"to_stern,omitempty"`
 	Type        uint8         `json:"type,omitempty"`
-	USCG        *uscgVessel   `json:"uscg,omitempty"`     // on /v1/vessels/{mmsi} only
-	Wikidata    *wikidataShip `json:"wikidata,omitempty"` // on /v1/vessels/{mmsi} only
+	// The merged enrichment document, its per-field provenance, and the contributing sources'
+	// credits (particulars.go). On /v1/vessels/{mmsi} only.
+	Particulars *particulars         `json:"particulars,omitempty"`
+	Provenance  map[string]string    `json:"provenance,omitempty"`
+	Sources     map[string]sourceRef `json:"sources,omitempty"`
 }
 
 func (v *vessel) feature(mmsi uint32) vesselFeature {
@@ -764,8 +767,8 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	if !first.IsZero() {
 		f.Properties.FirstSeen = first.UTC().Format(time.RFC3339)
 	}
-	f.Properties.Wikidata = p.wikidataOf(cur.IMO)[cur.IMO]
-	f.Properties.USCG = p.uscgOf(uscgKey{mmsi, cur.CallSign, cur.Name})[mmsi]
+	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources =
+		mergeParticulars(p.wikidataOf(cur.IMO)[cur.IMO], p.uscgOf(uscgKey{mmsi, cur.CallSign, cur.Name})[mmsi])
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
 	// allocation.

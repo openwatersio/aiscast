@@ -1,0 +1,123 @@
+package main
+
+// The enrichment sources merged into one document. Each synced source keeps its own table and its own
+// shape; this file folds them into a single vocabulary served on /v1/vessels/{mmsi} and the MCP
+// get_vessels tool, so a client never reads per-source keys. provenance names the source of each field it
+// serves, and sources carries the credit, license, and the source's own page for the vessel. A new source
+// adds fields to the vocabulary and a rank to the merge here, and no response key is named after it.
+
+import "strconv"
+
+// sourceRef is one source's entry in the sources map: how to credit it and where its record is.
+type sourceRef struct {
+	Credit  string `json:"credit" jsonschema:"display credit for the source"`
+	License string `json:"license"`
+	URL     string `json:"url,omitempty" jsonschema:"the source's own page for this vessel"`
+}
+
+// particulars is the merged document: one vocabulary, metres and tonnes, no source names.
+type particulars struct {
+	RegisteredName string   `json:"registered_name,omitempty" jsonschema:"name as documented with the flag state, when it differs from what AIS reports"`
+	Identification string   `json:"identification,omitempty" jsonschema:"the flag state's number for the vessel: a documented vessel's official number, else its state registration"`
+	Service        string   `json:"service,omitempty" jsonschema:"flag-state service type, e.g. Towing Vessel, Passenger (Inspected), Recreational"`
+	Status         string   `json:"status,omitempty" jsonschema:"flag-state status, e.g. Active, Laid Up"`
+	ShipType       string   `json:"ship_type,omitempty" jsonschema:"kind of ship, e.g. bulk carrier, container ship, ferry"`
+	Builder        string   `json:"builder,omitempty" jsonschema:"shipyard or builder"`
+	YardNumber     string   `json:"yard_number,omitempty" jsonschema:"the builder's hull number"`
+	YearBuilt      int      `json:"year_built,omitempty"`
+	GrossTonnage   int      `json:"gross_tonnage,omitempty"`
+	NetTonnage     int      `json:"net_tonnage,omitempty"`
+	TonnageMeasure string   `json:"tonnage_measure,omitempty" jsonschema:"how a tonnage from the flag state was measured: Convention (the international system), Regulatory (the older US system, in register tons), or Simplified (small vessels)"`
+	Deadweight     int      `json:"deadweight,omitempty" jsonschema:"deadweight, tonnes"`
+	Length         float64  `json:"length,omitempty" jsonschema:"length as registered, metres; may differ from the AIS length"`
+	Beam           float64  `json:"beam,omitempty" jsonschema:"beam as registered, metres"`
+	Depth          float64  `json:"depth,omitempty" jsonschema:"registered depth, metres"`
+	Draught        float64  `json:"draught,omitempty" jsonschema:"design draught, metres; AIS reports the draught on the current voyage"`
+	Registry       string   `json:"registry,omitempty" jsonschema:"country of registry, in English"`
+	HomePort       string   `json:"home_port,omitempty" jsonschema:"port of registry"`
+	Owner          string   `json:"owner,omitempty"`
+	Operator       string   `json:"operator,omitempty"`
+	FormerNames    []string `json:"former_names,omitempty" jsonschema:"names the vessel has carried before, oldest first"`
+	Wikipedia      string   `json:"wikipedia,omitempty" jsonschema:"the ship's English Wikipedia article"`
+	CommonsCat     string   `json:"commons_category,omitempty" jsonschema:"the category of the ship's photos on Wikimedia Commons"`
+	Image          string   `json:"image,omitempty" jsonschema:"the Commons page of a photo of the ship, which shows its license and credit"`
+}
+
+// mergeParticulars folds the sources into the served document. Per field, deterministically: the flag
+// state outranks Wikidata for registered facts, an empty value never wins, and provenance records the
+// winner by the field's JSON name.
+func mergeParticulars(wd *wikidataShip, cg *uscgVessel) (*particulars, map[string]string, map[string]sourceRef) {
+	if wd == nil && cg == nil {
+		return nil, nil, nil
+	}
+	m := &particulars{}
+	prov := map[string]string{}
+	str := func(field, source, v string, dst *string) {
+		if v != "" && *dst == "" {
+			*dst, prov[field] = v, source
+		}
+	}
+	num := func(field, source string, v, dst *int) {
+		if *v > 0 && *dst == 0 {
+			*dst, prov[field] = *v, source
+		}
+	}
+	flt := func(field, source string, v, dst *float64) {
+		if *v > 0 && *dst == 0 {
+			*dst, prov[field] = *v, source
+		}
+	}
+	if cg != nil {
+		str("registered_name", "uscg", cg.Name, &m.RegisteredName)
+		str("identification", "uscg", cg.Identification, &m.Identification)
+		str("service", "uscg", cg.Service, &m.Service)
+		str("status", "uscg", cg.Status, &m.Status)
+		num("year_built", "uscg", &cg.YearBuilt, &m.YearBuilt)
+		flt("length", "uscg", &cg.Length, &m.Length)
+		flt("beam", "uscg", &cg.Beam, &m.Beam)
+		flt("depth", "uscg", &cg.Depth, &m.Depth)
+		num("net_tonnage", "uscg", &cg.NetTonnage, &m.NetTonnage)
+		// Convention tonnage is the figure readers expect, so it wins; a Regulatory or Simplified figure
+		// yields to Wikidata's and serves only when it is all there is, named by tonnage_measure.
+		if cg.GrossTonnage > 0 && (cg.TonnageMeasure == "Convention" || wd == nil || wd.GrossTonnage == 0) {
+			m.GrossTonnage, prov["gross_tonnage"] = cg.GrossTonnage, "uscg"
+		}
+		if prov["gross_tonnage"] == "uscg" || prov["net_tonnage"] == "uscg" {
+			str("tonnage_measure", "uscg", cg.TonnageMeasure, &m.TonnageMeasure)
+		}
+	}
+	if wd != nil {
+		str("ship_type", "wikidata", wd.ShipType, &m.ShipType)
+		str("builder", "wikidata", wd.Builder, &m.Builder)
+		str("yard_number", "wikidata", wd.YardNumber, &m.YardNumber)
+		num("year_built", "wikidata", &wd.YearBuilt, &m.YearBuilt)
+		num("gross_tonnage", "wikidata", &wd.GrossTonnage, &m.GrossTonnage)
+		num("deadweight", "wikidata", &wd.Deadweight, &m.Deadweight)
+		flt("length", "wikidata", &wd.Length, &m.Length)
+		flt("beam", "wikidata", &wd.Beam, &m.Beam)
+		flt("draught", "wikidata", &wd.Draught, &m.Draught)
+		str("registry", "wikidata", wd.Registry, &m.Registry)
+		str("home_port", "wikidata", wd.HomePort, &m.HomePort)
+		str("owner", "wikidata", wd.Owner, &m.Owner)
+		str("operator", "wikidata", wd.Operator, &m.Operator)
+		if len(wd.FormerNames) > 0 {
+			m.FormerNames, prov["former_names"] = wd.FormerNames, "wikidata"
+		}
+		str("wikipedia", "wikidata", wd.Wikipedia, &m.Wikipedia)
+		str("commons_category", "wikidata", wd.CommonsCategory, &m.CommonsCat)
+		str("image", "wikidata", wd.Image, &m.Image)
+	}
+	// A PSIX match is itself the registry fact for a vessel Wikidata does not know.
+	if cg != nil {
+		str("registry", "uscg", "United States", &m.Registry)
+	}
+	sources := map[string]sourceRef{}
+	if wd != nil {
+		sources["wikidata"] = sourceRef{Credit: "Wikidata", License: wikidataLicense, URL: wd.URL}
+	}
+	if cg != nil {
+		sources["uscg"] = sourceRef{Credit: "U.S. Coast Guard PSIX", License: psixLicense,
+			URL: "https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=" + strconv.Itoa(cg.ID)}
+	}
+	return m, prov, sources
+}

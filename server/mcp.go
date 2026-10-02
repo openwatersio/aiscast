@@ -166,8 +166,9 @@ type mcpVessel struct {
 	Station       string        `json:"station"`
 	DistanceNM    *float64      `json:"distance_nm,omitempty" jsonschema:"nautical miles from the search centre (find_vessels_near)"`
 	Bearing       *float64      `json:"bearing,omitempty" jsonschema:"degrees true from the search centre to the vessel (find_vessels_near)"`
-	Wikidata      *wikidataShip `json:"wikidata,omitempty" jsonschema:"particulars as registered, from the vessel's Wikidata item found by its IMO number (get_vessels)"`
-	USCG          *uscgVessel   `json:"uscg,omitempty" jsonschema:"particulars as documented with the US Coast Guard, for a US-flag vessel whose call sign and name match a vessel in its PSIX database (get_vessels)"`
+	Particulars   *particulars         `json:"particulars,omitempty" jsonschema:"particulars as registered, merged from the enrichment sources into one vocabulary (get_vessels)"`
+	Provenance    map[string]string    `json:"provenance,omitempty" jsonschema:"the source of each particulars field, by the field's name; values are keys of sources (get_vessels)"`
+	Sources       map[string]sourceRef `json:"sources,omitempty" jsonschema:"each contributing source's credit, license, and its own page for this vessel (get_vessels)"`
 }
 
 type mcpVessels struct {
@@ -472,7 +473,8 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 	}
 	cg := p.uscgOf(keys...)
 	for i, r := range out.Vessels {
-		out.Vessels[i].Wikidata, out.Vessels[i].USCG = wd[r.IMO], cg[r.MMSI]
+		out.Vessels[i].Particulars, out.Vessels[i].Provenance, out.Vessels[i].Sources =
+			mergeParticulars(wd[r.IMO], cg[r.MMSI])
 	}
 	for _, m := range in.MMSI {
 		if !known[m] {

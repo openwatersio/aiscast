@@ -15,14 +15,14 @@ import {
   vesselDimensions,
   vesselPath,
 } from "../lib/ais";
-import { publicApiBase, type VesselFeature, type VesselUSCG, type VesselWikidata } from "../lib/api";
+import { publicApiBase, type SourceRef, type VesselFeature, type VesselParticulars } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS, SIGNALK_PLUGIN } from "../lib/links";
 import { SITE } from "../lib/meta";
 import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
 import { mediaKey } from "../lib/media";
-import { uscgFacts, wikidataFacts } from "../lib/particulars";
+import { particularsFacts } from "../lib/particulars";
 import { useMedia } from "../lib/useMedia";
 import { useStation } from "../lib/useStationTitle";
 import { useTrack } from "../lib/useTrack";
@@ -254,8 +254,9 @@ export function VesselDetail({
         ]}
       />
 
-      {p?.wikidata && <WikidataParticulars wikidata={p.wikidata} photos={media?.links.commonsCategory} />}
-      {p?.uscg && <CoastGuardParticulars uscg={p.uscg} name={name} />}
+      {p?.particulars && (
+        <Particulars particulars={p.particulars} provenance={p.provenance} sources={p.sources} name={name} photos={media?.links.commonsCategory} />
+      )}
 
       <ContributePrompt ownBoat={cls === "pleasure" || /ClassB/.test(p?.msg_type ?? "")} volunteer={isVolunteer(source)} />
 
@@ -283,40 +284,35 @@ export function VesselDetail({
 }
 
 /**
- * The vessel as registered, from its Wikidata item, and where to read more about it. Absent for
- * most vessels: only ships with an IMO have an item, and not all of them. `photos` is the Commons
- * category the photos came from.
+ * The vessel as registered, one section merged from the enrichment sources, and where to read
+ * more about it. Absent for most vessels: Wikidata knows ships with an IMO, the Coast Guard
+ * US-flag vessels it matches by call sign and name. The footer links each source's own page for
+ * the vessel, provenance for the reader rather than a license requirement: every current source
+ * is CC0 or public domain. `photos` is the Commons category the photos above came from.
  */
-function WikidataParticulars({ wikidata: w, photos }: { wikidata: VesselWikidata; photos?: string }) {
+function Particulars({
+  particulars: m,
+  provenance,
+  sources,
+  name,
+  photos,
+}: {
+  particulars: VesselParticulars;
+  provenance?: Record<string, string>;
+  sources?: Record<string, SourceRef>;
+  name?: string;
+  photos?: string;
+}) {
   const links: Array<[string, string | undefined]> = [
-    ["Wikipedia", w.wikipedia],
-    ["Wikidata", w.url],
+    ["Wikipedia", m.wikipedia],
+    ...Object.values(sources ?? {}).map((s): [string, string | undefined] => [s.credit, s.url]),
     // The item's category, else the one the photos above came from.
-    ["Wikimedia Commons", w.commons_category ?? photos],
+    ["Wikimedia Commons", m.commons_category ?? photos],
   ];
   return (
     <Section label="Particulars">
-      <Facts items={wikidataFacts(w)} />
+      <Facts items={particularsFacts(m, name, provenance)} />
       <SourceLinks className="mt-3" links={links} />
-    </Section>
-  );
-}
-
-/**
- * A US-flag vessel as the Coast Guard documents it. The API matches it by call sign and name, and
- * reads its dimensions and tonnage some time after it is first heard, so they can be missing at
- * first. PSIX has no page per vessel to link, so the credit names the database.
- */
-function CoastGuardParticulars({ uscg, name }: { uscg: VesselUSCG; name?: string }) {
-  return (
-    <Section label="US Coast Guard">
-      <Facts items={uscgFacts(uscg, name)} />
-      <p className="mt-3 text-footnote text-fg-muted">
-        From the Coast Guard&rsquo;s{" "}
-        <a href="https://cgmix.uscg.mil/psix/" target="_blank" rel="noopener">
-          Port State Information Exchange
-        </a>
-      </p>
     </Section>
   );
 }
