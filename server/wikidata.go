@@ -30,7 +30,7 @@ import (
 const (
 	wikidataSPARQL = "https://query.wikidata.org/sparql"
 	// Wikimedia asks every client to name itself and give a contact.
-	wikidataUserAgent = "aiscast/1.0 (https://openwaters.io/ais/; ais@openwaters.io)"
+	wikidataUserAgent = "aiscast/1.0 (https://openwaters.io/ais/; hello@openwaters.io)"
 	wikidataEvery     = 7 * 24 * time.Hour
 	wikidataLicense   = "CC0-1.0"
 )

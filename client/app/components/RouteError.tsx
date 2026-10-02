@@ -7,8 +7,8 @@ const isNotFound = (error: unknown) => isRouteErrorResponse(error) && error.stat
 /** The head of a page that could not load: not found, or unavailable. */
 export function routeErrorMeta(error: unknown) {
   return isNotFound(error)
-    ? pageMeta({ title: "Not found | Open Waters AIS", description: "There is nothing at this address.", path: "/vessels", noindex: true })
-    : pageMeta({ title: "Unavailable | Open Waters AIS", description: "The AIS network did not answer.", path: "/vessels", noindex: true });
+    ? pageMeta({ title: "Not found | Open Waters AIS", description: "There is nothing at this address.", noindex: true })
+    : pageMeta({ title: "Unavailable | Open Waters AIS", description: "The AIS network did not answer.", noindex: true });
 }
 
 /** A thrown response's headers, such as a 503's Retry-After, on the document. */

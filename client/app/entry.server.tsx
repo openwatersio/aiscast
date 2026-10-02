@@ -29,7 +29,8 @@ export default async function handleRequest(
   if ((ua && isbot(ua)) || routerContext.isSpaMode) await body.allReady;
 
   headers.set("Content-Type", "text/html; charset=utf-8");
-  // Every page carries the visitor's location from the root loader, so no shared cache may keep one.
+  // The theme cookie is rendered into the page, and a browser that kept it would show the old
+  // theme after a switch. The edge keeps one copy per theme (workers/app.ts).
   headers.set("Cache-Control", "private");
   return new Response(body, { headers, status });
 }

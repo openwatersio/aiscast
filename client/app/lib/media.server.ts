@@ -5,7 +5,7 @@ const COMMONS = "https://commons.wikimedia.org/w/api.php";
 
 // Wikimedia asks every client to name itself and give a contact. A browser cannot set this
 // header, which is one reason the lookup runs in the Worker.
-const USER_AGENT = "aiscast-web/1.0 (https://openwaters.io/ais/; ais@openwaters.io)";
+const USER_AGENT = "aiscast-web/1.0 (https://openwaters.io/ais/; hello@openwaters.io)";
 
 // One of Wikimedia's standard thumbnail widths. Since early 2026 other widths are throttled
 // or refused when requested directly, so only the thumburl the API returns is ever linked.

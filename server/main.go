@@ -212,6 +212,7 @@ func routes(p *Pipeline) map[string]http.HandlerFunc {
 		"/health":                       p.serveHealth,
 		"/metrics":                      p.serveMetrics,
 		"/robots.txt":                   serveRobots,
+		"/sitemap/vessels":              p.api(corsHeaders, p.serveVesselSitemap),
 		"/openapi.json":                 p.api(corsHeaders, serveOpenAPI),
 	}
 }

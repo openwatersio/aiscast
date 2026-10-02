@@ -1,5 +1,8 @@
 import { createRequestHandler, RouterContextProvider } from "react-router";
-import { serverEnv, visitorLocation } from "../app/lib/context";
+import { serverEnv } from "../app/lib/context";
+import { edgeCached, isSharedPage, pageCacheKey } from "../app/lib/edge.server";
+import { isSitemap, sitemap } from "../app/lib/sitemap.server";
+import { visitorMeta } from "../app/lib/visitor";
 
 declare global {
   // A secret, set with `wrangler secret put AIS_TOKEN`, so the generated Env leaves it out.
@@ -22,15 +25,56 @@ const handler = createRequestHandler(
   import.meta.env.MODE,
 );
 
+/**
+ * The visitor's location, written into a page's head on its way out, so the map opens where
+ * they are. After the edge cache, so the copy it keeps names no one's location.
+ */
+function withVisitor(res: Response, request: Request): Response {
+  const at = locate(request);
+  if (!at || !res.headers.get("content-type")?.startsWith("text/html")) return res;
+  return new HTMLRewriter()
+    .on("head", { element: (head) => void head.append(visitorMeta(at), { html: true }) })
+    .transform(res);
+}
+
+const PAGE_TTLS = { 200: 60 };
+/**
+ * The sitemaps change by the hour at most, and each costs the API a read of the whole record.
+ * A page past the last is kept briefly, as the next one may be listed soon.
+ */
+const SITEMAP_TTLS = { 200: 3600, 404: 300 };
+
 export default {
-  fetch(request, env) {
+  async fetch(request, env, ctx) {
     // On openwaters.io the Worker's routes send it only paths under /ais/. A workers.dev
     // address, such as a preview version's, sends it everything, and the app is at /ais/.
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/ais/")) return Response.redirect(new URL("/ais/vessels", url), 302);
-    const context = new RouterContextProvider();
-    context.set(serverEnv, { api: env.AIS_API, token: env.AIS_TOKEN || undefined });
-    context.set(visitorLocation, locate(request));
-    return handler(request, context);
+    const auth = { api: env.AIS_API, token: env.AIS_TOKEN || undefined };
+    const cache = (caches as unknown as { default: Cache }).default;
+    const waitUntil = (p: Promise<unknown>) => ctx.waitUntil(p);
+    const render = () => {
+      const context = new RouterContextProvider();
+      context.set(serverEnv, auth);
+      return handler(request, context);
+    };
+
+    if (isSitemap(url.pathname)) {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
+      }
+      // Keyed without the query, which changes nothing in a sitemap and would otherwise let
+      // anyone make the Worker read the whole record again.
+      const key = `${url.origin}${url.pathname}`;
+      return edgeCached(cache, key, SITEMAP_TTLS, waitUntil, () => sitemap(url.pathname, auth));
+    }
+    if (!isSharedPage(request, url)) return withVisitor(await render(), request);
+
+    const key = pageCacheKey(url, request.headers.get("cookie"));
+    const res = await edgeCached(cache, key, PAGE_TTLS, waitUntil, render);
+    // The browser keeps nothing: a theme switch writes the cookie, and the next load must show it.
+    const out = new Response(res.body, res);
+    out.headers.set("Cache-Control", "private");
+    return withVisitor(out, request);
   },
 } satisfies ExportedHandler<Env>;

@@ -49,7 +49,7 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
     description: st
       ? `AIS receiving station ${title}: ${n(st.events.last_24h)} messages in 24 hours, ${n(st.vessels)} vessels heard, last message ${formatAge(st.last_age_s)}.`
       : `AIS receiving station ${id}.`,
-    path: `/stations/${id}`,
+    path: st ? `/stations/${id}` : undefined,
     noindex: !st,
   });
 }
