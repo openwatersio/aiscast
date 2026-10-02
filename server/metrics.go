@@ -290,6 +290,16 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 			metricHead(w, "aiscast_fiskeridir_last_success_timestamp_seconds", "gauge", "when the register was last synced")
 			fmt.Fprintf(w, "aiscast_fiskeridir_last_success_timestamp_seconds %d\n", t)
 		}
+		metricHead(w, "aiscast_fcc_syncs_total", "counter", "weekly syncs of FCC ship station licenses")
+		fmt.Fprintf(w, "aiscast_fcc_syncs_total %d\n", p.fcc.runs.Load())
+		metricHead(w, "aiscast_fcc_sync_failures_total", "counter", "license syncs that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_fcc_sync_failures_total %d\n", p.fcc.failures.Load())
+		metricHead(w, "aiscast_fcc_ships", "gauge", "active FCC ship licenses with an MMSI stored")
+		fmt.Fprintf(w, "aiscast_fcc_ships %d\n", p.fcc.ships.Load())
+		if t := p.fcc.lastSuccess.Load(); t > 0 {
+			metricHead(w, "aiscast_fcc_last_success_timestamp_seconds", "gauge", "when the licenses were last synced")
+			fmt.Fprintf(w, "aiscast_fcc_last_success_timestamp_seconds %d\n", t)
+		}
 	}
 
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")

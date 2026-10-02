@@ -90,6 +90,12 @@ func main() {
 			if env("FISKERIDIR", "1") == "1" {
 				go p.runFiskeridir(env("FISKERIDIR_URL", fdirEndpoint))
 			}
+			if err := p.loadFCCStats(); err != nil {
+				log.Printf("fcc: %v", err)
+			}
+			if env("FCC", "1") == "1" {
+				go p.runFCC(env("FCC_URL", fccEndpoint))
+			}
 			go p.runRecordCounts()
 		}
 	}
