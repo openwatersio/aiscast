@@ -14,7 +14,8 @@ ais.openwaters.io {
 	# while it matters. aiscast's own access log keeps only the network and a keyed hash; the request id joins
 	# a line there to its line here. Tokens arrive in the key parameter or the Authorization header, and
 	# neither is written. Referer goes too: a page that embeds the map can carry its own token in its URL,
-	# and aiscast's log keeps the referer without its query. The file rolls daily, so it is never more than a day old, and a rolled file is
+	# and aiscast's log keeps the referer without its query. around and bbox go as well: a search from the
+	# visitor's own position and the view would place them, and aiscast's log keeps both rounded to 0.1°. The file rolls daily, so it is never more than a day old, and a rolled file is
 	# deleted after 13 days.
 	log {
 		output file /var/log/caddy/access.log {
@@ -26,6 +27,8 @@ ais.openwaters.io {
 		format filter {
 			request>uri query {
 				delete key
+				delete around
+				delete bbox
 			}
 			request>headers>Authorization delete
 			request>headers>Cookie delete

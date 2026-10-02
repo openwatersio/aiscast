@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"compress/gzip"
 	"encoding/json"
+	"maps"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -77,7 +79,7 @@ func TestAccessLog(t *testing.T) {
 		t.Fatalf("%d lines:\n%s", len(lines), raw)
 	}
 	a, b := lines[0], lines[1]
-	if a.Route != "/v1/vessels" || a.Query != "bbox=59%2C10%2C60%2C11" || a.Status != 200 || a.Bytes == 0 || a.Ms <= 0 {
+	if a.Route != "/v1/vessels" || a.Query != "bbox=59.0%2C10.0%2C60.0%2C11.0" || a.Status != 200 || a.Bytes == 0 || a.Ms <= 0 {
 		t.Errorf("request: %+v", a)
 	}
 	if a.ID != "req-1" || a.Sub != "fleet-co" || a.Role != "partner" || a.UA != "maplibre-test" || a.Referer != "https://charts.example/map" {
@@ -94,6 +96,46 @@ func TestAccessLog(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339Nano, a.T); err != nil {
 		t.Errorf("t: %v", err)
+	}
+}
+
+// A line never places a visitor: a search from their position, the view, and a deep tile are all logged
+// to about 10 km.
+func TestAccessLogCoarsensLocations(t *testing.T) {
+	p := testPipeline(t)
+	dir := t.TempDir()
+	p.access = newAccessArchive(dir, nil)
+	h := httpHandler(p)
+	for _, target := range []string{
+		"/v1/vessels?q=nordic&around=10.73519,59.91272",
+		"/v1/vessels?bbox=59.91234,10.71234,59.93456,10.75678",
+		"/v1/vessels/tiles/15/17361/9530",
+		"/v1/vessels/tiles/5/16/9",
+	} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", target, nil))
+	}
+	lines, raw := readAccess(t, p, dir)
+	for _, precise := range []string{"10.735", "59.912", "59.934", "10.756", "17361", "9530"} {
+		if strings.Contains(raw, precise) {
+			t.Errorf("%s reached the log:\n%s", precise, raw)
+		}
+	}
+	got := map[string]accessLine{}
+	for _, l := range lines {
+		got[l.Path+"?"+l.Query] = l
+	}
+	for _, want := range []string{
+		"/v1/vessels?around=10.7%2C59.9&q=nordic",
+		"/v1/vessels?bbox=59.9%2C10.7%2C59.9%2C10.8",
+		"/v1/vessels/tiles/12/2170/1191?",
+		"/v1/vessels/tiles/5/16/9?",
+	} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("no line %s in %v", want, slices.Collect(maps.Keys(got)))
+		}
+	}
+	if l := got["/v1/vessels/tiles/12/2170/1191?"]; l.Z != 15 {
+		t.Errorf("deep tile zoom %d, want 15", l.Z)
 	}
 }
 

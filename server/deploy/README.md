@@ -74,7 +74,7 @@ GRAFANA_URL=https://<stack>.grafana.net GRAFANA_TOKEN=<token> ALERT_EMAIL=<addre
 Two logs record every request, and the request id joins them.
 
 - aiscast's access log, in R2 under `access/v1/YYYY/MM/DD/HH.gz`, kept for good. It names a client by its /24 or /48 and a keyed hash of its address, and a token by its subject. It is the one to analyze. [server/README.md](../README.md#access-log) lists its fields.
-- Caddy's access log, `/var/log/caddy/access.log` on the box, in Caddy's JSON format, with the full client address and the request headers. The `key` parameter and the `Authorization`, `Cookie`, and `Referer` headers are removed before writing, so no token reaches it; aiscast's log keeps the referer without its query. It rolls daily and at 100 MiB, gzips what it rolls, and deletes rolled files after 13 days, so no address stays longer than two weeks. It lives only on the box and goes with it.
+- Caddy's access log, `/var/log/caddy/access.log` on the box, in Caddy's JSON format, with the full client address and the request headers. The `key`, `around`, and `bbox` parameters and the `Authorization`, `Cookie`, and `Referer` headers are removed before writing, so no token reaches it and no search position or view sits beside a full address; aiscast's log keeps the referer without its query and the coordinates rounded. Tile paths stay whole: Caddy's filters cannot coarsen them. It rolls daily and at 100 MiB, gzips what it rolls, and deletes rolled files after 13 days, so no address stays longer than two weeks. It lives only on the box and goes with it.
 
 To find the address behind load, take the busiest clients for the window from the R2 log:
 

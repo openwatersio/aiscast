@@ -121,13 +121,13 @@ A line holds:
 
 - `t`: when the response finished, UTC.
 - `id`: Caddy's request id, which its own access log on the box records too.
-- `method`, `route` (the mux pattern, or `other`), `path`, and `query` without `key`.
+- `method`, `route` (the mux pattern, or `other`), `path`, and `query` without `key`. Coordinates in `around` (a search ranked from the visitor's own position) and `bbox` (the view) are rounded to 0.1°, and a tile deeper than z12 is logged as the z12 tile holding it, with the requested zoom in `z`: about 10 km either way, so a line shows where load falls without placing a home or a berth.
 - `status`, `ms`, and `bytes` of body written. A WebSocket's frames bypass the writer, so a socket logs its handshake bytes only.
 - `net`: the client's /24 or /48. `client`: a keyed hash of its address, from `STATION_SALT` under a label of its own, so one client's requests group without the address being kept, and the hash cannot be matched against UDP station ids.
 - `sub` and `role` of a token that verified. An anonymous request has neither.
 - `ua`, `origin`, and `referer` without its query, which can carry a token.
 
-A line never holds a token or a full address. The full address is in Caddy's log on the box for under two weeks, joined by `id` ([deploy/README.md](deploy/README.md#access-logs)). Writing a line never holds up a request. When the writer falls behind, lines are dropped and counted in `aiscast_access_dropped_total`. The files load directly into DuckDB:
+A line never holds a token, a full address, or a precise location. The full address is in Caddy's log on the box for under two weeks, joined by `id` ([deploy/README.md](deploy/README.md#access-logs)). Writing a line never holds up a request. When the writer falls behind, lines are dropped and counted in `aiscast_access_dropped_total`. The files load directly into DuckDB:
 
 ```sql
 SELECT route, count(*) AS n, quantile_cont(ms, 0.99) AS p99_ms, count(DISTINCT client) AS clients

@@ -4,9 +4,12 @@ package main
 // uploaded beside the archive under access/v1/. It answers who asked for what and what it cost, after the
 // fact: the load behind a latency spike, and how clients use the API.
 //
-// A line never holds a token or a full address. It names a verified token by its subject, and a client by
-// its network (the /24 or /48) and a keyed hash of the address, so one client's requests group without the
-// address being stored. Caddy keeps the full address in its own short log on the box, and the request id
+// A line never holds a token, a full address, or a precise location. It names a verified token by its
+// subject, and a client by its network (the /24 or /48) and a keyed hash of the address, so one client's
+// requests group without the address being stored. Coordinates in the query (around, a search ranked from
+// the visitor's own position, and bbox, the view) are rounded to 0.1°, and a tile deeper than z12 is logged
+// as the z12 tile holding it: about 10 km either way, enough to see where load falls and too coarse to
+// place a home or a berth. Caddy keeps the full address in its own short log on the box, and the request id
 // joins a line here to its line there.
 
 import (
@@ -15,11 +18,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,9 +35,10 @@ type accessLine struct {
 	T       string  `json:"t"`            // when the response finished, UTC
 	ID      string  `json:"id,omitempty"` // Caddy's request id, also in its access log
 	Method  string  `json:"method"`
-	Route   string  `json:"route"` // the mux pattern; "other" when none matched
-	Path    string  `json:"path"`
-	Query   string  `json:"query,omitempty"` // without key
+	Route   string  `json:"route"`           // the mux pattern; "other" when none matched
+	Path    string  `json:"path"`            // a tile deeper than z12 as the z12 tile holding it
+	Z       int     `json:"z,omitempty"`     // the zoom of a tile request
+	Query   string  `json:"query,omitempty"` // without key, coordinates rounded to 0.1°
 	Status  int     `json:"status"`
 	Ms      float64 `json:"ms"`
 	Bytes   int64   `json:"bytes"`             // body bytes written; a WebSocket's frames bypass the writer
@@ -69,10 +77,23 @@ func withAccessNote(r *http.Request) (*http.Request, *accessNote) {
 func accessLineFor(r *http.Request, n *accessNote, route string, status int, bytes int64, start, end time.Time) []byte {
 	vals := r.URL.Query()
 	vals.Del("key")
+	for _, k := range []string{"around", "bbox"} {
+		for i, v := range vals[k] {
+			vals[k][i] = coarseCoords(v)
+		}
+	}
 	l := accessLine{
 		T: end.UTC().Format(time.RFC3339Nano), Method: r.Method, Route: route, Path: r.URL.Path, Query: vals.Encode(),
 		Status: status, Ms: float64(end.Sub(start).Microseconds()) / 1000, Bytes: bytes, Sub: n.sub, Role: n.role,
 		UA: r.Header.Get("User-Agent"), Origin: r.Header.Get("Origin"), Referer: stripQuery(r.Header.Get("Referer")),
+	}
+	if z, x, y, ok := tileCoords(r); ok && route == "/v1/vessels/tiles/{z}/{x}/{y}" {
+		l.Z = z
+		if z > accessTileZoom {
+			x, y = x>>(z-accessTileZoom), y>>(z-accessTileZoom)
+			z = accessTileZoom
+		}
+		l.Path = fmt.Sprintf("/v1/vessels/tiles/%d/%d/%d", z, x, y)
 	}
 	if viaProxy(r) {
 		l.ID = r.Header.Get("X-Request-Id")
@@ -98,6 +119,22 @@ func clientNet(ip string) (network, hash string) {
 	m := hmac.New(sha256.New, stationSalt)
 	m.Write([]byte("access\x00" + a.String()))
 	return pfx.String(), hex.EncodeToString(m.Sum(nil)[:8])
+}
+
+// accessTileZoom is the deepest tile the access log names: a z12 tile is about 10 km across.
+const accessTileZoom = 12
+
+// coarseCoords rounds each number in a comma-separated coordinate list to 0.1°. A part that is not a
+// number is dropped, so nothing precise survives a malformed value.
+func coarseCoords(s string) string {
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		if f, err := strconv.ParseFloat(strings.TrimSpace(p), 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			out = append(out, strconv.FormatFloat(math.Round(f*10)/10, 'f', 1, 64))
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 func stripQuery(s string) string {
