@@ -50,8 +50,9 @@ export async function sitemap(pathname: string, auth: ApiAuth): Promise<Response
       ]);
     }
     if (pathname === PAGES_SITEMAP) {
-      const stations = (await getStations(auth)) ?? [];
-      if (!stations.length) throw new ApiUnavailable("/v1/stations: no answer");
+      // Undefined is an outage; an empty list is a server that has not heard a station yet.
+      const stations = await getStations(auth);
+      if (!stations) throw new ApiUnavailable("/v1/stations: no answer");
       return document("urlset", [
         ...APP_PAGES.map((path) => entry("url", `${SITE}${path}`)),
         // A volunteer's receiver is a person's own station, often on their boat or at home, so

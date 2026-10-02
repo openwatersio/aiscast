@@ -33,9 +33,10 @@ type sitemapVessel struct {
 	Seen string `json:"seen"`
 }
 
-// serveVesselSitemap: GET /v1/vessels/sitemap → the pages of vessels a sitemap lists, each with its count and
+// serveVesselSitemap: GET /sitemap/vessels → the pages of vessels a sitemap lists, each with its count and
 // the newest seen in it; with page=n (from 1), that page's vessels in MMSI order. The web client builds
-// openwaters.io/ais/sitemap.xml from these.
+// openwaters.io/ais/sitemap.xml from these. It is the client's, for search engines, not an API: it sits outside
+// /v1, and openapi.json leaves it out.
 func (p *Pipeline) serveVesselSitemap(w http.ResponseWriter, r *http.Request) {
 	if _, err := p.requestClaims(r); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)

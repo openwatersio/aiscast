@@ -33,7 +33,7 @@ describe("sitemap", () => {
 
   it("indexes the pages file and one file per page of vessels", async () => {
     api({
-      "/v1/vessels/sitemap": {
+      "/sitemap/vessels": {
         page_size: 50000,
         max_age_s: 2592000,
         pages: [
@@ -71,9 +71,18 @@ describe("sitemap", () => {
     expect(body).not.toContain("udp:");
   });
 
+  it("lists the app's pages before any station is heard, and is a 503 when the API is down", async () => {
+    api({ "/v1/stations": [] });
+    const empty = await sitemap("/ais/sitemap-pages.xml", auth);
+    expect(empty.status).toBe(200);
+    expect(await empty.text()).toContain("<url><loc>https://openwaters.io/ais/vessels</loc></url>");
+    api({ "/v1/stations": new Response("down", { status: 502 }) });
+    expect((await sitemap("/ais/sitemap-pages.xml", auth)).status).toBe(503);
+  });
+
   it("lists each vessel at its canonical address, escaped", async () => {
     api({
-      "/v1/vessels/sitemap?page=1": {
+      "/sitemap/vessels?page=1": {
         vessels: [
           { mmsi: 257000001, name: "FIRST", seen: "2026-10-02T10:00:00Z" },
           { mmsi: 257000002, name: "A&B", seen: "2026-10-02T11:00:00Z" },
@@ -87,11 +96,14 @@ describe("sitemap", () => {
   });
 
   it("is a 404 past the last page and a 503 when the API is down", async () => {
-    api({ "/v1/vessels/sitemap": new Response("down", { status: 502 }) });
+    api({ "/sitemap/vessels": new Response("down", { status: 502 }) });
     expect((await sitemap("/ais/sitemap-vessels-9.xml", auth)).status).toBe(404);
     expect((await sitemap("/ais/sitemap-vessels-5000.xml", auth)).status).toBe(404);
     const down = await sitemap("/ais/sitemap.xml", auth);
     expect(down.status).toBe(503);
     expect(down.headers.get("retry-after")).toBe("300");
+    // A server without the endpoint is not one with no vessels.
+    api({});
+    expect((await sitemap("/ais/sitemap.xml", auth)).status).toBe(503);
   });
 });

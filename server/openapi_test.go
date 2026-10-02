@@ -50,7 +50,7 @@ func TestOpenAPIMatchesMux(t *testing.T) {
 		documented[path] = true
 		documented[subtree(path)] = true
 	}
-	notAPI := map[string]bool{"/metrics": true, "/robots.txt": true}
+	notAPI := map[string]bool{"/metrics": true, "/robots.txt": true, "/sitemap/vessels": true}
 	for pat := range mux {
 		if notAPI[pat] {
 			continue

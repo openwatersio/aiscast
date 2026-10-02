@@ -33,7 +33,7 @@ func TestVesselSitemap(t *testing.T) {
 		PageSize int           `json:"page_size"`
 		Pages    []sitemapPage `json:"pages"`
 	}
-	w := get(t, p, "/v1/vessels/sitemap")
+	w := get(t, p, "/sitemap/vessels")
 	if w.Code != 200 {
 		t.Fatalf("index: %d %s", w.Code, w.Body)
 	}
@@ -45,7 +45,7 @@ func TestVesselSitemap(t *testing.T) {
 	}
 
 	var page struct{ Vessels []sitemapVessel }
-	w = get(t, p, "/v1/vessels/sitemap?page=1")
+	w = get(t, p, "/sitemap/vessels?page=1")
 	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
 		t.Fatalf("page 1: %d %s", w.Code, w.Body)
 	}
@@ -61,10 +61,10 @@ func TestVesselSitemap(t *testing.T) {
 		t.Errorf("lastmod = %s, want the newest seen, %s", index.Pages[0].LastMod, newest)
 	}
 
-	if w := get(t, p, "/v1/vessels/sitemap?page=2"); w.Code != 404 {
+	if w := get(t, p, "/sitemap/vessels?page=2"); w.Code != 404 {
 		t.Errorf("page past the end: %d, want 404", w.Code)
 	}
-	if w := get(t, p, "/v1/vessels/sitemap?page=0"); w.Code != 400 {
+	if w := get(t, p, "/sitemap/vessels?page=0"); w.Code != 400 {
 		t.Errorf("page 0: %d, want 400", w.Code)
 	}
 }

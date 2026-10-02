@@ -268,8 +268,14 @@ export interface SitemapPages {
   pages: Array<{ vessels: number; lastmod: string }>;
 }
 
+/**
+ * The list of pages has no "not found", so a 404 is unexpected and counts as an outage. Taken
+ * for an empty index, it would tell crawlers there are no vessels.
+ */
 export async function getSitemapPages(auth: ApiAuth): Promise<SitemapPages> {
-  return (await get<SitemapPages>(auth, "/v1/vessels/sitemap")) ?? { page_size: 0, max_age_s: 0, pages: [] };
+  const pages = await get<SitemapPages>(auth, "/sitemap/vessels");
+  if (!pages) throw new ApiUnavailable("/sitemap/vessels: 404");
+  return pages;
 }
 
 /** One page of the sitemap's vessels, from 1. Undefined past the last page. */
@@ -277,7 +283,7 @@ export async function getSitemapVessels(
   auth: ApiAuth,
   page: number,
 ): Promise<Array<{ mmsi: number; name: string; seen: string }> | undefined> {
-  return (await get<{ vessels: Array<{ mmsi: number; name: string; seen: string }> }>(auth, `/v1/vessels/sitemap?page=${page}`))?.vessels;
+  return (await get<{ vessels: Array<{ mmsi: number; name: string; seen: string }> }>(auth, `/sitemap/vessels?page=${page}`))?.vessels;
 }
 
 export async function getStation(
