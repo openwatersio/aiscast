@@ -123,6 +123,20 @@ func TestFiskeridirSyncAndServe(t *testing.T) {
 	}
 }
 
+func TestFiskeridirRefusesTruncation(t *testing.T) {
+	p := storePipeline(t)
+	url, _ := fakeFiskeridir(t)
+	old := fdirMaxPages
+	fdirMaxPages = 1 // page 1 is full, so the walk wants page 2 and must refuse instead
+	t.Cleanup(func() { fdirMaxPages = old })
+	if p.syncFiskeridirIfDue(time.Now().UTC(), url) {
+		t.Fatal("a truncated register was stored")
+	}
+	if p.fiskeridir.failures.Load() != 1 {
+		t.Errorf("failures = %d, want 1", p.fiskeridir.failures.Load())
+	}
+}
+
 func TestNormCallSignNO(t *testing.T) {
 	for in, want := range map[string]string{
 		"3YPL": "3YPL", "LK6221": "LK6221", "lf2087 ": "LF2087", "JWABC": "JWABC",

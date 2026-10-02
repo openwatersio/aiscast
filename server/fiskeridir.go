@@ -99,7 +99,11 @@ type fdirRow struct {
 // out: nothing could ever match them.
 func fetchFiskeridir(ctx context.Context, endpoint string) (map[string]*fdirVessel, error) {
 	out := map[string]*fdirVessel{}
-	for page := 1; page <= fdirMaxPages; page++ {
+	for page := 1; ; page++ {
+		// A feed that pages forever must fail the sync, never silently store a truncated register.
+		if page > fdirMaxPages {
+			return nil, fmt.Errorf("still paging after %d pages; refusing a truncated register", fdirMaxPages)
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s?page=%d", endpoint, page), nil)
 		if err != nil {
 			return nil, err
