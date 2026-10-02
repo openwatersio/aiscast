@@ -127,7 +127,7 @@ A line holds:
 - `sub` and `role` of a token that verified. An anonymous request has neither.
 - `ua`, `origin`, and `referer` without its query, which can carry a token.
 
-A line never holds a token or a full address. The full address is in Caddy's log on the box for two weeks, joined by `id` ([deploy/README.md](deploy/README.md#access-logs)). Writing a line never holds up a request. When the writer falls behind, lines are dropped and counted in `aiscast_access_dropped_total`. The files load directly into DuckDB:
+A line never holds a token or a full address. The full address is in Caddy's log on the box for under two weeks, joined by `id` ([deploy/README.md](deploy/README.md#access-logs)). Writing a line never holds up a request. When the writer falls behind, lines are dropped and counted in `aiscast_access_dropped_total`. The files load directly into DuckDB:
 
 ```sql
 SELECT route, count(*) AS n, quantile_cont(ms, 0.99) AS p99_ms, count(DISTINCT client) AS clients

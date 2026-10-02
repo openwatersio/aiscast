@@ -10,15 +10,17 @@
 
 # TLS for the hub. Let's Encrypt HTTP-01 works through the Cloudflare proxy; ACME retries until DNS points here.
 ais.openwaters.io {
-	# Every request with the client's full address, kept two weeks, for finding who is behind load while it
-	# matters. aiscast's own access log keeps only the network and a keyed hash; the request id joins a line
-	# there to its line here. Tokens arrive in the key parameter or the Authorization header, and neither is
-	# written.
+	# Every request with the client's full address, kept under two weeks, for finding who is behind load
+	# while it matters. aiscast's own access log keeps only the network and a keyed hash; the request id joins
+	# a line there to its line here. Tokens arrive in the key parameter or the Authorization header, and
+	# neither is written. The file rolls daily, so it is never more than a day old, and a rolled file is
+	# deleted after 13 days.
 	log {
 		output file /var/log/caddy/access.log {
 			roll_size 100MiB
+			roll_interval 24h
 			roll_keep 500
-			roll_keep_for 336h
+			roll_keep_for 312h
 		}
 		format filter {
 			request>uri query {

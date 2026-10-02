@@ -129,3 +129,15 @@ func TestAccessLogDropsWhenBehind(t *testing.T) {
 		t.Fatalf("dropped %d", p.accessDropped.Load())
 	}
 }
+
+// A request that finishes after the access log shut down is counted, not left in a queue nothing reads.
+func TestAccessLogCountsLinesAfterShutdown(t *testing.T) {
+	p := testPipeline(t)
+	p.access = newAccessArchive(t.TempDir(), nil)
+	p.access.shutdown()
+	r, n := withAccessNote(httptest.NewRequest("GET", "/health", nil))
+	p.logAccess(r, n, "/health", 200, 0, time.Now(), time.Now())
+	if p.accessDropped.Load() != 1 {
+		t.Fatalf("dropped %d after shutdown", p.accessDropped.Load())
+	}
+}

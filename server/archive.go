@@ -87,6 +87,12 @@ type archive struct {
 	uploads sync.WaitGroup
 	stopped sync.Once // shutdown runs once; the writer is gone after the first
 
+	// offersClosed turns offer away once shutdown begins, so a record offered after the last drain is
+	// refused and counted rather than left in a queue nothing reads. offerMu keeps an offer that passed the
+	// check from landing after the drain.
+	offerMu      sync.RWMutex
+	offersClosed bool
+
 	// latest is the newest receive time the writer has seen and nextClose the earliest time any open
 	// hour may close; only run() touches them.
 	latest, nextClose time.Time
@@ -131,11 +137,16 @@ func (a *archive) write(rx Reception) {
 	a.ch <- rx
 }
 
-// offer is write without the wait: false when the queue is full. For records worth less than holding up
-// whoever produced them.
+// offer is write without the wait: false when the queue is full or the archive has shut down. For records
+// worth less than holding up whoever produced them.
 func (a *archive) offer(rx Reception) bool {
 	if a.dir == "" {
 		return true
+	}
+	a.offerMu.RLock()
+	defer a.offerMu.RUnlock()
+	if a.offersClosed {
+		return false
 	}
 	select {
 	case a.ch <- rx:
@@ -261,6 +272,9 @@ func (a *archive) shutdown() {
 	if a.dir == "" {
 		return
 	}
+	a.offerMu.Lock()
+	a.offersClosed = true
+	a.offerMu.Unlock()
 	a.stopped.Do(func() {
 		// No timeout on the drain: every queued reception reaches disk before the process exits, or
 		// systemd's stop timeout kills it with the disk as the reason. Uploads get a bound instead,
