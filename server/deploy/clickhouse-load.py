@@ -5,7 +5,10 @@
 # ///
 """Load packaged positions from the lake into ClickHouse, one day at a time.
 
-Run on the box, with the lake's credentials from /etc/aiscast.env:
+Run on the box, with the lake's credentials from /etc/aiscast.env. It runs under uv, which fetches DuckDB
+for it; apply.sh does not install uv, so a box needs it once first:
+
+    curl -LsSf https://astral.sh/uv/install.sh | sh
 
     set -a; . /etc/aiscast.env; set +a
     ./clickhouse-load.py 2026-08-20 2026-10-01
