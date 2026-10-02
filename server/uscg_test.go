@@ -243,17 +243,22 @@ func TestUSCGSync(t *testing.T) {
 
 	type props struct {
 		Properties struct {
-			USCG *uscgVessel `json:"uscg"`
+			Particulars *particulars         `json:"particulars"`
+			Sources     map[string]sourceRef `json:"sources"`
 		} `json:"properties"`
 	}
-	vessel := func(mmsi uint32) *uscgVessel {
+	vessel := func(mmsi uint32) props {
 		var f props
 		json.Unmarshal(get(t, p, fmt.Sprintf("/v1/vessels/%d", mmsi)).Body.Bytes(), &f)
-		return f.Properties.USCG
+		return f
+	}
+	psixURL := func(id int) string {
+		return fmt.Sprintf("https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=%d", id)
 	}
 	// Listed but not yet measured: the summary alone.
-	if v := vessel(366000004); v == nil || v.ID != 1097015 || v.Service != "Freight Ship" || v.YearBuilt != 2007 || v.Length != 0 {
-		t.Errorf("before the backfill: %+v", v)
+	if f := vessel(366000004); f.Properties.Particulars == nil || f.Properties.Sources["uscg"].URL != psixURL(1097015) ||
+		f.Properties.Particulars.Service != "Freight Ship" || f.Properties.Particulars.YearBuilt != 2007 || f.Properties.Particulars.Length != 0 {
+		t.Errorf("before the backfill: %+v", f.Properties)
 	}
 
 	if n := p.backfillUSCG(now, url, time.Minute); n != 4 || p.uscg.details.Load() != 4 {
@@ -275,16 +280,18 @@ func TestUSCGSync(t *testing.T) {
 	}
 	failDetails.Store(0)
 
-	got := vessel(366000004)
-	want := &uscgVessel{ID: 1097015, License: psixLicense, Name: "MAERSK KENSINGTON", Identification: "1257726", Service: "Freight Ship",
-		Status: "Active", YearBuilt: 2007, Length: 286.88, Beam: 39.99, Depth: 20.3, GrossTonnage: 74642, NetTonnage: 44243, TonnageMeasure: "Convention"}
+	got := vessel(366000004).Properties.Particulars
+	want := &particulars{RegisteredName: "MAERSK KENSINGTON", Identification: "1257726", Service: "Freight Ship",
+		Status: "Active", YearBuilt: 2007, Length: 286.88, Beam: 39.99, Depth: 20.3,
+		GrossTonnage: 74642, NetTonnage: 44243, TonnageMeasure: "Convention", Registry: "United States"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("/v1/vessels: %+v, want %+v", got, want)
 	}
 	for mmsi, id := range map[uint32]int{367000001: 507140, 367000002: 607128, 368168720: 167771, 367000003: 0, 257000009: 0} {
-		v := vessel(mmsi)
-		if (id == 0) != (v == nil) || v != nil && v.ID != id {
-			t.Errorf("%d: %+v, want PSIX vessel %d", mmsi, v, id)
+		f := vessel(mmsi)
+		cg, ok := f.Properties.Sources["uscg"]
+		if (id == 0) == ok || ok && cg.URL != psixURL(id) {
+			t.Errorf("%d: %+v, want PSIX vessel %d", mmsi, f.Properties, id)
 		}
 	}
 
@@ -293,7 +300,7 @@ func TestUSCGSync(t *testing.T) {
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{367000002, 367000003}}, &out); msg != "" {
 		t.Fatal(msg)
 	}
-	if len(out.Vessels) != 2 || out.Vessels[0].USCG == nil || out.Vessels[0].USCG.Service != "Passenger (Inspected)" || out.Vessels[1].USCG != nil {
+	if len(out.Vessels) != 2 || out.Vessels[0].Particulars == nil || out.Vessels[0].Particulars.Service != "Passenger (Inspected)" || out.Vessels[1].Particulars != nil {
 		t.Errorf("get_vessels: %+v", out.Vessels)
 	}
 
