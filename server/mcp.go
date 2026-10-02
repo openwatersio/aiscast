@@ -140,32 +140,32 @@ func (b mcpBox) bbox() bbox {
 // mcpVessel is one row of a vessel result. Sentinel "not available" values are omitted rather than sent
 // as 360, 102.3, or 511, so a reader never has to know the AIS encodings.
 type mcpVessel struct {
-	MMSI          uint32        `json:"mmsi"`
-	Name          string        `json:"name,omitempty" jsonschema:"name from the vessel's static data, when heard"`
-	Kind          string        `json:"kind" jsonschema:"vessel, aton (aid to navigation), base (base station), or sar (search and rescue aircraft)"`
-	Type          uint8         `json:"type,omitempty" jsonschema:"ITU ship and cargo type code, or the aid type for an aton"`
-	TypeName      string        `json:"type_name,omitempty"`
-	Lat           *float64      `json:"lat,omitempty" jsonschema:"latitude of the last position, degrees; absent when no position has been heard"`
-	Lon           *float64      `json:"lon,omitempty" jsonschema:"longitude of the last position, degrees"`
-	Cog           *float64      `json:"cog,omitempty" jsonschema:"course over ground, degrees true"`
-	Sog           *float64      `json:"sog,omitempty" jsonschema:"speed over ground, knots"`
-	Heading       *uint16       `json:"heading,omitempty" jsonschema:"true heading, degrees"`
-	NavStatus     *uint8        `json:"nav_status,omitempty" jsonschema:"AIS navigational status code"`
-	NavStatusName string        `json:"nav_status_name,omitempty"`
-	Flag          string        `json:"flag,omitempty" jsonschema:"ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits"`
-	IMO           uint32        `json:"imo,omitempty" jsonschema:"IMO number, once the vessel's static data has been heard"`
-	CallSign      string        `json:"callsign,omitempty"`
-	Destination   string        `json:"destination,omitempty" jsonschema:"destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful"`
-	ETA           string        `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD; AIS carries no year, so read it as the next occurrence"`
-	Draught       *float64      `json:"draught,omitempty" jsonschema:"maximum static draught, metres"`
-	Length        *uint16       `json:"length,omitempty" jsonschema:"overall length, metres"`
-	Beam          *uint16       `json:"beam,omitempty" jsonschema:"beam, metres"`
-	Seen          string        `json:"seen" jsonschema:"time of the last message heard, RFC 3339 UTC"`
-	AgeS          int64         `json:"age_s" jsonschema:"seconds since seen"`
-	Source        string        `json:"source" jsonschema:"feed or station kind the last message came from"`
-	Station       string        `json:"station"`
-	DistanceNM    *float64      `json:"distance_nm,omitempty" jsonschema:"nautical miles from the search centre (find_vessels_near)"`
-	Bearing       *float64      `json:"bearing,omitempty" jsonschema:"degrees true from the search centre to the vessel (find_vessels_near)"`
+	MMSI          uint32               `json:"mmsi"`
+	Name          string               `json:"name,omitempty" jsonschema:"name from the vessel's static data, when heard"`
+	Kind          string               `json:"kind" jsonschema:"vessel, aton (aid to navigation), base (base station), or sar (search and rescue aircraft)"`
+	Type          uint8                `json:"type,omitempty" jsonschema:"ITU ship and cargo type code, or the aid type for an aton"`
+	TypeName      string               `json:"type_name,omitempty"`
+	Lat           *float64             `json:"lat,omitempty" jsonschema:"latitude of the last position, degrees; absent when no position has been heard"`
+	Lon           *float64             `json:"lon,omitempty" jsonschema:"longitude of the last position, degrees"`
+	Cog           *float64             `json:"cog,omitempty" jsonschema:"course over ground, degrees true"`
+	Sog           *float64             `json:"sog,omitempty" jsonschema:"speed over ground, knots"`
+	Heading       *uint16              `json:"heading,omitempty" jsonschema:"true heading, degrees"`
+	NavStatus     *uint8               `json:"nav_status,omitempty" jsonschema:"AIS navigational status code"`
+	NavStatusName string               `json:"nav_status_name,omitempty"`
+	Flag          string               `json:"flag,omitempty" jsonschema:"ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits"`
+	IMO           uint32               `json:"imo,omitempty" jsonschema:"IMO number, once the vessel's static data has been heard"`
+	CallSign      string               `json:"callsign,omitempty"`
+	Destination   string               `json:"destination,omitempty" jsonschema:"destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful"`
+	ETA           string               `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD; AIS carries no year, so read it as the next occurrence"`
+	Draught       *float64             `json:"draught,omitempty" jsonschema:"maximum static draught, metres"`
+	Length        *uint16              `json:"length,omitempty" jsonschema:"overall length, metres"`
+	Beam          *uint16              `json:"beam,omitempty" jsonschema:"beam, metres"`
+	Seen          string               `json:"seen" jsonschema:"time of the last message heard, RFC 3339 UTC"`
+	AgeS          int64                `json:"age_s" jsonschema:"seconds since seen"`
+	Source        string               `json:"source" jsonschema:"feed or station kind the last message came from"`
+	Station       string               `json:"station"`
+	DistanceNM    *float64             `json:"distance_nm,omitempty" jsonschema:"nautical miles from the search centre (find_vessels_near)"`
+	Bearing       *float64             `json:"bearing,omitempty" jsonschema:"degrees true from the search centre to the vessel (find_vessels_near)"`
 	Particulars   *particulars         `json:"particulars,omitempty" jsonschema:"particulars as registered, merged from the enrichment sources into one vocabulary (get_vessels)"`
 	Provenance    map[string]string    `json:"provenance,omitempty" jsonschema:"the source of each particulars field, by the field's name; values are keys of sources (get_vessels)"`
 	Sources       map[string]sourceRef `json:"sources,omitempty" jsonschema:"each contributing source's credit, license, and its own page for this vessel (get_vessels)"`

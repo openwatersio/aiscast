@@ -252,7 +252,9 @@ func TestUSCGSync(t *testing.T) {
 		json.Unmarshal(get(t, p, fmt.Sprintf("/v1/vessels/%d", mmsi)).Body.Bytes(), &f)
 		return f
 	}
-	psixURL := func(id int) string { return fmt.Sprintf("https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=%d", id) }
+	psixURL := func(id int) string {
+		return fmt.Sprintf("https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=%d", id)
+	}
 	// Listed but not yet measured: the summary alone.
 	if f := vessel(366000004); f.Properties.Particulars == nil || f.Properties.Sources["uscg"].URL != psixURL(1097015) ||
 		f.Properties.Particulars.Service != "Freight Ship" || f.Properties.Particulars.YearBuilt != 2007 || f.Properties.Particulars.Length != 0 {
