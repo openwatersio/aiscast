@@ -2,7 +2,7 @@
 
 Effective [LAUNCH DATE].
 
-Open Water Software, LLC ("we") runs Open Waters AIS: the map at openwaters.io/ais/map, the API at ais.openwaters.io, and the network of stations that feed it. This policy says what personal data the service handles, why, how long we keep it, and what you can ask us to do. Write to hello@openwaters.io with any question or request. A person reads it.
+Open Water Software, LLC ("we") runs Open Waters AIS: the map at openwaters.io/ais/vessels, the API at ais.openwaters.io, and the network of stations that feed it. This policy says what personal data the service handles, why, how long we keep it, and what you can ask us to do. Write to hello@openwaters.io with any question or request. A person reads it.
 
 ## Summary
 
@@ -48,7 +48,7 @@ If you choose to bind a token to your address, that address is written into the 
 
 ## The map
 
-The map at openwaters.io/ais/map, with its vessel, station, and network pages, needs no account. It does not use analytics.
+The map at openwaters.io/ais/vessels, with its vessel, station, and network pages, needs no account. It does not use analytics.
 
 - **Cookies and storage.** If you pick a theme, the map sets a cookie, `aiscast-theme`, that remembers your choice for a year. The map keeps your last search in your browser until you close the tab. The token page keeps your key pair, token, and station name in your browser's local storage. Nothing else is stored, and you can delete all of it by clearing site data.
 - **Starting location.** Cloudflare estimates your approximate location from your IP address. The map uses that estimate to open near you. We do not store it.
