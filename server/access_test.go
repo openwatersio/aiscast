@@ -153,6 +153,10 @@ func TestAccessLogLeaksNothing(t *testing.T) {
 		"/v1/vessels/tiles/15/17361/9530.pbf",
 		"/v1/vessels/tiles/15/17361/9530/",
 		"/v1/vessels/tiles/fifteen/x/y",
+		"//v1/vessels/tiles/15/17361/9530",
+		"/ais/v1/vessels/tiles/15/17361/9530.pbf",
+		"/v1/vessels/tiles/tiles.json15/17361/9530.pbf",
+		"/v1/vessels/59.91234,10.73456",
 	} {
 		r := httptest.NewRequest("GET", target, nil)
 		r.Header.Set("User-Agent", "client/1 key="+tok)
@@ -160,7 +164,7 @@ func TestAccessLogLeaksNothing(t *testing.T) {
 		h.ServeHTTP(httptest.NewRecorder(), r)
 	}
 	lines, raw := readAccess(t, p, dir)
-	for _, leak := range []string{"eyJzdWIiOiJsZWFrIn0", "17361", "9530", "token=", "Key=", "api_key="} {
+	for _, leak := range []string{"eyJzdWIiOiJsZWFrIn0", "17361", "9530", "token=", "Key=", "api_key=", "59.91", "10.73"} {
 		if strings.Contains(raw, leak) {
 			t.Errorf("%s reached the log:\n%s", leak, raw)
 		}
@@ -174,6 +178,9 @@ func TestAccessLogLeaksNothing(t *testing.T) {
 	}
 	if _, ok := paths["/v1/vessels/tiles/invalid"]; !ok {
 		t.Errorf("a junk tile path was not logged as invalid: %v", paths)
+	}
+	if _, ok := paths["/v1/vessels/x"]; !ok {
+		t.Errorf("a non-numeric MMSI was not logged as x: %v", paths)
 	}
 }
 

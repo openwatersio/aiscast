@@ -83,8 +83,8 @@ type archive struct {
 	keyFn   func(source string, hour time.Time) string // nil = per-source license-prefixed layout
 	bare    bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
 	keepFor time.Duration                              // with no bucket, the sweep deletes closed hours older than this; 0 keeps them
-	// keepUnder confines that deletion to one directory under dir, so a dir set over another archive's
-	// never loses that archive's hours.
+	// keepUnder confines the sweep, uploads and deletions alike, to one directory under dir, so a dir set
+	// over another archive's never touches that archive's hours.
 	keepUnder string
 	ch        chan Reception
 	done      chan chan struct{} // shutdown request; replied to when files are closed and uploaded
@@ -422,7 +422,11 @@ func (a *archive) sweep() {
 	}
 	cutoff := time.Now().Add(-archiveGrace)
 	var freed, kept, total int64
-	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
+	root := a.dir
+	if a.keepUnder != "" {
+		root = filepath.Join(a.dir, a.keepUnder) // never another archive's hours, should dir cover them
+	}
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
 			return nil
 		}

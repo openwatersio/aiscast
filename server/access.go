@@ -42,7 +42,7 @@ type accessLine struct {
 	ID      string  `json:"id,omitempty"` // Caddy's request id, also in its access log
 	Method  string  `json:"method"`
 	Route   string  `json:"route"`           // the mux pattern; "other" when none matched
-	Path    string  `json:"path"`            // a tile deeper than z12 as the z12 tile holding it
+	Path    string  `json:"path"`            // canonical: the route with numeric path values, a deep tile as its z12 ancestor
 	Z       int     `json:"z,omitempty"`     // the zoom of a tile request
 	Query   string  `json:"query,omitempty"` // without key, coordinates rounded to 0.1°
 	Status  int     `json:"status"`
@@ -98,7 +98,7 @@ func accessLineFor(r *http.Request, n *accessNote, route string, status int, byt
 		Status: status, Ms: float64(end.Sub(start).Microseconds()) / 1000, Bytes: bytes, Sub: n.sub, Role: n.role,
 		UA: r.Header.Get("User-Agent"), Origin: r.Header.Get("Origin"), Referer: stripQuery(r.Header.Get("Referer")),
 	}
-	l.Path, l.Z = coarseTilePath(l.Path)
+	l.Path, l.Z = canonicalPath(r, route)
 	for _, s := range []*string{&l.Path, &l.Query, &l.UA, &l.Origin, &l.Referer} {
 		*s = tokenPattern.ReplaceAllString(*s, tokenPrefix+"REDACTED")
 	}
@@ -139,29 +139,50 @@ var tokenPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(tokenPrefix) + `
 // accessTileZoom is the deepest tile the access log names: a z12 tile is about 10 km across.
 const accessTileZoom = 12
 
-// coarseTilePath logs a tile request no deeper than accessTileZoom, with the requested zoom, whatever the
-// route made of it: a tile URL with an extension (.pbf, .mvt) fails to route as a tile and is still logged
-// coarse. A tile path whose numbers do not parse is logged without them.
-func coarseTilePath(path string) (string, int) {
-	const prefix = "/v1/vessels/tiles/"
-	rest, ok := strings.CutPrefix(path, prefix)
-	if !ok || rest == "" || strings.HasPrefix(rest, "tiles.json") || path == "/v1/vessels/tiles.json" {
-		return path, 0
+// canonicalPath is the path a line keeps: the matched route with its path values filled in only where they
+// are plain numbers (an MMSI, a tile's coordinates, coarsened), and x for anything else, so coordinates or
+// a token put where a number belongs never reach the log. A path no route matched keeps its first segment.
+func canonicalPath(r *http.Request, route string) (string, int) {
+	if route == "other" {
+		first, _, _ := strings.Cut(strings.TrimLeft(r.URL.Path, "/"), "/")
+		return "/" + first, 0
 	}
-	parts := strings.SplitN(rest, "/", 3)
-	nums := make([]int, 0, 3)
-	for _, p := range parts {
-		digits := p[:len(p)-len(strings.TrimLeft(p, "0123456789"))]
-		n, err := strconv.Atoi(digits)
-		if err != nil {
-			break
+	if route == "/v1/vessels/tiles/{z}/{x}/{y}" {
+		return coarseTilePath(r.PathValue("z"), r.PathValue("x"), r.PathValue("y"))
+	}
+	if strings.HasSuffix(route, "/") { // a subtree route: the rest of the path is its argument, a public station id
+		return r.URL.Path, 0
+	}
+	parts := strings.Split(route, "/")
+	for i, p := range parts {
+		if name, ok := strings.CutPrefix(p, "{"); ok {
+			v := r.PathValue(strings.TrimSuffix(name, "}"))
+			if v == "" || strings.Trim(v, "0123456789") != "" {
+				v = "x"
+			}
+			parts[i] = v
 		}
-		nums = append(nums, n)
 	}
-	if len(nums) != 3 || nums[0] < 0 || nums[0] > 30 {
-		return prefix + "invalid", 0
+	return strings.Join(parts, "/"), 0
+}
+
+// coarseTilePath names a tile no deeper than accessTileZoom, with the requested zoom. Each coordinate is
+// read from its leading digits, so a tile URL with an extension (.pbf, .mvt) is still named coarse; one
+// whose numbers do not parse is named invalid.
+func coarseTilePath(zs, xs, ys string) (string, int) {
+	const prefix = "/v1/vessels/tiles/"
+	var nums [3]int
+	for i, p := range []string{zs, xs, ys} {
+		n, err := strconv.Atoi(p[:len(p)-len(strings.TrimLeft(p, "0123456789"))])
+		if err != nil {
+			return prefix + "invalid", 0
+		}
+		nums[i] = n
 	}
 	z, x, y := nums[0], nums[1], nums[2]
+	if z > 30 {
+		return prefix + "invalid", 0
+	}
 	if z > accessTileZoom {
 		x, y = x>>(z-accessTileZoom), y>>(z-accessTileZoom)
 	}
