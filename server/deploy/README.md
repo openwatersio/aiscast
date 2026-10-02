@@ -73,7 +73,15 @@ GRAFANA_URL=https://<stack>.grafana.net GRAFANA_TOKEN=<token> ALERT_EMAIL=<addre
 
 Two logs record every request, and the request id joins them.
 
-- aiscast's access log, in its own private R2 bucket (`ACCESS_BUCKET`, `ais-access`) under `access/v1/YYYY/MM/DD/HH.gz`, kept 90 days. It must never share a bucket with the archive, which is meant to become public. Lines are personal data, since the hash key can recover an address from its /24, and the bucket keeps them 90 days. Setting it up: create the private bucket, add a lifecycle rule deleting objects under `access/` after 90 days, give the server's R2 token read and write on it, and set `ACCESS_BUCKET` in `/etc/aiscast.env`. Until then the hours stay under `ACCESS_DIR`, the sweep deletes them at 90 days, and it uploads the rest once the bucket is set. It names a client by its /24 or /48 and a keyed hash of its address, and a token by its subject. It is the one to analyze. [server/README.md](../README.md#access-log) lists its fields.
+- aiscast's access log, in its own private R2 bucket (`ACCESS_BUCKET`, `ais-access`) under `access/v1/YYYY/MM/DD/HH.gz`, kept 90 days. It must never share a bucket with the archive, which is meant to become public. Lines are personal data, since the hash key can recover an address from its /24, and the bucket keeps them 90 days. The bucket and its rule were made with wrangler, logged in to the Open Waters account:
+
+```sh
+wrangler r2 bucket create ais-access
+wrangler r2 bucket lifecycle add ais-access access-90-days access/ --expire-days 90 --force
+wrangler r2 bucket lifecycle list ais-access   # the 90-day rule beside R2's default multipart abort rule
+```
+
+Public access stays off: no r2.dev URL and no custom domain. The server's R2 token needs read and write on `ais-access`, and `/etc/aiscast.env` needs `ACCESS_BUCKET=ais-access`. Until both are set, the hours stay under `ACCESS_DIR`, the sweep deletes them at 90 days, and it uploads the rest once the bucket is set. It names a client by its /24 or /48 and a keyed hash of its address, and a token by its subject. It is the one to analyze. [server/README.md](../README.md#access-log) lists its fields.
 - Caddy's access log, `/var/log/caddy/access.log` on the box, in Caddy's JSON format, with the full client address and the request headers. The `key`, `around`, and `bbox` parameters and the `Authorization`, `Cookie`, and `Referer` headers are removed before writing, so no token reaches it and no search position or view sits beside a full address; aiscast's log keeps the referer without its query and the coordinates rounded. Tile paths stay whole: Caddy's filters cannot coarsen them. It rolls daily and at 100 MiB, gzips what it rolls, and deletes rolled files after 13 days, so no address stays longer than two weeks. It lives only on the box and goes with it.
 
 To find the address behind load, take the busiest clients for the window from the R2 log:
