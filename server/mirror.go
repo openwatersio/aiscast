@@ -1,0 +1,303 @@
+package main
+
+// The record mirror: every row of the vessel record, in memory. Lookups by MMSI or IMO, areas, nearest
+// rankings, counts, and the vector tiles answer from it, so no request scans SQLite or holds a record
+// connection while it does. SQLite stays the truth and answers what the mirror does not index: name and MMSI
+// prefix search, substring search, and the flag filter that goes with it.
+//
+// The mirror loads when the record opens. After every write to the record (the once-a-second flush, each
+// page of a history import) the rows just written are read back and filed again, so the mirror follows the
+// record's own merge rules at most a write behind. Refreshes run one at a time, and each reads the rows as
+// they are when it runs, so a later refresh never files an older row.
+//
+// A filed vessel is never modified: a refresh files a new one in its place, and readers get copies.
+
+import (
+	"cmp"
+	"slices"
+	"sync"
+	"time"
+)
+
+type mirrorEntry struct {
+	v         *vessel
+	firstSeen time.Time
+}
+
+type recordMirror struct {
+	mu      sync.RWMutex
+	entries map[uint32]*mirrorEntry
+	cells   map[cellKey]map[uint32]*mirrorEntry // the vessels with a position, by the cell of it
+	strs    map[string]string                   // one copy of each source, station, and message type
+
+	refreshMu sync.Mutex // one refresh at a time, read and filed together
+}
+
+// loadMirror reads every vessel the record holds.
+func loadMirror(s *store) (*recordMirror, error) {
+	m := &recordMirror{entries: map[uint32]*mirrorEntry{}, cells: map[cellKey]map[uint32]*mirrorEntry{}, strs: map[string]string{}}
+	recs, err := s.scan("SELECT " + recordCols + " FROM vessels") // in table order: no index to walk, no sort
+	if err != nil {
+		return nil, err
+	}
+	m.file(recs)
+	return m, nil
+}
+
+// refresh files again the rows of mmsis, as the record holds them now.
+func (m *recordMirror) refresh(s *store, mmsis []uint32) error {
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+	for len(mmsis) > 0 {
+		n := min(len(mmsis), maxParams)
+		recs, err := s.findSQL(recordQuery{mmsis: mmsis[:n]})
+		if err != nil {
+			return err
+		}
+		m.file(recs)
+		mmsis = mmsis[n:]
+	}
+	return nil
+}
+
+func (m *recordMirror) file(recs []record) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range recs {
+		v := r.v
+		v.Source, v.Station, v.MsgType = m.intern(v.Source), m.intern(v.Station), m.intern(v.MsgType)
+		v.Kind, v.Class = m.intern(v.Kind), m.intern(v.Class)
+		if old := m.entries[r.mmsi]; old != nil && old.v.HasPos {
+			m.unfileCell(r.mmsi, old.v.cell)
+		}
+		e := &mirrorEntry{v: v, firstSeen: r.firstSeen}
+		m.entries[r.mmsi] = e
+		if v.HasPos {
+			v.cell = cellOf(v.Lat, v.Lon)
+			c := m.cells[v.cell]
+			if c == nil {
+				c = map[uint32]*mirrorEntry{}
+				m.cells[v.cell] = c
+			}
+			c[r.mmsi] = e
+		}
+	}
+}
+
+func (m *recordMirror) unfileCell(mmsi uint32, k cellKey) {
+	if c := m.cells[k]; c != nil {
+		delete(c, mmsi)
+		if len(c) == 0 {
+			delete(m.cells, k)
+		}
+	}
+}
+
+func (m *recordMirror) intern(s string) string {
+	if i, ok := m.strs[s]; ok {
+		return i
+	}
+	m.strs[s] = s
+	return s
+}
+
+// answers reports whether the mirror can answer q: everything but the text search SQLite indexes.
+func (m *recordMirror) answers(q recordQuery) bool {
+	return m != nil && q.prefix == "" && q.contains == "" && q.flag == "" && !q.byName
+}
+
+// mirrorQuery is a recordQuery made ready to test entries against.
+type mirrorQuery struct {
+	recordQuery
+	mmsis, imos   map[uint32]bool
+	since, before int64 // unix ms, as the record compares them; 0 when unset
+}
+
+func newMirrorQuery(q recordQuery) (*mirrorQuery, error) {
+	if len(q.boxes) > maxBoxes { // the bound on what one area request may cost, as SQLite enforces it
+		return nil, errTooManyTerms
+	}
+	mq := &mirrorQuery{recordQuery: q, since: unixMs(q.since), before: unixMs(q.before)}
+	set := func(ids []uint32) map[uint32]bool {
+		if ids == nil {
+			return nil
+		}
+		s := make(map[uint32]bool, len(ids))
+		for _, id := range ids {
+			s[id] = true
+		}
+		return s
+	}
+	mq.mmsis, mq.imos = set(q.mmsis), set(q.imos)
+	return mq, nil
+}
+
+// match is where for one entry. A box matches only a vessel with a position.
+func (q *mirrorQuery) match(mmsi uint32, v *vessel) bool {
+	switch {
+	case q.mmsis != nil && !q.mmsis[mmsi],
+		q.imos != nil && !q.imos[v.IMO],
+		q.hasPos && !v.HasPos,
+		q.since != 0 && unixMs(v.Seen) < q.since,
+		q.before != 0 && unixMs(v.Seen) >= q.before,
+		len(q.boxes) > 0 && !(v.HasPos && inAny(q.boxes, v.Lat, v.Lon)),
+		q.filter != nil && !q.filter.match(v, q.now):
+		return false
+	}
+	return true
+}
+
+// each calls fn for every entry q matches, under the read lock: fn must not keep or modify v. It visits the
+// listed MMSIs when q has them, the cells its boxes cover when it has boxes, and every vessel otherwise.
+func (m *recordMirror) each(q *mirrorQuery, fn func(mmsi uint32, e *mirrorEntry)) {
+	visit := func(mmsi uint32, e *mirrorEntry) {
+		if q.match(mmsi, e.v) {
+			fn(mmsi, e)
+		}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	switch {
+	case q.mmsis != nil:
+		for mmsi := range q.mmsis {
+			if e := m.entries[mmsi]; e != nil {
+				visit(mmsi, e)
+			}
+		}
+	case len(q.boxes) > 0:
+		span := 0
+		for _, b := range q.boxes {
+			r0, c0 := cellRowCol(b[0], b[1])
+			r1, c1 := cellRowCol(b[2], b[3])
+			span += int(r1-r0+1) * int(c1-c0+1)
+		}
+		// Wide boxes cover more cells than hold any vessel, and walking the occupied cells is cheaper.
+		if span > len(m.cells) {
+			for _, c := range m.cells {
+				for mmsi, e := range c {
+					visit(mmsi, e)
+				}
+			}
+			return
+		}
+		// Each vessel sits in one cell, so visiting each cell once visits each vessel once, even where boxes overlap.
+		visited := map[cellKey]bool{}
+		for _, b := range q.boxes {
+			r0, c0 := cellRowCol(b[0], b[1])
+			r1, c1 := cellRowCol(b[2], b[3])
+			for r := r0; r <= r1; r++ {
+				for c := c0; c <= c1; c++ {
+					k := cellKey(r*360 + c)
+					if visited[k] {
+						continue
+					}
+					visited[k] = true
+					for mmsi, e := range m.cells[k] {
+						visit(mmsi, e)
+					}
+				}
+			}
+		}
+	default:
+		for mmsi, e := range m.entries {
+			visit(mmsi, e)
+		}
+	}
+}
+
+// find is store.find answered from memory: most recently heard first, the lower MMSI first on a tie, up to
+// q's limit. Each record holds a copy of the filed vessel.
+func (m *recordMirror) find(q recordQuery) ([]record, error) {
+	mq, err := newMirrorQuery(q)
+	if err != nil {
+		return nil, err
+	}
+	type hit struct {
+		mmsi uint32
+		e    *mirrorEntry
+	}
+	var hits []hit
+	m.each(mq, func(mmsi uint32, e *mirrorEntry) { hits = append(hits, hit{mmsi, e}) })
+	slices.SortFunc(hits, func(a, b hit) int {
+		return cmp.Or(b.e.v.Seen.Compare(a.e.v.Seen), cmp.Compare(a.mmsi, b.mmsi))
+	})
+	if q.limit > 0 && len(hits) > q.limit {
+		hits = hits[:q.limit]
+	}
+	out := make([]record, len(hits))
+	for i, h := range hits {
+		// Filed vessels are replaced, never modified, so the copy needs no lock.
+		out[i] = record{mmsi: h.mmsi, v: h.e.v.state(), firstSeen: h.e.firstSeen}
+	}
+	return out, nil
+}
+
+// count is store.count answered from memory.
+func (m *recordMirror) count(q recordQuery) (int, error) {
+	mq, err := newMirrorQuery(q)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	m.each(mq, func(uint32, *mirrorEntry) { n++ })
+	return n, nil
+}
+
+// positions is store.positions answered from memory.
+func (m *recordMirror) positions(q recordQuery) ([]storedPos, error) {
+	mq, err := newMirrorQuery(q)
+	if err != nil {
+		return nil, err
+	}
+	var out []storedPos
+	m.each(mq, func(mmsi uint32, e *mirrorEntry) {
+		out = append(out, storedPos{mmsi: mmsi, lat: e.v.Lat, lon: e.v.Lon, posAt: e.v.PosAt})
+	})
+	return out, nil
+}
+
+// counts is store.counts answered from memory, in one pass.
+func (m *recordMirror) counts(now time.Time) *recordCounts {
+	c := &recordCounts{Heard: map[string]int{}, New: map[string]int{}}
+	cuts := make([]int64, len(recordWindows))
+	for i, w := range recordWindows {
+		cuts[i] = unixMs(now.Add(-w.age))
+		c.Heard[w.key], c.New[w.key] = 0, 0 // every window reported, even when empty
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	c.Total = len(m.entries)
+	for _, e := range m.entries {
+		seen, first := unixMs(e.v.Seen), unixMs(e.firstSeen)
+		for i, w := range recordWindows {
+			if seen >= cuts[i] {
+				c.Heard[w.key]++
+			}
+			if first >= cuts[i] {
+				c.New[w.key]++
+			}
+		}
+	}
+	return c
+}
+
+// countFirstSeen is store.countFirstSeen answered from memory.
+func (m *recordMirror) countFirstSeen(since time.Time) int {
+	cut := unixMs(since)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, e := range m.entries {
+		if unixMs(e.firstSeen) >= cut {
+			n++
+		}
+	}
+	return n
+}
+
+// len is the number of vessels the mirror holds.
+func (m *recordMirror) len() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.entries)
+}

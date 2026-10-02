@@ -295,15 +295,21 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 }
 
 // tileRecords reads a tile's records. Past tileCap vessels a tile keeps the newest in each cell, and a
-// low-zoom tile matches a week of vessels across its area, so the record index answers where and when each
-// was last heard, and only the newest in each cell is read from the record. When no more match than a tile
+// low-zoom tile matches a week of vessels across its area, so the record mirror is walked for where and when
+// each was last heard, and only the newest in each cell is copied out. When no more match than a tile
 // holds, nothing is thinned and every match is read. The record holds only vessels unheard for 30 minutes and
 // the cache only those heard since, so a cached vessel always wins its cell, and the newest record vessel in
 // each cell is all the thinning can keep. The one exception lasts a flush: a vessel heard again after 30
 // minutes is cached while its row is still old, and if it was a cell's winner and has moved on, that cell
-// shows no record vessel until the next build. vesselTile applies the filters again to the rows it reads, which
-// can be a second newer than the index.
+// shows no record vessel until the next build.
 func (p *Pipeline) tileRecords(q recordQuery, z, x, y int) ([]record, error) {
+	if !p.store.mirror.answers(q) {
+		return p.store.find(q)
+	}
+	mq, err := newMirrorQuery(q)
+	if err != nil {
+		return nil, err
+	}
 	type pick struct {
 		mmsi uint32
 		seen int64
@@ -312,9 +318,9 @@ func (p *Pipeline) tileRecords(q recordQuery, z, x, y int) ([]record, error) {
 	newest := map[int32]pick{}
 	var all []uint32
 	inside := 0
-	p.store.idx.each(tileBox(z, x, y), q, func(mmsi uint32, e *recEntry) {
-		px, py := tilePixel(e.lat, e.lon, n, x, y)
-		if math.Abs(e.lat) > mercatorLat || !inTile(px, py) {
+	p.store.mirror.each(mq, func(mmsi uint32, e *mirrorEntry) {
+		px, py := tilePixel(e.v.Lat, e.v.Lon, n, x, y)
+		if math.Abs(e.v.Lat) > mercatorLat || !inTile(px, py) {
 			return
 		}
 		inside++
@@ -322,9 +328,9 @@ func (p *Pipeline) tileRecords(q recordQuery, z, x, y int) ([]record, error) {
 			all = append(all, mmsi)
 		}
 		// ties go to the lower MMSI, as vesselTile's thinning breaks them
-		c := tileCell(int32(math.Round(px)), int32(math.Round(py)))
-		if b, ok := newest[c]; !ok || e.seen > b.seen || e.seen == b.seen && mmsi < b.mmsi {
-			newest[c] = pick{mmsi, e.seen}
+		c, seen := tileCell(int32(math.Round(px)), int32(math.Round(py))), unixMs(e.v.Seen)
+		if b, ok := newest[c]; !ok || seen > b.seen || seen == b.seen && mmsi < b.mmsi {
+			newest[c] = pick{mmsi, seen}
 		}
 	})
 	if inside == 0 {

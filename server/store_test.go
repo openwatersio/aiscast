@@ -440,14 +440,16 @@ func TestLookupPrefersTheNewerState(t *testing.T) {
 	}
 }
 
+// A record that fails is an error, never an empty answer. Lookups by MMSI answer from the mirror, which holds
+// every row, so only the text search SQLite serves can fail this way.
 func TestMCPRecordFailureIsAnError(t *testing.T) {
 	p := storePipeline(t)
 	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 10*time.Second)
 	p.store.db.Close()
 	cs := mcpClient(t, p)
 	var out mcpVessels
-	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{999999999}}, &out); !strings.Contains(msg, "unavailable") {
-		t.Errorf("get_vessels called a vessel unknown when the record failed: %q %+v", msg, out)
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{999999999}}, &out); msg != "" || len(out.Unknown) != 1 {
+		t.Errorf("get_vessels with the mirror: %q %+v", msg, out)
 	}
 	if msg := mcpCall(t, cs, "search_vessels_by_name", map[string]any{"name": "nordic"}, &out); !strings.Contains(msg, "unavailable") {
 		t.Errorf("search: %q", msg)

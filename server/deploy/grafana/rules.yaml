@@ -212,6 +212,12 @@ groups:
         annotations:
           summary: '{{ $value | printf "%.0f" }} vessel record writes failed in 10 minutes'
           description: The record is falling behind the cache. Check the store lines in journalctl -u aiscast and free disk.
+      - alert: StoreMirrorFailing
+        expr: increase(aiscast_store_mirror_failures_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | printf "%.0f" }} record mirror refreshes failed in 10 minutes'
+          description: Lookups, areas, and tiles answer from the mirror, which lags the record for the vessels those writes held. Check the record mirror lines in journalctl -u aiscast. A restart reloads it.
       # The writer runs once a second, so the rate of its seconds is the share of each second it spends writing.
       - alert: StoreWritesSlow
         expr: rate(aiscast_store_flush_seconds_total[15m]) > 0.5
