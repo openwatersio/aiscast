@@ -44,6 +44,9 @@ func TestClickHouseSendsAFailedBatchAgainUnderItsToken(t *testing.T) {
 	if err := p.flushClickHouse(); err == nil {
 		t.Fatal("the first batch should fail")
 	}
+	if body := get(t, p, "/metrics").Body.String(); !strings.Contains(body, "aiscast_clickhouse_up 0\n") {
+		t.Error("a failing batch reads as down")
+	}
 	ingestAt(p, 257000001, start.Add(time.Minute), 59.91)
 	for range 2 {
 		if err := p.flushClickHouse(); err != nil {
@@ -59,6 +62,9 @@ func TestClickHouseSendsAFailedBatchAgainUnderItsToken(t *testing.T) {
 	}
 	if p.ch.failures.Load() != 1 || p.ch.written.Load() != 2 {
 		t.Errorf("failures %d written %d", p.ch.failures.Load(), p.ch.written.Load())
+	}
+	if body := get(t, p, "/metrics").Body.String(); !strings.Contains(body, "aiscast_clickhouse_up 1\n") {
+		t.Error("a written batch reads as up again")
 	}
 }
 

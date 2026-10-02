@@ -89,6 +89,7 @@ type chStore struct {
 
 	written, failures, dropped atomic.Int64
 	writeNanos                 atomic.Int64
+	failing                    atomic.Bool // the last batch failed; cleared when one is written
 }
 
 // chConn writes positions through a native-protocol connection.
@@ -198,6 +199,7 @@ func (p *Pipeline) flushClickHouse() error {
 	err := c.w.insert(ctx, c.token, c.failed)
 	cancel()
 	c.writeNanos.Add(int64(time.Since(start)))
+	c.failing.Store(err != nil)
 	if err != nil {
 		c.failures.Add(1)
 		return err

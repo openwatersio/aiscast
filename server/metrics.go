@@ -243,10 +243,10 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	c := p.ch
 	p.vmu.RUnlock()
 	chUp := 0
-	if c != nil {
+	if c != nil && !c.failing.Load() {
 		chUp = 1
 	}
-	metricHead(w, "aiscast_clickhouse_up", "gauge", "1 when ClickHouse is connected and taking positions; 0 while CLICKHOUSE_URL is unset or it has not answered")
+	metricHead(w, "aiscast_clickhouse_up", "gauge", "1 when ClickHouse is connected and took the last batch; 0 while CLICKHOUSE_URL is unset, it has not answered, or batches are failing")
 	fmt.Fprintf(w, "aiscast_clickhouse_up %d\n", chUp)
 	if c != nil {
 		metricHead(w, "aiscast_clickhouse_points_written_total", "counter", "positions written to ClickHouse")
