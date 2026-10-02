@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"math/rand/v2"
 	"net/url"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/BertoldVdb/go-ais"
 )
 
 // The mirror answers every query SQLite would, with the same rows in the same order.
@@ -30,6 +33,8 @@ func TestMirrorMatchesSQL(t *testing.T) {
 		v.PosAt, v.Kind, v.ShipType, v.IMO = v.Seen, kinds[i%len(kinds)], uint8(i%100), uint32(9000000+i%500)
 		v.Class = []string{"", "A", "B"}[i%3]
 		v.Sog, v.NavStatus = []float64{0, 0.5, 4, 12, 102.3}[i%5], uint8([]int{0, 1, 5, 15}[i%4])
+		v.ETA, v.Dim = ais.FieldETA{Month: uint8(1 + i%12), Day: uint8(1 + i%28), Hour: uint8(i % 24), Minute: uint8(i % 60)}, ais.FieldDimension{A: uint16(i % 90), B: 10, C: 4, D: 4}
+		v.Length, v.Beam, v.Name = v.Dim.A+v.Dim.B, 8, []string{"", "NORDIC STAR"}[i%2]
 		rows = append(rows, record{mmsi: uint32(200000000 + i), v: v, firstSeen: v.Seen.Add(-time.Hour)})
 	}
 	if err := p.store.upsert(rows); err != nil {
@@ -60,6 +65,7 @@ func TestMirrorMatchesSQL(t *testing.T) {
 		"mmsis":               {mmsis: mmsis},
 		"mmsis with position": {mmsis: mmsis, hasPos: true, since: now.Add(-time.Hour)},
 		"imos":                {imos: []uint32{9000001, 9000002, 9000499}},
+		"imos with position":  {imos: []uint32{9000001, 9000002, 9000499}, hasPos: true, since: now.Add(-48 * time.Hour)},
 		"no mmsis":            {mmsis: []uint32{}},
 	} {
 		if !p.store.mirror.answers(q) {
@@ -123,12 +129,14 @@ type mirrorFacts struct {
 	hasPos                                                             bool
 	heading, length, beam                                              uint16
 	seen, posAt, trustedAt, staticAt                                   int64
+	eta                                                                ais.FieldETA
+	dim                                                                ais.FieldDimension
 }
 
 func (v *vessel) facts() *mirrorFacts {
 	return &mirrorFacts{v.Name, v.Kind, v.Class, v.CallSign, v.Destination, v.Source, v.Station, v.MsgType, v.ShipType, v.NavStatus,
 		v.IMO, v.Lat, v.Lon, v.Cog, v.Sog, v.Draught, v.HasPos, v.Heading, v.Length, v.Beam,
-		unixMs(v.Seen), unixMs(v.PosAt), unixMs(v.TrustedAt), unixMs(v.StaticAt)}
+		unixMs(v.Seen), unixMs(v.PosAt), unixMs(v.TrustedAt), unixMs(v.StaticAt), v.ETA, v.Dim}
 }
 
 // The mirror files what the record holds after each write, by the record's merge rules: a vessel that moves
@@ -177,5 +185,54 @@ func TestMirrorFollowsTheRecord(t *testing.T) {
 	}
 	if p.store.mirror.len() != 2 {
 		t.Fatalf("an imported vessel did not reach the mirror: %d", p.store.mirror.len())
+	}
+}
+
+// Vessels heard in the same millisecond come back lower MMSI first, and a query past SQLite's term limit is
+// refused as SQLite refused it.
+func TestMirrorTiesAndLimits(t *testing.T) {
+	p := storePipeline(t)
+	seen := time.Now().Truncate(time.Millisecond)
+	var rows []record
+	for _, mmsi := range []uint32{257000003, 257000001, 257000002} {
+		v := newVessel()
+		v.Seen = seen
+		rows = append(rows, record{mmsi: mmsi, v: v, firstSeen: seen})
+	}
+	if err := p.store.upsert(rows); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.store.find(recordQuery{since: seen.Add(-time.Second)})
+	if err != nil || len(got) != 3 || got[0].mmsi != 257000001 || got[2].mmsi != 257000003 {
+		t.Fatalf("tie order: %v %v", got, err)
+	}
+	if _, err := p.store.find(recordQuery{mmsis: make([]uint32, maxParams+1)}); !errors.Is(err, errTooManyTerms) {
+		t.Errorf("past the term limit: %v", err)
+	}
+}
+
+// A refresh that fails is retried with the next one, so a vessel that goes quiet after a failed read-back
+// is not left stale.
+func TestMirrorRetriesAFailedRefresh(t *testing.T) {
+	p := storePipeline(t)
+	broken, err := openStore(t.TempDir() + "/broken.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken.close()
+	m := p.store.mirror
+	if err := m.refresh(broken, []uint32{257000009}); err == nil {
+		t.Fatal("a refresh from a closed record succeeded")
+	}
+	now := unixMs(time.Now())
+	// written behind the mirror's back, as the failed refresh left it
+	if _, err := p.store.db.Exec(`INSERT INTO vessels (mmsi, name, seen, first_seen) VALUES (257000009, 'QUIET ONE', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.refresh(p.store, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := m.find(recordQuery{mmsis: []uint32{257000009}}); len(got) != 1 || got[0].v.Name != "QUIET ONE" {
+		t.Fatalf("the failed vessel was not retried: %+v", got)
 	}
 }

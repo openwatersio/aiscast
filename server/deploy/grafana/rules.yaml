@@ -217,7 +217,7 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: '{{ $value | printf "%.0f" }} record mirror refreshes failed in 10 minutes'
-          description: Lookups, areas, and tiles answer from the mirror, which lags the record for the vessels those writes held. Check the record mirror lines in journalctl -u aiscast. A restart reloads it.
+          description: Lookups, areas, and tiles answer from the mirror, which lags the record for the vessels those writes held until a refresh succeeds; each refresh retries them. Check the record mirror lines in journalctl -u aiscast. A restart reloads it.
       # The writer runs once a second, so the rate of its seconds is the share of each second it spends writing.
       - alert: StoreWritesSlow
         expr: rate(aiscast_store_flush_seconds_total[15m]) > 0.5

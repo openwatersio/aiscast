@@ -3,7 +3,7 @@ package main
 // The record mirror: every row of the vessel record, in memory. Lookups by MMSI or IMO, areas, nearest
 // rankings, counts, and the vector tiles answer from it, so no request scans SQLite or holds a record
 // connection while it does. SQLite stays the truth and answers what the mirror does not index: name and MMSI
-// prefix search, substring search, and the flag filter that goes with it.
+// prefix search, substring search, the flag filter that goes with it, and ordering by name.
 //
 // The mirror loads when the record opens. After every write to the record (the once-a-second flush, each
 // page of a history import) the rows just written are read back and filed again, so the mirror follows the
@@ -14,6 +14,7 @@ package main
 
 import (
 	"cmp"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -28,14 +29,17 @@ type recordMirror struct {
 	mu      sync.RWMutex
 	entries map[uint32]*mirrorEntry
 	cells   map[cellKey]map[uint32]*mirrorEntry // the vessels with a position, by the cell of it
+	imos    map[uint32]map[uint32]bool          // the MMSIs reporting each IMO number
 	strs    map[string]string                   // one copy of each source, station, and message type
 
-	refreshMu sync.Mutex // one refresh at a time, read and filed together
+	refreshMu sync.Mutex          // one refresh at a time, read and filed together
+	pending   map[uint32]struct{} // MMSIs whose refresh failed, retried with the next; under refreshMu
 }
 
 // loadMirror reads every vessel the record holds.
 func loadMirror(s *store) (*recordMirror, error) {
-	m := &recordMirror{entries: map[uint32]*mirrorEntry{}, cells: map[cellKey]map[uint32]*mirrorEntry{}, strs: map[string]string{}}
+	m := &recordMirror{entries: map[uint32]*mirrorEntry{}, cells: map[cellKey]map[uint32]*mirrorEntry{},
+		imos: map[uint32]map[uint32]bool{}, strs: map[string]string{}, pending: map[uint32]struct{}{}}
 	recs, err := s.scan("SELECT " + recordCols + " FROM vessels") // in table order: no index to walk, no sort
 	if err != nil {
 		return nil, err
@@ -44,20 +48,32 @@ func loadMirror(s *store) (*recordMirror, error) {
 	return m, nil
 }
 
-// refresh files again the rows of mmsis, as the record holds them now.
+// refresh files again the rows of mmsis, as the record holds them now, and those of any earlier refresh
+// that failed: a vessel whose read-back failed is retried with the next write, not left stale until it
+// is written again. Every chunk is tried; the errors come back together.
 func (m *recordMirror) refresh(s *store, mmsis []uint32) error {
 	m.refreshMu.Lock()
 	defer m.refreshMu.Unlock()
+	for mmsi := range m.pending {
+		mmsis = append(mmsis, mmsi)
+	}
+	clear(m.pending)
+	var errs []error
 	for len(mmsis) > 0 {
 		n := min(len(mmsis), maxParams)
-		recs, err := s.findSQL(recordQuery{mmsis: mmsis[:n]})
+		chunk := mmsis[:n]
+		mmsis = mmsis[n:]
+		recs, err := s.findSQL(recordQuery{mmsis: chunk})
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			for _, mmsi := range chunk {
+				m.pending[mmsi] = struct{}{}
+			}
+			continue
 		}
 		m.file(recs)
-		mmsis = mmsis[n:]
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (m *recordMirror) file(recs []record) {
@@ -67,11 +83,25 @@ func (m *recordMirror) file(recs []record) {
 		v := r.v
 		v.Source, v.Station, v.MsgType = m.intern(v.Source), m.intern(v.Station), m.intern(v.MsgType)
 		v.Kind, v.Class = m.intern(v.Kind), m.intern(v.Class)
-		if old := m.entries[r.mmsi]; old != nil && old.v.HasPos {
-			m.unfileCell(r.mmsi, old.v.cell)
+		if old := m.entries[r.mmsi]; old != nil {
+			if old.v.HasPos {
+				m.unfileCell(r.mmsi, old.v.cell)
+			}
+			if set := m.imos[old.v.IMO]; set != nil {
+				delete(set, r.mmsi)
+				if len(set) == 0 {
+					delete(m.imos, old.v.IMO)
+				}
+			}
 		}
 		e := &mirrorEntry{v: v, firstSeen: r.firstSeen}
 		m.entries[r.mmsi] = e
+		if v.IMO != 0 {
+			if m.imos[v.IMO] == nil {
+				m.imos[v.IMO] = map[uint32]bool{}
+			}
+			m.imos[v.IMO][r.mmsi] = true
+		}
 		if v.HasPos {
 			v.cell = cellOf(v.Lat, v.Lon)
 			c := m.cells[v.cell]
@@ -114,7 +144,7 @@ type mirrorQuery struct {
 }
 
 func newMirrorQuery(q recordQuery) (*mirrorQuery, error) {
-	if len(q.boxes) > maxBoxes { // the bound on what one area request may cost, as SQLite enforces it
+	if len(q.boxes) > maxBoxes || len(q.mmsis)+len(q.imos) > maxParams { // the bounds SQLite enforces, kept
 		return nil, errTooManyTerms
 	}
 	mq := &mirrorQuery{recordQuery: q, since: unixMs(q.since), before: unixMs(q.before)}
@@ -148,7 +178,8 @@ func (q *mirrorQuery) match(mmsi uint32, v *vessel) bool {
 }
 
 // each calls fn for every entry q matches, under the read lock: fn must not keep or modify v. It visits the
-// listed MMSIs when q has them, the cells its boxes cover when it has boxes, and every vessel otherwise.
+// listed MMSIs or IMO numbers when q has them, the cells its boxes cover when it has boxes, and every
+// vessel otherwise.
 func (m *recordMirror) each(q *mirrorQuery, fn func(mmsi uint32, e *mirrorEntry)) {
 	visit := func(mmsi uint32, e *mirrorEntry) {
 		if q.match(mmsi, e.v) {
@@ -162,6 +193,12 @@ func (m *recordMirror) each(q *mirrorQuery, fn func(mmsi uint32, e *mirrorEntry)
 		for mmsi := range q.mmsis {
 			if e := m.entries[mmsi]; e != nil {
 				visit(mmsi, e)
+			}
+		}
+	case q.imos != nil:
+		for imo := range q.imos {
+			for mmsi := range m.imos[imo] {
+				visit(mmsi, m.entries[mmsi])
 			}
 		}
 	case len(q.boxes) > 0:
