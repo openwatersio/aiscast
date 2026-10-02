@@ -82,6 +82,7 @@ type archive struct {
 	s3      objectStore                                // nil = keep files local only
 	keyFn   func(source string, hour time.Time) string // nil = per-source license-prefixed layout
 	bare    bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
+	keepFor time.Duration                              // with no bucket, the sweep deletes closed hours older than this; 0 keeps them
 	ch      chan Reception
 	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
 	uploads sync.WaitGroup
@@ -376,6 +377,26 @@ func (a *archive) isHeld(path string) bool {
 	return a.holds[path] > 0
 }
 
+// expire deletes the closed hours older than keepFor, for an archive with no bucket whose records must not
+// outlive their retention on disk.
+func (a *archive) expire() {
+	if a.keepFor <= 0 {
+		return
+	}
+	cutoff := time.Now().Add(-a.keepFor)
+	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") || a.isHeld(path) {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil && fi.ModTime().Before(cutoff) {
+			if err := os.Remove(path); err != nil {
+				log.Printf("archive: expire %s: %v", path, err)
+			}
+		}
+		return nil
+	})
+}
+
 // archiveGrace is how long an hour file must sit untouched before a sweep may delete it. Rotation
 // does not delete: a Reception queued across the hour boundary reopens the hour it names, appending
 // to the file and uploading it again, so a file deleted at rotation would come back as a stub and
@@ -389,7 +410,11 @@ const archiveGrace = 2 * time.Hour
 // one is uploaded first. An object larger than the local file is left alone: that is a stub over a
 // complete upload, and overwriting it would destroy the only good copy.
 func (a *archive) sweep() {
-	if a.dir == "" || a.s3 == nil {
+	if a.dir == "" {
+		return
+	}
+	if a.s3 == nil {
+		a.expire()
 		return
 	}
 	cutoff := time.Now().Add(-archiveGrace)

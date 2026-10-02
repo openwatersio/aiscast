@@ -178,6 +178,27 @@ func TestAccessLogNeverUsesTheArchiveBucket(t *testing.T) {
 	}
 }
 
+// Without a bucket the access log keeps its hours on disk only for accessRetention.
+func TestAccessLogExpiresWithoutABucket(t *testing.T) {
+	dir := t.TempDir()
+	a := newAccessArchive(dir, nil)
+	old, recent := filepath.Join(dir, "access", "v1", "old.gz"), filepath.Join(dir, "access", "v1", "recent.gz")
+	os.MkdirAll(filepath.Dir(old), 0o755)
+	for _, f := range []string{old, recent} {
+		os.WriteFile(f, []byte("x"), 0o644)
+	}
+	stale := time.Now().Add(-accessRetention - time.Hour)
+	os.Chtimes(old, stale, stale)
+	a.sweep()
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("an hour past retention survived the sweep")
+	}
+	if _, err := os.Stat(recent); err != nil {
+		t.Errorf("a recent hour was deleted: %v", err)
+	}
+	a.shutdown()
+}
+
 // A full queue drops lines rather than holding up the request.
 func TestAccessLogDropsWhenBehind(t *testing.T) {
 	p := testPipeline(t)

@@ -7,7 +7,9 @@ package main
 //
 // A line never holds a token, a full address, or a precise location. It names a verified token by its
 // subject, and a client by its network (the /24 or /48) and a keyed hash of the address, so one client's
-// requests group without the address being stored. Coordinates in the query (around, a search ranked from
+// requests group across days without the address being written. The key is stable so abuse can be followed
+// over weeks, and whoever holds it can recover an address from its /24, so the lines are personal data and
+// kept 90 days (accessRetention). Coordinates in the query (around, a search ranked from
 // the visitor's own position, and bbox, the view) are rounded to 0.1°, and a tile deeper than z12 is logged
 // as the z12 tile holding it: about 10 km either way, enough to see where load falls and too coarse to
 // place a home or a berth. Caddy keeps the full address in its own short log on the box, and the request id
@@ -179,10 +181,14 @@ func accessStoreFromEnv() *s3Client {
 // the raw archive.
 const accessPrefix = "access"
 
+// accessRetention is how long access lines are kept: long enough to follow abuse across weeks. The bucket
+// enforces it with a lifecycle rule; without a bucket, the sweep deletes older hours on disk.
+const accessRetention = 90 * 24 * time.Hour
+
 // newAccessArchive is the archive writer configured for the access log: one file per hour, a line per request.
 func newAccessArchive(dir string, s3 *s3Client) *archive {
 	a := newArchive(dir, s3)
-	a.bare = true
+	a.bare, a.keepFor = true, accessRetention
 	a.keyFn = func(_ string, hour time.Time) string {
 		return filepath.Join(accessPrefix, "v1", hour.Format("2006/01/02/15")+".gz")
 	}
