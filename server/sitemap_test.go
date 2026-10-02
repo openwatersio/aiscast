@@ -14,6 +14,11 @@ func TestVesselSitemap(t *testing.T) {
 	heardAgo(p, 257000004, "LONG GONE", 60, 5, time.Minute)
 	heardAgo(p, 257000006, "BUOY", 60, 5, time.Minute)
 	heardAgo(p, 257000007, "NOWHERE", 60, 5, time.Minute)
+	// Not a ship's MMSI: a transmitter left at its default, a search-and-rescue aircraft's range,
+	// and a navigation aid's, which net buoys sending as vessels use.
+	heardAgo(p, 1, "DATAHUB", 60, 5, time.Minute)
+	heardAgo(p, 111257001, "RESCUE", 60, 5, time.Minute)
+	heardAgo(p, 994257001, "NET 1", 60, 5, time.Minute)
 	// Nameless: heard only by position.
 	at := time.Now().Add(-time.Minute).Truncate(time.Second)
 	p.ingestPacket("kystverket", "kystverket", at, at, posReport(257000005, 60, 5))

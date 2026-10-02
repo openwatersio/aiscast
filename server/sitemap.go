@@ -19,8 +19,10 @@ const sitemapAge = 30 * 24 * time.Hour
 
 // sitemapWhere is the vessels worth a search engine's visit: ships, named, with a position heard within
 // sitemapAge. pos_at rather than seen, which a static report alone moves. A nameless vessel's page is a
-// bare MMSI, which the web client marks noindex.
-const sitemapWhere = " WHERE kind = 'vessel' AND name != '' AND has_pos = 1 AND pos_at >= ?"
+// bare MMSI, which the web client marks noindex. A ship's MMSI is nine digits starting 2 to 7 (ITU-R
+// M.585); the record also holds what misconfigured transmitters send, such as 0 and 1, whose pages are
+// noise or, for 0, not a page at all.
+const sitemapWhere = " WHERE mmsi BETWEEN 200000000 AND 799999999 AND kind = 'vessel' AND name != '' AND has_pos = 1 AND pos_at >= ?"
 
 type sitemapPage struct {
 	Vessels int    `json:"vessels"`
