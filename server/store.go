@@ -183,6 +183,8 @@ type store struct {
 	db   *sql.DB
 	path string
 
+	sitemap sitemapMemo
+
 	// read by /metrics
 	flushes, flushFailures, rowsWritten atomic.Int64
 	flushNanos                          atomic.Int64

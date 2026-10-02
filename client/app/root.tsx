@@ -4,7 +4,7 @@ import type { Route } from "./+types/root";
 import "./app.css";
 import { Shell } from "./components/Shell";
 import { setPublicApi } from "./lib/api";
-import { serverEnv, visitorLocation } from "./lib/context";
+import { serverEnv } from "./lib/context";
 import { themeFromCookie } from "./lib/theme";
 
 export const links: Route.LinksFunction = () => [
@@ -18,14 +18,13 @@ export const links: Route.LinksFunction = () => [
 
 /**
  * The API the server rendered against is the one the browser should use. The theme choice
- * comes from its cookie so the first response is already in it. The map opens where the
- * visitor's network address places them.
+ * comes from its cookie so the first response is already in it. Nothing here is about the
+ * visitor beyond that, so a page can be kept at the edge (workers/app.ts).
  */
 export function loader({ context, request }: Route.LoaderArgs) {
   return {
     api: context.get(serverEnv).api,
     theme: themeFromCookie(request.headers.get("cookie")),
-    visitor: context.get(visitorLocation),
   };
 }
 
@@ -58,7 +57,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 export default function App({ loaderData }: Route.ComponentProps) {
   setPublicApi(loaderData.api);
-  return <Shell initialTheme={loaderData.theme} visitor={loaderData.visitor} />;
+  return <Shell initialTheme={loaderData.theme} />;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
