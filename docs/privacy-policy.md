@@ -1,5 +1,7 @@
 # Open Waters AIS privacy policy
 
+Effective [LAUNCH DATE].
+
 Open Water Software, LLC ("we") runs Open Waters AIS: the map at openwaters.io/ais/map, the API at ais.openwaters.io, and the network of stations that feed it. This policy says what personal data the service handles, why, how long we keep it, and what you can ask us to do. Write to hello@openwaters.io with any question or request. A person reads it.
 
 ## Summary
@@ -20,7 +22,7 @@ We publish this data on the basis of legitimate interest. The vessel's own equip
 
 If your vessel is a small craft linked to you, you can ask us to stop publishing it. Email hello@openwaters.io with the MMSI and anything that shows your connection to the vessel. A photo, an insurance or mooring document, or a club listing is enough. You do not have to be the registered owner. A vessel registered to a company counts if you are its only user.
 
-The opt-out is free. Within one month we stop publishing the vessel in the live stream, on the map, and in track and history queries. We delete it from the archive we control and confirm this to you in writing.
+The opt-out is free, and a person handles each request. Within 30 days we stop publishing the vessel in the live stream, on the map, and in track and history queries. We delete it from the archive we control and confirm this to you in writing. We keep the MMSI on a list so that we do not publish the vessel again. We delete the proof you sent once we have handled the request.
 
 There are limits. Copies of the archive that others took under an open license are beyond our control. Anyone with a receiver can still hear your transponder. Other tracking sites are separate, and you must ask each of them.
 
@@ -74,7 +76,7 @@ We send counts and timings to Grafana Cloud to watch the service's health. They 
 
 ## Who else handles data
 
-- **Cloudflare** serves the map and openwaters.io, so it sees those requests. Cloudflare keeps request details for the map, which can include your address, for up to seven days. Our archives and the API log are stored in Cloudflare R2. The API log is in its own private bucket.
+- **Cloudflare** serves the map and openwaters.io, so it sees those requests. Cloudflare Workers Logs keep a record of each request to the map, with your address, the page, and your browser's headers, for up to seven days. They can include Cloudflare's estimate of your location. We use them to find and fix errors. Our archives and the API log are stored in Cloudflare R2. The API log is in its own private bucket.
 - **Hetzner** hosts the API server in Helsinki, Finland. The API does not pass through Cloudflare.
 - **Grafana Cloud** stores our monitoring data.
 
@@ -88,4 +90,4 @@ If the GDPR applies to you, the vessel opt-out is your right to object, and the 
 
 ## Changes
 
-This policy lives in the public [aiscast repository](https://github.com/openwatersio/aiscast/blob/main/docs/privacy-policy.md). We change it only by pull request there, so every change is public.
+This policy lives in the public [aiscast repository](https://github.com/openwatersio/aiscast/blob/main/docs/privacy-policy.md). We change it only by pull request there, so every change is public. A material change takes effect 30 days after its pull request merges. Watch the repository to hear about changes.
