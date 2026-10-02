@@ -5,13 +5,17 @@ package main
 // vessel and time. positions_15m and positions_1h hold each vessel's first position in each epoch-aligned
 // window, which is what the track endpoint's thinning keeps, so a step that is a whole number of windows reads
 // the same answer from a rollup as from every position. ClickHouse being slow or down never holds up ingest:
-// its queue is bounded like the track store's, and what falls out is counted.
+// its queue is bounded like the track store's, and what falls out is counted. A batch whose insert failed is
+// sent again whole, under the same deduplication token, since a failure can come after ClickHouse committed it.
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,7 +43,8 @@ var chSchema = []string{
 	) ENGINE = MergeTree
 	PARTITION BY toYYYYMMDD(ts)
 	ORDER BY (mmsi, ts)
-	TTL toDateTime(ts) + INTERVAL 30 DAY DELETE`,
+	TTL toDateTime(ts) + INTERVAL 30 DAY DELETE
+	SETTINGS non_replicated_deduplication_window = 1000`,
 	chRollup("15m", "TTL slot + INTERVAL 13 MONTH DELETE"),
 	chRollupView("15m", "15 MINUTE"),
 	chRollup("1h", ""),
@@ -67,14 +72,20 @@ func chRollupView(name, window string) string {
 	FROM {db}.positions GROUP BY mmsi, slot`, name, name, window)
 }
 
-// chWriter inserts a batch of positions; tests fake it.
+// chWriter inserts a batch of positions under a deduplication token, so ClickHouse skips a batch it already
+// holds; tests fake it.
 type chWriter interface {
-	insert(ctx context.Context, points []trackPoint) error
+	insert(ctx context.Context, token string, points []trackPoint) error
 }
 
-// chStore is the attached ClickHouse: the writer and what /metrics reports about it.
+// chStore is the attached ClickHouse: the writer, the batch waiting to be sent again, and what /metrics
+// reports about it.
 type chStore struct {
 	w chWriter
+
+	mu     sync.Mutex // one flush at a time, so a resend never races the batch it repeats
+	failed []trackPoint
+	token  string
 
 	written, failures, dropped atomic.Int64
 	writeNanos                 atomic.Int64
@@ -112,7 +123,8 @@ func openClickHouse(ctx context.Context, url string) (*chConn, error) {
 	return &chConn{conn: conn, db: db}, nil
 }
 
-func (c *chConn) insert(ctx context.Context, points []trackPoint) error {
+func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"insert_deduplication_token": token}))
 	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".positions")
 	if err != nil {
 		return err
@@ -158,34 +170,45 @@ func (p *Pipeline) runClickHouse(url string) {
 	}
 }
 
-// flushClickHouse writes the queued positions as one batch. A failed batch goes back ahead of what arrived
-// since, within the queue's bound, so the next flush retries it in order.
+// flushClickHouse writes one batch: the one that failed last time, unchanged and under its token, or else
+// everything queued since. Positions keep queueing behind a failed batch, within the queue's bound.
 func (p *Pipeline) flushClickHouse() error {
-	p.vmu.Lock()
-	c, points := p.ch, p.chQueue
-	if c == nil || len(points) == 0 {
-		p.vmu.Unlock()
+	p.vmu.RLock()
+	c := p.ch
+	p.vmu.RUnlock()
+	if c == nil {
 		return nil
 	}
-	p.chQueue = make([]trackPoint, 0, len(points))
-	p.vmu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.failed == nil {
+		p.vmu.Lock()
+		points := p.chQueue
+		if len(points) > 0 {
+			p.chQueue = make([]trackPoint, 0, len(points))
+		}
+		p.vmu.Unlock()
+		if len(points) == 0 {
+			return nil
+		}
+		c.failed, c.token = points, newDedupeToken()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), chInsertTimeout)
 	start := time.Now()
-	err := c.w.insert(ctx, points)
+	err := c.w.insert(ctx, c.token, c.failed)
 	cancel()
 	c.writeNanos.Add(int64(time.Since(start)))
 	if err != nil {
 		c.failures.Add(1)
-		p.vmu.Lock()
-		room := maxPending - len(p.chQueue)
-		if room < len(points) {
-			c.dropped.Add(int64(len(points) - max(room, 0)))
-			points = points[len(points)-max(room, 0):]
-		}
-		p.chQueue = append(points, p.chQueue...)
-		p.vmu.Unlock()
 		return err
 	}
-	c.written.Add(int64(len(points)))
+	c.written.Add(int64(len(c.failed)))
+	c.failed = nil
 	return nil
+}
+
+func newDedupeToken() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }

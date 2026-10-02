@@ -11,21 +11,23 @@ import (
 	"time"
 )
 
-// fakeCH records the batches it is handed and fails the first `fail` of them.
+// fakeCH records every batch and token it is handed, and fails the first `fail` of them.
 type fakeCH struct {
 	mu      sync.Mutex
 	fail    int
+	tokens  []string
 	batches [][]trackPoint
 }
 
-func (f *fakeCH) insert(_ context.Context, points []trackPoint) error {
+func (f *fakeCH) insert(_ context.Context, token string, points []trackPoint) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.tokens = append(f.tokens, token)
+	f.batches = append(f.batches, append([]trackPoint(nil), points...))
 	if f.fail > 0 {
 		f.fail--
 		return errors.New("clickhouse is down")
 	}
-	f.batches = append(f.batches, append([]trackPoint(nil), points...))
 	return nil
 }
 
@@ -33,7 +35,7 @@ func ingestAt(p *Pipeline, mmsi uint32, at time.Time, lat float64) {
 	p.ingestPacket("kystverket", "kystverket", at, at, posReport(mmsi, lat, 10.7))
 }
 
-func TestClickHouseRetriesAFailedBatchInOrder(t *testing.T) {
+func TestClickHouseSendsAFailedBatchAgainUnderItsToken(t *testing.T) {
 	p := testPipeline(t)
 	f := &fakeCH{fail: 1}
 	p.attachClickHouse(&chStore{w: f})
@@ -43,11 +45,17 @@ func TestClickHouseRetriesAFailedBatchInOrder(t *testing.T) {
 		t.Fatal("the first batch should fail")
 	}
 	ingestAt(p, 257000001, start.Add(time.Minute), 59.91)
-	if err := p.flushClickHouse(); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err := p.flushClickHouse(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if len(f.batches) != 1 || len(f.batches[0]) != 2 || !f.batches[0][0].ts.Equal(start) {
-		t.Fatalf("the failed position goes again, ahead of the one after it: %+v", f.batches)
+	// A failure can follow a commit, so the batch goes again exactly as it was, for ClickHouse to recognize.
+	if len(f.batches) != 3 || len(f.batches[1]) != 1 || !f.batches[1][0].ts.Equal(start) || f.tokens[1] != f.tokens[0] {
+		t.Fatalf("the failed batch goes again alone under its token: %v %+v", f.tokens, f.batches)
+	}
+	if len(f.batches[2]) != 1 || !f.batches[2][0].ts.Equal(start.Add(time.Minute)) || f.tokens[2] == f.tokens[0] {
+		t.Fatalf("what queued behind it follows under a new token: %v %+v", f.tokens, f.batches)
 	}
 	if p.ch.failures.Load() != 1 || p.ch.written.Load() != 2 {
 		t.Errorf("failures %d written %d", p.ch.failures.Load(), p.ch.written.Load())
@@ -95,7 +103,11 @@ func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
 	// lake arrives out of order: an earlier position written after the others still wins its window.
 	early := trackPoint{mmsi: 257000001, ts: slot.Add(time.Minute), lat6: int32(59.89 * 600000), lon6: int32(10.7 * 600000),
 		sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "kystverket"}
-	if err := conn.insert(context.Background(), []trackPoint{early}); err != nil {
+	if err := conn.insert(context.Background(), "early", []trackPoint{early}); err != nil {
+		t.Fatal(err)
+	}
+	// The same batch under the same token, as after an insert that failed once ClickHouse had committed it.
+	if err := conn.insert(context.Background(), "early", []trackPoint{early}); err != nil {
 		t.Fatal(err)
 	}
 
