@@ -128,3 +128,37 @@ func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
 		}
 	}
 }
+
+// slowCH holds each insert open a while and records the most inserts it ever saw in flight.
+type slowCH struct {
+	mu            sync.Mutex
+	inFlight, max int
+}
+
+func (s *slowCH) insert(context.Context, string, []trackPoint) error {
+	s.mu.Lock()
+	s.inFlight++
+	s.max = max(s.max, s.inFlight)
+	s.mu.Unlock()
+	time.Sleep(20 * time.Millisecond)
+	s.mu.Lock()
+	s.inFlight--
+	s.mu.Unlock()
+	return nil
+}
+
+func TestClickHouseFlushesOneAtATime(t *testing.T) {
+	// The writer's tick and the shutdown flush can call at once; a second insert must wait for the first.
+	p := testPipeline(t)
+	s := &slowCH{}
+	p.attachClickHouse(&chStore{w: s})
+	var wg sync.WaitGroup
+	for i := range 4 {
+		ingestAt(p, 257000001, time.Now().Add(time.Duration(i)*time.Second), 59.9)
+		wg.Go(func() { p.flushClickHouse() })
+	}
+	wg.Wait()
+	if s.max != 1 {
+		t.Errorf("%d inserts in flight at once", s.max)
+	}
+}
