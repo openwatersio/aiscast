@@ -67,6 +67,41 @@ type fccShip struct {
 	Official string // the official number of a documented vessel, else its state registration
 }
 
+// cp1252 is the Windows-1252 table for 0x80 through 0x9F; the rest of the high half is Latin-1. The five
+// unassigned codes decode to the replacement character.
+var cp1252 = [32]rune{
+	'€', '�', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '�', 'Ž', '�',
+	'�', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '�', 'ž', 'Ÿ',
+}
+
+// fromCP1252 decodes ULS text, which is Windows-1252, into UTF-8. ASCII, which is nearly every line,
+// passes through untouched.
+func fromCP1252(s string) string {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c < 0x80:
+			b.WriteByte(c)
+		case c < 0xA0:
+			b.WriteRune(cp1252[c-0x80])
+		default:
+			b.WriteRune(rune(c))
+		}
+	}
+	return b.String()
+}
+
 // fccStats is read by /metrics.
 type fccStats struct {
 	runs, failures, ships atomic.Int64
@@ -149,7 +184,9 @@ func fetchFCC(ctx context.Context, endpoint string) (map[uint32]*fccShip, error)
 			return
 		}
 		mmsi, err := strconv.ParseUint(p[21], 10, 32)
-		if err != nil {
+		// ULS holds a few mistyped MMSIs under foreign identification digits; a junk row must never
+		// attach US facts to another flag's vessel.
+		if err != nil || flagOf(uint32(mmsi)) != "US" {
 			return
 		}
 		usi, _ := strconv.ParseInt(p[1], 10, 64)
@@ -158,8 +195,7 @@ func fetchFCC(ctx context.Context, endpoint string) (map[uint32]*fccShip, error)
 		}
 		out[uint32(mmsi)] = &fccShip{MMSI: uint32(mmsi), USI: usi,
 			CallSign: strings.TrimSpace(p[4]),
-			// ULS text is Windows-1252; the few non-ASCII names are kept valid rather than dropped.
-			Name:     strings.ToValidUTF8(strings.TrimSpace(p[9]), "\ufffd"),
+			Name:     fromCP1252(strings.TrimSpace(p[9])),
 			Official: normOfficial(p[10])}
 	}); err != nil {
 		return nil, err

@@ -507,7 +507,7 @@ func (s *store) uscgDue(cutoff time.Time) ([]*uscgVessel, error) {
 		SELECT v.mmsi, v.name, v.seen, 1 AS via, u.vessel_id, u.callsign, u.name AS uname, u.identification, u.service, u.status,
 			u.year_built, u.length, u.beam, u.depth, u.gross_tonnage, u.net_tonnage, u.tonnage_measure, u.details_at
 			FROM vessels v JOIN fcc f ON f.mmsi = v.mmsi JOIN uscg u ON u.identification = f.official
-			WHERE f.official != ''
+			WHERE v.flag = 'US' AND f.official != ''
 		) ORDER BY seen DESC, mmsi`)
 	if err != nil {
 		return nil, err

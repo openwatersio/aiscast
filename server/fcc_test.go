@@ -25,6 +25,7 @@ func fakeFCC(t *testing.T) string {
 		"HD|1000003|||WDA0003|A|SB|01/01/2021",
 		"HD|1000004|||WDA0004|A|SA|01/01/2024", // the newer license for 367000100
 		"HD|1000006|||WDA0006|A|SA|01/01/2023",
+		"HD|1000007|||WDA0007|A|SA|01/01/2023",
 		"", // ULS files end with a blank line now and then
 	}, "\n")))
 	sh, _ := zw.Create("SH.dat")
@@ -32,7 +33,8 @@ func fakeFCC(t *testing.T) string {
 		"SH|1000001|||WDA0001|R||MM|CIT|RESOLUTE|1257726|Y|Y|||100|30|W19|W50|11220|1502110|367000100|Y|N|N|N|Y",
 		"SH|1000002|||WDA0002|R||MM|CIT|OLD BOAT|999999|Y|Y|||10||W19|W50|||367000200|Y|N|N|N|Y",
 		"SH|1000003|||WDA0003|R||MM|CIT|SEA TOW 42|fl 8656-lb|Y|Y|||5||W19|W50|||367000300|Y|N|N|N|Y",
-		"SH|1000006|||WDA0006|R||MM|CIT|PLACEHOLDER|0000000|Y|Y|||5||W19|W50|||367000400|Y|N|N|N|Y",
+		"SH|1000006|||WDA0006|R||MM|CIT|S\xd8NDERJYDEN\x92S|0000000|Y|Y|||5||W19|W50|||367000400|Y|N|N|N|Y", // Windows-1252 bytes in the name
+		"SH|1000007|||WDA0007|R||MM|CIT|WRONG FLAG|7654321|Y|Y|||5||W19|W50|||230999999|Y|N|N|N|Y",
 		"SH|1000004|||WDA0004|R||MM|CIT|RESOLUTE II|1257727|Y|Y|||100|30|W19|W50|11220|1502110|367000100|Y|N|N|N|Y",
 		"SH|1000005|||WDA0005|R||MM|CIT|NO MMSI ROW||Y|Y|||5||W19|W50|||||N|N|N|Y",
 	}, "\n")))
@@ -52,7 +54,8 @@ func TestFCCSyncAndServe(t *testing.T) {
 	if !p.syncFCCIfDue(now, url) {
 		t.Fatal("first sync did not run")
 	}
-	// Three licensed MMSIs survive: the expired license and the MMSI-less row are out, and 367000100's
+	// Three licensed MMSIs survive: the expired license, the MMSI-less row, and the mistyped Finnish
+	// MMSI are out, and 367000100's
 	// two licenses collapse to the newest.
 	if n := p.fcc.ships.Load(); n != 3 {
 		t.Fatalf("stored %d ships, want 3", n)
@@ -62,7 +65,8 @@ func TestFCCSyncAndServe(t *testing.T) {
 	}
 	ships, err := p.store.fccByMMSI([]uint32{367000100, 367000300, 367000400})
 	if err != nil || ships[367000100] == nil || ships[367000100].Name != "RESOLUTE II" || ships[367000100].Official != "1257727" ||
-		ships[367000300] == nil || ships[367000300].Official != "FL8656LB" || ships[367000400].Official != "" {
+		ships[367000300] == nil || ships[367000300].Official != "FL8656LB" ||
+		ships[367000400].Official != "" || ships[367000400].Name != "SØNDERJYDEN’S" {
 		t.Fatalf("stored: %+v, %v", ships, err)
 	}
 
