@@ -206,6 +206,7 @@ func routes(p *Pipeline) map[string]http.HandlerFunc {
 		"/v1/vessels/{mmsi}":            p.api(corsHeaders, p.serveVessel),
 		"/v1/vessels/{mmsi}/track":      p.api(corsHeaders, p.serveTrack),
 		"/v1/vessels/tiles.json":        p.api(corsHeaders, p.serveTileJSON),
+		"/v1/vessels/sitemap":           p.api(corsHeaders, p.serveVesselSitemap),
 		"/v1/vessels/tiles/{z}/{x}/{y}": p.serveVesselTile,
 		"/v1/stats":                     p.api(corsHeaders, p.serveStats),
 		"/mcp":                          p.api(mcpHeaders, p.serveMCP),

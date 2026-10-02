@@ -38,3 +38,36 @@ test("no vessel is drawn by both the tiles and the stream", async ({ page }) => 
     }
   }
 });
+
+test("the map opens where the visitor is, unless the link has a #map= hash", async ({ page }) => {
+  // Where the Worker places a visitor depends on the address the test runs from, so the
+  // document's location is swapped for a known one: Oslo.
+  await page.route("**/ais/vessels", async (route) => {
+    const res = await route.fetch();
+    const html = (await res.text()).replace(/<meta name="aiscast-visitor"[^>]*>/, "");
+    await route.fulfill({ response: res, body: html.replace("</head>", '<meta name="aiscast-visitor" content="10.75,59.91"></head>') });
+  });
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => m.type() === "error" && /hydrat/i.test(m.text()) && errors.push(m.text()));
+  const firstView = () =>
+    page.waitForFunction(() => {
+      const map = window.aiscastMap;
+      if (!map) return undefined;
+      const c = map.getCenter();
+      return { lon: c.lng, lat: c.lat, zoom: map.getZoom() };
+    });
+
+  await page.goto("/ais/vessels");
+  const atVisitor = await (await firstView()).jsonValue();
+  expect(atVisitor!.lon).toBeCloseTo(10.75, 1);
+  expect(atVisitor!.lat).toBeCloseTo(59.91, 1);
+  expect(errors).toEqual([]);
+
+  await page.goto("about:blank");
+  await page.goto("/ais/vessels#map=8/59.85/24.9");
+  const atHash = await (await firstView()).jsonValue();
+  expect(atHash).toMatchObject({ zoom: 8 });
+  expect(atHash!.lon).toBeCloseTo(24.9, 1);
+  expect(atHash!.lat).toBeCloseTo(59.85, 1);
+});

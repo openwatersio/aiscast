@@ -261,6 +261,25 @@ export async function getStations(auth: ApiAuth): Promise<Station[] | undefined>
   return soft(get<Station[]>(auth, "/v1/stations"));
 }
 
+/** The pages of vessels the sitemap lists, each up to the 50,000 URLs a sitemap holds. */
+export interface SitemapPages {
+  page_size: number;
+  max_age_s: number;
+  pages: Array<{ vessels: number; lastmod: string }>;
+}
+
+export async function getSitemapPages(auth: ApiAuth): Promise<SitemapPages> {
+  return (await get<SitemapPages>(auth, "/v1/vessels/sitemap")) ?? { page_size: 0, max_age_s: 0, pages: [] };
+}
+
+/** One page of the sitemap's vessels, from 1. Undefined past the last page. */
+export async function getSitemapVessels(
+  auth: ApiAuth,
+  page: number,
+): Promise<Array<{ mmsi: number; name: string; seen: string }> | undefined> {
+  return (await get<{ vessels: Array<{ mmsi: number; name: string; seen: string }> }>(auth, `/v1/vessels/sitemap?page=${page}`))?.vessels;
+}
+
 export async function getStation(
   auth: ApiAuth,
   id: string,
