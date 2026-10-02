@@ -472,9 +472,14 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 		keys = append(keys, uscgKey{r.MMSI, r.CallSign, r.Name})
 	}
 	cg := p.uscgOf(keys...)
+	fkeys := make([]fdirKey, 0, len(out.Vessels))
+	for _, r := range out.Vessels {
+		fkeys = append(fkeys, fdirKey{r.MMSI, r.CallSign, r.Name})
+	}
+	fd := p.fiskeridirOf(fkeys...)
 	for i, r := range out.Vessels {
 		out.Vessels[i].Particulars, out.Vessels[i].Provenance, out.Vessels[i].Sources =
-			mergeParticulars(wd[r.IMO], cg[r.MMSI])
+			mergeParticulars(wd[r.IMO], cg[r.MMSI], fd[r.MMSI])
 	}
 	for _, m := range in.MMSI {
 		if !known[m] {

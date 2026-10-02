@@ -84,6 +84,12 @@ func main() {
 			if env("USCG", "1") == "1" {
 				go p.runUSCG(env("USCG_URL", psixEndpoint))
 			}
+			if err := p.loadFiskeridirStats(); err != nil {
+				log.Printf("fiskeridir: %v", err)
+			}
+			if env("FISKERIDIR", "1") == "1" {
+				go p.runFiskeridir(env("FISKERIDIR_URL", fdirEndpoint))
+			}
 			go p.runRecordCounts()
 		}
 	}

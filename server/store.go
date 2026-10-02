@@ -109,6 +109,20 @@ CREATE TABLE IF NOT EXISTS uscg (
 	details_at      INTEGER NOT NULL DEFAULT 0   -- unix ms of the last dimensions and tonnage read; 0 before
 );
 CREATE INDEX IF NOT EXISTS uscg_callsign ON uscg (callsign);
+-- Norwegian fishing vessels with a call sign from the Directorate of Fisheries' open register, replaced
+-- weekly (fiskeridir.go)
+CREATE TABLE IF NOT EXISTS fiskeridir (
+	vessel_id     TEXT    PRIMARY KEY,         -- the register's id
+	callsign      TEXT    NOT NULL,
+	name          TEXT    NOT NULL,
+	registration  TEXT    NOT NULL DEFAULT '', -- the registration mark, such as VL0148AV
+	year_built    INTEGER NOT NULL DEFAULT 0,
+	length        REAL    NOT NULL DEFAULT 0,  -- metres
+	beam          REAL    NOT NULL DEFAULT 0,
+	gross_tonnage INTEGER NOT NULL DEFAULT 0,  -- London Convention tonnage only
+	owner         TEXT    NOT NULL DEFAULT ''  -- the owning company; people are dropped at sync
+);
+CREATE INDEX IF NOT EXISTS fiskeridir_callsign ON fiskeridir (callsign);
 `
 
 // storeAddedCols are columns a file created by an earlier build lacks. SQLite has no ADD COLUMN IF NOT
