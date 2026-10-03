@@ -27,6 +27,7 @@ group("scrub", () => {
   it("drops queries and fragments from addresses without a scheme", () => {
     expect(scrub("/v1/vessels?around=60.1,24.9&key=secret: 503")).toBe("/v1/vessels 503");
     expect(scrub("/v1/vessels?foo&around=60.1,24.9 503")).toBe("/v1/vessels 503");
+    expect(scrub(`/v1/x?${"n".repeat(100)}:[0]=secret 503`)).toBe("/v1/x 503");
     expect(scrub("openwaters.io/ais/vessels#map=12/60.17/24.94 failed")).toBe("openwaters.io/ais/vessels failed");
     expect(scrub("https://x.test/a(b?around=60.1,24.9)")).toBe("https://x.test/a(b");
   });
@@ -35,7 +36,7 @@ group("scrub", () => {
     // 32 KB each: tens of milliseconds when linear, seconds for any quadratic rule.
     const n = 16384;
     const start = performance.now();
-    for (const text of ["a.".repeat(n), "ak1." + "a.".repeat(n), "a@" + "b.".repeat(n) + "!", "a://".repeat(n / 2), "key".repeat(n), "token".repeat(n)]) {
+    for (const text of ["a.".repeat(n), "ak1." + "a.".repeat(n), "a@" + "b.".repeat(n) + "!", "a://".repeat(n / 2), "key".repeat(n), "token".repeat(n), "?" + "a".repeat(n * 2), "?a".repeat(n)]) {
       scrub(text);
     }
     expect(performance.now() - start).toBeLessThan(1500);
@@ -56,8 +57,10 @@ group("scrub", () => {
   it("keeps stack frames readable", () => {
     const chrome = "TypeError: x is undefined\n    at render (https://openwaters.io/ais/assets/root-Ab12.js:3:1450)";
     const safari = "render@https://openwaters.io/ais/assets/root-Ab12.js:3:1450\n@https://openwaters.io/ais/assets/entry.js:1:20";
+    const firefox = "#connect@https://openwaters.io/ais/assets/stream-Cd34.js:5:120\n    at Stream.#onclose (https://openwaters.io/ais/assets/stream-Cd34.js:5:300)";
     expect(scrub(chrome)).toBe(chrome);
     expect(scrub(safari)).toBe(safari);
+    expect(scrub(firefox)).toBe(firefox);
   });
 });
 

@@ -38,8 +38,9 @@ export function scrub(text: string): string {
     // The whole URL, then the query cut from it: a pattern that has to find `?` after the
     // scheme backtracks through every later `://` when there is none.
     .replace(/\b[a-z][a-z0-9+.-]{0,15}:\/\/[^\s'"()<>]*/gi, (url) => url.replace(/[?#].*/, ""))
-    // The same for an address with no scheme, such as `/v1/vessels?around=…` or `#map=…`.
-    .replace(/[?#][\w.%[\]-]{1,64}[=&][^\s'"<>]*/g, "")
+    // The same for an address with no scheme, such as `/v1/vessels?around=…` or `#map=…`. The
+    // name cannot hold `?` or `#`, so each scan ends where the next could start: linear.
+    .replace(/[?#][^\s'"<>=&?#]+[=&][^\s'"<>]*/g, "")
     // An aiscast token is `ak1.<claims>.<signature>`; a JWT starts with `eyJ`, base64 for `{"`.
     // No word boundary before either, so one after `%3D` or `_` is caught too.
     .replace(/ak1\.[\w-]+(?:\.[\w-]+)?/g, "[token]")
