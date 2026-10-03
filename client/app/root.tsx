@@ -1,6 +1,6 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect } from "react";
-import { isRouteErrorResponse, Links, Meta, Scripts, ScrollRestoration, useRouteLoaderData } from "react-router";
+import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration, useMatches, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/root";
 import "./app.css";
 import { Shell } from "./components/Shell";
@@ -61,7 +61,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App({ loaderData }: Route.ComponentProps) {
+  const directory = useMatches().some((match) => (match.handle as { directory?: boolean } | undefined)?.directory);
   setPublicApi(loaderData.api);
+  if (directory) return <Outlet />;
   return <Shell initialTheme={loaderData.theme} />;
 }
 

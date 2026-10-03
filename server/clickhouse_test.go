@@ -78,10 +78,14 @@ func TestClickHouseDropsWhatItsQueueCannotHold(t *testing.T) {
 	p.attachClickHouse(&chStore{w: &fakeCH{}})
 	p.vmu.Lock()
 	p.chQueue = make([]trackPoint, maxPending)
+	p.chQueue[maxPending/10].mmsi = 1 // the oldest position that should survive
 	p.vmu.Unlock()
 	ingestAt(p, 257000001, time.Now(), 59.9)
-	if p.ch.dropped.Load() != 1 {
-		t.Errorf("a full queue drops the newest position and counts it: %d", p.ch.dropped.Load())
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	if n := len(p.chQueue); p.ch.dropped.Load() != maxPending/10 || n != maxPending-maxPending/10+1 ||
+		p.chQueue[0].mmsi != 1 || p.chQueue[n-1].mmsi != 257000001 {
+		t.Errorf("a full queue drops its oldest tenth, counted, and keeps the newest: dropped %d, %d queued", p.ch.dropped.Load(), n)
 	}
 }
 
@@ -137,6 +141,33 @@ func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
 	missing := &chConn{conn: conn.conn, db: db + "_missing"}
 	if err := missing.insert(context.Background(), "missing", []trackPoint{early}); !errors.As(err, new(chRefused)) {
 		t.Errorf("an insert into a missing database is a refusal: %v", err)
+	}
+
+	// Reads come back in time order from every table. A one-minute step reads every position, a 15-minute step
+	// the earliest per window, and a day-long step the hourly rollup.
+	now := time.Now()
+	for _, c := range []struct {
+		step time.Duration
+		want []time.Time
+	}{
+		{time.Minute, []time.Time{slot.Add(time.Minute), slot.Add(2 * time.Minute), slot.Add(9 * time.Minute)}},
+		{15 * time.Minute, []time.Time{slot.Add(time.Minute)}},
+		{24 * time.Hour, []time.Time{slot.Add(time.Minute)}},
+	} {
+		points, err := conn.history(context.Background(), 257000001, slot.Add(-time.Hour), slot.Add(time.Hour), c.step, 1000, now)
+		if err != nil {
+			t.Fatal(c.step, err)
+		}
+		var got, want []time.Time
+		for _, pt := range points {
+			got = append(got, pt.ts.UTC())
+		}
+		for _, w := range c.want {
+			want = append(want, w.UTC())
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) || points[0].lat6 != int32(59.89*600000) || points[0].source != "kystverket" {
+			t.Errorf("step %v: %v, want %v", c.step, got, c.want)
+		}
 	}
 
 	ctx := context.Background()
@@ -233,5 +264,187 @@ func TestClickHouseShutdownSendsTheFailedBatchAndTheQueue(t *testing.T) {
 	ingestAt(p, 257000001, time.Now(), 59.91)
 	if err := p.drainClickHouse(); err != nil || p.ch.written.Load() != 2 {
 		t.Errorf("both reach ClickHouse: %v, written %d", err, p.ch.written.Load())
+	}
+}
+
+func TestClickHouseTableForAStep(t *testing.T) {
+	now := time.Now()
+	for _, c := range []struct {
+		age    time.Duration
+		step   time.Duration
+		table  string
+		window time.Duration
+	}{
+		{3 * 24 * time.Hour, 0, "positions", 0},
+		{3 * 24 * time.Hour, 10 * time.Minute, "positions", 0},
+		{3 * 24 * time.Hour, 15 * time.Minute, "positions_15m", 15 * time.Minute},
+		{40 * 24 * time.Hour, time.Minute, "positions_15m", 15 * time.Minute}, // past the raw 30 days
+		{3 * 24 * time.Hour, 2 * time.Hour, "positions_1h", time.Hour},
+		{400 * 24 * time.Hour, 15 * time.Minute, "positions_1h", time.Hour}, // past the 15-minute rollup's 13 months
+		{3 * 24 * time.Hour, 20 * time.Minute, "positions", 0},              // not whole 15-minute windows
+		{3 * 24 * time.Hour, 90 * time.Minute, "positions_15m", 15 * time.Minute},
+	} {
+		if table, window := chTable(now.Add(-c.age), c.step, now); table != c.table || window != c.window {
+			t.Errorf("%v back at %v: %s %v, want %s %v", c.age, c.step, table, window, c.table, c.window)
+		}
+	}
+}
+
+// fakeHistory answers history reads with fixed points, or an error.
+type fakeHistory struct {
+	points []trackPoint
+	err    error
+}
+
+func (f *fakeHistory) history(context.Context, uint32, time.Time, time.Time, time.Duration, int, time.Time) ([]trackPoint, error) {
+	return f.points, f.err
+}
+
+func TestTrackReadsHistoryFromClickHouse(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-3 * 24 * time.Hour).Truncate(time.Hour)
+	ch := &fakeHistory{points: []trackPoint{{mmsi: 257000001, ts: old, lat6: int32(59.5 * 600000), lon6: int32(10.7 * 600000),
+		sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"}}}
+	p := lakePipeline(t, &fakeLake{positions: []map[string]any{lakePosition(old.Add(time.Hour), 59.6)}})
+	p.attachClickHouse(&chStore{w: &fakeCH{}, r: ch})
+	sail(t, p, 257000001, time.Hour)
+	from := now.Add(-4 * 24 * time.Hour).UTC().Format(time.RFC3339)
+
+	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from)
+	if first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0]); tr.Properties.Points != 2 || !first.Equal(old) || tr.Attribution["aishub"] == "" {
+		t.Errorf("history comes from ClickHouse, not the lake: %+v %v", tr.Properties, tr.Attribution)
+	}
+	ch.err = errors.New("clickhouse is down")
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from); tr.Properties.Points != 2 || tr.Attribution["digitraffic"] == "" {
+		t.Errorf("the lake answers while ClickHouse fails: %+v %v", tr.Properties, tr.Attribution)
+	}
+	// Past the lake's own reach, a failing ClickHouse fails the request rather than scan months of the lake.
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+now.Add(-20*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 500 {
+		t.Errorf("20 days with ClickHouse down: %d", w.Code)
+	}
+	ch.err = nil
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+now.Add(-300*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 200 {
+		t.Errorf("with ClickHouse a track reaches most of a year: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestTrackFromClickHouseEndToEnd serves tracks past the window from a real ClickHouse, through the endpoint:
+// raw positions thinned in the query, the limit, and a rollup for a long step.
+func TestTrackFromClickHouseEndToEnd(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(context.Background(), strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	p, _ := trackPipeline(t)
+	p.attachClickHouse(&chStore{w: conn, r: conn})
+	sail(t, p, 257000001, time.Hour)
+
+	// Three days back, a report every minute for two hours.
+	start := time.Now().Add(-3 * 24 * time.Hour).Truncate(time.Hour)
+	var points []trackPoint
+	for i := range 120 {
+		points = append(points, trackPoint{mmsi: 257000001, ts: start.Add(time.Duration(i) * time.Minute), lat6: int32((59 + float64(i)/10000) * 600000),
+			lon6: int32(10.7 * 600000), sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"})
+	}
+	// A second vessel, a report every minute for a whole day.
+	for i := range 1440 {
+		points = append(points, trackPoint{mmsi: 257000002, ts: start.Add(time.Duration(i) * time.Minute), lat6: int32(58 * 600000),
+			lon6: int32(10.7 * 600000), sog10: 0, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"})
+	}
+	if err := conn.insert(context.Background(), "history", points); err != nil {
+		t.Fatal(err)
+	}
+	// The thinning happens in ClickHouse: ten-minute buckets bring 12 rows back, not 120.
+	if got, err := conn.history(context.Background(), 257000001, start, start.Add(2*time.Hour), 10*time.Minute, 1000, time.Now()); err != nil || len(got) != 12 {
+		t.Errorf("thinned in the query: %d rows, %v", len(got), err)
+	}
+	from := start.Add(-time.Hour).UTC().Format(time.RFC3339)
+	to := start.Add(3 * time.Hour).UTC().Format(time.RFC3339)
+	for _, c := range []struct {
+		vessel string
+		query  string
+		points int
+		first  time.Time
+	}{
+		{"257000001", "&interval=10m", 12, start},                              // raw, thinned in the query
+		{"257000001", "&interval=0&limit=50", 50, start.Add(70 * time.Minute)}, // raw, the newest 50
+		{"257000001", "&interval=2h", 1 + int(start.Unix()/3600%2), start},     // the hourly rollup: epoch-aligned 2-hour buckets, so two when the hours start odd
+	} {
+		tr := getTrack(t, p, "/v1/vessels/"+c.vessel+"/track?from="+from+"&to="+to+c.query)
+		if len(tr.Properties.Times) == 0 {
+			t.Errorf("%s: no positions", c.query)
+			continue
+		}
+		first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0])
+		if tr.Properties.Points != c.points || !first.Equal(c.first) || tr.Attribution["aishub"] == "" {
+			t.Errorf("%s: %d points from %v, want %d from %v", c.query, tr.Properties.Points, first, c.points, c.first)
+		}
+	}
+	// A long step over the day reads hourly windows grouped by the step, so the limit counts what the answer
+	// keeps: the newest ten two-hour buckets, and the answer says older ones were left out.
+	dayTo := start.Add(25 * time.Hour).UTC().Format(time.RFC3339)
+	if tr := getTrack(t, p, "/v1/vessels/257000002/track?from="+from+"&to="+dayTo+"&interval=2h&limit=10"); tr.Properties.Points != 10 || !tr.Properties.Truncated {
+		t.Errorf("a rollup at the limit: %d points, truncated %v", tr.Properties.Points, tr.Properties.Truncated)
+	}
+	// Past the raw table's 30 days, a 20-minute step reads 15-minute windows, which do not divide it. Each
+	// position falls in the step bucket of its own time: 15:21, first in its window, opens the 15:20 bucket.
+	old := time.Now().Add(-40 * 24 * time.Hour).Truncate(time.Hour)
+	var sparse []trackPoint
+	for _, m := range []int{5, 21, 31} {
+		sparse = append(sparse, trackPoint{mmsi: 257000003, ts: old.Add(time.Duration(m) * time.Minute), lat6: int32(57 * 600000),
+			lon6: int32(10.7 * 600000), sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"})
+	}
+	if err := conn.insert(context.Background(), "sparse", sparse); err != nil {
+		t.Fatal(err)
+	}
+	oldFrom, oldTo := old.Add(-time.Hour).UTC().Format(time.RFC3339), old.Add(time.Hour).UTC().Format(time.RFC3339)
+	tr := getTrack(t, p, "/v1/vessels/257000003/track?from="+oldFrom+"&to="+oldTo+"&interval=20m")
+	if want := fmt.Sprint([]string{old.Add(5 * time.Minute).UTC().Format(time.RFC3339), old.Add(21 * time.Minute).UTC().Format(time.RFC3339)}); fmt.Sprint(tr.Properties.Times) != want {
+		t.Errorf("a 20-minute step over 15-minute windows: %v, want %v", tr.Properties.Times, want)
+	}
+
+	// Every position past the raw table's 30 days is beyond what ClickHouse keeps: the answer is the
+	// 15-minute rollup's, and it says so rather than claim to be every position.
+	if tr := getTrack(t, p, "/v1/vessels/257000003/track?from="+oldFrom+"&to="+oldTo+"&interval=0"); tr.Properties.Interval != 900 || tr.Properties.Points != 3 {
+		t.Errorf("interval=0 40 days back: interval %d, %d points; want 900 and 3", tr.Properties.Interval, tr.Properties.Points)
+	}
+
+	// A step under a millisecond keeps every position, as the track store does.
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=500us"); tr.Properties.Points != 120 || tr.Properties.Interval != 0 {
+		t.Errorf("a sub-millisecond step: %d points", tr.Properties.Points)
+	}
+}
+
+func TestTrackKeepsTheExtraHistoryRowAsTheSpikeAnchor(t *testing.T) {
+	// ClickHouse returns one row past the limit, the oldest, which judges the next row for impossible speed
+	// before it is dropped. Here the page holds two rows, and the second-oldest is a fix 120 nm off.
+	now := time.Now()
+	t0 := now.Add(-5 * 24 * time.Hour).Truncate(time.Hour)
+	pt := func(at time.Duration, lat float64) trackPoint {
+		return trackPoint{mmsi: 257000001, ts: t0.Add(at), lat6: int32(lat * 600000), lon6: int32(10.7 * 600000),
+			sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"}
+	}
+	p := lakePipeline(t, &fakeLake{})
+	p.attachClickHouse(&chStore{w: &fakeCH{}, r: &fakeHistory{points: []trackPoint{pt(0, 59.0), pt(time.Minute, 61.0), pt(2*time.Minute, 59.001)}}})
+	from := t0.Add(-time.Hour).UTC().Format(time.RFC3339)
+	to := t0.Add(time.Hour).UTC().Format(time.RFC3339)
+	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=0&limit=2")
+	want := fmt.Sprint([]string{t0.UTC().Format(time.RFC3339), t0.Add(2 * time.Minute).UTC().Format(time.RFC3339)})
+	var got []string
+	for _, ts := range tr.Properties.Times {
+		parsed, _ := time.Parse(time.RFC3339, ts)
+		got = append(got, parsed.UTC().Format(time.RFC3339))
+	}
+	if fmt.Sprint(got) != want {
+		t.Fatalf("the spike is judged against the row past the limit: %v, want %v", got, want)
+	}
+	if !tr.Properties.Truncated {
+		t.Error("older positions were left out, and the answer should say so")
 	}
 }

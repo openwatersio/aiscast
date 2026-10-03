@@ -24,6 +24,7 @@ export const BROWSE: Destination[] = [
  * the website. The header's Contribute button comes after them.
  */
 export const SITE: Array<{ label: string; href: string }> = [
+  { label: "Explore", href: "/ais/explore" },
   { label: "Developers", href: DEVELOPERS },
   { label: "About", href: ABOUT },
 ];
