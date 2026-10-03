@@ -10,10 +10,33 @@
 
 # TLS for the hub. Let's Encrypt HTTP-01 works through the Cloudflare proxy; ACME retries until DNS points here.
 ais.openwaters.io {
+	# Every request with the client's full address, kept under two weeks, for finding who is behind load
+	# while it matters. aiscast's own access log keeps only the network and a keyed hash; the request id joins
+	# a line there to its line here. No request header is written, and the URI loses the usual token
+	# parameters, any token in it, and around and bbox, since a search from the visitor's position or the
+	# view would place them; aiscast's log keeps both rounded to 0.1 degrees. The file rolls daily, so it is
+	# never more than a day old, and a rolled file is deleted after 12 days.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100MiB
+			roll_interval 24h
+			roll_keep 500
+			roll_keep_for 288h
+		}
+		format filter {
+			# the usual token parameter names, around and bbox, and a token anywhere in the URI, in the usual encodings
+			request>uri regexp "(?i)([?&](?:key|token|api_?key|access_token|around|bbox)=)[^&]*|(?:a|%61)(?:k|%6b)(?:1|%31)(?:\.|%2e)[^&/?]*" "${1}REDACTED"
+			# every request header: a token can arrive under any header name, and aiscast's log keeps the user
+			# agent and origin with tokens redacted
+			request>headers delete
+		}
+	}
+	log_append request_id {http.request.uuid}
 	@metrics path /metrics
 	respond @metrics 404
 	encode zstd gzip
 	reverse_proxy localhost:8080 {
+		header_up X-Request-Id {http.request.uuid}
 		# Stalled client blocks the reload, so close on a timer after a reload
 		stream_close_delay 30s
 	}

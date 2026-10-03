@@ -26,7 +26,7 @@ fi
 echo 'deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main' >/etc/apt/sources.list.d/grafana.list
 apt-get update -q
 # confold: rootfs/ owns config files such as /etc/alloy/config.alloy, so a package upgrade must not stop to ask.
-apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy curl fail2ban unattended-upgrades
+apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy curl fail2ban jq unattended-upgrades
 
 id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
 
@@ -72,7 +72,10 @@ systemctl daemon-reload
 systemctl restart systemd-journald
 systemctl enable aiscast caddy fail2ban
 systemctl reload-or-restart fail2ban
-caddy validate --config /etc/caddy/Caddyfile
+install -d -o caddy -g caddy /var/log/caddy
+chown -h caddy:caddy /var/log/caddy/access.log 2>/dev/null || true # -h: never follow a link the caddy user planted
+# as root, validate would create the access log root-owned, which Caddy then cannot open
+runuser -u caddy -- env HOME=/var/lib/caddy caddy validate --config /etc/caddy/Caddyfile
 # The Caddyfile's stream_close_delay keeps the reload from blocking on open WebSockets; the
 # restart is the bounded fallback if it hangs anyway.
 systemctl reload-or-restart caddy || systemctl restart caddy
@@ -99,7 +102,8 @@ systemctl restart aiscast
 sleep 3
 systemctl is-active aiscast
 systemctl is-active caddy
-curl -fsS localhost:8080/health
+# A boot that loads a large vessel record can take longer than the sleep before it listens.
+curl -fsS --retry 20 --retry-connrefused --retry-delay 1 localhost:8080/health
 if [ -n "$alloy" ]; then
 	systemctl is-active alloy
 fi

@@ -145,8 +145,11 @@ func collectReaders(dir string, start, end time.Time) ([]*rawReader, error) {
 			return err
 		}
 		if d.IsDir() {
-			if filepath.ToSlash(rel) == normPrefix {
+			switch filepath.ToSlash(rel) {
+			case normPrefix:
 				return filepath.SkipDir // the normalized stream shares the bucket; it is replay's output, not its input
+			case accessPrefix:
+				return filepath.SkipDir // so does the access log, in hours shaped like raw ones
 			}
 			return nil
 		}

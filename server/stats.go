@@ -226,7 +226,7 @@ func (p *Pipeline) vesselTotal(active int) int {
 }
 
 // countRequests wraps the mux so every request is counted once, whatever handler serves it: API requests in
-// the /v1/stats usage rings, and all of them by route and status in /metrics.
+// the /v1/stats usage rings, all of them by route and status in /metrics, and each in the access log.
 func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -237,12 +237,16 @@ func (p *Pipeline) countRequests(h http.Handler) http.Handler {
 			}
 		}
 		start, sw := time.Now(), &statusWriter{ResponseWriter: w}
+		r, note := withAccessNote(r)
 		h.ServeHTTP(sw, r)
+		end := time.Now()
 		route := r.Pattern // set by the mux as it routes; empty for a path no route matched
 		if route == "" {
 			route = "other"
 		}
-		p.requests.observe(route, cmp.Or(sw.status, http.StatusOK), time.Since(start))
+		status := cmp.Or(sw.status, http.StatusOK)
+		p.requests.observe(route, status, end.Sub(start))
+		p.logAccess(r, note, route, status, sw.bytes, start, end)
 	})
 }
 

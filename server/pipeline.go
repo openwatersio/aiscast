@@ -63,9 +63,12 @@ type subscriber struct {
 }
 
 type Pipeline struct {
-	arch  *archive
-	norm  *archive // normalized stream: accepted events, reception copies, weather; no-op unless configured
-	codec *ais.Codec
+	arch *archive
+	norm *archive // normalized stream: accepted events, reception copies, weather; no-op unless configured
+	// access log: a line per HTTP request (access.go); no-op unless configured
+	access        *archive
+	accessDropped atomic.Int64 // lines dropped because the writer fell behind
+	codec         *ais.Codec
 
 	mu      sync.Mutex         // ponytail: one lock around parse+dedupe; shard per station if it shows up in profiles
 	encoder *aisnmea.NMEACodec // for synthesized events; has its own sequence counter
@@ -139,7 +142,7 @@ func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
 	p := &Pipeline{
-		arch: arch, norm: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
+		arch: arch, norm: newArchive("", nil), access: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]fragment{},
@@ -212,15 +215,19 @@ func (p *Pipeline) release() {
 	p.intake.RUnlock()
 }
 
-// closeArchives stops intake, then drains both archives. Setting closing turns away receptions not
+// closeArchives stops intake, then drains the archives. Setting closing turns away receptions not
 // yet started; the write lock waits out those in flight; only then do the writers drain, so raw and
 // normalized hold the same receptions and replay regenerates the stream across a restart. A
-// producer turned away is dropped; the process is exiting.
+// producer turned away is dropped; the process is exiting. The access log answers to no reception and
+// drains beside the other two, so its upload bound does not add to theirs inside TimeoutStopSec.
 func (p *Pipeline) closeArchives() {
 	p.closing.Store(true)
+	access := make(chan struct{})
+	go func() { p.access.shutdown(); close(access) }()
 	p.intake.Lock()
 	p.arch.shutdown()
 	p.norm.shutdown()
+	<-access
 }
 
 // fragment is one sentence of a multipart message awaiting the rest.
