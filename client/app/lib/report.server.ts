@@ -83,8 +83,10 @@ async function readCapped(request: Request, max: number): Promise<string | undef
  */
 export async function handleReport(request: Request, limit = allow): Promise<Response> {
   if (request.method !== "POST") return new Response(null, { status: 405, headers: { allow: "POST" } });
-  // Browsers say where a request came from; the app's own beacon is same-origin.
-  if (request.headers.get("sec-fetch-site") === "cross-site") return new Response(null, { status: 403 });
+  // A browser names the page a POST comes from, and the app's beacon is same-origin, so a
+  // request with no Origin or another one is not the app's. One that forges it is held to the
+  // rate limit and scrubbed like any other.
+  if (request.headers.get("origin") !== new URL(request.url).origin) return new Response(null, { status: 403 });
   const text = await readCapped(request, MAX_BODY);
   if (text === undefined) return new Response(null, { status: 413 });
 

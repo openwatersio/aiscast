@@ -146,7 +146,11 @@ group("createRateLimit", () => {
 group("handleReport", () => {
   const always = () => true;
   const post = (body: string, headers: Record<string, string> = {}) =>
-    new Request("https://openwaters.io/ais/errors", { method: "POST", body, headers });
+    new Request("https://openwaters.io/ais/errors", {
+      method: "POST",
+      body,
+      headers: { origin: "https://openwaters.io", ...headers },
+    });
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -193,7 +197,9 @@ group("handleReport", () => {
     expect((await handleReport(post(JSON.stringify({ kind: "error" })), always)).status).toBe(400);
     expect((await handleReport(post(JSON.stringify({ kind: "error", message: "?a=1" })), always)).status).toBe(400);
     expect((await handleReport(post("x".repeat(20_000)), always)).status).toBe(413);
-    expect((await handleReport(post("{}", { "sec-fetch-site": "cross-site" }), always)).status).toBe(403);
+    expect((await handleReport(post("{}", { origin: "https://example.com" }), always)).status).toBe(403);
+    const noOrigin = new Request("https://openwaters.io/ais/errors", { method: "POST", body: "{}" });
+    expect((await handleReport(noOrigin, always)).status).toBe(403);
     expect(console.error).not.toHaveBeenCalled();
   });
 
@@ -205,7 +211,12 @@ group("handleReport", () => {
         controller.enqueue(new Uint8Array(1024));
       },
     });
-    const req = new Request("https://openwaters.io/ais/errors", { method: "POST", body, duplex: "half" } as RequestInit);
+    const req = new Request("https://openwaters.io/ais/errors", {
+      method: "POST",
+      body,
+      headers: { origin: "https://openwaters.io" },
+      duplex: "half",
+    } as RequestInit);
     expect((await handleReport(req, always)).status).toBe(413);
     expect(pulled).toBeLessThan(40);
   });
