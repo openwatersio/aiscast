@@ -122,8 +122,7 @@ func (m *requestMetrics) observe(route string, status int, d time.Duration) {
 	h.sum += s
 }
 
-// statusWriter records the status a handler sends and the body bytes it writes. Unwrap keeps WebSocket
-// hijacking and SSE flushing working.
+// statusWriter: Unwrap keeps WebSocket hijacking and SSE flushing working.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -439,8 +438,7 @@ func writeProcessMetrics(w io.Writer) {
 	writeRuntimeMetrics(w)
 }
 
-// runtimeMetrics are the garbage collector's costs, from runtime/metrics: how much CPU it takes and what
-// drives it, the bytes allocated and the heap it has to mark.
+// runtimeMetrics show the garbage collector's cost, which the record mirror adds to.
 var runtimeMetrics = []struct{ name, typ, help, key string }{
 	{"go_gc_cpu_seconds_total", "counter", "CPU time the garbage collector used, estimated by the runtime", "/cpu/classes/gc/total:cpu-seconds"},
 	{"go_gc_cycles_total", "counter", "completed garbage collection cycles", "/gc/cycles/total:gc-cycles"},

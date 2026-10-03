@@ -139,8 +139,7 @@ func (v *vessel) facts() *mirrorFacts {
 		unixMs(v.Seen), unixMs(v.PosAt), unixMs(v.TrustedAt), unixMs(v.StaticAt), v.ETA, v.Dim}
 }
 
-// The mirror files what the record holds after each write, by the record's merge rules: a vessel that moves
-// changes cell, and one back from the sweep without a position keeps its stored one.
+// The mirror follows the record's merge rules: a move changes cell, and a blank return keeps the stored position.
 func TestMirrorFollowsTheRecord(t *testing.T) {
 	p := storePipeline(t)
 	now := time.Now().Truncate(time.Millisecond)
@@ -188,8 +187,7 @@ func TestMirrorFollowsTheRecord(t *testing.T) {
 	}
 }
 
-// Vessels heard in the same millisecond come back lower MMSI first, and a query past SQLite's term limit is
-// refused as SQLite refused it.
+// Ties come back lower MMSI first, and too many terms are refused as SQLite refused them.
 func TestMirrorTiesAndLimits(t *testing.T) {
 	p := storePipeline(t)
 	seen := time.Now().Truncate(time.Millisecond)
@@ -211,8 +209,7 @@ func TestMirrorTiesAndLimits(t *testing.T) {
 	}
 }
 
-// A refresh that fails is retried with the next one, so a vessel that goes quiet after a failed read-back
-// is not left stale.
+// A failed refresh is retried with the next one.
 func TestMirrorRetriesAFailedRefresh(t *testing.T) {
 	p := storePipeline(t)
 	broken, err := openStore(t.TempDir() + "/broken.db")

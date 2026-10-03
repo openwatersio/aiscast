@@ -440,8 +440,7 @@ func TestLookupPrefersTheNewerState(t *testing.T) {
 	}
 }
 
-// A record that fails is an error, never an empty answer. Lookups by MMSI answer from the mirror, which holds
-// every row, so only the text search SQLite serves can fail this way.
+// A failing record is an error, never an empty answer; only text search reads SQLite.
 func TestMCPRecordFailureIsAnError(t *testing.T) {
 	p := storePipeline(t)
 	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 10*time.Second)

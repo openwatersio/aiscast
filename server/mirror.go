@@ -1,16 +1,6 @@
 package main
 
-// The record mirror: every row of the vessel record, in memory. Lookups by MMSI or IMO, areas, nearest
-// rankings, counts, and the vector tiles answer from it, so no request scans SQLite or holds a record
-// connection while it does. SQLite stays the truth and answers what the mirror does not index: name and MMSI
-// prefix search, substring search, the flag filter that goes with it, and ordering by name.
-//
-// The mirror loads when the record opens. After every write to the record (the once-a-second flush, each
-// page of a history import) the rows just written are read back and filed again, so the mirror follows the
-// record's own merge rules at most a write behind. Refreshes run one at a time, and each reads the rows as
-// they are when it runs, so a later refresh never files an older row.
-//
-// A filed vessel is never modified: a refresh files a new one in its place, and readers get copies.
+// The record mirror answers every record read but text search from memory; filed vessels are replaced, never changed.
 
 import (
 	"cmp"
@@ -48,9 +38,7 @@ func loadMirror(s *store) (*recordMirror, error) {
 	return m, nil
 }
 
-// refresh files again the rows of mmsis, as the record holds them now, and those of any earlier refresh
-// that failed: a vessel whose read-back failed is retried with the next write, not left stale until it
-// is written again. Every chunk is tried; the errors come back together.
+// refresh retries earlier failures too, so a vessel that goes quiet is not left stale.
 func (m *recordMirror) refresh(s *store, mmsis []uint32) error {
 	m.refreshMu.Lock()
 	defer m.refreshMu.Unlock()
@@ -177,9 +165,7 @@ func (q *mirrorQuery) match(mmsi uint32, v *vessel) bool {
 	return true
 }
 
-// each calls fn for every entry q matches, under the read lock: fn must not keep or modify v. It visits the
-// listed MMSIs or IMO numbers when q has them, the cells its boxes cover when it has boxes, and every
-// vessel otherwise.
+// each runs fn under the read lock: fn must not keep or modify the vessel.
 func (m *recordMirror) each(q *mirrorQuery, fn func(mmsi uint32, e *mirrorEntry)) {
 	visit := func(mmsi uint32, e *mirrorEntry) {
 		if q.match(mmsi, e.v) {
@@ -242,8 +228,7 @@ func (m *recordMirror) each(q *mirrorQuery, fn func(mmsi uint32, e *mirrorEntry)
 	}
 }
 
-// find is store.find answered from memory: most recently heard first, the lower MMSI first on a tie, up to
-// q's limit. Each record holds a copy of the filed vessel.
+// find breaks ties by lower MMSI and returns copies of the filed vessels.
 func (m *recordMirror) find(q recordQuery) ([]record, error) {
 	mq, err := newMirrorQuery(q)
 	if err != nil {

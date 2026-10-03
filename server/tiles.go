@@ -294,14 +294,7 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 	return l.tile()
 }
 
-// tileRecords reads a tile's records. Past tileCap vessels a tile keeps the newest in each cell, and a
-// low-zoom tile matches a week of vessels across its area, so the record mirror is walked for where and when
-// each was last heard, and only the newest in each cell is copied out. When no more match than a tile
-// holds, nothing is thinned and every match is read. The record holds only vessels unheard for 30 minutes and
-// the cache only those heard since, so a cached vessel always wins its cell, and the newest record vessel in
-// each cell is all the thinning can keep. The one exception lasts a flush: a vessel heard again after 30
-// minutes is cached while its row is still old, and if it was a cell's winner and has moved on, that cell
-// shows no record vessel until the next build.
+// tileRecords copies out only each cell's newest record vessel, since a tile past tileCap keeps no more.
 func (p *Pipeline) tileRecords(q recordQuery, z, x, y int) ([]record, error) {
 	if !p.store.mirror.answers(q) {
 		return p.store.find(q)

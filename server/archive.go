@@ -83,17 +83,14 @@ type archive struct {
 	keyFn   func(source string, hour time.Time) string // nil = per-source license-prefixed layout
 	bare    bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
 	keepFor time.Duration                              // with no bucket, the sweep deletes closed hours older than this; 0 keeps them
-	// keepUnder confines the sweep, uploads and deletions alike, to one directory under dir, so a dir set
-	// over another archive's never touches that archive's hours.
+	// keepUnder keeps the sweep out of another archive's hours when dir covers them.
 	keepUnder string
 	ch        chan Reception
 	done      chan chan struct{} // shutdown request; replied to when files are closed and uploaded
 	uploads   sync.WaitGroup
 	stopped   sync.Once // shutdown runs once; the writer is gone after the first
 
-	// offersClosed turns offer away once shutdown begins, so a record offered after the last drain is
-	// refused and counted rather than left in a queue nothing reads. offerMu keeps an offer that passed the
-	// check from landing after the drain.
+	// offersClosed refuses offers after the last drain, under offerMu, so none is left in a queue nothing reads.
 	offerMu      sync.RWMutex
 	offersClosed bool
 
@@ -141,8 +138,7 @@ func (a *archive) write(rx Reception) {
 	a.ch <- rx
 }
 
-// offer is write without the wait: false when the queue is full or the archive has shut down. For records
-// worth less than holding up whoever produced them.
+// offer is write for records not worth holding up their producer: false when full or shut down.
 func (a *archive) offer(rx Reception) bool {
 	if a.dir == "" {
 		return true
@@ -380,8 +376,7 @@ func (a *archive) isHeld(path string) bool {
 	return a.holds[path] > 0
 }
 
-// expire deletes the closed hours older than keepFor, for an archive with no bucket whose records must not
-// outlive their retention on disk.
+// expire enforces keepFor on disk for an archive with no bucket.
 func (a *archive) expire() {
 	if a.keepFor <= 0 || a.keepUnder == "" {
 		return

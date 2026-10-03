@@ -290,8 +290,7 @@ func (s *store) upsert(rows []record) error {
 	return nil
 }
 
-// refreshMirror files again the n rows just written. A failure leaves those vessels a write behind in the
-// mirror, until their next write, and never fails the write itself.
+// refreshMirror never fails the write: the mirror retries with the next one.
 func (s *store) refreshMirror(n int, mmsi func(int) uint32) {
 	mmsis := make([]uint32, n)
 	for i := range mmsis {

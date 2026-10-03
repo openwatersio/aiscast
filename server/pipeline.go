@@ -213,15 +213,14 @@ func (p *Pipeline) release() {
 	p.intake.RUnlock()
 }
 
-// closeArchives stops intake, then drains the archives. Setting closing turns away receptions not
+// closeArchives stops intake, then drains both archives. Setting closing turns away receptions not
 // yet started; the write lock waits out those in flight; only then do the writers drain, so raw and
 // normalized hold the same receptions and replay regenerates the stream across a restart. A
-// producer turned away is dropped; the process is exiting. The access log answers to no reception and
-// drains beside the other two, so its upload bound does not add to theirs inside TimeoutStopSec.
+// producer turned away is dropped; the process is exiting.
 func (p *Pipeline) closeArchives() {
 	p.closing.Store(true)
 	access := make(chan struct{})
-	go func() { p.access.shutdown(); close(access) }()
+	go func() { p.access.shutdown(); close(access) }() // in parallel, so its upload bound fits in TimeoutStopSec beside theirs
 	p.intake.Lock()
 	p.arch.shutdown()
 	p.norm.shutdown()
