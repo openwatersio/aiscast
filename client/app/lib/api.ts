@@ -264,22 +264,9 @@ export function trackPath(mmsi: number, q: { from?: number; to?: number; format?
   return `/v1/vessels/${mmsi}/track?${params}`;
 }
 
-/**
- * Where a vessel has been. The server thins the range to fit the token's limit. It clamps a
- * range that overlaps the last 48 hours to what the token reaches, and answers "forbidden"
- * for one wholly before the token's reach.
- */
-export async function getTrack(
-  auth: ApiAuth,
-  mmsi: number,
-  range: { from: number; to: number },
-): Promise<Track | "forbidden" | undefined> {
-  try {
-    return await get<Track>(auth, trackPath(mmsi, range));
-  } catch (e) {
-    if (e instanceof ApiUnavailable) return e.status === 403 ? "forbidden" : undefined;
-    throw e;
-  }
+/** Where a vessel has been. The server thins the range to fit the token's limit. */
+export async function getTrack(auth: ApiAuth, mmsi: number, range: { from: number; to: number }): Promise<Track | undefined> {
+  return soft(get<Track>(auth, trackPath(mmsi, range)));
 }
 
 export async function getStations(auth: ApiAuth): Promise<Station[] | undefined> {
