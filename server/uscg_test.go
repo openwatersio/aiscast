@@ -476,7 +476,10 @@ func TestUSCGQueryPlansUseIndexes(t *testing.T) {
 			if err := rows.Scan(&id, &parent, &aux, &detail); err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(detail, "SCAN u") && !strings.Contains(detail, "INDEX") {
+			// Any scan of the uscg side is rejected, covering-index scans included: a lookup that
+			// walks the whole index is still linear per probe, and the join that went quadratic
+			// planned exactly that way.
+			if strings.Contains(detail, "SCAN u") {
 				t.Errorf("plan scans the uscg table: %s", detail)
 			}
 		}
