@@ -221,26 +221,23 @@ func TestTrackTierCap(t *testing.T) {
 	}
 }
 
-func TestTrackHistoryIsATier(t *testing.T) {
-	p, _ := trackPipeline(t)
-	sail(t, p, 257000001, time.Hour)
+func TestTrackHistoryIsOpenToEveryTier(t *testing.T) {
+	p, ch := trackPipeline(t)
+	old := time.Now().Add(-3 * 24 * time.Hour).Truncate(time.Second)
+	v := newVessel()
+	v.Lat, v.Lon = 59.9, 10.7
+	ch.insert(context.Background(), "", []trackPoint{newTrackPoint(257000001, old, v, "aishub")})
 	allowAnon = false
 	t.Cleanup(func() { allowAnon = true })
-	from := time.Now().Add(-3 * 24 * time.Hour).UTC().Format(time.RFC3339)
-	old := time.Now().Add(-2*24*time.Hour - time.Hour).UTC().Format(time.RFC3339)
-	if w := get(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+old); w.Code != 403 || !strings.Contains(w.Body.String(), "feeder") {
-		t.Errorf("anonymous past the window: %d %s", w.Code, w.Body)
-	}
-	// A range that overlaps the window is clamped to it, as a client asking for 48 hours a moment early does.
-	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from)
-	if at, _ := time.Parse(time.RFC3339, tr.Properties.From); tr.Properties.Points == 0 || time.Since(at) > trackWindow+time.Minute {
-		t.Errorf("anonymous overlapping the window: %+v", tr.Properties)
+	from := old.Add(-time.Hour).UTC().Format(time.RFC3339)
+	to := old.Add(time.Hour).UTC().Format(time.RFC3339)
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to); tr.Properties.Points != 1 {
+		t.Errorf("anonymous three days back: %+v", tr.Properties)
 	}
 	var out mcpTrack
-	if msg := mcpCall(t, mcpClient(t, p), "get_vessel_track", map[string]any{"mmsi": 257000001, "from": from, "to": old}, &out); !strings.Contains(msg, "feeder") {
-		t.Errorf("MCP past the window: %q", msg)
+	if msg := mcpCall(t, mcpClient(t, p), "get_vessel_track", map[string]any{"mmsi": 257000001, "from": from, "to": to}, &out); msg != "" || len(out.Positions) != 1 {
+		t.Errorf("MCP three days back: %q %d", msg, len(out.Positions))
 	}
-	allowAnon = true
 	long := time.Now().Add(-400 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	if w := get(t, p, "/v1/vessels/257000001/track?from="+long); w.Code != 400 {
 		t.Errorf("more than a year: %d", w.Code)
@@ -280,7 +277,7 @@ func TestMCPGetVesselTrack(t *testing.T) {
 	}
 }
 
-func TestTrackRangeOutsideTheWindow(t *testing.T) {
+func TestTrackRangeWithNoPositions(t *testing.T) {
 	p, _ := trackPipeline(t)
 	sail(t, p, 257000001, time.Hour)
 	base := "/v1/vessels/257000001/track"
