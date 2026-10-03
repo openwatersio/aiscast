@@ -365,11 +365,8 @@ func (p *Pipeline) syncFCCIfDue(now time.Time, endpoint string) bool {
 	}
 	p.fcc.ships.Store(int64(len(ships)))
 	p.fcc.lastSuccess.Store(now.Unix())
+	// The PSIX listing re-runs when its stamp is older than this sync's (syncUSCGIfDue), so a fresh
+	// license set makes ident-only rows joinable within the hour.
 	log.Printf("fcc: stored %d active ship licenses with an MMSI", len(ships))
-	// A fresh license set can make ident-only PSIX rows joinable, so the listing re-runs at the next
-	// hourly check rather than serving nothing for those vessels until its own week is up.
-	if _, err := p.store.db.Exec(`DELETE FROM meta WHERE key = 'uscg_sync'`); err != nil {
-		log.Printf("fcc: %v", err)
-	}
 	return true
 }

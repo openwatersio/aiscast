@@ -327,6 +327,17 @@ func TestUSCGSync(t *testing.T) {
 			t.Errorf("/metrics lacks %q", want)
 		}
 	}
+
+	// A license sync newer than the listing re-runs it early, even within the week.
+	if err := p.store.replaceFCC(map[uint32]*fccShip{
+		368168720: {MMSI: 368168720, USI: 1, CallSign: "WDQ5444", Name: "DOCKSIDE DREAM", Official: "1307977"},
+		366999999: {MMSI: 366999999, USI: 2, CallSign: "WDX0000", Name: "VA08BP", Official: "VA1208BP"},
+	}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !p.syncUSCGIfDue(now.Add(2*time.Minute), url) {
+		t.Error("a newer license sync did not re-run the listing")
+	}
 }
 
 func TestReplaceUSCGListing(t *testing.T) {

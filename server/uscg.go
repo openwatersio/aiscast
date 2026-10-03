@@ -727,7 +727,18 @@ func (p *Pipeline) syncUSCGIfDue(now time.Time, endpoint string) bool {
 		return false
 	}
 	if t, err := time.Parse(time.RFC3339, last); err == nil && now.Sub(t) < psixEvery {
-		return false
+		// A license sync newer than the listing can make more ident-only rows joinable, so the listing
+		// re-runs early. Comparing stamps, rather than one sync clearing the other's, stays correct
+		// when the license sync lands while a listing is already in flight: the fresh listing writes a
+		// newer stamp, and the comparison still fires at the next check.
+		fccLast, ferr := p.store.meta("fcc_sync")
+		if ferr != nil {
+			log.Printf("uscg: %v", ferr)
+			return false
+		}
+		if f, perr := time.Parse(time.RFC3339, fccLast); perr != nil || !f.After(t) {
+			return false
+		}
 	}
 	p.uscg.runs.Add(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
