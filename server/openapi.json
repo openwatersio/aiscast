@@ -170,7 +170,7 @@
         "operationId": "getVesselTrack",
         "tags": ["Vessels and stations"],
         "summary": "Where a vessel has been",
-        "description": "The positions the network heard from one vessel, as a GeoJSON Feature or a GPX 1.1 track. Anonymous and personal requests reach the last 48 hours; feeder and commercial tokens reach history before that, up to 366 days per request, and for the other tiers a range that overlaps the last 48 hours is clamped to them, while one wholly before them is a `403`. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. When more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
+        "description": "The positions the network heard from one vessel, as a GeoJSON Feature or a GPX 1.1 track. A request covers up to 366 days. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. When more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
         "security": [{}, { "token": [] }],
         "parameters": [
           { "name": "mmsi", "in": "path", "required": true, "description": "The vessel's MMSI.", "schema": { "type": "integer" }, "example": 368168720 },
@@ -222,10 +222,6 @@
           "404": {
             "description": "No vessel with this MMSI has been heard.",
             "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
-          },
-          "403": {
-            "description": "The range ends more than 48 hours ago and the token's tier does not reach the archive.",
-            "content": { "text/plain": { "schema": { "type": "string" } } }
           },
           "429": { "$ref": "#/components/responses/RateLimited" },
           "503": {

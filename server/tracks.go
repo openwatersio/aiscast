@@ -1,15 +1,14 @@
 package main
 
 // Track positions: every position report the pipeline accepts goes to ClickHouse (clickhouse.go), which
-// answers every track. A track reaches back 48 hours for anonymous and personal tokens and a year for the
-// rest. Nothing attaches ClickHouse in replay, so replay never writes there.
+// answers every track, up to a year per request. Nothing attaches ClickHouse in replay, so replay never writes there.
 
 import (
 	"math"
 	"time"
 )
 
-// trackWindow is how far back an anonymous or personal track reaches.
+// trackWindow is the recent stretch chTable reads from the raw positions table, whatever the step.
 const trackWindow = 48 * time.Hour
 
 // maxPending bounds the positions held for the ClickHouse writer, about eight minutes of traffic at the 600 or
