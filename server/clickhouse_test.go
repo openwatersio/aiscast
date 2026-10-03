@@ -409,8 +409,14 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 		t.Errorf("a 20-minute step over 15-minute windows: %v, want %v", tr.Properties.Times, want)
 	}
 
+	// Every position past the raw table's 30 days is beyond what ClickHouse keeps: the answer is the
+	// 15-minute rollup's, and it says so rather than claim to be every position.
+	if tr := getTrack(t, p, "/v1/vessels/257000003/track?from="+oldFrom+"&to="+oldTo+"&interval=0"); tr.Properties.Interval != 900 || tr.Properties.Points != 3 {
+		t.Errorf("interval=0 40 days back: interval %d, %d points; want 900 and 3", tr.Properties.Interval, tr.Properties.Points)
+	}
+
 	// A step under a millisecond keeps every position, as the track store does.
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=500us"); tr.Properties.Points != 120 {
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=500us"); tr.Properties.Points != 120 || tr.Properties.Interval != 0 {
 		t.Errorf("a sub-millisecond step: %d points", tr.Properties.Points)
 	}
 }
