@@ -108,10 +108,12 @@ type fccStats struct {
 	lastSuccess           atomic.Int64 // unix seconds
 }
 
-// fetchFCC downloads the weekly zip to a temporary file and reads two of its tables: HD for each
+// fetchFCC downloads the weekly zip to a temporary file in dir and reads two of its tables: HD for each
 // license's status and SH for the ship. Only an active license with an MMSI is kept; where two licenses
-// name one MMSI, the newest wins.
-func fetchFCC(ctx context.Context, endpoint string) (map[uint32]*fccShip, error) {
+// name one MMSI, the newest wins. dir is the vessel record's directory in production: the service runs
+// under ProtectSystem=strict, where /tmp is read-only and the record's directory is the one writable
+// place. Empty falls back to the system temp directory.
+func fetchFCC(ctx context.Context, endpoint, dir string) (map[uint32]*fccShip, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -127,12 +129,16 @@ func fetchFCC(ctx context.Context, endpoint string) (map[uint32]*fccShip, error)
 	}
 	// A crash mid-sync leaves the previous download behind, and the zip holds licensee names this
 	// source promises never to keep, so stale copies go first.
-	if stale, _ := filepath.Glob(filepath.Join(os.TempDir(), "fcc-ship-*.zip")); stale != nil {
+	staleDir := dir
+	if staleDir == "" {
+		staleDir = os.TempDir()
+	}
+	if stale, _ := filepath.Glob(filepath.Join(staleDir, "fcc-ship-*.zip")); stale != nil {
 		for _, f := range stale {
 			os.Remove(f)
 		}
 	}
-	tmp, err := os.CreateTemp("", "fcc-ship-*.zip")
+	tmp, err := os.CreateTemp(dir, "fcc-ship-*.zip")
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +331,11 @@ func (p *Pipeline) syncFCCIfDue(now time.Time, endpoint string) bool {
 	p.fcc.runs.Add(1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
-	ships, err := fetchFCC(ctx, endpoint)
+	dir := ""
+	if p.store != nil {
+		dir = filepath.Dir(p.store.path)
+	}
+	ships, err := fetchFCC(ctx, endpoint, dir)
 	if err == nil {
 		err = p.store.replaceFCC(ships, now)
 	}
