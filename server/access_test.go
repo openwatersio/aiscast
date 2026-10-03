@@ -99,8 +99,7 @@ func TestAccessLog(t *testing.T) {
 	}
 }
 
-// A line never places a visitor: a search from their position, the view, and a deep tile are all logged
-// to about 10 km.
+// A search from the visitor's position, the view, and a deep tile are all logged to about 10 km.
 func TestAccessLogCoarsensLocations(t *testing.T) {
 	p := testPipeline(t)
 	dir := t.TempDir()
@@ -139,8 +138,7 @@ func TestAccessLogCoarsensLocations(t *testing.T) {
 	}
 }
 
-// No token reaches the log under another parameter name, in a path, or in a header, and a tile URL that
-// fails to route (an extension, junk) is logged coarse or not at all.
+// No token or precise tile reaches the log by another parameter name, a path, a header, or an unrouted tile URL.
 func TestAccessLogLeaksNothing(t *testing.T) {
 	p := testPipeline(t)
 	dir := t.TempDir()

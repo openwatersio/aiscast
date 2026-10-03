@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"slices"
 	"sort"
 	"strconv"
@@ -121,8 +122,7 @@ func (m *requestMetrics) observe(route string, status int, d time.Duration) {
 	h.sum += s
 }
 
-// statusWriter records the status a handler sends and the body bytes it writes. Unwrap keeps WebSocket
-// hijacking and SSE flushing working.
+// statusWriter: Unwrap keeps WebSocket hijacking and SSE flushing working.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -220,6 +220,10 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_store_rows_written_total %d\n", st.rowsWritten.Load())
 		metricHead(w, "aiscast_store_bytes", "gauge", "size of the record database and its write-ahead log")
 		fmt.Fprintf(w, "aiscast_store_bytes %d\n", st.bytes())
+		metricHead(w, "aiscast_store_mirror_vessels", "gauge", "vessels in the in-memory mirror of the record")
+		fmt.Fprintf(w, "aiscast_store_mirror_vessels %d\n", st.mirror.len())
+		metricHead(w, "aiscast_store_mirror_failures_total", "counter", "mirror refreshes that failed after a write; their vessels are read back again with the next write")
+		fmt.Fprintf(w, "aiscast_store_mirror_failures_total %d\n", st.mirrorFailures.Load())
 	}
 	tracksUp := 0
 	if p.tracks != nil {
@@ -470,4 +474,30 @@ func writeProcessMetrics(w io.Writer) {
 	}
 	metricHead(w, "go_goroutines", "gauge", "number of goroutines that currently exist")
 	fmt.Fprintf(w, "go_goroutines %d\n", runtime.NumGoroutine())
+	writeRuntimeMetrics(w)
+}
+
+// runtimeMetrics show the garbage collector's cost, which the record mirror adds to.
+var runtimeMetrics = []struct{ name, typ, help, key string }{
+	{"go_gc_cpu_seconds_total", "counter", "CPU time the garbage collector used, estimated by the runtime", "/cpu/classes/gc/total:cpu-seconds"},
+	{"go_gc_cycles_total", "counter", "completed garbage collection cycles", "/gc/cycles/total:gc-cycles"},
+	{"go_heap_allocs_bytes_total", "counter", "bytes allocated on the heap", "/gc/heap/allocs:bytes"},
+	{"go_heap_live_bytes", "gauge", "heap bytes live at the end of the last collection", "/gc/heap/live:bytes"},
+}
+
+func writeRuntimeMetrics(w io.Writer) {
+	samples := make([]metrics.Sample, len(runtimeMetrics))
+	for i, m := range runtimeMetrics {
+		samples[i].Name = m.key
+	}
+	metrics.Read(samples)
+	for i, m := range runtimeMetrics {
+		metricHead(w, m.name, m.typ, m.help)
+		switch v := samples[i].Value; v.Kind() {
+		case metrics.KindUint64:
+			fmt.Fprintf(w, "%s %d\n", m.name, v.Uint64())
+		case metrics.KindFloat64:
+			fmt.Fprintf(w, "%s %g\n", m.name, v.Float64())
+		}
+	}
 }

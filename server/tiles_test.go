@@ -323,8 +323,7 @@ func TestVesselTileRecord(t *testing.T) {
 	}
 }
 
-// Past tileCap rows the record answers a tile with the newest row in each thinning cell, and the tile keeps the
-// same vessels it keeps when the cache holds them all and thins them itself.
+// A tile from the record keeps the same vessels as the cache's own thinning.
 func TestTileRecordsThinLikeTheCache(t *testing.T) {
 	now := time.Now().Truncate(time.Millisecond) // the record keeps milliseconds
 	r := rand.New(rand.NewPCG(5, 6))

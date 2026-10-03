@@ -295,9 +295,7 @@ func hashTree(t *testing.T, dir string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// The normalized stream and the access log share the raw archive's bucket, in hour keys shaped like raw
-// ones, so a synced copy of the bucket holds all three. Replay must walk past both deliberately rather than
-// read either as a source.
+// Replay skips the normalized stream and the access log, whose hour keys look like raw ones.
 func TestReplaySkipsWhatSharesTheBucket(t *testing.T) {
 	raw := writeRawTree(t)
 	for _, prefix := range []string{normPrefix, accessPrefix} {
