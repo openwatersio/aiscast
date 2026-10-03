@@ -222,7 +222,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_store_bytes %d\n", st.bytes())
 		metricHead(w, "aiscast_store_mirror_vessels", "gauge", "vessels in the in-memory mirror of the record")
 		fmt.Fprintf(w, "aiscast_store_mirror_vessels %d\n", st.mirror.len())
-		metricHead(w, "aiscast_store_mirror_failures_total", "counter", "mirror refreshes that failed after a write; those vessels stay a write behind until their next")
+		metricHead(w, "aiscast_store_mirror_failures_total", "counter", "mirror refreshes that failed after a write; their vessels are read back again with the next write")
 		fmt.Fprintf(w, "aiscast_store_mirror_failures_total %d\n", st.mirrorFailures.Load())
 	}
 	tracksUp := 0

@@ -3,7 +3,7 @@ package main
 // The record mirror answers every record read but text search from memory; filed vessels are replaced, never changed.
 
 import (
-	"cmp"
+	"container/heap"
 	"errors"
 	"slices"
 	"sync"
@@ -234,24 +234,54 @@ func (m *recordMirror) find(q recordQuery) ([]record, error) {
 	if err != nil {
 		return nil, err
 	}
-	type hit struct {
-		mmsi uint32
-		e    *mirrorEntry
-	}
-	var hits []hit
-	m.each(mq, func(mmsi uint32, e *mirrorEntry) { hits = append(hits, hit{mmsi, e}) })
-	slices.SortFunc(hits, func(a, b hit) int {
-		return cmp.Or(b.e.v.Seen.Compare(a.e.v.Seen), cmp.Compare(a.mmsi, b.mmsi))
+	var hits mirrorHits
+	m.each(mq, func(mmsi uint32, e *mirrorEntry) {
+		h := mirrorHit{mmsi: mmsi, seen: unixMs(e.v.Seen), e: e}
+		switch {
+		case q.limit <= 0 || len(hits) < q.limit:
+			heap.Push(&hits, h)
+		case h.before(hits[0]): // a limit keeps the best q.limit in a heap rather than sorting every match
+			hits[0] = h
+			heap.Fix(&hits, 0)
+		}
 	})
-	if q.limit > 0 && len(hits) > q.limit {
-		hits = hits[:q.limit]
-	}
+	slices.SortFunc(hits, func(a, b mirrorHit) int {
+		if a.before(b) {
+			return -1
+		}
+		return 1
+	})
 	out := make([]record, len(hits))
 	for i, h := range hits {
 		// Filed vessels are replaced, never modified, so the copy needs no lock.
 		out[i] = record{mmsi: h.mmsi, v: h.e.v.state(), firstSeen: h.e.firstSeen}
 	}
 	return out, nil
+}
+
+// mirrorHit ranks as the record orders: most recently heard first by the millisecond, lower MMSI on a tie.
+type mirrorHit struct {
+	mmsi uint32
+	seen int64
+	e    *mirrorEntry
+}
+
+func (a mirrorHit) before(b mirrorHit) bool {
+	return a.seen > b.seen || a.seen == b.seen && a.mmsi < b.mmsi
+}
+
+// mirrorHits is a heap with the worst-ranked hit on top, so a limit evicts it first.
+type mirrorHits []mirrorHit
+
+func (h mirrorHits) Len() int           { return len(h) }
+func (h mirrorHits) Less(i, j int) bool { return h[j].before(h[i]) }
+func (h mirrorHits) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *mirrorHits) Push(x any)        { *h = append(*h, x.(mirrorHit)) }
+func (h *mirrorHits) Pop() any {
+	old := *h
+	x := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return x
 }
 
 // count is store.count answered from memory.
