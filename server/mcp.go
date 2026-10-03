@@ -43,7 +43,7 @@ const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the ope
 - A supplement to onboard AIS, never a substitute, and not for safety of navigation.
 - get_vessel_track answers where a vessel has been. Anonymous and personal calls reach the last 48 hours; feeder and commercial tokens reach further, 7 days per call.
 - These tools answer one question at a time. For continuous updates use the WebSocket stream at wss://ais.openwaters.io/v1/stream, documented at ` + mcpDocsURL + `.
-- get_vessels adds particulars for vessels an enrichment source knows, merged into one vocabulary, with a provenance map naming each field's source and a sources map carrying each source's credit, license, and its own page for the vessel. The sources: Wikidata, by IMO number; the US Coast Guard's PSIX, for a US-flag vessel matched by call sign and name or by its FCC license's official number; the FCC's ship station licenses, by MMSI; and Norway's fishing vessel register, matched as PSIX is. Each field is present only when a source has it, refreshed weekly. Registered dimensions can differ from the ones AIS reports, and the draught AIS reports is the current voyage's. Wikidata is CC0 and the US sources public domain; the Norwegian register's NLOD 2.0 asks for the credit its sources entry carries.
+- get_vessels adds particulars for vessels an enrichment source knows, merged into one vocabulary, with a provenance map naming each field's source and a sources map carrying each source's credit, license, and its own page for the vessel. The sources: Wikidata, by IMO number; the US Coast Guard's PSIX, for a US-flag vessel matched by call sign and name or by its FCC license's official number; the FCC's ship station licenses, by MMSI; Norway's fishing vessel register, matched as PSIX is; Transport Canada's vessel register (Open Government Licence - Canada), by IMO and name for a CA-flag vessel; and ISED's Canadian MMSI registry, asked on demand for heard CA-flag vessels. Each field is present only when a source has it; the registers refresh weekly, and the Canadian MMSI registry answers stand about ninety days. Registered dimensions can differ from the ones AIS reports, and the draught AIS reports is the current voyage's. Wikidata is CC0 and the US sources public domain; the Norwegian register's NLOD 2.0 asks for the credit its sources entry carries.
 - The network holds no port call, weather, or inspection data. Owners and operators come only from Wikidata, for the ships whose items list them.`
 
 // mcpService is the MCP server and its HTTP handler, built once per Pipeline.
@@ -485,9 +485,27 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 		fkeys = append(fkeys, fdirKey{r.MMSI, r.CallSign, r.Name})
 	}
 	fd := p.fiskeridirOf(fkeys...)
+	caIMOs := make([]uint32, 0, len(out.Vessels))
+	caMMSIs := make([]uint32, 0, len(out.Vessels))
+	for _, r := range out.Vessels {
+		if flagOf(r.MMSI) == "CA" {
+			caMMSIs = append(caMMSIs, r.MMSI)
+			if r.IMO != 0 {
+				caIMOs = append(caIMOs, r.IMO)
+			}
+		}
+	}
+	tc := p.tcOf(caIMOs...)
+	is := p.isedOf(caMMSIs...)
 	for i, r := range out.Vessels {
-		out.Vessels[i].Particulars, out.Vessels[i].Provenance, out.Vessels[i].Sources =
-			mergeParticulars(wd[r.IMO], cg[r.MMSI], fd[r.MMSI], fc[r.MMSI])
+		e := enrichment{wd: wd[r.IMO], cg: cg[r.MMSI], fd: fd[r.MMSI], fc: fc[r.MMSI]}
+		if flagOf(r.MMSI) == "CA" {
+			if tcv := tc[r.IMO]; tcv != nil && namesAgree(r.Name, tcv.Name) {
+				e.tc = tcv
+			}
+			e.is = is[r.MMSI]
+		}
+		out.Vessels[i].Particulars, out.Vessels[i].Provenance, out.Vessels[i].Sources = mergeParticulars(e)
 	}
 	for _, m := range in.MMSI {
 		if !known[m] {

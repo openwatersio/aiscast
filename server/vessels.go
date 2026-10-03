@@ -772,9 +772,18 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	if fc != nil {
 		key.official = fc.Official
 	}
-	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources =
-		mergeParticulars(p.wikidataOf(cur.IMO)[cur.IMO], p.uscgOf(key)[mmsi],
-			p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc)
+	e := enrichment{wd: p.wikidataOf(cur.IMO)[cur.IMO], cg: p.uscgOf(key)[mmsi],
+		fd: p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc: fc}
+	// The Canadian register speaks for CA-flag vessels; an IMO another flag carries may have left it,
+	// and the names must agree, as the other registries require, so a mistyped or copied IMO in AIS
+	// static data never serves another registered ship's facts.
+	if flagOf(mmsi) == "CA" {
+		if tcv := p.tcOf(cur.IMO)[cur.IMO]; tcv != nil && namesAgree(cur.Name, tcv.Name) {
+			e.tc = tcv
+		}
+		e.is = p.isedOf(mmsi)[mmsi]
+	}
+	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources = mergeParticulars(e)
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
 	// allocation.

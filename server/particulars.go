@@ -20,6 +20,7 @@ type particulars struct {
 	RegisteredName string   `json:"registered_name,omitempty" jsonschema:"name as documented with the flag state, when it differs from what AIS reports"`
 	Identification string   `json:"identification,omitempty" jsonschema:"the flag state's number for the vessel: a documented vessel's official number, else its state registration"`
 	Service        string   `json:"service,omitempty" jsonschema:"flag-state service type, e.g. Towing Vessel, Passenger (Inspected), Recreational"`
+	CallSign       string   `json:"callsign,omitempty" jsonschema:"call sign as registered; the callsign in the vessel's own properties is the one AIS reports"`
 	Status         string   `json:"status,omitempty" jsonschema:"flag-state status, e.g. Active, Laid Up"`
 	ShipType       string   `json:"ship_type,omitempty" jsonschema:"kind of ship, e.g. bulk carrier, container ship, ferry"`
 	Builder        string   `json:"builder,omitempty" jsonschema:"shipyard or builder"`
@@ -43,12 +44,24 @@ type particulars struct {
 	Image          string   `json:"image,omitempty" jsonschema:"the Commons page of a photo of the ship, which shows its license and credit"`
 }
 
+// enrichment is one vessel's rows from every synced source, handed to the merge together. A new source
+// is one more field here rather than another parameter everywhere.
+type enrichment struct {
+	wd *wikidataShip
+	cg *uscgVessel
+	fd *fdirVessel
+	fc *fccShip
+	tc *tcVessel
+	is *isedShip
+}
+
 // mergeParticulars folds the sources into the served document. Per field, deterministically: a flag
 // state outranks Wikidata for registered facts, an empty value never wins, and provenance records the
-// winner by the field's JSON name. The flag states never meet: a vessel is US-flag or Norwegian, not both.
+// winner by the field's JSON name. The flag states never meet: a vessel flies one flag at a time.
 // An FCC license ranks below PSIX, the vessel registry proper, and above Wikidata for what it documents.
-func mergeParticulars(wd *wikidataShip, cg *uscgVessel, fd *fdirVessel, fc *fccShip) (*particulars, map[string]string, map[string]sourceRef) {
-	if wd == nil && cg == nil && fd == nil && fc == nil {
+func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string]sourceRef) {
+	wd, cg, fd, fc, tcv, is := e.wd, e.cg, e.fd, e.fc, e.tc, e.is
+	if wd == nil && cg == nil && fd == nil && fc == nil && tcv == nil && is == nil {
 		return nil, nil, nil
 	}
 	m := &particulars{}
@@ -108,6 +121,26 @@ func mergeParticulars(wd *wikidataShip, cg *uscgVessel, fd *fdirVessel, fc *fccS
 		// A ship station license is a US license, so the match is itself the registry fact.
 		str("registry", "fcc", "United States", &m.Registry)
 	}
+	if tcv != nil {
+		str("registered_name", "tc", tcv.Name, &m.RegisteredName)
+		str("identification", "tc", tcv.Official, &m.Identification)
+		str("service", "tc", tcv.Service, &m.Service)
+		num("year_built", "tc", &tcv.YearBuilt, &m.YearBuilt)
+		num("gross_tonnage", "tc", &tcv.GrossTonnage, &m.GrossTonnage)
+		num("net_tonnage", "tc", &tcv.NetTonnage, &m.NetTonnage)
+		flt("length", "tc", &tcv.Length, &m.Length)
+		flt("beam", "tc", &tcv.Beam, &m.Beam)
+		flt("depth", "tc", &tcv.Depth, &m.Depth)
+		str("home_port", "tc", tcv.HomePort, &m.HomePort)
+		str("registry", "tc", "Canada", &m.Registry)
+	}
+	if is != nil {
+		// The MMSI registry's answer: thin, but it is the flag state's own name and call sign for the
+		// boat, and for most Canadian small craft the only registered facts any source holds.
+		str("registered_name", "ised", is.Name, &m.RegisteredName)
+		str("callsign", "ised", is.CallSign, &m.CallSign)
+		str("registry", "ised", "Canada", &m.Registry)
+	}
 	if wd != nil {
 		str("ship_type", "wikidata", wd.ShipType, &m.ShipType)
 		str("builder", "wikidata", wd.Builder, &m.Builder)
@@ -143,6 +176,12 @@ func mergeParticulars(wd *wikidataShip, cg *uscgVessel, fd *fdirVessel, fc *fccS
 	if fc != nil {
 		sources["fcc"] = sourceRef{Credit: "FCC ship station license", License: psixLicense,
 			URL: "https://wireless2.fcc.gov/UlsApp/UlsSearch/license.jsp?licKey=" + strconv.FormatInt(fc.USI, 10)}
+	}
+	if tcv != nil {
+		sources["tc"] = sourceRef{Credit: "Transport Canada vessel registry", License: tcLicense}
+	}
+	if is != nil {
+		sources["ised"] = sourceRef{Credit: "ISED Canadian MMSI registry", License: isedLicense, URL: isedSearchURL(is.MMSI)}
 	}
 	return m, prov, sources
 }

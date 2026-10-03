@@ -101,6 +101,18 @@ func main() {
 			if env("FCC", "1") == "1" {
 				go p.runFCC(env("FCC_URL", fccEndpoint))
 			}
+			if err := p.loadTCStats(); err != nil {
+				log.Printf("tc: %v", err)
+			}
+			if env("TC", "1") == "1" {
+				go p.runTC(env("TC_URL", tcEndpoint))
+			}
+			if err := p.loadISEDStats(); err != nil {
+				log.Printf("ised: %v", err)
+			}
+			if env("ISED", "1") == "1" {
+				go p.runISED(env("ISED_URL", isedEndpoint))
+			}
 			go p.runRecordCounts()
 		}
 	}
