@@ -124,6 +124,20 @@ CREATE TABLE IF NOT EXISTS fiskeridir (
 	owner         TEXT    NOT NULL DEFAULT ''  -- the owning company; people are dropped at sync
 );
 CREATE INDEX IF NOT EXISTS fiskeridir_callsign ON fiskeridir (callsign);
+-- Canadian vessels with an IMO from Transport Canada's Register of Large Vessels, replaced weekly (tc.go)
+CREATE TABLE IF NOT EXISTS tc (
+	imo           INTEGER PRIMARY KEY,
+	official      TEXT    NOT NULL DEFAULT '',
+	name          TEXT    NOT NULL DEFAULT '',
+	service       TEXT    NOT NULL DEFAULT '', -- the register's vessel descriptor
+	year_built    INTEGER NOT NULL DEFAULT 0,
+	gross_tonnage INTEGER NOT NULL DEFAULT 0,
+	net_tonnage   INTEGER NOT NULL DEFAULT 0,
+	length        REAL    NOT NULL DEFAULT 0,  -- metres
+	beam          REAL    NOT NULL DEFAULT 0,
+	depth         REAL    NOT NULL DEFAULT 0,
+	home_port     TEXT    NOT NULL DEFAULT ''
+);
 -- active FCC ship station licenses with an MMSI, replaced weekly from the ULS bulk files (fcc.go)
 CREATE TABLE IF NOT EXISTS fcc (
 	mmsi     INTEGER PRIMARY KEY,

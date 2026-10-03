@@ -107,6 +107,7 @@ type Pipeline struct {
 	uscg       uscgStats                      // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
 	fiskeridir fdirStats                      // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
 	fcc        fccStats                       // the weekly sync of FCC ship station licenses (fcc.go)
+	tc         tcStats                        // the weekly sync of Transport Canada's vessel register (tc.go)
 	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
 	ch         *chStore                       // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
 	chQueue    []trackPoint                   // positions folded since the last flush to ClickHouse; guarded by vmu

@@ -101,6 +101,12 @@ func main() {
 			if env("FCC", "1") == "1" {
 				go p.runFCC(env("FCC_URL", fccEndpoint))
 			}
+			if err := p.loadTCStats(); err != nil {
+				log.Printf("tc: %v", err)
+			}
+			if env("TC", "1") == "1" {
+				go p.runTC(env("TC_URL", tcEndpoint))
+			}
 			go p.runRecordCounts()
 		}
 	}
