@@ -420,3 +420,31 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 		t.Errorf("a sub-millisecond step: %d points", tr.Properties.Points)
 	}
 }
+
+func TestTrackKeepsTheExtraHistoryRowAsTheSpikeAnchor(t *testing.T) {
+	// ClickHouse returns one row past the limit, the oldest, which judges the next row for impossible speed
+	// before it is dropped. Here the page holds two rows, and the second-oldest is a fix 120 nm off.
+	now := time.Now()
+	t0 := now.Add(-5 * 24 * time.Hour).Truncate(time.Hour)
+	pt := func(at time.Duration, lat float64) trackPoint {
+		return trackPoint{mmsi: 257000001, ts: t0.Add(at), lat6: int32(lat * 600000), lon6: int32(10.7 * 600000),
+			sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"}
+	}
+	p := lakePipeline(t, &fakeLake{})
+	p.attachClickHouse(&chStore{w: &fakeCH{}, r: &fakeHistory{points: []trackPoint{pt(0, 59.0), pt(time.Minute, 61.0), pt(2*time.Minute, 59.001)}}})
+	from := t0.Add(-time.Hour).UTC().Format(time.RFC3339)
+	to := t0.Add(time.Hour).UTC().Format(time.RFC3339)
+	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=0&limit=2")
+	want := fmt.Sprint([]string{t0.UTC().Format(time.RFC3339), t0.Add(2 * time.Minute).UTC().Format(time.RFC3339)})
+	var got []string
+	for _, ts := range tr.Properties.Times {
+		parsed, _ := time.Parse(time.RFC3339, ts)
+		got = append(got, parsed.UTC().Format(time.RFC3339))
+	}
+	if fmt.Sprint(got) != want {
+		t.Fatalf("the spike is judged against the row past the limit: %v, want %v", got, want)
+	}
+	if !tr.Properties.Truncated {
+		t.Error("older positions were left out, and the answer should say so")
+	}
+}

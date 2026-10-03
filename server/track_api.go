@@ -256,8 +256,8 @@ func (p *Pipeline) answeredStep(from time.Time, interval time.Duration, now time
 }
 
 // historyPoints is one vessel's positions between from and to, oldest first, from before the track store's
-// window: ClickHouse's when it is attached, else the lake's. capped says ClickHouse stopped at limit with older
-// positions left, which the caller must report whatever its own filtering drops. When ClickHouse fails, the
+// window: ClickHouse's when it is attached, else the lake's. capped says ClickHouse returned a row past limit,
+// so older positions were left out, which the caller must report whatever its own filtering drops. When ClickHouse fails, the
 // lake answers a range it allows, trackMaxSpan; a longer one fails, since the lake's reads are billed by the
 // bytes they scan.
 func (p *Pipeline) historyPoints(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) (points []trackPoint, capped bool, err error) {
@@ -267,10 +267,9 @@ func (p *Pipeline) historyPoints(ctx context.Context, mmsi uint32, from, to time
 	if ch != nil && ch.r != nil {
 		points, err := ch.r.history(ctx, mmsi, from, to, step, limit, now)
 		if err == nil || p.lake == nil || to.Sub(from) > trackMaxSpan {
-			if len(points) > limit {
-				return points[1:], true, err
-			}
-			return points, false, err
+			// The row past the limit stays, as the track store's does: it is the anchor that judges the next row
+			// for impossible speed, and the caller trims to the limit after despiking.
+			return points, len(points) > limit, err
 		}
 	}
 	days, err := p.lake.days(ctx, mmsi, from, to, now)
