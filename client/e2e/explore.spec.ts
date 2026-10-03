@@ -15,25 +15,33 @@ test("the sailors directory has channel links and map previews without the live 
   await expect(
     page.getByRole("heading", { level: 1, name: "YouTube sailors" }),
   ).toBeVisible();
-  await expect(page.locator("article")).toHaveCount(9);
-  await expect(page.getByRole("link", { name: "Explore", exact: true })).toHaveAttribute("href", "/ais/explore");
+  await expect(page.locator("article")).toHaveCount(10);
+  await expect(
+    page.getByRole("link", { name: "Explore", exact: true }),
+  ).toHaveAttribute("href", "/ais/explore");
   await expect(
     page.locator('article a[href^="https://www.youtube.com/"]'),
-  ).toHaveCount(9);
+  ).toHaveCount(10);
   await expect(page.locator("#map")).toHaveCount(0);
   await expect(page.locator(".sheet")).toHaveCount(0);
   await expect(page.locator("#wynns")).toContainText("Leopard 43");
-  await expect(page.locator("#zatara")).toContainText("Beneteau Oceanis 55");
+  await expect(page.locator("#florence")).toContainText("Oyster Heritage 37");
+  await expect(page.locator("#nbjs")).toContainText("Tessie");
+  await expect(page.locator("#sam-holmes")).toContainText("Pickled Herring");
+  await expect(page.locator("article").last()).toHaveAttribute(
+    "id",
+    "magic-carpet",
+  );
+  await expect(page.locator("#magic-carpet")).toContainText("Magic Carpet II");
+  await expect(page.locator("#zatara, #doodles, #mj-sailing")).toHaveCount(0);
   await expect(page.locator("#delos")).toContainText(
     "AIS identity not yet confirmed",
   );
   await expect(
-    page
-      .locator("#la-vagabonde")
-      .getByRole("link", {
-        name: "Open La Vagabonde III in the AIS viewer",
-        exact: true,
-      }),
+    page.locator("#la-vagabonde").getByRole("link", {
+      name: "Open La Vagabonde III in the AIS viewer",
+      exact: true,
+    }),
   ).toHaveAttribute("href", "/ais/vessels/268233302");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#tally-ho").scrollIntoViewIfNeeded();
