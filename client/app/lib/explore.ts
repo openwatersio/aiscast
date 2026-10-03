@@ -20,6 +20,69 @@ export interface SailingChannel {
 
 export const sailingChannels: SailingChannel[] = [
   {
+    id: "wynns",
+    name: "Gone With The Wynns",
+    crew: "Jason & Nikki Wynn",
+    youtube: "https://www.youtube.com/@gonewiththewynns",
+    boats: [
+      {
+        name: "Undra",
+        model: "50-foot aluminum explorer yacht",
+        chapter: "Third boat",
+        source: "https://www.gonewiththewynns.com/explorer-yacht-undra/",
+        mmsi: 368478440,
+        identitySource: "https://www.aiscatcher.org/ship/details/368478440",
+      },
+      {
+        name: "Curiosity²",
+        model: "HH44 sailing catamaran",
+        chapter: "Previous boat",
+        source: "https://www.gonewiththewynns.com/curiosity-sailboat/",
+      },
+      {
+        name: "Curiosity",
+        model: "Leopard 43 catamaran",
+        chapter: "First boat",
+        source:
+          "https://www.gonewiththewynns.com/sweet-life-sailing-dream-boat/",
+      },
+    ],
+  },
+  {
+    id: "tally-ho",
+    name: "Sampson Boat Co.",
+    crew: "Leo Goolden & crew",
+    youtube: "https://www.youtube.com/@SampsonBoatCo",
+    boats: [
+      {
+        name: "Tally Ho",
+        model: "1910 Albert Strange gaff cutter",
+        chapter: "Restored & sailing",
+        source: "https://www.yachttallyho.com/",
+        mmsi: 235093681,
+        identitySource:
+          "https://www.marineradar.com/vessel/mmsi-235093681/tally-ho",
+      },
+    ],
+  },
+  {
+    id: "nbjs",
+    name: "No Bullshit Just Sailing",
+    crew: "Erik Aanderaa",
+    youtube: "https://www.youtube.com/@erikaanderaa",
+    boats: [
+      {
+        name: "Tessie",
+        model: "Contessa 35",
+        chapter: "Solo North Atlantic sailing",
+        source: "https://nbjs.no/",
+        mmsi: 257528790,
+        identitySource:
+          "https://www.vesselfinder.com/vessels/details/257528790",
+      },
+    ],
+  },
+  {
     id: "la-vagabonde",
     name: "Sailing La Vagabonde",
     crew: "Riley Whitelum & Elayna Carausu",
@@ -103,35 +166,6 @@ export const sailingChannels: SailingChannel[] = [
     ],
   },
   {
-    id: "wynns",
-    name: "Gone With The Wynns",
-    crew: "Jason & Nikki Wynn",
-    youtube: "https://www.youtube.com/@gonewiththewynns",
-    boats: [
-      {
-        name: "Undra",
-        model: "50-foot aluminum explorer yacht",
-        chapter: "Third boat",
-        source: "https://www.gonewiththewynns.com/explorer-yacht-undra/",
-        mmsi: 368478440,
-        identitySource: "https://www.aiscatcher.org/ship/details/368478440",
-      },
-      {
-        name: "Curiosity²",
-        model: "HH44 sailing catamaran",
-        chapter: "Previous boat",
-        source: "https://www.gonewiththewynns.com/curiosity-sailboat/",
-      },
-      {
-        name: "Curiosity",
-        model: "Leopard 43 catamaran",
-        chapter: "First boat",
-        source:
-          "https://www.gonewiththewynns.com/sweet-life-sailing-dream-boat/",
-      },
-    ],
-  },
-  {
     id: "florence",
     name: "Sailing Yacht Florence",
     crew: "Matt Humphreys & Amy Cartwright",
@@ -142,23 +176,6 @@ export const sailingChannels: SailingChannel[] = [
         model: "Oyster Heritage 37",
         chapter: "Circumnavigation & refit",
         source: "https://sailwiththeflo.wordpress.com/florence/",
-      },
-    ],
-  },
-  {
-    id: "nbjs",
-    name: "No Bullshit Just Sailing",
-    crew: "Erik Aanderaa",
-    youtube: "https://www.youtube.com/@erikaanderaa",
-    boats: [
-      {
-        name: "Tessie",
-        model: "Contessa 35",
-        chapter: "Solo North Atlantic sailing",
-        source: "https://nbjs.no/",
-        mmsi: 257528790,
-        identitySource:
-          "https://www.vesselfinder.com/vessels/details/257528790",
       },
     ],
   },
@@ -191,19 +208,109 @@ export const sailingChannels: SailingChannel[] = [
     ],
   },
   {
-    id: "tally-ho",
-    name: "Sampson Boat Co.",
-    crew: "Leo Goolden & crew",
-    youtube: "https://www.youtube.com/@SampsonBoatCo",
+    id: "phoenix",
+    name: "Sailing With Phoenix",
+    crew: "Oliver Widger & Phoenix the cat",
+    youtube: "https://www.youtube.com/channel/UCAub01nC6godaiC7iI9kasw",
     boats: [
       {
-        name: "Tally Ho",
-        model: "1910 Albert Strange gaff cutter",
-        chapter: "Restored & sailing",
-        source: "https://www.yachttallyho.com/",
-        mmsi: 235093681,
+        name: "Phoenix do Mar",
+        model: "Pacific Seacraft 40",
+        chapter: "Current boat",
+        source: "https://www.youtube.com/watch?v=fASS2iAo5FU",
+        mmsi: 368448560,
         identitySource:
-          "https://www.marineradar.com/vessel/mmsi-235093681/tally-ho",
+          "https://www.vesselfinder.com/vessels/details/368448560",
+      },
+      {
+        name: "Phoenix",
+        model: "33-foot cruising sailboat",
+        chapter: "Previous boat",
+        source:
+          "https://www.buzzsprout.com/2321035/episodes/16992754-salty-podcast-58-sailing-oregon-to-hawaii-sailing_with_phoenix-prepares-to-cross-the-pacific",
+      },
+    ],
+  },
+  {
+    id: "alluring-arctic",
+    name: "Alluring Arctic",
+    crew: "Juho Karhu & Sohvi Kangasluoma",
+    youtube: "https://www.youtube.com/@AlluringArctic",
+    boats: [
+      {
+        name: "Lumi",
+        model: "Garcia Nouanni 43/46 aluminum sailboat",
+        chapter: "Current boat",
+        source: "https://www.alluringarctic.com/about-us",
+        mmsi: 230174360,
+        identitySource:
+          "https://www.myshiptracking.com/vessels/lumi-mmsi-230174360-imo-",
+      },
+      {
+        name: "Sylvia",
+        model: "Beneteau Idylle 11.50",
+        chapter: "Previous boat",
+        source: "https://www.alluringarctic.com/our-story",
+      },
+    ],
+  },
+  {
+    id: "wind-hippie",
+    name: "Wind Hippie Sailing",
+    crew: "Holly Martin",
+    youtube: "https://www.youtube.com/@WindHippieSailing",
+    boats: [
+      {
+        name: "Gecko",
+        model: "Grinde 27",
+        chapter: "Solo sailing",
+        source: "https://windhippie.com/about-my-boat/",
+      },
+    ],
+  },
+  {
+    id: "distant-shores",
+    name: "Distant Shores",
+    crew: "Paul & Sheryl Shard",
+    youtube: "https://www.youtube.com/@DistantShoresTV",
+    boats: [
+      {
+        name: "Distant Shores IV",
+        model: "Enksail Orion 49 aluminum sailboat",
+        chapter: "Fourth Distant Shores boat",
+        source:
+          "https://www.patreon.com/distantshorestv/posts/new-video-shores-103883084",
+        mmsi: 232057925,
+        identitySource:
+          "https://www.harbourmaps.com/ship/journey/q?mmsi=232057925",
+      },
+      {
+        name: "Distant Shores III",
+        model: "Southerly 480",
+        chapter: "Previous boat",
+        source:
+          "https://www.distantshores.ca/boatblog_files/category-distant-shores-iii.php",
+      },
+      {
+        name: "Distant Shores II",
+        model: "Southerly 49",
+        chapter: "Earlier boat",
+        source:
+          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
+      },
+      {
+        name: "Distant Shores",
+        model: "Southerly 42",
+        chapter: "First Distant Shores boat",
+        source:
+          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
+      },
+      {
+        name: "Two-Step",
+        model: "Classic 37",
+        chapter: "Original boat",
+        source:
+          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
       },
     ],
   },

@@ -15,13 +15,24 @@ test("the sailors directory has channel links and map previews without the live 
   await expect(
     page.getByRole("heading", { level: 1, name: "YouTube sailors" }),
   ).toBeVisible();
-  await expect(page.locator("article")).toHaveCount(10);
+  await expect(page.locator("article")).toHaveCount(14);
   await expect(
     page.getByRole("link", { name: "Explore", exact: true }),
   ).toHaveAttribute("href", "/ais/explore");
   await expect(
-    page.locator('article a[href^="https://www.youtube.com/"]'),
-  ).toHaveCount(10);
+    page.getByRole("link", { name: / on YouTube$/ }),
+  ).toHaveCount(14);
+  expect(
+    await page
+      .locator("article")
+      .evaluateAll((cards) => cards.slice(0, 3).map((card) => card.id)),
+  ).toEqual(["wynns", "tally-ho", "nbjs"]);
+  await expect(page.locator("#phoenix")).toContainText("Phoenix do Mar");
+  await expect(page.locator("#alluring-arctic")).toContainText("Lumi");
+  await expect(page.locator("#wind-hippie")).toContainText("Gecko");
+  await expect(page.locator("#distant-shores")).toContainText(
+    "Distant Shores IV",
+  );
   await expect(page.locator("#map")).toHaveCount(0);
   await expect(page.locator(".sheet")).toHaveCount(0);
   await expect(page.locator("#wynns")).toContainText("Leopard 43");
@@ -88,6 +99,7 @@ test("a preview reports its date and opens that boat, while an API failure leave
   });
   await page.goto("/ais/explore/youtube/sailors");
   const card = page.locator("#la-vagabonde");
+  await card.scrollIntoViewIfNeeded();
   await expect(card.locator("time")).toHaveAttribute(
     "datetime",
     "2026-10-01T12:00:00Z",

@@ -1,6 +1,6 @@
 import { DirectoryLayout } from "../components/DirectoryLayout";
 import { pageMeta } from "../lib/meta";
-import { SAILORS_PATH } from "../lib/explore";
+import { SAILORS_PATH, sailingChannels } from "../lib/explore";
 
 export const handle = { directory: true };
 export const meta = () =>
@@ -24,7 +24,8 @@ export default function Explore() {
       >
         <h2 className="text-title">YouTube sailors</h2>
         <p className="mt-2 text-body text-fg-secondary">
-          Ten sailing channels, their crews, and their boats past and present.
+          {sailingChannels.length} sailing channels, their crews, and their
+          boats past and present.
         </p>
       </a>
     </DirectoryLayout>
