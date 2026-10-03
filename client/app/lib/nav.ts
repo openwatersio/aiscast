@@ -16,7 +16,7 @@ export interface Destination {
  */
 export const BROWSE: Destination[] = [
   { to: "/stations", label: "Stations", hint: "Who is receiving, and where", icon: RadioTower },
-  { to: "/network", label: "Network", hint: "Sources, rates and delay", icon: Activity },
+  { to: "/network", label: "Network", hint: "Coverage, sources and delay", icon: Activity },
 ];
 
 /**

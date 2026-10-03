@@ -292,6 +292,64 @@
         }
       }
     },
+    "/v1/coverage/tiles.json": {
+      "get": {
+        "operationId": "getCoverageTileJSON",
+        "tags": ["Vessels and stations"],
+        "security": [{}, { "token": [] }],
+        "summary": "Coverage tiles for maps",
+        "description": "Where there are vessel positions from any source, live or historical, for the last 7 complete days, UTC, as vector tiles of H3 hexagons. Point a vector source at this URL, as for the vessel tiles. A cell the network did not hear has no feature, so draw the map beneath it as it is.\n\nThe newest day is yesterday, since today is not over. `window` gives the first and last day and how many days in between have coverage. Tiles change once a day.\n\n```js\nmap.addSource(\"coverage\", { type: \"vector\", url: \"https://ais.openwaters.io/v1/coverage/tiles.json\" });\nmap.addLayer({\n  id: \"coverage\",\n  type: \"fill\",\n  source: \"coverage\",\n  \"source-layer\": \"coverage\",\n  paint: { \"fill-color\": \"#1565c0\", \"fill-opacity\": [\"/\", [\"get\", \"days\"], 7] },\n});\n```\n\n#### Properties\n\nEach cell is a polygon in the `coverage` layer, with its H3 index as the feature id. The resolution follows the zoom: 3 below zoom 5, 4 to zoom 6, 5 to zoom 8, and 6 above.\n\n- `vessels`: distinct vessels heard in the cell a day, averaged over the window\n- `days`: how many days of the window the network heard the cell at all",
+        "responses": {
+          "200": {
+            "description": "TileJSON, with the window the tiles cover.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["tilejson", "tiles", "attribution", "vector_layers", "window"],
+                  "properties": {
+                    "window": {
+                      "type": "object",
+                      "required": ["from", "to", "days"],
+                      "properties": {
+                        "from": { "type": "string", "format": "date", "description": "First day of the window, UTC" },
+                        "to": { "type": "string", "format": "date", "description": "Last day of the window, yesterday in UTC" },
+                        "days": { "type": "integer", "description": "Days in the window the server holds coverage for, up to 7" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "description": "The server has no coverage loaded: it runs without ClickHouse, or ClickHouse has no coverage for the window yet." }
+        }
+      }
+    },
+    "/v1/coverage/tiles/{z}/{x}/{y}": {
+      "get": {
+        "operationId": "getCoverageTile",
+        "tags": ["Vessels and stations"],
+        "security": [],
+        "summary": "Coverage tile by z/x/y",
+        "description": "One coverage tile, at the URL template that `/v1/coverage/tiles.json` points to. Most maps should use the TileJSON instead. Coverage tiles share the vessel tiles' rate limit of 600 requests per minute per address.",
+        "parameters": [
+          { "name": "z", "in": "path", "required": true, "description": "Zoom, 0–22. TileJSON advertises 10 as the maximum, and clients overzoom past it.", "schema": { "type": "integer", "minimum": 0, "maximum": 22 } },
+          { "name": "x", "in": "path", "required": true, "description": "Column, 0 to 2^z−1.", "schema": { "type": "integer", "minimum": 0 } },
+          { "name": "y", "in": "path", "required": true, "description": "Row, 0 to 2^z−1, from the north.", "schema": { "type": "integer", "minimum": 0 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tile, gzipped when the request accepts gzip. A tile over water nobody heard has an empty `coverage` layer.",
+            "content": { "application/vnd.mapbox-vector-tile": { "schema": { "type": "string", "format": "binary" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "description": "The server has no coverage loaded." }
+        }
+      }
+    },
     "/v1/stations": {
       "get": {
         "operationId": "listStations",

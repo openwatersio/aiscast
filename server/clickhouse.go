@@ -61,6 +61,10 @@ var chSchema = []string{
 	chRollup("1h", ""),
 	chRollupView("1h", "1 HOUR"),
 	chPositionsView,
+	// coverage, filled from receptions as they are written (coveragemap.go)
+	chCoverageTable,
+	`CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.coverage_mv TO {db}.coverage AS ` + chCoverageSelect("{db}.receptions", chUsable),
+	`CREATE TABLE IF NOT EXISTS {db}.coverage_backfilled (day Date) ENGINE = ReplacingMergeTree ORDER BY day`,
 }
 
 // chUsable is the condition every history read and rollup puts on receptions: copies the fold judged an
@@ -150,8 +154,9 @@ type chReader interface {
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
 // /metrics reports about it.
 type chStore struct {
-	w chWriter
-	r chReader // nil keeps tracks on the lake
+	w   chWriter
+	r   chReader       // nil keeps tracks on the lake
+	cov coverageSource // nil leaves the coverage map unavailable
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -350,7 +355,7 @@ func (p *Pipeline) runClickHouse(url string) {
 		conn, err := openClickHouse(ctx, url)
 		cancel()
 		if err == nil {
-			p.attachClickHouse(&chStore{w: conn, r: conn})
+			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn})
 			log.Printf("clickhouse: writing receptions to %s", conn.db)
 			break
 		}
