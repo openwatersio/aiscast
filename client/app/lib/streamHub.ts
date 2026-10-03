@@ -255,8 +255,9 @@ export class Hub {
       let fault: string | undefined;
       if (this.state !== "refused") {
         this.state = "reconnecting";
-        // An offline device is not a broken stream. A worker without the flag counts as online.
-        if (++this.#failures === FAILURES_REPORTED && globalThis.navigator?.onLine !== false) {
+        // An offline device is not a broken stream, so its closes are not counted. A worker
+        // without the flag counts as online.
+        if (globalThis.navigator?.onLine !== false && ++this.#failures === FAILURES_REPORTED) {
           fault = `no welcome after ${FAILURES_REPORTED} attempts`;
         }
       }

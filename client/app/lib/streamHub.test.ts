@@ -339,6 +339,28 @@ describe("Hub", () => {
     expect(faults()).toHaveLength(2);
   });
 
+  it("counts only closes while online", () => {
+    const { a } = setup();
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    const close = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        FakeSocket.all.at(-1)!.close();
+        vi.advanceTimersByTime(30e3);
+        a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+      }
+    };
+    vi.stubGlobal("navigator", { onLine: false });
+    try {
+      close(6);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const faults = () => a.got.flatMap((m) => (m.type === "status" && m.fault ? [m.fault] : []));
+    expect(faults()).toEqual([]);
+    close(5);
+    expect(faults()).toEqual(["no welcome after 5 attempts"]);
+  });
+
   it("does not count closes while refused", () => {
     const { a } = setup();
     a.say({ type: "view", ...view({ bbox: [OSLO] }) });
