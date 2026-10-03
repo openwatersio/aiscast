@@ -89,8 +89,9 @@ type Pipeline struct {
 	closing     atomic.Bool
 
 	seen     map[string]time.Time
-	seenHW   time.Time // newest event time folded into seen; prune cutoff, so replay needs no wall clock
-	normGate time.Time // replay warm-up: records received before this are state-building only, not written
+	bad      map[string]time.Time // dedupe keys of transmissions the fold judged implausible, by time, pruned with seen
+	seenHW   time.Time            // newest event time folded into seen; prune cutoff, so replay needs no wall clock
+	normGate time.Time            // replay warm-up: records received before this are state-building only, not written
 	nSeen    int
 
 	vmu        sync.RWMutex
@@ -111,7 +112,9 @@ type Pipeline struct {
 	ised       isedStats                      // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
 	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
 	ch         *chStore                       // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
-	chQueue    []trackPoint                   // positions folded since the last flush to ClickHouse; guarded by vmu
+	chMu       sync.Mutex                     // guards chQueue; taken after vmu when both are held
+	chQueue    []trackPoint                   // copies received since the last flush to ClickHouse; nil until it connects
+	chOn       atomic.Bool                    // ClickHouse is attached, so copies are worth building
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
 	storesClosed bool       // set by closeStore; flushes after it do nothing
@@ -152,6 +155,7 @@ func newPipeline(arch *archive) *Pipeline {
 		pending: map[string][]fragment{},
 		ownOf:   map[string]string{},
 		seen:    map[string]time.Time{},
+		bad:     map[string]time.Time{},
 		vessels: map[uint32]*vessel{},
 		cells:   map[cellKey]map[uint32]*vessel{},
 		subs:    map[*subscriber]struct{}{},
@@ -392,8 +396,12 @@ func (p *Pipeline) emit(ev *Event) {
 	key := string(ev.Payload) + string(ev.Channel)
 	p.mu.Lock()
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
+		bad := p.bad[key].Equal(prev)
 		p.mu.Unlock()
 		p.writeCopy(ev, key, prev) // prev is the accepted transmission: proximity alone is ambiguous between two of them
+		if p.chOn.Load() {
+			p.noteCopy(ev, key, prev, bad)
+		}
 		p.stats.dup.Add(1)
 		p.usage.dups.add(time.Now())
 		p.stations.dup(ev)
@@ -415,11 +423,15 @@ func (p *Pipeline) emit(ev *Event) {
 				delete(p.seen, k)
 			}
 		}
+		for k, v := range p.bad {
+			if v.Before(cutoff) {
+				delete(p.bad, k)
+			}
+		}
 	}
 	p.mu.Unlock()
 
-	sum := sha256.Sum256([]byte(key))
-	ev.ID = hex.EncodeToString(sum[:16])
+	ev.ID = eventID(key)
 	ev.Type = typeName(ev.Packet)
 	ev.MMSI = ev.Packet.GetHeader().UserID
 	ev.LowTrust = lowTrust(ev.Source)
@@ -427,6 +439,10 @@ func (p *Pipeline) emit(ev *Event) {
 	p.writeEvent(ev) // flagged or not: the normalized archive keeps what the raw archive keeps
 	if ev.Implausible {
 		p.stats.implausible.Add(1)
+		// Its later copies carry the same position, so they are written implausible too.
+		p.mu.Lock()
+		p.bad[key] = ev.Time
+		p.mu.Unlock()
 		return
 	}
 	// Per-vessel monotonic stream: a late copy of an already-superseded report (AISHub lags minutes)
@@ -466,6 +482,13 @@ const (
 	dedupeWindow = 10 * time.Second
 	replayAge    = 60 * time.Second // buffered receptions older than this go to the archive only
 )
+
+// eventID is an event's id: a hash of its payload and channel, the dedupe key, so every copy of a transmission
+// computes the same one.
+func eventID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:16])
+}
 
 func absDur(d time.Duration) time.Duration {
 	if d < 0 {
