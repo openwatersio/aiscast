@@ -318,6 +318,70 @@ describe("Hub", () => {
     expect(third.sent).toEqual([{ type: "subscribe", bbox: [OSLO], mmsi: [] }]);
   });
 
+  it("reports a stream that keeps failing once, until it is welcomed again", () => {
+    const { a } = setup();
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    const faults = () => a.got.flatMap((m) => (m.type === "status" && m.fault ? [m.fault] : []));
+    const fail = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        FakeSocket.all.at(-1)!.close();
+        vi.advanceTimersByTime(30e3);
+        // A live tab keeps telling the hub its view, or the hub forgets it.
+        a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+      }
+    };
+    fail(4);
+    expect(faults()).toEqual([]);
+    fail(3);
+    expect(faults()).toEqual(["no welcome after 5 attempts"]);
+    FakeSocket.all.at(-1)!.open();
+    fail(5);
+    expect(faults()).toHaveLength(2);
+  });
+
+  it("counts only closes while online", () => {
+    const { a } = setup();
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    const close = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        FakeSocket.all.at(-1)!.close();
+        vi.advanceTimersByTime(30e3);
+        a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+      }
+    };
+    vi.stubGlobal("navigator", { onLine: false });
+    try {
+      close(6);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const faults = () => a.got.flatMap((m) => (m.type === "status" && m.fault ? [m.fault] : []));
+    expect(faults()).toEqual([]);
+    close(5);
+    expect(faults()).toEqual(["no welcome after 5 attempts"]);
+  });
+
+  it("does not count closes while refused", () => {
+    const { a } = setup();
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    FakeSocket.all[0]!.frame({ type: "error", error: "concurrent connections per user exceeded" });
+    for (let i = 0; i < 6; i++) {
+      FakeSocket.all.at(-1)!.close();
+      vi.advanceTimersByTime(30e3);
+    }
+    expect(a.got.some((m) => m.type === "status" && m.fault)).toBe(false);
+  });
+
+  it("reports an error frame it does not expect, to one tab", () => {
+    const { a, b } = setup();
+    a.say({ type: "view", ...view({ bbox: [OSLO] }) });
+    b.say({ type: "view", ...view({ bbox: [HELSINKI] }) });
+    FakeSocket.all[0]!.frame({ type: "error", error: "token revoked" });
+    FakeSocket.all[0]!.frame({ type: "error", error: "bad frame" });
+    const faults = [a, b].flatMap((p) => p.got.flatMap((m) => (m.type === "status" && m.fault ? [m.fault] : [])));
+    expect(faults).toEqual(["server error: bad frame"]);
+  });
+
   it("holds no timers once its last tab goes, and starts again with the next", () => {
     const { a } = setup();
     expect(vi.getTimerCount()).toBe(0);

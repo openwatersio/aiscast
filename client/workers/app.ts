@@ -3,6 +3,8 @@ import { serverEnv } from "../app/lib/context";
 import { edgeCached, isSharedPage, pageCacheKey } from "../app/lib/edge.server";
 import { isSitemap, sitemap } from "../app/lib/sitemap.server";
 import { visitorMeta } from "../app/lib/visitor";
+import { REPORT_PATH } from "../app/lib/report";
+import { handleReport } from "../app/lib/report.server";
 
 declare global {
   // A secret, set with `wrangler secret put AIS_TOKEN`, so the generated Env leaves it out.
@@ -50,6 +52,7 @@ export default {
     // address, such as a preview version's, sends it everything, and the app is at /ais/.
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/ais/")) return Response.redirect(new URL("/ais/vessels", url), 302);
+    if (url.pathname === REPORT_PATH) return handleReport(request);
     const auth = { api: env.AIS_API, token: env.AIS_TOKEN || undefined };
     const cache = (caches as unknown as { default: Cache }).default;
     const waitUntil = (p: Promise<unknown>) => ctx.waitUntil(p);
