@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["duckdb"]
 # ///
-"""Load receptions into ClickHouse: from the lake, or from the positions table receptions replaced.
+"""Load receptions into ClickHouse from the lake: every copy the server received before it wrote receptions itself.
 
 Run on the box, with the lake's credentials from /etc/aiscast.env. It runs under uv, which fetches DuckDB
 for it; apply.sh does not install uv, so a box needs it once first:
@@ -11,8 +11,7 @@ for it; apply.sh does not install uv, so a box needs it once first:
     curl -LsSf https://astral.sh/uv/install.sh | sh
 
     set -a; . /etc/aiscast.env; set +a
-    ./clickhouse-load.py 2026-08-20 2026-10-01     # every copy of every day the lake has packaged
-    ./clickhouse-load.py --old 2026-10-02           # the days after it, from positions_old
+    ./clickhouse-load.py 2026-08-20 2026-10-04 --until 2026-10-04T15:30:00Z
 
 From the lake, each day of ais.receptions is joined to ais.positions for the position each copy carried,
 exported to Parquet with DuckDB, and inserted with clickhouse-client. A copy's transmission is named as the
@@ -20,8 +19,11 @@ server's txOf names it, the event id's first 64 bits XORed with the canonical ti
 loaded here and one the server wrote agree; the copy that arrived first is the accepted one, which the rollups read. The lake withholds what the
 stream withheld, so nothing here is implausible.
 
-positions_old is the table the server renamed when it moved to receptions. It holds only accepted copies, so
-each of its positions loads as a transmission of its own; use it for the days the lake has not packaged.
+--until is when the server began writing receptions, the time of its "renamed aiscast.positions to
+positions_old" log line: copies received from then on are already there. Wait until the packager has packaged
+the day of the switch, then load through it. Every reception then comes from the server or the lake, and both
+name transmissions with txOf, so a copy loaded here and another copy of the same transmission always agree.
+positions_old held only accepted copies with no event id to name them by, so nothing loads from it.
 
 clickhouse-client connects with its defaults, localhost:9000 as the default user, which is where the box runs
 ClickHouse, into the database CLICKHOUSE_URL names, or aiscast. Inserting into receptions fills the rollups,
@@ -34,7 +36,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 db = urlparse(os.environ.get("CLICKHOUSE_URL", "")).path.strip("/") or "aiscast"
@@ -64,7 +66,7 @@ def days(first, last):
         d += timedelta(days=1)
 
 
-def from_lake(first, last):
+def from_lake(first, last, until):
     import duckdb
 
     acct, bucket = os.environ["R2_ACCOUNT_ID"], os.environ.get("LAKE_BUCKET", "ais-lake")
@@ -73,6 +75,9 @@ def from_lake(first, last):
               f"CREATE SECRET lake (TYPE ICEBERG, TOKEN '{os.environ['LAKE_CATALOG_TOKEN']}')",
               f"ATTACH '{acct}_{bucket}' AS lake (TYPE ICEBERG, ENDPOINT 'https://catalog.cloudflarestorage.com/{acct}/{bucket}', READ_ONLY)"]:
         con.execute(s)
+    before = ""
+    if until is not None:
+        before = "AND r.recv_ts < TIMESTAMP '" + until.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f") + "'"
     for d in days(first, last):
         with tempfile.NamedTemporaryFile(suffix=".parquet") as f:
             # A copy's day is the day it arrived, which can be the day after its transmission's: the server drops
@@ -92,23 +97,16 @@ def from_lake(first, last):
                     FROM lake.ais.receptions WHERE day BETWEEN DATE '{d}' - 1 AND DATE '{d}'
                 ) r
                 JOIN lake.ais.positions p ON p.id = r.id AND p.ts = r.ts
-                WHERE r.day = DATE '{d}' AND p.day BETWEEN DATE '{d}' - 1 AND DATE '{d}' AND p.lat6 IS NOT NULL
+                WHERE r.day = DATE '{d}' AND p.day BETWEEN DATE '{d}' - 1 AND DATE '{d}' AND p.lat6 IS NOT NULL {before}
             ) TO '{f.name}' (FORMAT parquet)""")
             insert(f"lake-{d}", f.name)
         print(d, flush=True)
 
 
-def from_old(first):
-    # Each position is one accepted copy of a transmission of its own, named by its position and time.
-    q = f"""INSERT INTO {db}.receptions
-        (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station)
-        SELECT mmsi, ts, cityHash64(lat6, lon6, toUnixTimestamp64Milli(ts)), ts,
-               lat6, lon6, sog10, cog10, heading, navstat, source, source
-        FROM {db}.positions_old WHERE ts >= toDateTime64('{first}', 3, 'UTC')"""
-    subprocess.run(["clickhouse-client", f"--insert_deduplication_token=old-{first}", "--query", q], check=True)
-
-
-if sys.argv[1] == "--old":
-    from_old(date.fromisoformat(sys.argv[2]))
-else:
-    from_lake(*(date.fromisoformat(a) for a in sys.argv[1:3]))
+args = sys.argv[1:]
+until = None
+if "--until" in args:
+    i = args.index("--until")
+    until = datetime.fromisoformat(args[i + 1].replace("Z", "+00:00"))
+    del args[i:i + 2]
+from_lake(*(date.fromisoformat(a) for a in args[:2]), until)

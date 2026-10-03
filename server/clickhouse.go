@@ -113,7 +113,8 @@ const chPositionsView = `CREATE OR REPLACE VIEW {db}.positions AS
 
 // chMigrate moves a database from the positions table to receptions. Its rollup views read the table, so they
 // go first and the schema recreates them over receptions; the table is renamed positions_old rather than
-// dropped, so clickhouse-load.py can copy the days the lake has not packaged yet. Run before chSchema.
+// dropped, a copy to go back to until clickhouse-load.py has filled receptions from the lake. Run before
+// chSchema.
 func chMigrate(ctx context.Context, conn driver.Conn, db string) error {
 	var engine string
 	err := conn.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = 'positions'", db).Scan(&engine)
