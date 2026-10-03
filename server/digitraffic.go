@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -147,10 +148,21 @@ func (p *Pipeline) digitrafficMessage(topic string, body []byte, now time.Time) 
 	p.ingestPacket("digitraffic", "digitraffic", t, now, pkt)
 }
 
-func runDigitraffic(p *Pipeline, url string) {
+// digitrafficClientID names this process's connection. The broker keeps one connection per
+// ID and drops the older when another connects, so the ID must be this process's alone. Host
+// and PID are not enough: CI runners started together can share both, and two runs then knock
+// each other off the feed. It is made once, so the client's reconnects reuse it, and the
+// session is clean, so a new ID per start leaves nothing behind.
+func digitrafficClientID() string {
 	host, _ := os.Hostname()
+	b := make([]byte, 4)
+	rand.Read(b)
+	return fmt.Sprintf("aiscast-%s-%d-%x", host, os.Getpid(), b)
+}
+
+func runDigitraffic(p *Pipeline, url string) {
 	opts := mqtt.NewClientOptions().AddBroker(url).
-		SetClientID(fmt.Sprintf("aiscast-%s-%d", host, os.Getpid())).
+		SetClientID(digitrafficClientID()).
 		SetHTTPHeaders(http.Header{"Digitraffic-User": {"aiscast"}}). // asked for by the ToS; lifts the per-IP limits
 		SetAutoReconnect(true).SetConnectRetry(true).SetConnectRetryInterval(10 * time.Second).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) { log.Printf("digitraffic: connection lost: %v", err) }).
