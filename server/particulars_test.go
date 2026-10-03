@@ -27,7 +27,7 @@ func TestMergeParticulars(t *testing.T) {
 	if prov["year_built"] != "uscg" || prov["builder"] != "wikidata" || prov["registry"] != "uscg" || prov["gross_tonnage"] != "uscg" {
 		t.Errorf("provenance: %v", prov)
 	}
-	if src["wikidata"].URL != wd.URL || src["uscg"].URL != "https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=42" ||
+	if src["wikidata"].URL != wd.URL || src["uscg"].URL != "https://cgmix.uscg.mil/PSIX/PSIXSearch.aspx" ||
 		src["uscg"].License != psixLicense {
 		t.Errorf("sources: %+v", src)
 	}

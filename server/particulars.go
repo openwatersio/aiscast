@@ -168,8 +168,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		sources["wikidata"] = sourceRef{Credit: "Wikidata", License: wikidataLicense, URL: wd.URL}
 	}
 	if cg != nil {
-		sources["uscg"] = sourceRef{Credit: "U.S. Coast Guard PSIX", License: psixLicense,
-			URL: "https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=" + strconv.Itoa(cg.ID)}
+		sources["uscg"] = sourceRef{Credit: "U.S. Coast Guard PSIX", License: psixLicense, URL: psixSearchPage}
 	}
 	if fd != nil {
 		sources["fiskeridir"] = sourceRef{Credit: "Norwegian Directorate of Fisheries", License: fdirLicense}
