@@ -63,18 +63,10 @@ func main() {
 			if err := p.names.attach(st); err != nil {
 				log.Printf("stations: %v; station names will not survive a restart", err)
 			}
-			// Tracks ride on the record's writer, so they run only beside it.
-			if tp := env("TRACKS", "tracks.db"); tp != "off" {
-				if ts, err := openTracks(tp); err != nil {
-					log.Printf("tracks: %v; running without recent positions", err)
-				} else {
-					p.attachTracks(ts)
-					if c := duckLakeFromEnv(); c != nil {
-						p.lake = &lake{client: c, cache: ts}
-						go c.open(context.Background()) // attach and load the lake's metadata before a request needs it
-						go p.runImport()
-					}
-				}
+			if c := duckLakeFromEnv(); c != nil {
+				p.lake = &lake{client: c}
+				go c.open(context.Background()) // attach the lake before the first import needs it
+				go p.runImport()
 			}
 			go p.runStore()
 			if err := p.loadWikidataStats(); err != nil {
