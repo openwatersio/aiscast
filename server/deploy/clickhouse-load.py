@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["duckdb"]
 # ///
-"""Load receptions into ClickHouse from the lake: every copy the server received before it wrote receptions itself.
+"""Load receptions into ClickHouse from the lake, for the days before the server wrote receptions itself.
 
 Run on the box, with the lake's credentials from /etc/aiscast.env. It runs under uv, which fetches DuckDB
 for it; apply.sh does not install uv, so a box needs it once first:
@@ -16,8 +16,15 @@ for it; apply.sh does not install uv, so a box needs it once first:
 From the lake, each day of ais.receptions is joined to ais.positions for the position each copy carried,
 exported to Parquet with DuckDB, and inserted with clickhouse-client. A copy's transmission is named as the
 server's txOf names it, the event id's first 64 bits XORed with the canonical time in milliseconds, so a copy
-loaded here and one the server wrote agree; the copy that arrived first is the accepted one, which the rollups read. The lake withholds what the
-stream withheld, so nothing here is implausible.
+loaded here and one the server wrote agree; the copy that arrived first is the accepted one, which the rollups
+read.
+
+The lake holds less than the server now writes. Its positions are the transmissions the stream accepted, and
+its receptions only the copies of those, each joined to its transmission: the stale and implausible events the
+stream withheld are in the normalized archive and nowhere in the lake. So for these days receptions has every
+accepted transmission and every copy dedupe matched to one, but not the rebuilt copies the server now matches
+to a recent position, the genuine late reports it now keeps, or the implausible ones it now flags. Replaying
+the raw archive through a server attached to ClickHouse would write those as the live writer does.
 
 --until is when the server began writing receptions, the time of its "renamed aiscast.positions to
 positions_old" log line: copies received from then on are already there. Wait until the packager has packaged
