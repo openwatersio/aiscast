@@ -110,7 +110,9 @@ The particulars live in the `wikidata` table of the vessel record, keyed by IMO,
 
 `/metrics` reports syncs, failures, the IMO numbers stored, and when the last sync succeeded.
 
-The second source, for US-flag vessels, is the Coast Guard's Port State Information Exchange (PSIX), a weekly public snapshot of its MISLE database: service type, status, year built, official number, the documented name, registered length, breadth, and depth, and gross and net tonnage with the system they were measured under.
+#### US Coast Guard's Port State Information Exchange (PSIX)
+
+For US-flag vessels, a weekly public snapshot of its MISLE database: service type, status, year built, official number, the documented name, registered length, breadth, and depth, and gross and net tonnage with the system they were measured under.
 
 PSIX has no MMSI and no bulk download, only a SOAP service ([uscg.go](uscg.go)) that lists vessels by flag and service type and answers dimensions and tonnage one vessel at a time. Once a week the server lists US-flag vessels into the `uscg` table of the vessel record: every vessel with a call sign, and the call-sign-less vessels whose official number an active FCC license carries, the one join that could reach them; a documented vessel no license names stays absent, one request per service type, two seconds apart. Recreational vessels are listed one build year at a time, from 1800, because the service fails to build that listing whole. A listing has about 250 requests and takes about 15 minutes. It replaces the table in one transaction: a vessel it no longer has is dropped, and a vessel it still has keeps its dimensions and tonnage. It is refused below 50,000 vessels or half the vessels already stored, and a record merged into another, listed under a name starting `DUPLICATE OF`, is skipped. After each hourly check a backfill reads dimensions and tonnage for the matched vessels that have none or whose last read is 90 days old, a request a second, most recently heard first. A vessel whose read fails waits for the next round, and three failures in a row end the round.
 

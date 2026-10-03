@@ -21,7 +21,7 @@ func fakeISED(t *testing.T) (string, *atomic.Int64) {
 		case "316061185":
 			// stray spaces, as the real service writes them
 			fmt.Fprint(w, `{"records":[{"mmsi":" 316061185","vesselName":"RUBY'S STAR","vesselId":null,"callSign":"CFN5678"}],"moreRecordsAvailable":false}`)
-		case "316999999":
+		case "316999991", "316999992", "316999993", "316999994":
 			http.Error(w, "boom", http.StatusInternalServerError)
 		default:
 			fmt.Fprint(w, `{"records":[],"moreRecordsAvailable":false}`)
@@ -96,24 +96,27 @@ func TestISEDRoundsAndServe(t *testing.T) {
 	}
 }
 
-// Repeated service failures end the round rather than hammering a down registry.
+// Repeated service failures end the round rather than hammering a down registry: exactly the cutoff
+// number of asks, and the vessels behind them wait for the next round.
 func TestISEDFailuresEndRound(t *testing.T) {
 	p := storePipeline(t)
-	url, _ := fakeISED(t)
+	url, requests := fakeISED(t)
 	isedPause = 0
 	now := time.Now().UTC()
-	for i := range 4 {
-		mmsi := uint32(316999999) // every ask errors
-		_ = i
-		p.ingestPacket("kystverket", "kystverket", now, now, posReport(mmsi, 49, -123))
-		break
+	// Four failing vessels heard recently, and a good one heard earlier, so the round meets the
+	// failures first and must stop before reaching it.
+	p.ingestPacket("kystverket", "kystverket", now.Add(-time.Hour), now.Add(-time.Hour), staticCallSign(316061185, "RUBYS STAR", ""))
+	for _, mmsi := range []uint32{316999991, 316999992, 316999993, 316999994} {
+		p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(mmsi, "BOOM BOAT", ""))
 	}
-	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(316999999, "BOOM BOAT", ""))
 	mustFlush(t, p)
 	if n := p.backfillISED(now, url, time.Minute); n != 0 {
 		t.Errorf("checked %d, want 0", n)
 	}
-	if p.ised.failures.Load() == 0 {
-		t.Error("no failures counted")
+	if got := requests.Load(); got != int64(isedFailuresInARow) {
+		t.Errorf("made %d asks, want exactly the cutoff %d", got, isedFailuresInARow)
+	}
+	if p.ised.failures.Load() != int64(isedFailuresInARow) {
+		t.Errorf("failures %d, want %d", p.ised.failures.Load(), isedFailuresInARow)
 	}
 }
