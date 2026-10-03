@@ -28,6 +28,12 @@ func init() { psixMinVessels = 1 }
 // failDetails, when set, is a PSIX vessel ID whose dimensions and tonnage the fake service fails to answer.
 var failDetails atomic.Int64
 
+// splitService, when set, is a service type whose whole listing the fake service fails to build, as PSIX
+// does for one grown too large; its per-year asks still answer.
+var splitService atomic.Value
+
+func init() { splitService.Store("") }
+
 // fakePSIX answers the PSIX SOAP service from testdata/uscg, recorded from cgmix.uscg.mil: call-sign
 // searches for six vessels, and their dimensions and tonnage. A listing by service type or build year is
 // answered with the recorded rows that fit it. fail makes the recreational listing answer as the service
@@ -75,6 +81,12 @@ func fakePSIX(t *testing.T, fail *atomic.Bool) (url string, requests *atomic.Int
 			}
 			service, year := param("Service"), param("BuildYear")
 			if service == "Recreational" && year == "1978" && fail != nil && fail.Load() {
+				b, _ := os.ReadFile("testdata/uscg/no_result.xml")
+				w.Write(b)
+				return
+			}
+			// A service PSIX can no longer list whole answers with no result; its years still answer.
+			if year == "" && service == splitService.Load() {
 				b, _ := os.ReadFile("testdata/uscg/no_result.xml")
 				w.Write(b)
 				return
@@ -160,7 +172,7 @@ func TestNormCallSign(t *testing.T) {
 
 func TestFetchPSIX(t *testing.T) {
 	url, _ := fakePSIX(t, nil)
-	got, err := fetchPSIX(t.Context(), url, time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC))
+	got, err := fetchPSIX(t.Context(), url, time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), map[string]bool{"1307977": true, "VA1208BP": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,10 +181,18 @@ func TestFetchPSIX(t *testing.T) {
 		ids[id] = v.Name
 	}
 	// The three DUPLICATE OF records under WCZ5696 are left out; CERULEAN comes from the 1978 listing.
+	// DOCKSIDE DREAM and VA08BP have no call sign and are kept for their official numbers, which the
+	// FCC licenses join; a row with neither key is left out.
 	want := map[int]string{1097015: "MAERSK KENSINGTON", 507140: "NICOLE LEIGH REINAUER", 607128: "CONGRESSMAN ROBERT A. ROE",
-		171966: "PAIGE MARIE", 872923: "ANNALISE", 167771: "CERULEAN"}
+		171966: "PAIGE MARIE", 872923: "ANNALISE", 167771: "CERULEAN", 955001: "DOCKSIDE DREAM", 1205346: "VA08BP"}
 	if !reflect.DeepEqual(ids, want) {
 		t.Errorf("listed %v", ids)
+	}
+	if v := got[955001]; v.callsign != "" || v.officialKey != "1307977" {
+		t.Errorf("ident-only row: %+v", *v)
+	}
+	if v := got[1205346]; v.officialKey != "VA1208BP" {
+		t.Errorf("normalized key: %+v", *v)
 	}
 	if v := got[507140]; v.callsign != "WCZ5696" || v.Service != "Towing Vessel" || v.Status != "Active" || v.YearBuilt != 1999 || v.Identification == "" {
 		t.Errorf("summary: %+v", *v)
@@ -233,7 +253,13 @@ func TestUSCGSync(t *testing.T) {
 		t.Errorf("failed listing recorded %q", last)
 	}
 	fail.Store(false)
-	if !p.syncUSCGIfDue(now, url) || p.uscg.vessels.Load() != 6 {
+	if err := p.store.replaceFCC(map[uint32]*fccShip{
+		368168720: {MMSI: 368168720, USI: 1, CallSign: "WDQ5444", Name: "DOCKSIDE DREAM", Official: "1307977"},
+		366999999: {MMSI: 366999999, USI: 2, CallSign: "WDX0000", Name: "VA08BP", Official: "VA1208BP"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if !p.syncUSCGIfDue(now, url) || p.uscg.vessels.Load() != 8 {
 		t.Fatalf("listing: vessels %d", p.uscg.vessels.Load())
 	}
 	before := requests.Load()
@@ -243,17 +269,22 @@ func TestUSCGSync(t *testing.T) {
 
 	type props struct {
 		Properties struct {
-			USCG *uscgVessel `json:"uscg"`
+			Particulars *particulars         `json:"particulars"`
+			Sources     map[string]sourceRef `json:"sources"`
 		} `json:"properties"`
 	}
-	vessel := func(mmsi uint32) *uscgVessel {
+	vessel := func(mmsi uint32) props {
 		var f props
 		json.Unmarshal(get(t, p, fmt.Sprintf("/v1/vessels/%d", mmsi)).Body.Bytes(), &f)
-		return f.Properties.USCG
+		return f
+	}
+	psixURL := func(id int) string {
+		return fmt.Sprintf("https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=%d", id)
 	}
 	// Listed but not yet measured: the summary alone.
-	if v := vessel(366000004); v == nil || v.ID != 1097015 || v.Service != "Freight Ship" || v.YearBuilt != 2007 || v.Length != 0 {
-		t.Errorf("before the backfill: %+v", v)
+	if f := vessel(366000004); f.Properties.Particulars == nil || f.Properties.Sources["uscg"].URL != psixURL(1097015) ||
+		f.Properties.Particulars.Service != "Freight Ship" || f.Properties.Particulars.YearBuilt != 2007 || f.Properties.Particulars.Length != 0 {
+		t.Errorf("before the backfill: %+v", f.Properties)
 	}
 
 	if n := p.backfillUSCG(now, url, time.Minute); n != 4 || p.uscg.details.Load() != 4 {
@@ -275,16 +306,18 @@ func TestUSCGSync(t *testing.T) {
 	}
 	failDetails.Store(0)
 
-	got := vessel(366000004)
-	want := &uscgVessel{ID: 1097015, License: psixLicense, Name: "MAERSK KENSINGTON", Identification: "1257726", Service: "Freight Ship",
-		Status: "Active", YearBuilt: 2007, Length: 286.88, Beam: 39.99, Depth: 20.3, GrossTonnage: 74642, NetTonnage: 44243, TonnageMeasure: "Convention"}
+	got := vessel(366000004).Properties.Particulars
+	want := &particulars{RegisteredName: "MAERSK KENSINGTON", Identification: "1257726", Service: "Freight Ship",
+		Status: "Active", YearBuilt: 2007, Length: 286.88, Beam: 39.99, Depth: 20.3,
+		GrossTonnage: 74642, NetTonnage: 44243, TonnageMeasure: "Convention", Registry: "United States"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("/v1/vessels: %+v, want %+v", got, want)
 	}
 	for mmsi, id := range map[uint32]int{367000001: 507140, 367000002: 607128, 368168720: 167771, 367000003: 0, 257000009: 0} {
-		v := vessel(mmsi)
-		if (id == 0) != (v == nil) || v != nil && v.ID != id {
-			t.Errorf("%d: %+v, want PSIX vessel %d", mmsi, v, id)
+		f := vessel(mmsi)
+		cg, ok := f.Properties.Sources["uscg"]
+		if (id == 0) == ok || ok && cg.URL != psixURL(id) {
+			t.Errorf("%d: %+v, want PSIX vessel %d", mmsi, f.Properties, id)
 		}
 	}
 
@@ -293,7 +326,7 @@ func TestUSCGSync(t *testing.T) {
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{367000002, 367000003}}, &out); msg != "" {
 		t.Fatal(msg)
 	}
-	if len(out.Vessels) != 2 || out.Vessels[0].USCG == nil || out.Vessels[0].USCG.Service != "Passenger (Inspected)" || out.Vessels[1].USCG != nil {
+	if len(out.Vessels) != 2 || out.Vessels[0].Particulars == nil || out.Vessels[0].Particulars.Service != "Passenger (Inspected)" || out.Vessels[1].Particulars != nil {
 		t.Errorf("get_vessels: %+v", out.Vessels)
 	}
 
@@ -301,10 +334,21 @@ func TestUSCGSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := get(t, p, "/metrics").Body.String()
-	for _, want := range []string{"aiscast_uscg_vessels 6\n", fmt.Sprintf("aiscast_uscg_last_success_timestamp_seconds %d\n", now.Unix())} {
+	for _, want := range []string{"aiscast_uscg_vessels 8\n", fmt.Sprintf("aiscast_uscg_last_success_timestamp_seconds %d\n", now.Unix())} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/metrics lacks %q", want)
 		}
+	}
+
+	// A license sync newer than the listing re-runs it early, even within the week.
+	if err := p.store.replaceFCC(map[uint32]*fccShip{
+		368168720: {MMSI: 368168720, USI: 1, CallSign: "WDQ5444", Name: "DOCKSIDE DREAM", Official: "1307977"},
+		366999999: {MMSI: 366999999, USI: 2, CallSign: "WDX0000", Name: "VA08BP", Official: "VA1208BP"},
+	}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !p.syncUSCGIfDue(now.Add(2*time.Minute), url) {
+		t.Error("a newer license sync did not re-run the listing")
 	}
 }
 
@@ -344,5 +388,101 @@ func TestReplaceUSCGListing(t *testing.T) {
 	psixMinVessels = 10
 	if err := p.store.replaceUSCGListing(listing(1, 2, 3, 4, 5), time.Now()); err == nil {
 		t.Error("a listing under the minimum was stored")
+	}
+}
+
+// A vessel whose stored call sign is blank padding must join no ident-only row: the join compares
+// trimmed values, so the guard has to test the trimmed side too.
+func TestUSCGDuePaddedCallsign(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(366000011, "PADDED GHOST", "X"))
+	mustFlush(t, p)
+	if _, err := p.store.db.Exec(`UPDATE vessels SET callsign = '   ' WHERE mmsi = 366000011`); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.store.replaceUSCGListing(map[int]*uscgVessel{
+		910001: {ID: 910001, License: psixLicense, Name: "PADDED GHOST", Identification: "1222333", officialKey: "1222333"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if due, err := p.store.uscgDue(t.Context(), now.Add(time.Hour)); err != nil || len(due) != 0 {
+		t.Errorf("padded call sign joined: %+v, %v", due, err)
+	}
+}
+
+// The listing replace at the scale keeping ident-only rows reaches: several hundred thousand rows in
+// one transaction must stay well inside the ingest writer's 5 s busy timeout.
+func BenchmarkReplaceUSCGListing500k(b *testing.B) {
+	dir := b.TempDir()
+	st, err := openStore(dir + "/bench.db")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.close()
+	vessels := make(map[int]*uscgVessel, 500_000)
+	for i := range 500_000 {
+		vessels[i+1] = &uscgVessel{ID: i + 1, Name: fmt.Sprintf("VESSEL %d", i), Identification: fmt.Sprintf("%07d", i+1000000),
+			officialKey: fmt.Sprintf("%07d", i+1000000), Service: "Recreational", Status: "Active", YearBuilt: 1990}
+	}
+	old := psixMinVessels
+	psixMinVessels = 1
+	defer func() { psixMinVessels = old }()
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		if err := st.replaceUSCGListing(vessels, time.Now().Add(time.Duration(i)*time.Second)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// A service grown past what PSIX can list whole falls back to its build years instead of failing the
+// sync: Commercial Fishing Vessel crossed that line in October 2026.
+func TestUSCGListsSplitServiceByYear(t *testing.T) {
+	p := storePipeline(t)
+	url, requests := fakePSIX(t, nil)
+	splitService.Store("Freight Ship")
+	t.Cleanup(func() { splitService.Store("") })
+	before := requests.Load()
+	if !p.syncUSCGIfDue(time.Now().UTC(), url) {
+		t.Fatal("the split service failed the sync")
+	}
+	byCS, err := p.store.uscgByCallSign([]string{"WMKN"})
+	if err != nil || len(byCS["WMKN"]) != 1 || byCS["WMKN"][0].Name != "MAERSK KENSINGTON" {
+		t.Errorf("the split service's vessel was not listed: %+v, %v", byCS["WMKN"], err)
+	}
+	// The fallback asks once per build year on top of the usual asks.
+	if n := requests.Load() - before; n < 200 {
+		t.Errorf("only %d asks; the year fallback did not run", n)
+	}
+}
+
+// The joins that reach uscg rows must use its indexes: a schema change once left the official-key join
+// scanning the table per vessel, quadratic, and it pinned a CPU for hours.
+func TestUSCGQueryPlansUseIndexes(t *testing.T) {
+	p := storePipeline(t)
+	for _, q := range []string{uscgDueSQL, `SELECT ` + uscgCols + ` FROM uscg WHERE official_key != '' AND official_key IN (?)`} {
+		rows, err := p.store.db.Query("EXPLAIN QUERY PLAN "+q, "x")
+		if err != nil {
+			// uscgDueSQL takes no arguments; retry without one.
+			rows, err = p.store.db.Query("EXPLAIN QUERY PLAN " + q)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		for rows.Next() {
+			var id, parent, aux int
+			var detail string
+			if err := rows.Scan(&id, &parent, &aux, &detail); err != nil {
+				t.Fatal(err)
+			}
+			// Any scan of the uscg side is rejected, covering-index scans included: a lookup that
+			// walks the whole index is still linear per probe, and the join that went quadratic
+			// planned exactly that way.
+			if strings.Contains(detail, "SCAN u") {
+				t.Errorf("plan scans the uscg table: %s", detail)
+			}
+		}
+		rows.Close()
 	}
 }

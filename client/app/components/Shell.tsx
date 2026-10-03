@@ -16,6 +16,7 @@ import { liveInstance, LiveContext, setLiveInstance, type Live } from "../lib/li
 import { NO_FILTERS, type SearchFilters } from "../lib/searchFilters";
 import { Stream } from "../lib/stream";
 import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
+import { readVisitor } from "../lib/visitor";
 import { Sheet, type Detent } from "./Sheet";
 import { Header } from "./Header";
 import { StatusChip } from "./StatusChip";
@@ -97,7 +98,7 @@ function routeDetent(pathname: string): Detent {
  * navigation: the stream is capped at two connections per network address, and remounting
  * would spend that budget.
  */
-export function Shell({ initialTheme, visitor }: { initialTheme: ThemeChoice; visitor?: [number, number] }) {
+export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   const container = useRef<HTMLDivElement>(null);
   const [live, setLive] = useState<Live | undefined>(liveInstance);
   const location = useLocation();
@@ -153,8 +154,9 @@ export function Shell({ initialTheme, visitor }: { initialTheme: ThemeChoice; vi
     if (liveInstance() || !container.current) return;
     const stream = new Stream();
     // Resolved here rather than taken from render: during hydration a System choice still
-    // reads as the server's dark, and the map should open in the device's scheme.
-    const built = { stream, ctl: createMap(container.current, stream, resolveTheme(choice), visitor) };
+    // reads as the server's dark, and the map should open in the device's scheme. The visitor's
+    // location is already in the head, so the first frame is drawn there.
+    const built = { stream, ctl: createMap(container.current, stream, resolveTheme(choice), readVisitor()) };
     setLiveInstance(built);
     setLive(built);
   }, []);

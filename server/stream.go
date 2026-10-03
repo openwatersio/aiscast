@@ -235,6 +235,9 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		f, cl, msg := p.parseV0Sub(data, ip)
+		if msg == "" {
+			noteClaims(r, cl)
+		}
 		if msg == "" && release == nil {
 			var err error
 			if release, err = acquireStream(cl, ip); err != nil {

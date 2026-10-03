@@ -72,8 +72,10 @@ func newNormArchive(dir string, s3 *s3Client) *archive {
 }
 
 // s3NormFromEnv: NORMALIZED_BUCKET, normally the raw archive's own bucket, with the same account and keys; empty = local only.
-func s3NormFromEnv() *s3Client {
-	bucket := os.Getenv("NORMALIZED_BUCKET")
+func s3NormFromEnv() *s3Client { return s3BucketFromEnv(os.Getenv("NORMALIZED_BUCKET")) }
+
+// s3BucketFromEnv is a client for bucket in the raw archive's account, with its keys; nil for no bucket or no keys.
+func s3BucketFromEnv(bucket string) *s3Client {
 	if bucket == "" {
 		return nil
 	}

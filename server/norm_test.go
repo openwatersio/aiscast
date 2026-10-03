@@ -295,25 +295,27 @@ func hashTree(t *testing.T, dir string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// The normalized stream shares the raw archive's bucket, so a synced copy of the bucket holds both.
-// Replay must walk past the stream deliberately rather than read it as a source.
-func TestReplaySkipsTheNormalizedStream(t *testing.T) {
+// Replay skips the normalized stream and the access log, whose hour keys look like raw ones.
+func TestReplaySkipsWhatSharesTheBucket(t *testing.T) {
 	raw := writeRawTree(t)
-	stream := filepath.Join(raw, normPrefix, "v1", "2026", "09", "01", "12.gz")
-	os.MkdirAll(filepath.Dir(stream), 0o755)
-	f, err := os.Create(stream)
-	if err != nil {
-		t.Fatal(err)
+	for _, prefix := range []string{normPrefix, accessPrefix} {
+		stream := filepath.Join(raw, prefix, "v1", "2026", "09", "01", "12.gz")
+		os.MkdirAll(filepath.Dir(stream), 0o755)
+		f, err := os.Create(stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gz := gzip.NewWriter(f)
+		gz.Write([]byte("2026-09-01T12:00:00Z\tv1\t!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23\n")) // parseable, so only the skip keeps it out
+		gz.Close()
+		f.Close()
 	}
-	gz := gzip.NewWriter(f)
-	gz.Write([]byte("2026-09-01T12:00:00Z\tv1\t!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23\n")) // parseable, so only the skip keeps it out
-	gz.Close()
-	f.Close()
-
 	for _, r := range allReaders(t, raw) {
 		for _, path := range r.paths {
-			if strings.Contains(filepath.ToSlash(path), "/"+normPrefix+"/") {
-				t.Fatalf("replay would read the normalized stream as source %q: %s", r.source, path)
+			for _, prefix := range []string{normPrefix, accessPrefix} {
+				if strings.Contains(filepath.ToSlash(path), "/"+prefix+"/") {
+					t.Fatalf("replay would read %s as source %q: %s", prefix, r.source, path)
+				}
 			}
 		}
 	}

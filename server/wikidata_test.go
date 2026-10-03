@@ -225,31 +225,45 @@ func TestVesselWikidata(t *testing.T) {
 	mustFlush(t, p)
 
 	var f struct {
-		Properties map[string]json.RawMessage `json:"properties"`
+		Properties struct {
+			Particulars *particulars         `json:"particulars"`
+			Provenance  map[string]string    `json:"provenance"`
+			Sources     map[string]sourceRef `json:"sources"`
+		} `json:"properties"`
+		Raw map[string]json.RawMessage `json:"-"`
 	}
 	json.Unmarshal(get(t, p, "/v1/vessels/256000001").Body.Bytes(), &f)
-	var w map[string]any
-	if err := json.Unmarshal(f.Properties["wikidata"], &w); err != nil {
-		t.Fatalf("no wikidata: %s", f.Properties["wikidata"])
+	m := f.Properties.Particulars
+	if m == nil {
+		t.Fatal("no particulars")
 	}
-	if w["id"] != "Q1052819" || w["url"] != "https://www.wikidata.org/wiki/Q1052819" || w["license"] != "CC0-1.0" ||
-		w["builder"] != "Meyer Werft" || w["year_built"] != 2010.0 || w["gross_tonnage"] != 121878.0 || w["deadweight"] != 9500.0 ||
-		w["length"] != 317.2 || w["beam"] != 36.8 || w["registry"] != "Malta" || w["former_names"] != nil ||
-		w["ship_type"] != "cruise ship" || w["draught"] != 8.62 || w["home_port"] != "Valletta" || w["operator"] != "Celebrity Cruises" ||
-		w["owner"] != nil || w["yard_number"] != "677" || w["wikipedia"] != "https://en.wikipedia.org/wiki/Celebrity_Eclipse" ||
-		w["image"] != "https://commons.wikimedia.org/wiki/File:Celebrity_Eclipse_leaving_Southampton.jpg" {
-		t.Errorf("wikidata: %v", w)
+	want := &particulars{ShipType: "cruise ship", Builder: "Meyer Werft", YardNumber: "677", YearBuilt: 2010,
+		GrossTonnage: 121878, Deadweight: 9500, Length: 317.2, Beam: 36.8, Draught: 8.62,
+		Registry: "Malta", HomePort: "Valletta", Operator: "Celebrity Cruises",
+		Wikipedia:  "https://en.wikipedia.org/wiki/Celebrity_Eclipse",
+		CommonsCat: "https://commons.wikimedia.org/wiki/Category:Celebrity_Eclipse_%28ship%2C_2010%29",
+		Image:      "https://commons.wikimedia.org/wiki/File:Celebrity_Eclipse_leaving_Southampton.jpg"}
+	if !reflect.DeepEqual(m, want) {
+		t.Errorf("particulars: %+v, want %+v", m, want)
+	}
+	if f.Properties.Provenance["builder"] != "wikidata" || f.Properties.Provenance["length"] != "wikidata" {
+		t.Errorf("provenance: %v", f.Properties.Provenance)
+	}
+	if s := f.Properties.Sources["wikidata"]; s.Credit != "Wikidata" || s.License != "CC0-1.0" || s.URL != "https://www.wikidata.org/wiki/Q1052819" {
+		t.Errorf("sources: %+v", f.Properties.Sources)
 	}
 	for _, mmsi := range []string{"257000002", "257000003"} {
-		f.Properties = nil
-		json.Unmarshal(get(t, p, "/v1/vessels/"+mmsi).Body.Bytes(), &f)
-		if f.Properties == nil || f.Properties["wikidata"] != nil {
-			t.Errorf("%s: %v", mmsi, f.Properties)
+		var g struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		json.Unmarshal(get(t, p, "/v1/vessels/"+mmsi).Body.Bytes(), &g)
+		if g.Properties == nil || g.Properties["particulars"] != nil {
+			t.Errorf("%s: %v", mmsi, g.Properties)
 		}
 	}
 
 	// The collection stays as it was: particulars are on the one-vessel answer only.
-	if body := get(t, p, "/v1/vessels?mmsi=256000001").Body.String(); strings.Contains(body, "wikidata") {
+	if body := get(t, p, "/v1/vessels?mmsi=256000001").Body.String(); strings.Contains(body, "particulars") {
 		t.Errorf("collection carries particulars: %s", body)
 	}
 
@@ -258,7 +272,7 @@ func TestVesselWikidata(t *testing.T) {
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{256000001, 257000002}}, &out); msg != "" {
 		t.Fatal(msg)
 	}
-	if len(out.Vessels) != 2 || out.Vessels[0].Wikidata == nil || out.Vessels[0].Wikidata.Builder != "Meyer Werft" || out.Vessels[1].Wikidata != nil {
+	if len(out.Vessels) != 2 || out.Vessels[0].Particulars == nil || out.Vessels[0].Particulars.Builder != "Meyer Werft" || out.Vessels[1].Particulars != nil {
 		t.Errorf("get_vessels: %+v", out.Vessels)
 	}
 }

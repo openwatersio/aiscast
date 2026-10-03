@@ -62,7 +62,7 @@ func TestArchiveSweep(t *testing.T) {
 		{"a/missing.gz", "hello", 2 * time.Hour, true},   // never made it up, upload then drop
 		{"a/broken.gz", "hello", 2 * time.Hour, false},   // upload fails, keep it for the next sweep
 		{"a/stub.gz", "hello", 2 * time.Hour, false},     // local is a stub over a complete object: never clobber it
-		{"a/open.gz", "hello", 5 * time.Minute, false},   // inside the grace window, rotation owns it
+		{"a/recent.gz", "hello", 5 * time.Minute, false}, // left by the last shutdown: upload, but keep inside the grace window
 	}
 	paths := map[string]string{}
 	for _, tc := range cases {
@@ -78,7 +78,7 @@ func TestArchiveSweep(t *testing.T) {
 			t.Errorf("%s: deleted=%v, want %v", tc.name, gone, tc.wantGone)
 		}
 	}
-	want := map[string]bool{"a/truncated.gz": true, "a/missing.gz": true}
+	want := map[string]bool{"a/truncated.gz": true, "a/missing.gz": true, "a/recent.gz": true}
 	for _, k := range puts {
 		if !want[k] {
 			t.Errorf("unexpected upload of %s", k)
@@ -88,7 +88,7 @@ func TestArchiveSweep(t *testing.T) {
 	for k := range want {
 		t.Errorf("%s was never uploaded", k)
 	}
-	if got := a.staged.Load(); got != 15 { // broken, stub, and open stay on disk
+	if got := a.staged.Load(); got != 15 { // broken, stub, and recent stay on disk
 		t.Errorf("staged = %d bytes, want 15", got)
 	}
 	if got := a.uploadFailures.Load(); got != 1 {

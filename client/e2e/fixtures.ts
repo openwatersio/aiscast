@@ -62,7 +62,15 @@ export async function waitForVessels(page: Page) {
  */
 export async function waitForFlight(page: Page) {
   await expect
-    .poll(() => page.evaluate(() => !window.aiscastMap!.isMoving() && window.aiscastMap!.getZoom() >= 12), { timeout: 15_000 })
+    // Straight after a page load the map may not be built yet.
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const map = window.aiscastMap;
+          return Boolean(map && !map.isMoving() && map.getZoom() >= 12);
+        }),
+      { timeout: 15_000 },
+    )
     .toBe(true);
 }
 

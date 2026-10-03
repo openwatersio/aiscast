@@ -82,10 +82,17 @@ type archive struct {
 	s3      objectStore                                // nil = keep files local only
 	keyFn   func(source string, hour time.Time) string // nil = per-source license-prefixed layout
 	bare    bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
-	ch      chan Reception
-	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
-	uploads sync.WaitGroup
-	stopped sync.Once // shutdown runs once; the writer is gone after the first
+	keepFor time.Duration                              // with no bucket, the sweep deletes closed hours older than this; 0 keeps them
+	// keepUnder keeps the sweep out of another archive's hours when dir covers them.
+	keepUnder string
+	ch        chan Reception
+	done      chan chan struct{} // shutdown request; replied to when files are closed
+	uploads   sync.WaitGroup     // rotation uploads in flight; shutdown leaves them, tests wait on them
+	stopped   sync.Once          // shutdown runs once; the writer is gone after the first
+
+	// offersClosed refuses offers after the last drain, under offerMu, so none is left in a queue nothing reads.
+	offerMu      sync.RWMutex
+	offersClosed bool
 
 	// latest is the newest receive time the writer has seen and nextClose the earliest time any open
 	// hour may close; only run() touches them.
@@ -131,6 +138,24 @@ func (a *archive) write(rx Reception) {
 	a.ch <- rx
 }
 
+// offer is write for records not worth holding up their producer: false when full or shut down.
+func (a *archive) offer(rx Reception) bool {
+	if a.dir == "" {
+		return true
+	}
+	a.offerMu.RLock()
+	defer a.offerMu.RUnlock()
+	if a.offersClosed {
+		return false
+	}
+	select {
+	case a.ch <- rx:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *archive) run() {
 	files := map[string]*hourFile{}
 	flush := time.NewTicker(5 * time.Second)
@@ -152,8 +177,11 @@ func (a *archive) run() {
 					drained = true
 				}
 			}
+			// Closed but not uploaded: the next process's sweep uploads them, so a deploy does not wait on
+			// the hour files, the largest of which take most of a minute to send.
 			for _, hf := range files {
-				a.close(hf)
+				a.finish(hf)
+				a.release(hf.path)
 			}
 			reply <- struct{}{}
 			return
@@ -242,26 +270,22 @@ func (a *archive) rotate(recv time.Time, files map[string]*hourFile) {
 	}
 }
 
-// shutdown drains the queue to disk, closes open hours, and waits up to 45 s for their uploads.
+// shutdown drains the queue to disk and closes open hours. It neither uploads them nor waits for uploads
+// already running: a PUT cut off by the exit leaves the bucket's object as it was, and the next process's
+// sweep uploads every hour the bucket holds short.
 func (a *archive) shutdown() {
 	if a.dir == "" {
 		return
 	}
+	a.offerMu.Lock()
+	a.offersClosed = true
+	a.offerMu.Unlock()
 	a.stopped.Do(func() {
 		// No timeout on the drain: every queued reception reaches disk before the process exits, or
-		// systemd's stop timeout kills it with the disk as the reason. Uploads get a bound instead,
-		// since an hour left on disk is uploaded by the next process's sweep; both archives shut down
-		// in turn, and two bounds must fit inside TimeoutStopSec.
+		// systemd's stop timeout kills it with the disk as the reason.
 		reply := make(chan struct{})
 		a.done <- reply
 		<-reply
-		uploaded := make(chan struct{})
-		go func() { a.uploads.Wait(); close(uploaded) }()
-		select {
-		case <-uploaded:
-		case <-time.After(45 * time.Second):
-			log.Printf("archive: shutdown timed out waiting for uploads")
-		}
 	})
 }
 
@@ -285,11 +309,15 @@ func (a *archive) open(source string, hour time.Time) *hourFile {
 	return &hourFile{hour: hour, path: path, f: f, gz: gzip.NewWriter(f)} // appending gzip members is valid gzip
 }
 
-func (a *archive) close(hf *hourFile) {
-	// The gzip footer and the close can be the first to hit a full disk. The hour stays on disk,
-	// held by no one, and the next process's sweep uploads it.
+// finish writes the gzip footer and closes the file. The footer and the close can be the first writes to
+// hit a full disk; the hour stays on disk, held by no one, and the next process's sweep uploads it.
+func (a *archive) finish(hf *hourFile) {
 	gzErr, fErr := hf.gz.Close(), hf.f.Close()
 	ioFatal(errors.Join(gzErr, fErr))
+}
+
+func (a *archive) close(hf *hourFile) {
+	a.finish(hf)
 	if a.s3 == nil {
 		a.release(hf.path)
 		return
@@ -348,6 +376,25 @@ func (a *archive) isHeld(path string) bool {
 	return a.holds[path] > 0
 }
 
+// expire enforces keepFor on disk for an archive with no bucket.
+func (a *archive) expire() {
+	if a.keepFor <= 0 || a.keepUnder == "" {
+		return
+	}
+	cutoff := time.Now().Add(-a.keepFor)
+	filepath.WalkDir(filepath.Join(a.dir, a.keepUnder), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") || a.isHeld(path) {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil && fi.ModTime().Before(cutoff) {
+			if err := os.Remove(path); err != nil {
+				log.Printf("archive: expire %s: %v", path, err)
+			}
+		}
+		return nil
+	})
+}
+
 // archiveGrace is how long an hour file must sit untouched before a sweep may delete it. Rotation
 // does not delete: a Reception queued across the hour boundary reopens the hour it names, appending
 // to the file and uploading it again, so a file deleted at rotation would come back as a stub and
@@ -360,13 +407,26 @@ const archiveGrace = 2 * time.Hour
 // only staging. A file the bucket already holds at the same size is deleted, and a short or missing
 // one is uploaded first. An object larger than the local file is left alone: that is a stub over a
 // complete upload, and overwriting it would destroy the only good copy.
+//
+// Files inside archiveGrace are uploaded the same way but never deleted. Those are the hours the last
+// process closed at shutdown without uploading, and the sweep at boot sends them within a minute, well
+// before the packager reads the day. If this process reopens it while the upload runs, it goes up again,
+// complete, when it rotates.
 func (a *archive) sweep() {
-	if a.dir == "" || a.s3 == nil {
+	if a.dir == "" {
+		return
+	}
+	if a.s3 == nil {
+		a.expire()
 		return
 	}
 	cutoff := time.Now().Add(-archiveGrace)
 	var freed, kept, total int64
-	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
+	root := a.dir
+	if a.keepUnder != "" {
+		root = filepath.Join(a.dir, a.keepUnder) // never another archive's hours, should dir cover them
+	}
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
 			return nil
 		}
@@ -375,9 +435,10 @@ func (a *archive) sweep() {
 			return nil
 		}
 		total += fi.Size()
-		if a.isHeld(path) || fi.ModTime().After(cutoff) {
+		if a.isHeld(path) {
 			return nil
 		}
+		recent := fi.ModTime().After(cutoff)
 		rel, err := filepath.Rel(a.dir, path)
 		if err != nil {
 			return nil
@@ -386,13 +447,17 @@ func (a *archive) sweep() {
 		stored, err := a.s3.size(key)
 		if err != nil {
 			log.Printf("archive: sweep head %s: %v", key, err)
-			kept += fi.Size()
+			if !recent {
+				kept += fi.Size()
+			}
 			return nil
 		}
 		switch {
 		case stored > fi.Size():
 			log.Printf("archive: %s is %d bytes in the bucket but %d on disk; keeping both for a human", key, stored, fi.Size())
-			kept += fi.Size()
+			if !recent {
+				kept += fi.Size()
+			}
 			return nil
 		case stored < fi.Size():
 			var err error
@@ -400,10 +465,15 @@ func (a *archive) sweep() {
 			if err != nil {
 				a.uploadFailures.Add(1)
 				log.Printf("archive: sweep upload %s: %v", key, err)
-				kept += fi.Size()
+				if !recent {
+					kept += fi.Size()
+				}
 				return nil
 			}
 			log.Printf("archive: uploaded %s (sweep)", key)
+		}
+		if recent {
+			return nil
 		}
 		// The upload took a while. Delete only the bytes that went up: anything else means a writer
 		// touched the file, and the next sweep can take another run at it.
@@ -421,6 +491,20 @@ func (a *archive) sweep() {
 	})
 	a.staged.Store(total - freed)
 	log.Printf("archive: sweep freed %d MiB, kept %d MiB not yet reclaimed", freed>>20, kept>>20)
+}
+
+// runSweep is `aiscast sweep`: one sweep of every archive, with the server's environment, then exit.
+// Shutdown leaves its last hours for the next process to upload, so a box being retired runs this
+// once the server has stopped. Run beside a live server it could upload an hour that server is still
+// writing.
+func runSweep() {
+	for _, a := range []*archive{
+		newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv()),
+		newNormArchive(normDir(), s3NormFromEnv()),
+		newAccessArchive(accessDir(), accessStoreFromEnv()),
+	} {
+		a.sweep()
+	}
 }
 
 // sweepLoop reclaims on an interval, so a failed upload is retried without waiting for a restart.

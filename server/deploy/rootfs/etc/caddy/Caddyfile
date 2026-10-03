@@ -10,10 +10,27 @@
 
 # TLS for the hub. Let's Encrypt HTTP-01 works through the Cloudflare proxy; ACME retries until DNS points here.
 ais.openwaters.io {
+	# Full client addresses for abuse response, under two weeks; README: Access logs.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100MiB
+			roll_interval 24h
+			roll_keep 500
+			roll_keep_for 288h
+		}
+		format filter {
+			# the usual token parameter names, around and bbox, and a token anywhere in the URI, in the usual encodings
+			request>uri regexp "(?i)([?&](?:key|token|api_?key|access_token|around|bbox)=)[^&]*|(?:a|%61)(?:k|%6b)(?:1|%31)(?:\.|%2e)[^&/?]*" "${1}REDACTED"
+			# a token can arrive under any header name
+			request>headers delete
+		}
+	}
+	log_append request_id {http.request.uuid}
 	@metrics path /metrics
 	respond @metrics 404
 	encode zstd gzip
 	reverse_proxy localhost:8080 {
+		header_up X-Request-Id {http.request.uuid}
 		# Stalled client blocks the reload, so close on a timer after a reload
 		stream_close_delay 30s
 	}

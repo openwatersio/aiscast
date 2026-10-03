@@ -22,7 +22,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.8.0"
+const mcpVersion = "0.9.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -43,8 +43,7 @@ const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the ope
 - A supplement to onboard AIS, never a substitute, and not for safety of navigation.
 - get_vessel_track answers where a vessel has been. Anonymous and personal calls reach the last 48 hours; feeder and commercial tokens reach further, 7 days per call.
 - These tools answer one question at a time. For continuous updates use the WebSocket stream at wss://ais.openwaters.io/v1/stream, documented at ` + mcpDocsURL + `.
-- get_vessels adds a wikidata object for vessels whose IMO number has a Wikidata item: ship type, builder and yard number, year built, gross tonnage, deadweight, registered length, beam, and design draught, country of registry and home port, owner and operator, former names, and links to the ship's Wikipedia article and its photos on Wikimedia Commons. Each field is present only when the item has it. It is refreshed weekly and public domain (CC0), so it needs no credit line; the photos carry their own licenses, shown on their Commons pages. Registered dimensions can differ from the ones AIS reports, and the draught AIS reports is the current voyage's.
-- get_vessels adds a uscg object for US-flag vessels whose call sign and name match the Coast Guard's PSIX database: service type such as Towing Vessel or Passenger (Inspected), status, year built, official number, and, once read, registered length, breadth, depth, and tonnage. It is public domain and needs no credit line.
+- get_vessels adds particulars for vessels an enrichment source knows, merged into one vocabulary, with a provenance map naming each field's source and a sources map carrying each source's credit, license, and its own page for the vessel. The sources: Wikidata, by IMO number; the US Coast Guard's PSIX, for a US-flag vessel matched by call sign and name or by its FCC license's official number; the FCC's ship station licenses, by MMSI; and Norway's fishing vessel register, matched as PSIX is. Each field is present only when a source has it, refreshed weekly. Registered dimensions can differ from the ones AIS reports, and the draught AIS reports is the current voyage's. Wikidata is CC0 and the US sources public domain; the Norwegian register's NLOD 2.0 asks for the credit its sources entry carries.
 - The network holds no port call, weather, or inspection data. Owners and operators come only from Wikidata, for the ships whose items list them.`
 
 // mcpService is the MCP server and its HTTP handler, built once per Pipeline.
@@ -140,34 +139,35 @@ func (b mcpBox) bbox() bbox {
 // mcpVessel is one row of a vessel result. Sentinel "not available" values are omitted rather than sent
 // as 360, 102.3, or 511, so a reader never has to know the AIS encodings.
 type mcpVessel struct {
-	MMSI          uint32        `json:"mmsi"`
-	Name          string        `json:"name,omitempty" jsonschema:"name from the vessel's static data, when heard"`
-	Kind          string        `json:"kind" jsonschema:"vessel, aton (aid to navigation), base (base station), or sar (search and rescue aircraft)"`
-	Type          uint8         `json:"type,omitempty" jsonschema:"ITU ship and cargo type code, or the aid type for an aton"`
-	TypeName      string        `json:"type_name,omitempty"`
-	Lat           *float64      `json:"lat,omitempty" jsonschema:"latitude of the last position, degrees; absent when no position has been heard"`
-	Lon           *float64      `json:"lon,omitempty" jsonschema:"longitude of the last position, degrees"`
-	Cog           *float64      `json:"cog,omitempty" jsonschema:"course over ground, degrees true"`
-	Sog           *float64      `json:"sog,omitempty" jsonschema:"speed over ground, knots"`
-	Heading       *uint16       `json:"heading,omitempty" jsonschema:"true heading, degrees"`
-	NavStatus     *uint8        `json:"nav_status,omitempty" jsonschema:"AIS navigational status code"`
-	NavStatusName string        `json:"nav_status_name,omitempty"`
-	Flag          string        `json:"flag,omitempty" jsonschema:"ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits"`
-	IMO           uint32        `json:"imo,omitempty" jsonschema:"IMO number, once the vessel's static data has been heard"`
-	CallSign      string        `json:"callsign,omitempty"`
-	Destination   string        `json:"destination,omitempty" jsonschema:"destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful"`
-	ETA           string        `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD; AIS carries no year, so read it as the next occurrence"`
-	Draught       *float64      `json:"draught,omitempty" jsonschema:"maximum static draught, metres"`
-	Length        *uint16       `json:"length,omitempty" jsonschema:"overall length, metres"`
-	Beam          *uint16       `json:"beam,omitempty" jsonschema:"beam, metres"`
-	Seen          string        `json:"seen" jsonschema:"time of the last message heard, RFC 3339 UTC"`
-	AgeS          int64         `json:"age_s" jsonschema:"seconds since seen"`
-	Source        string        `json:"source" jsonschema:"feed or station kind the last message came from"`
-	Station       string        `json:"station"`
-	DistanceNM    *float64      `json:"distance_nm,omitempty" jsonschema:"nautical miles from the search centre (find_vessels_near)"`
-	Bearing       *float64      `json:"bearing,omitempty" jsonschema:"degrees true from the search centre to the vessel (find_vessels_near)"`
-	Wikidata      *wikidataShip `json:"wikidata,omitempty" jsonschema:"particulars as registered, from the vessel's Wikidata item found by its IMO number (get_vessels)"`
-	USCG          *uscgVessel   `json:"uscg,omitempty" jsonschema:"particulars as documented with the US Coast Guard, for a US-flag vessel whose call sign and name match a vessel in its PSIX database (get_vessels)"`
+	MMSI          uint32               `json:"mmsi"`
+	Name          string               `json:"name,omitempty" jsonschema:"name from the vessel's static data, when heard"`
+	Kind          string               `json:"kind" jsonschema:"vessel, aton (aid to navigation), base (base station), or sar (search and rescue aircraft)"`
+	Type          uint8                `json:"type,omitempty" jsonschema:"ITU ship and cargo type code, or the aid type for an aton"`
+	TypeName      string               `json:"type_name,omitempty"`
+	Lat           *float64             `json:"lat,omitempty" jsonschema:"latitude of the last position, degrees; absent when no position has been heard"`
+	Lon           *float64             `json:"lon,omitempty" jsonschema:"longitude of the last position, degrees"`
+	Cog           *float64             `json:"cog,omitempty" jsonschema:"course over ground, degrees true"`
+	Sog           *float64             `json:"sog,omitempty" jsonschema:"speed over ground, knots"`
+	Heading       *uint16              `json:"heading,omitempty" jsonschema:"true heading, degrees"`
+	NavStatus     *uint8               `json:"nav_status,omitempty" jsonschema:"AIS navigational status code"`
+	NavStatusName string               `json:"nav_status_name,omitempty"`
+	Flag          string               `json:"flag,omitempty" jsonschema:"ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits"`
+	IMO           uint32               `json:"imo,omitempty" jsonschema:"IMO number, once the vessel's static data has been heard"`
+	CallSign      string               `json:"callsign,omitempty"`
+	Destination   string               `json:"destination,omitempty" jsonschema:"destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful"`
+	ETA           string               `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD; AIS carries no year, so read it as the next occurrence"`
+	Draught       *float64             `json:"draught,omitempty" jsonschema:"maximum static draught, metres"`
+	Length        *uint16              `json:"length,omitempty" jsonschema:"overall length, metres"`
+	Beam          *uint16              `json:"beam,omitempty" jsonschema:"beam, metres"`
+	Seen          string               `json:"seen" jsonschema:"time of the last message heard, RFC 3339 UTC"`
+	AgeS          int64                `json:"age_s" jsonschema:"seconds since seen"`
+	Source        string               `json:"source" jsonschema:"feed or station kind the last message came from"`
+	Station       string               `json:"station"`
+	DistanceNM    *float64             `json:"distance_nm,omitempty" jsonschema:"nautical miles from the search centre (find_vessels_near)"`
+	Bearing       *float64             `json:"bearing,omitempty" jsonschema:"degrees true from the search centre to the vessel (find_vessels_near)"`
+	Particulars   *particulars         `json:"particulars,omitempty" jsonschema:"particulars as registered, merged from the enrichment sources into one vocabulary (get_vessels)"`
+	Provenance    map[string]string    `json:"provenance,omitempty" jsonschema:"the source of each particulars field, by the field's name; values are keys of sources (get_vessels)"`
+	Sources       map[string]sourceRef `json:"sources,omitempty" jsonschema:"each contributing source's credit, license, and its own page for this vessel (get_vessels)"`
 }
 
 type mcpVessels struct {
@@ -466,13 +466,28 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 		imos = append(imos, r.IMO)
 	}
 	wd := p.wikidataOf(imos...)
+	mmsis := make([]uint32, 0, len(out.Vessels))
+	for _, r := range out.Vessels {
+		mmsis = append(mmsis, r.MMSI)
+	}
+	fc := p.fccOf(mmsis...)
 	keys := make([]uscgKey, 0, len(out.Vessels))
 	for _, r := range out.Vessels {
-		keys = append(keys, uscgKey{r.MMSI, r.CallSign, r.Name})
+		k := uscgKey{mmsi: r.MMSI, callsign: r.CallSign, name: r.Name}
+		if lic := fc[r.MMSI]; lic != nil {
+			k.official = lic.Official
+		}
+		keys = append(keys, k)
 	}
 	cg := p.uscgOf(keys...)
+	fkeys := make([]fdirKey, 0, len(out.Vessels))
+	for _, r := range out.Vessels {
+		fkeys = append(fkeys, fdirKey{r.MMSI, r.CallSign, r.Name})
+	}
+	fd := p.fiskeridirOf(fkeys...)
 	for i, r := range out.Vessels {
-		out.Vessels[i].Wikidata, out.Vessels[i].USCG = wd[r.IMO], cg[r.MMSI]
+		out.Vessels[i].Particulars, out.Vessels[i].Provenance, out.Vessels[i].Sources =
+			mergeParticulars(wd[r.IMO], cg[r.MMSI], fd[r.MMSI], fc[r.MMSI])
 	}
 	for _, m := range in.MMSI {
 		if !known[m] {

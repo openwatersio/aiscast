@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -316,6 +320,95 @@ func TestVesselTileRecord(t *testing.T) {
 		if got := fcIDs("/v1/vessels?" + query); !slices.Equal(got, want) {
 			t.Errorf("/v1/vessels?%s: %v, want %v", query, got, want)
 		}
+	}
+}
+
+// A tile from the record keeps the same vessels as the cache's own thinning.
+func TestTileRecordsThinLikeTheCache(t *testing.T) {
+	now := time.Now().Truncate(time.Millisecond) // the record keeps milliseconds
+	r := rand.New(rand.NewPCG(5, 6))
+	z, x, y := 3, 4, 2 // the North Sea and the Baltic
+	box := tileBox(z, x, y)
+	var rows []record
+	for i := range tileCap * 3 {
+		v := newVessel()
+		v.Lat, v.Lon, v.HasPos = box[0]+r.Float64()*(box[2]-box[0]), box[1]+r.Float64()*(box[3]-box[1]), true
+		v.Seen = now.Add(-time.Hour - time.Duration(r.IntN(60))*time.Second) // many share a second
+		v.PosAt, v.Sog = v.Seen, 0
+		rows = append(rows, record{mmsi: uint32(300000000 + i), v: v, firstSeen: v.Seen})
+	}
+	rec := storePipeline(t)
+	if err := rec.store.upsert(rows); err != nil {
+		t.Fatal(err)
+	}
+	cached := testPipeline(t)
+	cached.vmu.Lock()
+	for _, row := range rows {
+		cached.putVesselLocked(row.mmsi, row.v)
+	}
+	cached.vmu.Unlock()
+	rules, _ := parseAgeRules(url.Values{})
+	ids := func(p *Pipeline) []uint64 {
+		var out []uint64
+		for id := range decodeTile(t, p.vesselTile(z, x, y, &tileFilter{ageRules: *rules}, now)) {
+			out = append(out, id)
+		}
+		slices.Sort(out)
+		return out
+	}
+	got, want := ids(rec), ids(cached)
+	if len(want) >= len(rows) || !slices.Equal(got, want) {
+		t.Fatalf("record tile kept %d, cache tile %d, of %d", len(got), len(want), len(rows))
+	}
+	// and the record read only the cells' winners, not every row
+	now2 := now
+	read, err := rec.tileRecords(recordQuery{boxes: []bbox{box}, since: now2.Add(-areaWindow), before: now2.Add(-vesselTTL), hasPos: true, filter: &rules.area, now: now2}, z, x, y)
+	if err != nil || len(read) >= len(rows) || len(read) > tileCols*tileCols {
+		t.Fatalf("read %d of %d rows (%v); want at most one per cell", len(read), len(rows), err)
+	}
+}
+
+// A few vessels in one cell are not thinned, so the record answers with all of them.
+func TestTileRecordsUnthinned(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	var rows []record
+	for i := range 3 {
+		v := newVessel()
+		v.Lat, v.Lon, v.HasPos, v.Seen, v.Sog = 59.5, 10.6, true, now.Add(-time.Duration(i+1)*time.Hour), 0
+		rows = append(rows, record{mmsi: uint32(257000020 + i), v: v, firstSeen: v.Seen})
+	}
+	if err := p.store.upsert(rows); err != nil {
+		t.Fatal(err)
+	}
+	q := recordQuery{boxes: []bbox{tileBox(0, 0, 0)}, since: now.Add(-areaWindow), before: now.Add(-vesselTTL), hasPos: true, now: now}
+	got, err := p.tileRecords(q, 0, 0, 0)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("%d rows, %v; want all 3", len(got), err)
+	}
+}
+
+func TestTileBuildsBounded(t *testing.T) {
+	var c tileCache
+	var active, peak atomic.Int32
+	var wg sync.WaitGroup
+	for i := range 4 * tileBuilds {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.get(strconv.Itoa(i), time.Now(), func() []byte {
+				n := active.Add(1)
+				for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+				}
+				time.Sleep(10 * time.Millisecond)
+				active.Add(-1)
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+	if peak.Load() != tileBuilds {
+		t.Fatalf("%d builds at once, want %d", peak.Load(), tileBuilds)
 	}
 }
 

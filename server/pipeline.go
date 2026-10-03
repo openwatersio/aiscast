@@ -63,9 +63,12 @@ type subscriber struct {
 }
 
 type Pipeline struct {
-	arch  *archive
-	norm  *archive // normalized stream: accepted events, reception copies, weather; no-op unless configured
-	codec *ais.Codec
+	arch *archive
+	norm *archive // normalized stream: accepted events, reception copies, weather; no-op unless configured
+	// access log: a line per HTTP request (access.go); no-op unless configured
+	access        *archive
+	accessDropped atomic.Int64 // lines dropped because the writer fell behind
+	codec         *ais.Codec
 
 	mu      sync.Mutex         // ponytail: one lock around parse+dedupe; shard per station if it shows up in profiles
 	encoder *aisnmea.NMEACodec // for synthesized events; has its own sequence counter
@@ -102,7 +105,11 @@ type Pipeline struct {
 	imports    importStats                    // the daily merge of the lake's vessels into the record (import.go)
 	wikidata   wikidataStats                  // the weekly sync of vessel particulars from Wikidata (wikidata.go)
 	uscg       uscgStats                      // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
+	fiskeridir fdirStats                      // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
+	fcc        fccStats                       // the weekly sync of FCC ship station licenses (fcc.go)
 	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
+	ch         *chStore                       // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
+	chQueue    []trackPoint                   // positions folded since the last flush to ClickHouse; guarded by vmu
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
 	storesClosed bool       // set by closeStore; flushes after it do nothing
@@ -137,7 +144,7 @@ func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
 	p := &Pipeline{
-		arch: arch, norm: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
+		arch: arch, norm: newArchive("", nil), access: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]fragment{},
@@ -216,9 +223,12 @@ func (p *Pipeline) release() {
 // producer turned away is dropped; the process is exiting.
 func (p *Pipeline) closeArchives() {
 	p.closing.Store(true)
+	access := make(chan struct{})
+	go func() { p.access.shutdown(); close(access) }() // in parallel, so its upload bound fits in TimeoutStopSec beside theirs
 	p.intake.Lock()
 	p.arch.shutdown()
 	p.norm.shutdown()
+	<-access
 }
 
 // fragment is one sentence of a multipart message awaiting the rest.
