@@ -12,7 +12,7 @@ export function clientLoader() {
 }
 
 export const meta = () =>
-  pageMeta({ title: "Not found | Open Waters AIS", description: "No page at this address.", path: "/vessels", noindex: true });
+  pageMeta({ title: "Not found | Open Waters AIS", description: "No page at this address.", noindex: true });
 
 export default function NotFound() {
   return (

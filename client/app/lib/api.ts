@@ -70,26 +70,38 @@ export interface VesselProps {
   source: string;
   station: string;
   msg_type: string;
-  /** Particulars as registered, from the vessel's Wikidata item. On /v1/vessels/{mmsi} only. */
-  wikidata?: VesselWikidata;
-  /** Particulars as documented with the US Coast Guard, for a US-flag vessel. On /v1/vessels/{mmsi} only. */
-  uscg?: VesselUSCG;
+  /** Registered facts merged from the enrichment sources into one vocabulary. On /v1/vessels/{mmsi} only. */
+  particulars?: VesselParticulars;
+  /** The source of each particulars field, by the field's name; values are keys of `sources`. */
+  provenance?: Record<string, string>;
+  /** Each contributing source's credit, license, and its own page for this vessel. */
+  sources?: Record<string, SourceRef>;
 }
 
-/** A vessel's Wikidata item, found by its IMO number. Dimensions are in meters, deadweight in tonnes. */
-export interface VesselWikidata {
-  id: string;
-  url: string;
-  license: string;
+/**
+ * The vessel as registered, merged per field from the enrichment sources: a flag state outranks
+ * Wikidata, an empty value never wins. Dimensions are in meters, deadweight in tonnes. Every field
+ * is present only when a source has it.
+ */
+export interface VesselParticulars {
+  /** Name as documented with the flag state, which can differ from the AIS name. */
+  registered_name?: string;
+  /** The official number of a documented vessel, else its state registration. */
+  identification?: string;
+  service?: string;
+  status?: string;
   ship_type?: string;
   builder?: string;
   yard_number?: string;
-  /** The year it entered service. */
   year_built?: number;
   gross_tonnage?: number;
+  net_tonnage?: number;
+  /** How a flag-state tonnage was measured; Convention is the international system. */
+  tonnage_measure?: "Convention" | "Regulatory" | "Simplified";
   deadweight?: number;
   length?: number;
   beam?: number;
+  depth?: number;
   /** Design draught; the vessel's own `draught` is the current voyage's. */
   draught?: number;
   registry?: string;
@@ -104,23 +116,11 @@ export interface VesselWikidata {
   image?: string;
 }
 
-/** A US-flag vessel as the Coast Guard's PSIX documents it, matched by call sign and name. Dimensions in meters. */
-export interface VesselUSCG {
-  id: number;
+/** One enrichment source's credit and where its record of this vessel is. */
+export interface SourceRef {
+  credit: string;
   license: string;
-  name: string;
-  /** The official number of a documented vessel, else its state registration. */
-  identification?: string;
-  service?: string;
-  status?: string;
-  year_built?: number;
-  length?: number;
-  beam?: number;
-  depth?: number;
-  gross_tonnage?: number;
-  net_tonnage?: number;
-  /** Absent until the dimensions and tonnage have been read. */
-  tonnage_measure?: "Convention" | "Regulatory" | "Simplified";
+  url?: string;
 }
 
 export interface VesselFeature {
@@ -259,6 +259,31 @@ export async function getTrack(
 
 export async function getStations(auth: ApiAuth): Promise<Station[] | undefined> {
   return soft(get<Station[]>(auth, "/v1/stations"));
+}
+
+/** The pages of vessels the sitemap lists, each up to the 50,000 URLs a sitemap holds. */
+export interface SitemapPages {
+  page_size: number;
+  max_age_s: number;
+  pages: Array<{ vessels: number; lastmod: string }>;
+}
+
+/**
+ * The list of pages has no "not found", so a 404 is unexpected and counts as an outage. Taken
+ * for an empty index, it would tell crawlers there are no vessels.
+ */
+export async function getSitemapPages(auth: ApiAuth): Promise<SitemapPages> {
+  const pages = await get<SitemapPages>(auth, "/sitemap/vessels");
+  if (!pages) throw new ApiUnavailable("/sitemap/vessels: 404");
+  return pages;
+}
+
+/** One page of the sitemap's vessels, from 1. Undefined past the last page. */
+export async function getSitemapVessels(
+  auth: ApiAuth,
+  page: number,
+): Promise<Array<{ mmsi: number; name: string; seen: string }> | undefined> {
+  return (await get<{ vessels: Array<{ mmsi: number; name: string; seen: string }> }>(auth, `/sitemap/vessels?page=${page}`))?.vessels;
 }
 
 export async function getStation(

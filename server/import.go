@@ -118,7 +118,11 @@ func (s *store) importRows(rows []historyRow) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.refreshIndex(len(rows), func(i int) uint32 { return rows[i].mmsi })
+	return nil
 }
 
 func (s *store) meta(key string) (string, error) {

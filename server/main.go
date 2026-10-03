@@ -40,6 +40,8 @@ func main() {
 	go norm.sweepLoop()
 	p := newPipeline(arch)
 	p.norm = norm
+	p.access = newAccessArchive(accessDir(), accessStoreFromEnv())
+	go p.access.sweepLoop()
 
 	// The record restores the vessel cache, so a restart resumes the map the last process left. A record
 	// that will not open costs the restored map and the lookups it serves, never live ingest or the stream:
@@ -83,6 +85,18 @@ func main() {
 			}
 			if env("USCG", "1") == "1" {
 				go p.runUSCG(env("USCG_URL", psixEndpoint))
+			}
+			if err := p.loadFiskeridirStats(); err != nil {
+				log.Printf("fiskeridir: %v", err)
+			}
+			if env("FISKERIDIR", "1") == "1" {
+				go p.runFiskeridir(env("FISKERIDIR_URL", fdirEndpoint))
+			}
+			if err := p.loadFCCStats(); err != nil {
+				log.Printf("fcc: %v", err)
+			}
+			if env("FCC", "1") == "1" {
+				go p.runFCC(env("FCC_URL", fccEndpoint))
 			}
 			go p.runRecordCounts()
 		}
@@ -147,6 +161,9 @@ func main() {
 	for _, l := range p.udp {
 		go runUDP(p, l)
 	}
+	if url := os.Getenv("CLICKHOUSE_URL"); url != "" {
+		go p.runClickHouse(url)
+	}
 	go p.logStats()
 	go p.runStationNames()
 	go func() {
@@ -176,6 +193,9 @@ func main() {
 		}
 		if err := p.closeStore(); err != nil {
 			log.Printf("store: %v", err)
+		}
+		if err := p.drainClickHouse(); err != nil {
+			log.Printf("clickhouse: %v", err)
 		}
 		os.Exit(0)
 	}()
@@ -212,6 +232,7 @@ func routes(p *Pipeline) map[string]http.HandlerFunc {
 		"/health":                       p.serveHealth,
 		"/metrics":                      p.serveMetrics,
 		"/robots.txt":                   serveRobots,
+		"/sitemap/vessels":              p.api(corsHeaders, p.serveVesselSitemap),
 		"/openapi.json":                 p.api(corsHeaders, serveOpenAPI),
 	}
 }

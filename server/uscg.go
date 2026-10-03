@@ -6,7 +6,7 @@ package main
 //
 // PSIX has no MMSI, and no bulk download. Its SOAP service lists vessels by flag and service type, and
 // answers dimensions and tonnage one vessel at a time. So the sync runs in two parts. Once a week a listing
-// reads every US-flag vessel with a call sign into the uscg table, by service type, and recreational
+// reads every US-flag vessel with a call sign or an official number into the uscg table, by service type, and recreational
 // vessels by build year, since all of them at once fails. Then a backfill reads dimensions and tonnage, a
 // request a second, for the vessels heard on AIS that match a listed one, and again every 90 days.
 //
@@ -47,7 +47,8 @@ var (
 	psixPause       = 2 * time.Second
 	psixDetailPause = time.Second
 	// psixMinVessels is the fewest vessels a listing may store. It stands in for the stored set on the first
-	// sync: 61,634 US-flag vessels outside the recreational service had a call sign in September 2026.
+	// sync: 61,634 US-flag vessels outside the recreational service had a call sign in September 2026, and
+	// the ident-only rows kept for the FCC join add at most the ~66,000 licensed official numbers.
 	psixMinVessels = 50_000
 )
 
@@ -77,8 +78,9 @@ type uscgVessel struct {
 	NetTonnage     int     `json:"net_tonnage,omitempty"`
 	TonnageMeasure string  `json:"tonnage_measure,omitempty" jsonschema:"how the tonnage was measured: Convention (the international system), Regulatory (the older US system, in register tons), or Simplified (small vessels)"`
 
-	callsign  string
-	detailsAt int64 // unix ms of the last dimensions and tonnage read; 0 before
+	callsign    string
+	officialKey string // Identification through normOfficial, the key the FCC licenses join; "" without one
+	detailsAt   int64  // unix ms of the last dimensions and tonnage read; 0 before
 }
 
 // uscgStats is read by /metrics.
@@ -283,8 +285,11 @@ func psixListing(ctx context.Context, endpoint, service, year string) ([]psixSum
 	return psixRows[psixSummary](doc, "VesselSummary")
 }
 
-// fetchPSIX lists every US-flag vessel with a call sign, keyed by PSIX vessel ID.
-func fetchPSIX(ctx context.Context, endpoint string, now time.Time) (map[int]*uscgVessel, error) {
+// fetchPSIX lists every US-flag vessel with a call sign, or an official number an FCC license carries,
+// keyed by PSIX vessel ID. licensed is the set of normalized official numbers from the fcc table: an
+// ident-only row only that join could ever reach is dead weight unless its number is licensed, and
+// keeping all of them made the weekly replace long enough to stall the ingest writer.
+func fetchPSIX(ctx context.Context, endpoint string, now time.Time, licensed map[string]bool) (map[int]*uscgVessel, error) {
 	type ask struct{ service, year string }
 	var asks []ask
 	for _, s := range psixServices {
@@ -308,12 +313,17 @@ func fetchPSIX(ctx context.Context, endpoint string, now time.Time) (map[int]*us
 		}
 		for _, r := range rows {
 			cs, name := normCallSign(r.CallSign), strings.TrimSpace(r.Name)
-			// A merged record keeps its call sign under a name that says so.
-			if cs == "" || r.ID == 0 || strings.HasPrefix(name, "DUPLICATE OF") {
+			ident := strings.TrimSpace(r.Identification)
+			// A merged record keeps its call sign under a name that says so. A vessel without a call
+			// sign is kept when its official number or state registration survives normOfficial, which
+			// is how the FCC licenses join: most documented recreational vessels are listed that way.
+			// With neither key, or a placeholder where the number should be, nothing could ever find it.
+			key := normOfficial(ident)
+			if r.ID == 0 || (cs == "" && !licensed[key]) || strings.HasPrefix(name, "DUPLICATE OF") {
 				continue
 			}
 			year, _ := strconv.Atoi(strings.TrimSpace(r.Year))
-			out[r.ID] = &uscgVessel{ID: r.ID, callsign: cs, Name: name, Identification: strings.TrimSpace(r.Identification),
+			out[r.ID] = &uscgVessel{ID: r.ID, callsign: cs, Name: name, Identification: ident, officialKey: key,
 				Service: strings.TrimSpace(r.Service), Status: strings.TrimSpace(r.Status), YearBuilt: year}
 		}
 	}
@@ -410,12 +420,12 @@ func psixDetails(ctx context.Context, endpoint string, v *uscgVessel) error {
 
 // ---- storage ----
 
-const uscgCols = `vessel_id, callsign, name, identification, service, status, year_built, length, beam, depth,
+const uscgCols = `vessel_id, callsign, name, identification, official_key, service, status, year_built, length, beam, depth,
 	gross_tonnage, net_tonnage, tonnage_measure, details_at`
 
 func scanUSCG(rows *sql.Rows) (*uscgVessel, error) {
 	v := &uscgVessel{License: psixLicense}
-	err := rows.Scan(&v.ID, &v.callsign, &v.Name, &v.Identification, &v.Service, &v.Status, &v.YearBuilt, &v.Length, &v.Beam,
+	err := rows.Scan(&v.ID, &v.callsign, &v.Name, &v.Identification, &v.officialKey, &v.Service, &v.Status, &v.YearBuilt, &v.Length, &v.Beam,
 		&v.Depth, &v.GrossTonnage, &v.NetTonnage, &v.TonnageMeasure, &v.detailsAt)
 	return v, err
 }
@@ -438,18 +448,18 @@ func (s *store) replaceUSCGListing(vessels map[int]*uscgVessel, at time.Time) er
 		return err
 	}
 	defer tx.Rollback()
-	st, err := tx.Prepare(`INSERT INTO uscg (vessel_id, callsign, name, identification, service, status, year_built, listed)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	st, err := tx.Prepare(`INSERT INTO uscg (vessel_id, callsign, name, identification, official_key, service, status, year_built, listed)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (vessel_id) DO UPDATE SET callsign = excluded.callsign, name = excluded.name,
-			identification = excluded.identification, service = excluded.service, status = excluded.status,
-			year_built = excluded.year_built, listed = excluded.listed`)
+			identification = excluded.identification, official_key = excluded.official_key, service = excluded.service,
+			status = excluded.status, year_built = excluded.year_built, listed = excluded.listed`)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 	listed := at.UnixMilli()
 	for _, v := range vessels {
-		if _, err := st.Exec(v.ID, v.callsign, v.Name, v.Identification, v.Service, v.Status, v.YearBuilt, listed); err != nil {
+		if _, err := st.Exec(v.ID, v.callsign, v.Name, v.Identification, v.officialKey, v.Service, v.Status, v.YearBuilt, listed); err != nil {
 			return err
 		}
 	}
@@ -498,26 +508,36 @@ func (s *store) uscgByCallSign(callsigns []string) (map[string][]*uscgVessel, er
 // read before cutoff or never, most recently heard first, so the backfill reaches the vessels on the water
 // before those long gone.
 func (s *store) uscgDue(cutoff time.Time) ([]*uscgVessel, error) {
-	rows, err := s.db.Query(`SELECT v.mmsi, v.name, u.vessel_id, u.callsign, u.name, u.identification, u.service, u.status,
-		u.year_built, u.length, u.beam, u.depth, u.gross_tonnage, u.net_tonnage, u.tonnage_measure, u.details_at
-		FROM vessels v JOIN uscg u ON u.callsign = upper(trim(v.callsign))
-		WHERE v.flag = 'US' AND v.callsign != '' ORDER BY v.seen DESC, v.mmsi`)
+	rows, err := s.db.Query(`SELECT * FROM (
+		SELECT v.mmsi, v.name, v.seen, 0 AS via, u.vessel_id, u.callsign, u.name AS uname, u.identification, u.service, u.status,
+			u.year_built, u.length, u.beam, u.depth, u.gross_tonnage, u.net_tonnage, u.tonnage_measure, u.details_at
+			FROM vessels v JOIN uscg u ON u.callsign = upper(trim(v.callsign))
+			WHERE v.flag = 'US' AND u.callsign != ''
+		UNION ALL
+		SELECT v.mmsi, v.name, v.seen, 1 AS via, u.vessel_id, u.callsign, u.name AS uname, u.identification, u.service, u.status,
+			u.year_built, u.length, u.beam, u.depth, u.gross_tonnage, u.net_tonnage, u.tonnage_measure, u.details_at
+			FROM vessels v JOIN fcc f ON f.mmsi = v.mmsi JOIN uscg u ON u.official_key = f.official
+			WHERE v.flag = 'US' AND f.official != ''
+		) ORDER BY seen DESC, mmsi`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	type heard struct {
-		mmsi  uint32
-		name  string
-		cands []*uscgVessel
+		mmsi   uint32
+		name   string
+		cands  []*uscgVessel // matched through the call sign
+		fromID []*uscgVessel // matched through the FCC license's official number
 	}
 	var order []*heard
 	byMMSI := map[uint32]*heard{}
 	for rows.Next() {
 		var mmsi uint32
 		var name string
+		var seen int64
+		var via int
 		v := &uscgVessel{License: psixLicense}
-		if err := rows.Scan(&mmsi, &name, &v.ID, &v.callsign, &v.Name, &v.Identification, &v.Service, &v.Status, &v.YearBuilt,
+		if err := rows.Scan(&mmsi, &name, &seen, &via, &v.ID, &v.callsign, &v.Name, &v.Identification, &v.Service, &v.Status, &v.YearBuilt,
 			&v.Length, &v.Beam, &v.Depth, &v.GrossTonnage, &v.NetTonnage, &v.TonnageMeasure, &v.detailsAt); err != nil {
 			return nil, err
 		}
@@ -527,7 +547,11 @@ func (s *store) uscgDue(cutoff time.Time) ([]*uscgVessel, error) {
 			byMMSI[mmsi] = h
 			order = append(order, h)
 		}
-		h.cands = append(h.cands, v)
+		if via == 1 {
+			h.fromID = append(h.fromID, v)
+		} else {
+			h.cands = append(h.cands, v)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -535,7 +559,8 @@ func (s *store) uscgDue(cutoff time.Time) ([]*uscgVessel, error) {
 	var due []*uscgVessel
 	taken := map[int]bool{}
 	for _, h := range order {
-		if v := uscgPick(h.name, h.cands); v != nil && !taken[v.ID] && v.detailsAt < cutoff.UnixMilli() {
+		v := uscgChoose(h.name, uscgNewest(h.fromID), uscgPick(h.name, h.cands))
+		if v != nil && !taken[v.ID] && v.detailsAt < cutoff.UnixMilli() {
 			taken[v.ID] = true
 			due = append(due, v)
 		}
@@ -549,23 +574,34 @@ func (s *store) uscgDue(cutoff time.Time) ([]*uscgVessel, error) {
 type uscgKey struct {
 	mmsi           uint32
 	callsign, name string
+	official       string // from the vessel's FCC license (fcc.go), "" without one
 }
 
-// uscgOf is the PSIX particulars for each US-flag vessel that matches a listed one. A failed read costs the
-// particulars, never the answer they ride on.
+// uscgOf is the PSIX particulars for each US-flag vessel that matches a listed one. An official number
+// from the vessel's FCC license matches a record exactly and wins; without one, or when the number finds
+// nothing, the vessel matches by call sign and name together. A failed read costs the particulars, never
+// the answer they ride on.
 func (p *Pipeline) uscgOf(keys ...uscgKey) map[uint32]*uscgVessel {
 	if p.store == nil {
 		return nil
 	}
 	callsign := map[uint32]string{} // the US-flag keys, by their normalized call sign
-	var callsigns []string
+	official := map[uint32]string{} // the US-flag keys' official numbers from their FCC licenses
+	var callsigns, officials []string
 	for _, k := range keys {
-		if cs := normCallSign(k.callsign); cs != "" && flagOf(k.mmsi) == "US" {
+		if flagOf(k.mmsi) != "US" {
+			continue
+		}
+		if cs := normCallSign(k.callsign); cs != "" {
 			callsign[k.mmsi] = cs
 			callsigns = append(callsigns, cs)
 		}
+		if k.official != "" {
+			official[k.mmsi] = k.official
+			officials = append(officials, k.official)
+		}
 	}
-	if len(callsigns) == 0 {
+	if len(callsigns) == 0 && len(officials) == 0 {
 		return nil
 	}
 	byCS, err := p.store.uscgByCallSign(callsigns)
@@ -573,15 +609,84 @@ func (p *Pipeline) uscgOf(keys ...uscgKey) map[uint32]*uscgVessel {
 		log.Printf("uscg: %v", err)
 		return nil
 	}
+	byID, err := p.store.uscgByIdentification(officials)
+	if err != nil {
+		log.Printf("uscg: %v", err)
+		return nil
+	}
 	out := map[uint32]*uscgVessel{}
 	for _, k := range keys {
+		var fromID, fuzzy *uscgVessel
+		if o, ok := official[k.mmsi]; ok {
+			fromID = uscgNewest(byID[o])
+		}
 		if cs, ok := callsign[k.mmsi]; ok {
-			if v := uscgPick(k.name, byCS[cs]); v != nil {
-				out[k.mmsi] = v
-			}
+			fuzzy = uscgPick(k.name, byCS[cs])
+		}
+		if v := uscgChoose(k.name, fromID, fuzzy); v != nil {
+			out[k.mmsi] = v
 		}
 	}
 	return out
+}
+
+// uscgChoose is the one record a vessel gets, agreed between the serve path and the backfill so they
+// never pick differently: an official-number match wins when the fuzzy path found nothing, found the
+// same record, or the documented names agree; a license carrying a stale hull's number never overrides
+// a call-sign and name match that disagrees with it. A record only its official number reached, one
+// with no call sign at all, also needs the names to agree: with no second key, a stale or mistyped
+// number on the license would otherwise serve another hull's facts uncorroborated.
+func uscgChoose(name string, fromID, fuzzy *uscgVessel) *uscgVessel {
+	if fromID != nil && fuzzy == nil && fromID.callsign == "" && !namesAgree(name, fromID.Name) {
+		fromID = nil
+	}
+	if fromID != nil && (fuzzy == nil || fuzzy.ID == fromID.ID || namesAgree(name, fromID.Name)) {
+		return fromID
+	}
+	return fuzzy
+}
+
+// uscgNewest is the record to serve among those sharing an official number: active over not, then newest.
+func uscgNewest(cands []*uscgVessel) *uscgVessel {
+	var best *uscgVessel
+	for _, c := range cands {
+		if best == nil {
+			best = c
+		} else if active, bestActive := c.Status == "Active", best.Status == "Active"; active != bestActive {
+			if active {
+				best = c
+			}
+		} else if c.ID > best.ID {
+			best = c
+		}
+	}
+	return best
+}
+
+// uscgByIdentification is the listed vessels with each official number or state registration, keyed and
+// queried by the normalized form both sides of the FCC join are written in.
+func (s *store) uscgByIdentification(ids []string) (map[string][]*uscgVessel, error) {
+	out := map[string][]*uscgVessel{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(ids))
+	for i, c := range ids {
+		args[i] = c
+	}
+	rows, err := s.db.Query(`SELECT `+uscgCols+` FROM uscg WHERE official_key IN (?`+strings.Repeat(",?", len(ids)-1)+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		v, err := scanUSCG(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[v.officialKey] = append(out[v.officialKey], v)
+	}
+	return out, rows.Err()
 }
 
 // loadUSCGStats reads what the last sync stored, so /metrics reports it from boot and with the sync off.
@@ -622,12 +727,29 @@ func (p *Pipeline) syncUSCGIfDue(now time.Time, endpoint string) bool {
 		return false
 	}
 	if t, err := time.Parse(time.RFC3339, last); err == nil && now.Sub(t) < psixEvery {
-		return false
+		// A license sync newer than the listing can make more ident-only rows joinable, so the listing
+		// re-runs early. Comparing stamps, rather than one sync clearing the other's, stays correct
+		// when the license sync lands while a listing is already in flight: the fresh listing writes a
+		// newer stamp, and the comparison still fires at the next check.
+		fccLast, ferr := p.store.meta("fcc_sync")
+		if ferr != nil {
+			log.Printf("uscg: %v", ferr)
+			return false
+		}
+		if f, perr := time.Parse(time.RFC3339, fccLast); perr != nil || !f.After(t) {
+			return false
+		}
 	}
 	p.uscg.runs.Add(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
-	vessels, err := fetchPSIX(ctx, endpoint, now)
+	licensed, err := p.store.fccOfficials()
+	if err != nil {
+		p.uscg.failures.Add(1)
+		log.Printf("uscg: %v", err)
+		return false
+	}
+	vessels, err := fetchPSIX(ctx, endpoint, now, licensed)
 	if err == nil {
 		err = p.store.replaceUSCGListing(vessels, now)
 	}
@@ -638,7 +760,7 @@ func (p *Pipeline) syncUSCGIfDue(now time.Time, endpoint string) bool {
 	}
 	p.uscg.vessels.Store(int64(len(vessels)))
 	p.uscg.lastSuccess.Store(now.Unix())
-	log.Printf("uscg: listed %d US-flag vessels with a call sign", len(vessels))
+	log.Printf("uscg: listed %d US-flag vessels", len(vessels))
 	return true
 }
 

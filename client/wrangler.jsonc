@@ -13,6 +13,10 @@
     { "pattern": "openwaters.io/ais/stations*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/network*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/assets/*", "zone_name": "openwaters.io" },
+    // sitemap.xml, the index, and the sitemap-*.xml files it lists (app/lib/sitemap.server.ts).
+    { "pattern": "openwaters.io/ais/sitemap*", "zone_name": "openwaters.io" },
+    // Browser error reports (app/lib/report.ts), answered by the Worker before the app.
+    { "pattern": "openwaters.io/ais/errors", "zone_name": "openwaters.io" },
   ],
   // Routes disable these by default; keep the generated URL and PR previews.
   "workers_dev": true,

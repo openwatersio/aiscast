@@ -82,10 +82,20 @@ type archive struct {
 	s3      objectStore                                // nil = keep files local only
 	keyFn   func(source string, hour time.Time) string // nil = per-source license-prefixed layout
 	bare    bool                                       // write Body verbatim, one record per line, instead of the recv/station/body raw format
-	ch      chan Reception
-	done    chan chan struct{} // shutdown request; replied to when files are closed and uploaded
-	uploads sync.WaitGroup
-	stopped sync.Once // shutdown runs once; the writer is gone after the first
+	keepFor time.Duration                              // with no bucket, the sweep deletes closed hours older than this; 0 keeps them
+	// keepUnder confines the sweep, uploads and deletions alike, to one directory under dir, so a dir set
+	// over another archive's never touches that archive's hours.
+	keepUnder string
+	ch        chan Reception
+	done      chan chan struct{} // shutdown request; replied to when files are closed and uploaded
+	uploads   sync.WaitGroup
+	stopped   sync.Once // shutdown runs once; the writer is gone after the first
+
+	// offersClosed turns offer away once shutdown begins, so a record offered after the last drain is
+	// refused and counted rather than left in a queue nothing reads. offerMu keeps an offer that passed the
+	// check from landing after the drain.
+	offerMu      sync.RWMutex
+	offersClosed bool
 
 	// latest is the newest receive time the writer has seen and nextClose the earliest time any open
 	// hour may close; only run() touches them.
@@ -129,6 +139,25 @@ func (a *archive) write(rx Reception) {
 	// regenerate the stream, and the writer only touches local disk (uploads run beside it), so a
 	// full queue means the disk has stalled and ingest waits for it.
 	a.ch <- rx
+}
+
+// offer is write without the wait: false when the queue is full or the archive has shut down. For records
+// worth less than holding up whoever produced them.
+func (a *archive) offer(rx Reception) bool {
+	if a.dir == "" {
+		return true
+	}
+	a.offerMu.RLock()
+	defer a.offerMu.RUnlock()
+	if a.offersClosed {
+		return false
+	}
+	select {
+	case a.ch <- rx:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *archive) run() {
@@ -247,6 +276,9 @@ func (a *archive) shutdown() {
 	if a.dir == "" {
 		return
 	}
+	a.offerMu.Lock()
+	a.offersClosed = true
+	a.offerMu.Unlock()
 	a.stopped.Do(func() {
 		// No timeout on the drain: every queued reception reaches disk before the process exits, or
 		// systemd's stop timeout kills it with the disk as the reason. Uploads get a bound instead,
@@ -348,6 +380,26 @@ func (a *archive) isHeld(path string) bool {
 	return a.holds[path] > 0
 }
 
+// expire deletes the closed hours older than keepFor, for an archive with no bucket whose records must not
+// outlive their retention on disk.
+func (a *archive) expire() {
+	if a.keepFor <= 0 || a.keepUnder == "" {
+		return
+	}
+	cutoff := time.Now().Add(-a.keepFor)
+	filepath.WalkDir(filepath.Join(a.dir, a.keepUnder), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") || a.isHeld(path) {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil && fi.ModTime().Before(cutoff) {
+			if err := os.Remove(path); err != nil {
+				log.Printf("archive: expire %s: %v", path, err)
+			}
+		}
+		return nil
+	})
+}
+
 // archiveGrace is how long an hour file must sit untouched before a sweep may delete it. Rotation
 // does not delete: a Reception queued across the hour boundary reopens the hour it names, appending
 // to the file and uploading it again, so a file deleted at rotation would come back as a stub and
@@ -361,12 +413,20 @@ const archiveGrace = 2 * time.Hour
 // one is uploaded first. An object larger than the local file is left alone: that is a stub over a
 // complete upload, and overwriting it would destroy the only good copy.
 func (a *archive) sweep() {
-	if a.dir == "" || a.s3 == nil {
+	if a.dir == "" {
+		return
+	}
+	if a.s3 == nil {
+		a.expire()
 		return
 	}
 	cutoff := time.Now().Add(-archiveGrace)
 	var freed, kept, total int64
-	filepath.WalkDir(a.dir, func(path string, d fs.DirEntry, err error) error {
+	root := a.dir
+	if a.keepUnder != "" {
+		root = filepath.Join(a.dir, a.keepUnder) // never another archive's hours, should dir cover them
+	}
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
 			return nil
 		}

@@ -21,7 +21,12 @@ test("a vessel page renders the vessel, with its name in the head", async ({ pag
   expect(await page.locator('meta[name="description"]').getAttribute("content")).toContain(`Live AIS position for ${name}`);
   await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
   const ld = JSON.parse((await page.locator('script[type="application/ld+json"]').textContent()) ?? "");
-  expect(ld).toMatchObject({ "@type": "Vehicle", name, identifier: String(mmsi) });
+  expect(ld).toMatchObject({
+    "@type": "Vehicle",
+    name,
+    url: `https://openwaters.io${path}`,
+    identifier: expect.arrayContaining([{ "@type": "PropertyValue", propertyID: "MMSI", value: String(mmsi) }]),
+  });
   // One heading, the vessel's, in sight: not a fallback with the vessel hidden behind it.
   await expect(page.getByRole("heading", { level: 1, includeHidden: true })).toHaveText([name]);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
@@ -40,6 +45,7 @@ test("a vessel the network has never heard is a 404 that asks not to be indexed"
   const res = await page.goto(`/ais/vessels/${UNHEARD}`);
   expect(res?.status()).toBe(404);
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
+  await expect(page.locator('link[rel="canonical"]')).toHaveCount(0);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(`MMSI ${UNHEARD}`);
   await expect(page.getByText("The network has never heard this vessel.")).toBeVisible();
 });
@@ -67,6 +73,36 @@ test("a station the network has not heard is a 404 that asks not to be indexed",
   expect(res?.status()).toBe(404);
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
   await expect(page.getByText("No station with this id has been heard since the server started.")).toBeVisible();
+});
+
+test("the sitemap lists the vessel pages at their canonical addresses", async ({ request }) => {
+  const index = await request.get("/ais/sitemap.xml");
+  expect(index.status()).toBe(200);
+  expect(index.headers()["content-type"]).toMatch(/^application\/xml/);
+  const sitemaps = [...(await index.text()).matchAll(/<loc>https:\/\/openwaters\.io(\/ais\/[^<]+)<\/loc>/g)].map((m) => m[1]);
+  expect(sitemaps).toContain("/ais/sitemap-pages.xml");
+  expect(sitemaps).toContain("/ais/sitemap-vessels-1.xml");
+
+  const pages = await (await request.get("/ais/sitemap-pages.xml")).text();
+  expect(pages).toContain("<loc>https://openwaters.io/ais/stations/digitraffic</loc>");
+
+  const vessels = await (await request.get("/ais/sitemap-vessels-1.xml")).text();
+  const first = /<loc>https:\/\/openwaters\.io(\/ais\/vessels\/[^<]+)<\/loc><lastmod>/.exec(vessels)?.[1];
+  expect(first).toBeTruthy();
+  // Listed at the address the page answers at, not one that redirects.
+  expect((await request.get(first!, { maxRedirects: 0 })).status()).toBe(200);
+  expect((await request.get("/ais/sitemap-vessels-999.xml")).status()).toBe(404);
+});
+
+test("a page kept at the edge carries no visitor's location but the current one's", async ({ request }) => {
+  // The second request is answered from the copy the first left. Were the location kept in
+  // it, the Worker would add the reader's beside it. The query is this run's own, so the first
+  // is not answered from a copy an earlier run left.
+  const path = `/ais/stations/digitraffic?run=${Date.now()}`;
+  const tags = async () => ((await (await request.get(path)).text()).match(/name="aiscast-visitor"/g) ?? []).length;
+  const first = await tags();
+  expect(first).toBeLessThanOrEqual(1);
+  expect(await tags()).toBe(first);
 });
 
 test("old map and station links redirect to where those pages are now", async ({ request }) => {

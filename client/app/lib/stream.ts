@@ -1,8 +1,11 @@
 import { publicApiBase, storedToken, type VesselProps } from "./api";
+import { reportError } from "./report";
+import { Hub, HUB_HEARTBEAT, type HubState, type Limits, type Port, type ToHub, type ToTab } from "./streamHub";
 
-// One connection for the whole app. Anonymous clients get two concurrent streams per
+// One connection for the whole browser. Anonymous clients get two concurrent streams per
 // network address, which a household or a marina shares, so a second connection here would
-// spend somebody else's budget. bbox and mmsi filters are ORed in a single subscribe frame,
+// spend somebody else's budget. Every tab talks to one hub, in a SharedWorker, which holds the
+// socket (see streamHub.ts). bbox and mmsi filters are ORed in a single subscribe frame,
 // which is what lets one socket serve the viewport and a followed vessel at the same time.
 
 export interface Vessel {
@@ -63,6 +66,11 @@ const POSITION_TYPES = new Set([
 ]);
 
 const TTL = 30 * 60e3; // matches the server's vessel cache
+// The hub forgets a tab it has not heard from in a while, so a quiet tab says it is still here.
+const TAB_HEARTBEAT = 20e3;
+// A hub that has missed this many heartbeats is gone: its worker crashed or was stopped.
+const HUB_SILENCE = 6 * HUB_HEARTBEAT;
+const TOKEN_KEY = "aiscast.token";
 // Enough to bridge the gap since the track was fetched, not to be a track in its own right.
 const MAX_TRACK = 120;
 
@@ -71,15 +79,35 @@ type Listener = () => void;
 export class Stream {
   readonly vessels = new Map<number, Vessel>();
   readonly credits = new Map<string, string>();
-  /** `refused`: every stream this address may hold is open elsewhere, often another tab. */
+  /**
+   * `refused`: every stream this address may hold is open elsewhere, or this browser's stream
+   * cannot fit this tab's view beside other tabs' under the key's area cap or limit on
+   * followed vessels.
+   */
   state: "connecting" | "live" | "reconnecting" | "capped" | "refused" = "connecting";
   eventsPerSec = 0;
   /** Bumped on every change, so React can tell a new frame from the same one. */
   version = 0;
-  limits: Record<string, number | boolean> | undefined;
+  limits: Limits | undefined;
 
-  #ws: WebSocket | undefined;
-  #backoff = 1000;
+  #port: Port<ToHub, ToTab> | undefined;
+  #worker: SharedWorker | undefined;
+  #url = "";
+  #local: { url: string; hub: Hub } | undefined;
+  /** Whether the port is a SharedWorker's rather than a hub's in this tab. */
+  #onWorker = false;
+  /** Whether the hub has said anything on this port. */
+  #spoke = false;
+  #shared = typeof SharedWorker === "function";
+  /** When the hub last said anything. */
+  #heard = 0;
+  /** When this tab last sent the hub its view. */
+  #told = 0;
+  #active = Date.now();
+  /** Whether the hub's subscription includes this tab's boxes and follows. */
+  #served = true;
+  /** Whether it includes this tab's follows, which it can without the boxes. */
+  #following = true;
   #bbox: BBox[] = [];
   #mmsi = new Set<number>();
   #count = 0;
@@ -88,6 +116,7 @@ export class Stream {
   #dirty = false;
 
   constructor() {
+    if (import.meta.env.DEV || import.meta.env.VITE_E2E) (window as { aiscastStream?: Stream }).aiscastStream = this;
     this.#connect();
     setInterval(() => {
       this.eventsPerSec = this.#count;
@@ -97,7 +126,24 @@ export class Stream {
         this.#dirty = false;
         this.#emit();
       }
+      // Also how a tab that was frozen finds its way back, since its port may have been reaped.
+      const now = Date.now();
+      // A hub in this tab sleeps when the tab does, so its silence says nothing.
+      if (this.#onWorker && now - this.#heard > HUB_SILENCE) this.#connect();
+      // The hub's URL carries the token, which can expire or be replaced.
+      else if (now - this.#told > TAB_HEARTBEAT) streamUrl() === this.#url ? this.#send() : this.#connect();
     }, 1000);
+    const activate = () => {
+      if (document.visibilityState === "visible") this.#active = Date.now();
+      this.#send();
+    };
+    document.addEventListener("visibilitychange", activate);
+    window.addEventListener("focus", activate);
+    window.addEventListener("pagehide", () => this.#post({ type: "close" }));
+    // Back from the back-forward cache, after pagehide let the hub go.
+    window.addEventListener("pageshow", (e) => e.persisted && this.#connect());
+    // A token saved in another tab raises the limits, and lives on the stream's URL.
+    window.addEventListener("storage", (e) => e.key === TOKEN_KEY && this.#connect());
   }
 
   /**
@@ -176,60 +222,85 @@ export class Stream {
   }
 
   #connect() {
-    // The token goes on the URL only because WebSocket has no request headers. Anonymous is
-    // 20 messages/s and 100 square degrees; a personal token is 50/s and 400.
-    const token = storedToken();
-    const url =
-      publicApiBase().replace(/^http/, "ws") +
-      "/v1/stream" +
-      (token ? `?key=${encodeURIComponent(token)}` : "");
-    this.#ws = new WebSocket(url);
-    this.#ws.onopen = () => this.#send();
-    this.#ws.onclose = () => {
-      if (this.state !== "refused") this.state = "reconnecting";
-      this.#emit();
-      setTimeout(() => this.#connect(), this.#backoff);
-      this.#backoff = Math.min(this.#backoff * 2, 30e3);
-    };
-    this.#ws.onerror = () => this.#ws?.close();
-    this.#ws.onmessage = (e) => this.#onMessage(JSON.parse(e.data));
+    this.#post({ type: "close" });
+    if (this.#port) this.#port.onmessage = null;
+    this.#port?.close?.();
+    if (this.#worker) this.#worker.onerror = null;
+    const url = streamUrl();
+    this.#url = url;
+    const shared = this.#sharedPort(url);
+    this.#onWorker = Boolean(shared);
+    const port = shared ?? this.#localPort(url);
+    port.onmessage = (e: MessageEvent<ToTab>) => this.#onHub(e.data);
+    this.#port = port;
+    this.#heard = Date.now();
+    this.#spoke = false;
+    this.#send();
+  }
+
+  #sharedPort(url: string): Port<ToHub, ToTab> | undefined {
+    if (!this.#shared) return undefined;
+    try {
+      const worker = new SharedWorker(new URL("./stream.worker.ts", import.meta.url), { type: "module", name: url });
+      // A browser with only classic shared workers fails to load this one, and gets a hub here.
+      // Once the hub has spoken, an error is the watchdog's to handle.
+      worker.onerror = () => {
+        if (this.#spoke) return;
+        this.#shared = false;
+        this.#connect();
+      };
+      this.#worker = worker;
+      return worker.port;
+    } catch {
+      this.#shared = false;
+      return undefined;
+    }
+  }
+
+  /** A hub of this tab's own, and so a stream of its own, where there is no SharedWorker. */
+  #localPort(url: string): Port<ToHub, ToTab> {
+    if (this.#local?.url !== url) this.#local = { url, hub: new Hub(url) };
+    const { port1, port2 } = new MessageChannel();
+    this.#local.hub.add(port1);
+    return port2;
+  }
+
+  #post(msg: ToHub) {
+    this.#port?.postMessage(msg);
   }
 
   #send() {
-    if (this.#ws?.readyState !== WebSocket.OPEN) return;
-    if (!this.#bbox.length && !this.#mmsi.size) return;
-    this.#ws.send(
-      JSON.stringify({
-        type: "subscribe",
-        bbox: this.#bbox,
-        mmsi: [...this.#mmsi],
-      }),
-    );
+    this.#told = Date.now();
+    this.#post({
+      type: "view",
+      bbox: this.#bbox,
+      mmsi: [...this.#mmsi],
+      visible: document.visibilityState === "visible",
+      active: this.#active,
+    });
   }
 
-  #onMessage(ev: StreamEvent & { limits?: Record<string, number | boolean> }) {
-    if (ev.type === "welcome") {
-      // Not on open: the server accepts the socket before it checks the per-address stream
-      // limit, then refuses and closes it. Resetting there retried every second forever.
-      this.#backoff = 1000;
-      this.state = "live";
-      this.limits = ev.limits;
-      this.#emit();
-      return;
-    }
-    if (ev.type === "error") {
-      // The viewport exceeds the area cap. Not a failure; the map switches to coverage.
-      if (/bbox|area/i.test(ev.error ?? "")) {
-        this.state = "capped";
-        this.#emit();
-      } else if (/concurrent/i.test(ev.error ?? "")) {
-        this.state = "refused";
-        this.#emit();
-      }
-      return;
-    }
+  #onHub(msg: ToTab) {
+    this.#heard = Date.now();
+    this.#spoke = true;
+    if (msg.type === "event") return this.#onEvent(JSON.parse(msg.data));
+    if (msg.fault) reportError("stream", new Error(msg.fault));
+    // Another tab's view took the area this one needs, so the tiles carry it, as when refused.
+    const state = msg.state === "live" && !msg.served ? "refused" : msg.state;
+    const lost = (this.#served && !msg.served) || (this.#following && !(msg.following ?? msg.served));
+    this.#served = msg.served;
+    // A hub from an older build, kept alive across a deploy, sends no following.
+    this.#following = msg.following ?? msg.served;
+    if (lost) this.#prune();
+    // Every heartbeat carries the status, and an unchanged one is not a new frame.
+    if (state === this.state && JSON.stringify(msg.limits) === JSON.stringify(this.limits)) return;
+    this.state = state;
+    this.limits = msg.limits;
+    this.#emit();
+  }
+
+  #onEvent(ev: StreamEvent) {
     if (ev.type !== "event") return;
-    this.state = "live";
     this.#count++;
     this.#fold(ev);
     this.#dirty = true;
@@ -304,17 +375,23 @@ export class Stream {
     }
   }
 
+  /** A vessel this tab follows and the hub still streams to it. */
+  #followed(mmsi: number): boolean {
+    return this.#following && this.#mmsi.has(mmsi);
+  }
+
   /**
    * Forgets vessels outside the subscription. The stream stops reporting a vessel once it is
    * out of view, so its last position here goes stale while the tile under it stays current.
    */
   #prune() {
+    const boxes = this.#served ? this.#bbox : [];
     for (const [mmsi, v] of this.vessels) {
-      if (this.#mmsi.has(mmsi)) continue;
+      if (this.#followed(mmsi)) continue;
       const inView =
         v.lat != null &&
         v.lon != null &&
-        this.#bbox.some(([s, w, n, e]) => v.lat! >= s && v.lat! <= n && v.lon! >= w && v.lon! <= e);
+        boxes.some(([s, w, n, e]) => v.lat! >= s && v.lat! <= n && v.lon! >= w && v.lon! <= e);
       if (!inView) {
         this.vessels.delete(mmsi);
         this.#dirty = true;
@@ -325,10 +402,17 @@ export class Stream {
   #sweep() {
     const cutoff = Date.now() - TTL;
     for (const [mmsi, v] of this.vessels) {
-      if (v.seen < cutoff && !this.#mmsi.has(mmsi)) {
+      if (v.seen < cutoff && !this.#followed(mmsi)) {
         this.vessels.delete(mmsi);
         this.#dirty = true;
       }
     }
   }
+}
+
+function streamUrl(): string {
+  // The token goes on the URL only because WebSocket has no request headers. Anonymous is
+  // 20 messages/s and 100 square degrees; a personal token is 50/s and 400.
+  const token = storedToken();
+  return publicApiBase().replace(/^http/, "ws") + "/v1/stream" + (token ? `?key=${encodeURIComponent(token)}` : "");
 }

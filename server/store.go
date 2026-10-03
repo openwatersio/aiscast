@@ -89,13 +89,14 @@ CREATE TABLE IF NOT EXISTS wikidata (
 	commons_category TEXT    NOT NULL DEFAULT '',
 	image            TEXT    NOT NULL DEFAULT ''
 );
--- US-flag vessels with a call sign from the Coast Guard's PSIX, listed weekly, with dimensions and tonnage
--- read for the vessels AIS matches to them (uscg.go)
+-- US-flag vessels with a call sign or an official number from the Coast Guard's PSIX, listed weekly, with
+-- dimensions and tonnage read for the vessels AIS matches to them (uscg.go)
 CREATE TABLE IF NOT EXISTS uscg (
 	vessel_id       INTEGER PRIMARY KEY,         -- PSIX's id
 	callsign        TEXT    NOT NULL,
 	name            TEXT    NOT NULL,
 	identification  TEXT    NOT NULL DEFAULT '',
+	official_key    TEXT    NOT NULL DEFAULT '', -- identification through normOfficial, which the FCC licenses join
 	service         TEXT    NOT NULL DEFAULT '',
 	status          TEXT    NOT NULL DEFAULT '',
 	year_built      INTEGER NOT NULL DEFAULT 0,
@@ -109,6 +110,28 @@ CREATE TABLE IF NOT EXISTS uscg (
 	details_at      INTEGER NOT NULL DEFAULT 0   -- unix ms of the last dimensions and tonnage read; 0 before
 );
 CREATE INDEX IF NOT EXISTS uscg_callsign ON uscg (callsign);
+-- Norwegian fishing vessels with a call sign from the Directorate of Fisheries' open register, replaced
+-- weekly (fiskeridir.go)
+CREATE TABLE IF NOT EXISTS fiskeridir (
+	vessel_id     TEXT    PRIMARY KEY,         -- the register's id
+	callsign      TEXT    NOT NULL,
+	name          TEXT    NOT NULL,
+	registration  TEXT    NOT NULL DEFAULT '', -- the registration mark, such as VL0148AV
+	year_built    INTEGER NOT NULL DEFAULT 0,
+	length        REAL    NOT NULL DEFAULT 0,  -- metres
+	beam          REAL    NOT NULL DEFAULT 0,
+	gross_tonnage INTEGER NOT NULL DEFAULT 0,  -- London Convention tonnage only
+	owner         TEXT    NOT NULL DEFAULT ''  -- the owning company; people are dropped at sync
+);
+CREATE INDEX IF NOT EXISTS fiskeridir_callsign ON fiskeridir (callsign);
+-- active FCC ship station licenses with an MMSI, replaced weekly from the ULS bulk files (fcc.go)
+CREATE TABLE IF NOT EXISTS fcc (
+	mmsi     INTEGER PRIMARY KEY,
+	usi      INTEGER NOT NULL,             -- the license's unique system identifier
+	callsign TEXT    NOT NULL DEFAULT '',
+	name     TEXT    NOT NULL DEFAULT '',
+	official TEXT    NOT NULL DEFAULT ''   -- official number or state registration
+);
 `
 
 // storeAddedCols are columns a file created by an earlier build lacks. SQLite has no ADD COLUMN IF NOT
@@ -182,6 +205,9 @@ type record struct {
 type store struct {
 	db   *sql.DB
 	path string
+	idx  *recordIndex // the record's positions in memory, refreshed after every write (recindex.go)
+
+	sitemap sitemapMemo
 
 	// read by /metrics
 	flushes, flushFailures, rowsWritten atomic.Int64
@@ -208,7 +234,33 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
-	return &store{db: db, path: path}, nil
+	// A file from before official_key gains the column, and its sync stamp is cleared so the next hourly
+	// check re-lists, filling the keys, rather than serving empty ones for up to a week. The old
+	// identification index, which nothing queries now, goes with it.
+	if _, err := db.Exec("ALTER TABLE uscg ADD COLUMN official_key TEXT NOT NULL DEFAULT ''"); err == nil {
+		if _, err := db.Exec("DELETE FROM meta WHERE key = 'uscg_sync'"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	} else if !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for _, stmt := range []string{
+		"DROP INDEX IF EXISTS uscg_identification",
+		"CREATE INDEX IF NOT EXISTS uscg_official_key ON uscg (official_key) WHERE official_key != ''",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	s := &store{db: db, path: path}
+	if s.idx, err = loadRecordIndex(s); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return s, nil
 }
 
 // storeConns bounds the vessel record's connections: the writer and the requests reading beside it.
@@ -276,7 +328,23 @@ func (s *store) upsert(rows []record) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.refreshIndex(len(rows), func(i int) uint32 { return rows[i].mmsi })
+	return nil
+}
+
+// refreshIndex files again the n rows just written. A failure leaves those vessels a write behind in the
+// index, until their next write, and never fails the write itself.
+func (s *store) refreshIndex(n int, mmsi func(int) uint32) {
+	mmsis := make([]uint32, n)
+	for i := range mmsis {
+		mmsis[i] = mmsi(i)
+	}
+	if err := s.idx.refresh(s, mmsis); err != nil {
+		log.Printf("record index: %v", err)
+	}
 }
 
 // recordQuery selects rows. Every set filter must hold; boxes and mmsis match any of their members.

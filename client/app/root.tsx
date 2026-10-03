@@ -1,11 +1,16 @@
 import "maplibre-gl/dist/maplibre-gl.css";
+import { useEffect } from "react";
 import { isRouteErrorResponse, Links, Meta, Scripts, ScrollRestoration, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/root";
 import "./app.css";
 import { Shell } from "./components/Shell";
 import { setPublicApi } from "./lib/api";
-import { serverEnv, visitorLocation } from "./lib/context";
+import { serverEnv } from "./lib/context";
+import { installErrorReporting, reportError } from "./lib/report";
 import { themeFromCookie } from "./lib/theme";
+
+// Here rather than in an effect, so an error during hydration is heard.
+installErrorReporting();
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://tiles.openfreemap.org", crossOrigin: "anonymous" },
@@ -18,14 +23,13 @@ export const links: Route.LinksFunction = () => [
 
 /**
  * The API the server rendered against is the one the browser should use. The theme choice
- * comes from its cookie so the first response is already in it. The map opens where the
- * visitor's network address places them.
+ * comes from its cookie so the first response is already in it. Nothing here is about the
+ * visitor beyond that, so a page can be kept at the edge (workers/app.ts).
  */
 export function loader({ context, request }: Route.LoaderArgs) {
   return {
     api: context.get(serverEnv).api,
     theme: themeFromCookie(request.headers.get("cookie")),
-    visitor: context.get(visitorLocation),
   };
 }
 
@@ -58,11 +62,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 export default function App({ loaderData }: Route.ComponentProps) {
   setPublicApi(loaderData.api);
-  return <Shell initialTheme={loaderData.theme} visitor={loaderData.visitor} />;
+  return <Shell initialTheme={loaderData.theme} />;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   const notFound = isRouteErrorResponse(error) && error.status === 404;
+  useEffect(() => {
+    if (!isRouteErrorResponse(error)) reportError("boundary", error);
+  }, [error]);
   return (
     <main className="p-6">
       <h1 className="text-title text-fg">{notFound ? "Not found" : "Something went wrong"}</h1>

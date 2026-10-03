@@ -16,6 +16,7 @@ import {
 } from "./ais";
 import { publicApiBase } from "./api";
 import { PRIVACY } from "./links";
+import { reportError } from "./report";
 import type { BBox, Stream } from "./stream";
 import type { Theme } from "./theme";
 
@@ -216,8 +217,13 @@ export function createMap(
   let styleLoaded = false;
   map.on("error", (e) => {
     console.error("[map]", e.error ?? e);
-    if (!styleLoaded) mapError = e.error?.message ?? "basemap failed to load";
+    if (styleLoaded) return;
+    mapError = e.error?.message ?? "basemap failed to load";
+    reportError("map", e.error ?? mapError);
   });
+  // MapLibre restores the map when the context comes back. A mobile browser drops it under
+  // memory pressure; a count of these is how a leak or a driver fault would show.
+  map.on("webglcontextlost", () => reportError("webgl", new Error("WebGL context lost")));
   map.on("style.load", () => {
     styleLoaded = true;
     mapError = "";
@@ -239,8 +245,15 @@ export function createMap(
   // Route changes ask for one before all three are true, and issuing it early is worse than
   // useless: the move is computed against the wrong viewport and then cancelled by the
   // setPadding that follows. So the intent is held and replayed once the map can honour it.
-  let pendingCamera: (() => void) | undefined;
-  function requestCamera(move: () => void) {
+  //
+  // Until the map has finished its first render the reader has not seen where it is, so a move
+  // then jumps rather than animates: a vessel's page opens on the vessel, not on a flight to it
+  // from wherever the map started. Only the first: "load" waits on every source, and one that
+  // hangs would otherwise leave every later move jumping.
+  let pendingCamera: ((animate: boolean) => void) | undefined;
+  let firstRender = true;
+  map.once("load", () => (firstRender = false));
+  function requestCamera(move: (animate: boolean) => void) {
     pendingCamera = move;
     runPendingCamera();
   }
@@ -250,7 +263,8 @@ export function createMap(
     const move = pendingCamera;
     pendingCamera = undefined;
     applyInsets();
-    move();
+    move(!firstRender);
+    firstRender = false;
   }
 
   // The panels float over the map, so the viewport centre is not the centre of the map the
@@ -1073,13 +1087,16 @@ export function createMap(
       if (history.length < 2) return;
       const lons = history.map((c) => c[0]);
       const lats = history.map((c) => c[1]);
-      requestCamera(() =>
-        fit([
-          Math.min(...lats),
-          Math.min(...lons),
-          Math.max(...lats),
-          Math.max(...lons),
-        ]),
+      requestCamera((animate) =>
+        fit(
+          [
+            Math.min(...lats),
+            Math.min(...lons),
+            Math.max(...lats),
+            Math.max(...lons),
+          ],
+          animate,
+        ),
       );
     },
     scrubTo(at) {
@@ -1114,17 +1131,17 @@ export function createMap(
       const center: [number, number] | undefined =
         v?.lat != null && v.lon != null ? [v.lon, v.lat] : fallback;
       if (!center) return;
-      requestCamera(() =>
-        map.flyTo({ center, zoom: Math.max(map.getZoom(), 12), speed: 1.4 }),
+      requestCamera((animate) =>
+        map.flyTo({ center, zoom: Math.max(map.getZoom(), 12), speed: 1.4, animate }),
       );
     },
     flyToPoint([lat, lon]) {
-      requestCamera(() => map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 11), speed: 1.4 }));
+      requestCamera((animate) => map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 11), speed: 1.4, animate }));
     },
     fitBBox(bbox) {
       // fitBounds' own padding replaces the camera padding rather than adding to it, so the
       // panel insets have to be folded in here or the fitted box lands under a panel.
-      requestCamera(() => fit(bbox));
+      requestCamera((animate) => fit(bbox, animate));
     },
     onSelect(fn) {
       selectHandlers.push(fn);
@@ -1199,7 +1216,7 @@ export function createMap(
     if (!inside) map.panTo(point, { duration: 300 });
   }
 
-  function fit(bbox: BBox) {
+  function fit(bbox: BBox, animate: boolean) {
     const p = map.getPadding();
     map.fitBounds(
       [
@@ -1214,6 +1231,7 @@ export function createMap(
           left: (p.left ?? 0) + 40,
         },
         maxZoom: 11,
+        animate,
       },
     );
   }

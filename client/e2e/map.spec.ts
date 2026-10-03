@@ -1,5 +1,7 @@
 import { createPropertyExpression, latest } from "@maplibre/maplibre-gl-style-spec";
-import { expect, openMap, test } from "./fixtures";
+import { vesselPath } from "../app/lib/ais";
+import { api, namedVessel } from "./data";
+import { expect, openMap, test, waitForFlight } from "./fixtures";
 
 test("no vessel is drawn by both the tiles and the stream", async ({ page }) => {
   await openMap(page);
@@ -37,4 +39,59 @@ test("no vessel is drawn by both the tiles and the stream", async ({ page }) => 
       expect(at({}), `${layer.id} ${property} for a vessel only the tiles draw`).toBeGreaterThan(0);
     }
   }
+});
+
+test("the map opens where the visitor is, unless the link has a #map= hash", async ({ page }) => {
+  // Where the Worker places a visitor depends on the address the test runs from, so the
+  // document's location is swapped for a known one: Oslo.
+  await page.route("**/ais/vessels", async (route) => {
+    const res = await route.fetch();
+    const html = (await res.text()).replace(/<meta name="aiscast-visitor"[^>]*>/, "");
+    await route.fulfill({ response: res, body: html.replace("</head>", '<meta name="aiscast-visitor" content="10.75,59.91"></head>') });
+  });
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => m.type() === "error" && /hydrat/i.test(m.text()) && errors.push(m.text()));
+  const firstView = () =>
+    page.waitForFunction(() => {
+      const map = window.aiscastMap;
+      if (!map) return undefined;
+      const c = map.getCenter();
+      return { lon: c.lng, lat: c.lat, zoom: map.getZoom() };
+    });
+
+  await page.goto("/ais/vessels");
+  const atVisitor = await (await firstView()).jsonValue();
+  expect(atVisitor!.lon).toBeCloseTo(10.75, 1);
+  expect(atVisitor!.lat).toBeCloseTo(59.91, 1);
+  expect(errors).toEqual([]);
+
+  await page.goto("about:blank");
+  await page.goto("/ais/vessels#map=8/59.85/24.9");
+  const atHash = await (await firstView()).jsonValue();
+  expect(atHash).toMatchObject({ zoom: 8 });
+  expect(atHash!.lon).toBeCloseTo(24.9, 1);
+  expect(atHash!.lat).toBeCloseTo(59.85, 1);
+});
+
+test("a vessel's page opens on the vessel, without a flight to it", async ({ page }) => {
+  const { mmsi, name } = await namedVessel();
+  const { geometry } = await api<{ geometry: { coordinates: [number, number] } | null }>(`/v1/vessels/${mmsi}`);
+  expect(geometry).not.toBeNull();
+  // Every frame from the start, whether the camera was animating.
+  await page.addInitScript(() => {
+    const w = window as unknown as { aiscastMap?: { isMoving(): boolean }; animated?: boolean };
+    const watch = () => {
+      if (w.aiscastMap?.isMoving()) w.animated = true;
+      requestAnimationFrame(watch);
+    };
+    requestAnimationFrame(watch);
+  });
+
+  await page.goto(`/ais${vesselPath(mmsi, name)}`);
+  await waitForFlight(page);
+  const at = await page.evaluate(() => window.aiscastMap!.getCenter().toArray());
+  expect(at[0]).toBeCloseTo(geometry!.coordinates[0], 1);
+  expect(at[1]).toBeCloseTo(geometry!.coordinates[1], 1);
+  expect(await page.evaluate(() => (window as unknown as { animated?: boolean }).animated ?? false)).toBe(false);
 });

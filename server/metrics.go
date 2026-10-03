@@ -121,10 +121,12 @@ func (m *requestMetrics) observe(route string, status int, d time.Duration) {
 	h.sum += s
 }
 
-// statusWriter records the status a handler sends. Unwrap keeps WebSocket hijacking and SSE flushing working.
+// statusWriter records the status a handler sends and the body bytes it writes. Unwrap keeps WebSocket
+// hijacking and SSE flushing working.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	bytes  int64
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -138,7 +140,9 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(b)
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
 }
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -182,7 +186,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	archives := []struct {
 		name string
 		a    *archive
-	}{{"raw", p.arch}, {"normalized", p.norm}}
+	}{{"raw", p.arch}, {"normalized", p.norm}, {"access", p.access}}
 	metricHead(w, "aiscast_udp_datagrams_total", "counter", "raw NMEA datagrams received, per UDP listener")
 	for _, l := range p.udp {
 		fmt.Fprintf(w, "aiscast_udp_datagrams_total{listener=%q} %d\n", l.label, l.datagrams.Load())
@@ -192,6 +196,8 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	for _, a := range archives {
 		fmt.Fprintf(w, "aiscast_archive_upload_failures_total{archive=%q} %d\n", a.name, a.a.uploadFailures.Load())
 	}
+	metricHead(w, "aiscast_access_dropped_total", "counter", "access log lines dropped because the writer fell behind the requests")
+	fmt.Fprintf(w, "aiscast_access_dropped_total %d\n", p.accessDropped.Load())
 	metricHead(w, "aiscast_archive_staged_bytes", "gauge", "archive bytes on local disk at the last hourly sweep, not yet reclaimed after upload")
 	for _, a := range archives {
 		fmt.Fprintf(w, "aiscast_archive_staged_bytes{archive=%q} %d\n", a.name, a.a.staged.Load())
@@ -233,6 +239,25 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		metricHead(w, "aiscast_tracks_bytes", "gauge", "size of the track database and its write-ahead log")
 		fmt.Fprintf(w, "aiscast_tracks_bytes %d\n", t.bytes())
 	}
+	p.vmu.RLock()
+	c := p.ch
+	p.vmu.RUnlock()
+	chUp := 0
+	if c != nil && !c.failing.Load() {
+		chUp = 1
+	}
+	metricHead(w, "aiscast_clickhouse_up", "gauge", "1 when ClickHouse is connected and took the last batch; 0 while CLICKHOUSE_URL is unset, it has not answered, or batches are failing")
+	fmt.Fprintf(w, "aiscast_clickhouse_up %d\n", chUp)
+	if c != nil {
+		metricHead(w, "aiscast_clickhouse_points_written_total", "counter", "positions written to ClickHouse")
+		fmt.Fprintf(w, "aiscast_clickhouse_points_written_total %d\n", c.written.Load())
+		metricHead(w, "aiscast_clickhouse_write_failures_total", "counter", "ClickHouse batches that failed; the positions are retried on the next flush")
+		fmt.Fprintf(w, "aiscast_clickhouse_write_failures_total %d\n", c.failures.Load())
+		metricHead(w, "aiscast_clickhouse_write_seconds_total", "counter", "time spent writing batches to ClickHouse")
+		fmt.Fprintf(w, "aiscast_clickhouse_write_seconds_total %.3f\n", float64(c.writeNanos.Load())/1e9)
+		metricHead(w, "aiscast_clickhouse_points_dropped_total", "counter", "positions dropped because the ClickHouse writer fell behind by more than its queue holds, or in a batch ClickHouse refused for 10 minutes")
+		fmt.Fprintf(w, "aiscast_clickhouse_points_dropped_total %d\n", c.dropped.Load())
+	}
 	if l := p.lake; l != nil {
 		metricHead(w, "aiscast_lake_queries_total", "counter", "lake queries for track history and the record import")
 		fmt.Fprintf(w, "aiscast_lake_queries_total %d\n", l.queries.Load())
@@ -270,7 +295,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_uscg_syncs_total %d\n", p.uscg.runs.Load())
 		metricHead(w, "aiscast_uscg_sync_failures_total", "counter", "PSIX listings that failed; the next hourly check retries")
 		fmt.Fprintf(w, "aiscast_uscg_sync_failures_total %d\n", p.uscg.failures.Load())
-		metricHead(w, "aiscast_uscg_vessels", "gauge", "US-flag vessels with a call sign listed from PSIX")
+		metricHead(w, "aiscast_uscg_vessels", "gauge", "US-flag vessels with a call sign or an official number listed from PSIX")
 		fmt.Fprintf(w, "aiscast_uscg_vessels %d\n", p.uscg.vessels.Load())
 		metricHead(w, "aiscast_uscg_details_total", "counter", "matched vessels whose dimensions and tonnage were read from PSIX")
 		fmt.Fprintf(w, "aiscast_uscg_details_total %d\n", p.uscg.details.Load())
@@ -279,6 +304,26 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		if t := p.uscg.lastSuccess.Load(); t > 0 {
 			metricHead(w, "aiscast_uscg_last_success_timestamp_seconds", "gauge", "when US-flag vessels were last listed from PSIX")
 			fmt.Fprintf(w, "aiscast_uscg_last_success_timestamp_seconds %d\n", t)
+		}
+		metricHead(w, "aiscast_fiskeridir_syncs_total", "counter", "weekly syncs of Norway's fishing vessel register")
+		fmt.Fprintf(w, "aiscast_fiskeridir_syncs_total %d\n", p.fiskeridir.runs.Load())
+		metricHead(w, "aiscast_fiskeridir_sync_failures_total", "counter", "register syncs that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_fiskeridir_sync_failures_total %d\n", p.fiskeridir.failures.Load())
+		metricHead(w, "aiscast_fiskeridir_vessels", "gauge", "registered Norwegian fishing vessels with a call sign stored")
+		fmt.Fprintf(w, "aiscast_fiskeridir_vessels %d\n", p.fiskeridir.vessels.Load())
+		if t := p.fiskeridir.lastSuccess.Load(); t > 0 {
+			metricHead(w, "aiscast_fiskeridir_last_success_timestamp_seconds", "gauge", "when the register was last synced")
+			fmt.Fprintf(w, "aiscast_fiskeridir_last_success_timestamp_seconds %d\n", t)
+		}
+		metricHead(w, "aiscast_fcc_syncs_total", "counter", "weekly syncs of FCC ship station licenses")
+		fmt.Fprintf(w, "aiscast_fcc_syncs_total %d\n", p.fcc.runs.Load())
+		metricHead(w, "aiscast_fcc_sync_failures_total", "counter", "license syncs that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_fcc_sync_failures_total %d\n", p.fcc.failures.Load())
+		metricHead(w, "aiscast_fcc_ships", "gauge", "active FCC ship licenses with an MMSI stored")
+		fmt.Fprintf(w, "aiscast_fcc_ships %d\n", p.fcc.ships.Load())
+		if t := p.fcc.lastSuccess.Load(); t > 0 {
+			metricHead(w, "aiscast_fcc_last_success_timestamp_seconds", "gauge", "when the licenses were last synced")
+			fmt.Fprintf(w, "aiscast_fcc_last_success_timestamp_seconds %d\n", t)
 		}
 	}
 

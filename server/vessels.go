@@ -368,34 +368,37 @@ type pointGeometry struct {
 }
 
 type vesselProps struct {
-	Beam        uint16        `json:"beam,omitempty"`
-	CallSign    string        `json:"callsign,omitempty"`
-	Cog         *float64      `json:"cog,omitempty"`
-	Destination string        `json:"destination,omitempty"`
-	Draught     float64       `json:"draught,omitempty"`
-	ETA         string        `json:"eta,omitempty"`
-	FirstSeen   string        `json:"first_seen,omitempty"` // from the record, on /v1/vessels/{mmsi} only
-	Flag        string        `json:"flag,omitempty"`
-	Heading     *uint16       `json:"heading,omitempty"`
-	IMO         uint32        `json:"imo,omitempty"`
-	Kind        string        `json:"kind"`
-	Length      uint16        `json:"length,omitempty"`
-	MMSI        uint32        `json:"mmsi"`
-	MsgType     string        `json:"msg_type"`
-	Name        string        `json:"name,omitempty"`
-	NavStatus   *uint8        `json:"nav_status,omitempty"`
-	Near        string        `json:"near,omitempty"` // the place nearest the position, on searches only
-	Seen        string        `json:"seen"`
-	Sog         *float64      `json:"sog,omitempty"`
-	Source      string        `json:"source"`
-	Station     string        `json:"station"`
-	ToBow       *uint16       `json:"to_bow,omitempty"`
-	ToPort      *uint8        `json:"to_port,omitempty"`
-	ToStarboard *uint8        `json:"to_starboard,omitempty"`
-	ToStern     *uint16       `json:"to_stern,omitempty"`
-	Type        uint8         `json:"type,omitempty"`
-	USCG        *uscgVessel   `json:"uscg,omitempty"`     // on /v1/vessels/{mmsi} only
-	Wikidata    *wikidataShip `json:"wikidata,omitempty"` // on /v1/vessels/{mmsi} only
+	Beam        uint16   `json:"beam,omitempty"`
+	CallSign    string   `json:"callsign,omitempty"`
+	Cog         *float64 `json:"cog,omitempty"`
+	Destination string   `json:"destination,omitempty"`
+	Draught     float64  `json:"draught,omitempty"`
+	ETA         string   `json:"eta,omitempty"`
+	FirstSeen   string   `json:"first_seen,omitempty"` // from the record, on /v1/vessels/{mmsi} only
+	Flag        string   `json:"flag,omitempty"`
+	Heading     *uint16  `json:"heading,omitempty"`
+	IMO         uint32   `json:"imo,omitempty"`
+	Kind        string   `json:"kind"`
+	Length      uint16   `json:"length,omitempty"`
+	MMSI        uint32   `json:"mmsi"`
+	MsgType     string   `json:"msg_type"`
+	Name        string   `json:"name,omitempty"`
+	NavStatus   *uint8   `json:"nav_status,omitempty"`
+	Near        string   `json:"near,omitempty"` // the place nearest the position, on searches only
+	Seen        string   `json:"seen"`
+	Sog         *float64 `json:"sog,omitempty"`
+	Source      string   `json:"source"`
+	Station     string   `json:"station"`
+	ToBow       *uint16  `json:"to_bow,omitempty"`
+	ToPort      *uint8   `json:"to_port,omitempty"`
+	ToStarboard *uint8   `json:"to_starboard,omitempty"`
+	ToStern     *uint16  `json:"to_stern,omitempty"`
+	Type        uint8    `json:"type,omitempty"`
+	// The merged enrichment document, its per-field provenance, and the contributing sources'
+	// credits (particulars.go). On /v1/vessels/{mmsi} only.
+	Particulars *particulars         `json:"particulars,omitempty"`
+	Provenance  map[string]string    `json:"provenance,omitempty"`
+	Sources     map[string]sourceRef `json:"sources,omitempty"`
 }
 
 func (v *vessel) feature(mmsi uint32) vesselFeature {
@@ -764,8 +767,14 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	if !first.IsZero() {
 		f.Properties.FirstSeen = first.UTC().Format(time.RFC3339)
 	}
-	f.Properties.Wikidata = p.wikidataOf(cur.IMO)[cur.IMO]
-	f.Properties.USCG = p.uscgOf(uscgKey{mmsi, cur.CallSign, cur.Name})[mmsi]
+	fc := p.fccOf(mmsi)[mmsi]
+	key := uscgKey{mmsi: mmsi, callsign: cur.CallSign, name: cur.Name}
+	if fc != nil {
+		key.official = fc.Official
+	}
+	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources =
+		mergeParticulars(p.wikidataOf(cur.IMO)[cur.IMO], p.uscgOf(key)[mmsi],
+			p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc)
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
 	// allocation.
@@ -851,23 +860,40 @@ func parseVesselFilter(vals url.Values, movingAge time.Duration) (*vesselFilter,
 // stationary: the vessel's last report says it was not going anywhere. Aids to navigation and base stations
 // never move; a vessel counts when it was under a knot or reported itself moored, at anchor, or aground.
 // A vessel with neither speed nor status known counts as moving.
-func stationary(v *vessel) bool {
-	return v.Kind == "aton" || v.Kind == "base" || v.Sog < 1 || v.NavStatus == 1 || v.NavStatus == 5 || v.NavStatus == 6
+func stationary(v *vessel) bool { return v.facts().stationary() }
+
+func (x vesselFacts) stationary() bool {
+	return x.kind == "aton" || x.kind == "base" || x.sog < 1 || x.navStatus == 1 || x.navStatus == 5 || x.navStatus == 6
 }
 
-func (f *vesselFilter) match(v *vessel, now time.Time) bool {
+// vesselFacts are the fields the filters read, so they run over the record index's entries as they do over
+// cached vessels.
+type vesselFacts struct {
+	kind, class         string
+	shipType, navStatus uint8
+	sog                 float64
+	seen                time.Time
+}
+
+func (v *vessel) facts() vesselFacts {
+	return vesselFacts{kind: v.Kind, class: v.Class, shipType: v.ShipType, navStatus: v.NavStatus, sog: v.Sog, seen: v.Seen}
+}
+
+func (f *vesselFilter) match(v *vessel, now time.Time) bool { return f.matchFacts(v.facts(), now) }
+
+func (f *vesselFilter) matchFacts(x vesselFacts, now time.Time) bool {
 	switch {
-	case f.kinds != nil && !f.kinds[v.Kind],
-		f.class != "" && v.Class != f.class,
-		f.hasMinSog && !(v.Sog < 102.3 && v.Sog >= f.minSog),
-		f.movingAge > 0 && now.Sub(v.Seen) > f.movingAge && !stationary(v):
+	case f.kinds != nil && !f.kinds[x.kind],
+		f.class != "" && x.class != f.class,
+		f.hasMinSog && !(x.sog < 102.3 && x.sog >= f.minSog),
+		f.movingAge > 0 && now.Sub(x.seen) > f.movingAge && !x.stationary():
 		return false
 	}
 	if f.types == nil {
 		return true
 	}
 	for _, t := range f.types {
-		if v.ShipType >= t[0] && v.ShipType <= t[1] {
+		if x.shipType >= t[0] && x.shipType <= t[1] {
 			return true
 		}
 	}

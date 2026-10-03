@@ -2,10 +2,11 @@ import { isValidImo } from "./ais";
 import { type Photo, type VesselMedia } from "./media";
 
 const COMMONS = "https://commons.wikimedia.org/w/api.php";
+const WIKIDATA = "https://www.wikidata.org/w/api.php";
 
 // Wikimedia asks every client to name itself and give a contact. A browser cannot set this
 // header, which is one reason the lookup runs in the Worker.
-const USER_AGENT = "aiscast-web/1.0 (https://openwaters.io/ais/; ais@openwaters.io)";
+const USER_AGENT = "aiscast-web/1.0 (https://openwaters.io/ais/; hello@openwaters.io)";
 
 // One of Wikimedia's standard thumbnail widths. Since early 2026 other widths are throttled
 // or refused when requested directly, so only the thumburl the API returns is ever linked.
@@ -70,17 +71,47 @@ function taken(meta: Record<string, { value?: string }>): number {
 }
 
 /**
- * The newest photos in a Commons category and its first ship-identity subcategories.
- * Throws UpstreamError when Wikimedia fails, so the caller can cache that briefly.
+ * The photo Wikidata gives the ship with this IMO (P458): its P18, which Wikidata serves as the
+ * item's page image. An editor chose it for this hull, where a Commons category is filed by
+ * hand and can hold another ship of the same name. An IMO on more than one item takes the lowest
+ * QID, as the API's particulars do (server/wikidata.go), so the photo is that item's or none.
  */
-async function lookupPhotos(category: string): Promise<VesselMedia> {
-  const top = await members(category, "file|subcat");
+async function wikidataPhoto(imo: number): Promise<string | undefined> {
+  const body = await wikimedia(WIKIDATA, {
+    action: "query",
+    generator: "search",
+    gsrsearch: `haswbstatement:P458=${imo}`,
+    gsrlimit: "50",
+    prop: "pageprops",
+    ppprop: "page_image_free",
+  });
+  const pages: Array<{ title: string; pageprops?: { page_image_free?: string } }> = body.query?.pages ?? [];
+  const qid = (p: { title: string }) => Number(p.title.slice(1));
+  const item = pages.filter((p) => /^Q\d+$/.test(p.title)).sort((a, b) => qid(a) - qid(b))[0];
+  const file = item?.pageprops?.page_image_free;
+  return file ? `File:${file.replace(/_/g, " ")}` : undefined;
+}
+
+/**
+ * The newest photos in a Commons category and its first ship-identity subcategories, led by the
+ * photo Wikidata gives the ship when `imo` is known. Throws UpstreamError when Commons fails, so
+ * the caller can cache that briefly. Wikidata failing costs only the lead, so the photos are
+ * still answered, marked incomplete.
+ */
+async function lookupPhotos(category: string, imo?: number): Promise<{ media: VesselMedia; complete: boolean }> {
+  const [top, lead] = await Promise.all([
+    members(category, "file|subcat"),
+    // Null when Wikidata failed, undefined when it has no photo.
+    imo ? wikidataPhoto(imo).catch((e) => (isUpstream(e) ? null : Promise.reject(e))) : undefined,
+  ]);
+  const complete = lead !== null;
   const files = top.filter((m) => m.ns === 6).map((m) => m.title);
   const subcats = top.filter((m) => m.ns === 14).slice(0, MAX_SUBCATEGORIES);
   for (const sub of subcats) files.push(...(await members(sub.title, "file")).map((m) => m.title));
 
-  const titles = [...new Set(files)].slice(0, MAX_CANDIDATES);
-  if (!titles.length) return { photos: [], links: {} };
+  // The lead comes first so the cap never drops it, and is asked for even when the category lacks it.
+  const titles = [...new Set(lead ? [lead, ...files] : files)].slice(0, MAX_CANDIDATES);
+  if (!titles.length) return { media: { photos: [], links: {} }, complete };
 
   const body = await wikimedia(COMMONS, {
     action: "query",
@@ -91,7 +122,11 @@ async function lookupPhotos(category: string): Promise<VesselMedia> {
     titles: titles.join("|"),
   });
 
-  const found: Array<Photo & { taken: number }> = [];
+  // Commons answers under its own form of each title, which may differ from Wikidata's.
+  const normalized = new Map<string, string>((body.query?.normalized ?? []).map((n: { from: string; to: string }) => [n.from, n.to]));
+  const leadTitle = lead && (normalized.get(lead) ?? lead);
+
+  const found: Array<Photo & { taken: number; title: string }> = [];
   for (const page of body.query?.pages ?? []) {
     const info = page.imageinfo?.[0];
     // Categories also hold PDFs, videos and plans; only photographs and drawings render here.
@@ -109,31 +144,43 @@ async function lookupPhotos(category: string): Promise<VesselMedia> {
       licenseUrl: /^https?:\/\//i.test(text(meta.LicenseUrl?.value) ?? "") ? text(meta.LicenseUrl?.value) : undefined,
       description: text(meta.ImageDescription?.value),
       taken: taken(meta),
+      title: page.title,
     });
   }
 
-  // Recent livery first.
+  // Wikidata's photo, then recent livery.
   found.sort((a, b) => b.taken - a.taken);
-  const photos = found.slice(0, MAX_PHOTOS).map(({ taken: _, ...photo }) => photo);
+  const at = found.findIndex((p) => p.title === leadTitle);
+  if (at > 0) found.unshift(...found.splice(at, 1));
+  const photos = found.slice(0, MAX_PHOTOS).map(({ taken: _, title: __, ...photo }) => photo);
   return {
-    photos,
-    links: photos.length ? { commonsCategory: `https://commons.wikimedia.org/wiki/${encodeURI(category.replace(/ /g, "_"))}` } : {},
+    media: {
+      photos,
+      links:
+        photos.length && files.length
+          ? { commonsCategory: `https://commons.wikimedia.org/wiki/${encodeURI(category.replace(/ /g, "_"))}` }
+          : {},
+    },
+    complete,
   };
 }
 
 /**
  * The media route's answer for a key: photographs from Wikimedia Commons. A seven-digit key is
- * an IMO, looked up in Commons' per-hull "IMO <n>" category; a nine-digit key is an MMSI, looked
- * up in its "MMSI <n>" category, for vessels without a usable IMO. Answers are cached at the edge,
- * so Wikimedia sees a few requests per vessel per week. The vessel's particulars come from the
- * API, which syncs them from Wikidata and the Coast Guard.
+ * an IMO, looked up in Commons' per-hull "IMO <n>" category, led by the photo Wikidata gives
+ * that IMO; a nine-digit key is an MMSI, looked up in its "MMSI <n>" category, for vessels
+ * without a usable IMO. Answers are cached at the edge, so Wikimedia sees a few requests per
+ * vessel per week. The vessel's particulars come from the API, which syncs them from Wikidata
+ * and the Coast Guard.
  */
 export async function mediaResponse(key: string, requestUrl: string): Promise<Response> {
   let category: string;
+  let imo: number | undefined;
   if (/^\d{7}$/.test(key)) {
     // A mistyped IMO would find another ship's photos or none; refuse it before asking.
     if (!isValidImo(Number(key))) return Response.json({ error: "invalid IMO" }, { status: 400 });
     category = `Category:IMO ${key}`;
+    imo = Number(key);
   } else if (/^\d{9}$/.test(key)) {
     category = `Category:MMSI ${key}`;
   } else {
@@ -148,8 +195,10 @@ export async function mediaResponse(key: string, requestUrl: string): Promise<Re
   let media: VesselMedia;
   let cacheControl: string;
   try {
-    media = await lookupPhotos(category);
-    cacheControl = media.photos.length ? FOUND : EMPTY;
+    const answer = await lookupPhotos(category, imo);
+    media = answer.media;
+    // Photos without their lead are served, but asked for again soon.
+    cacheControl = !answer.complete ? FAILED : media.photos.length ? FOUND : EMPTY;
   } catch (e) {
     if (!isUpstream(e)) throw e;
     // Served, but kept only briefly, so the photos are asked for again.

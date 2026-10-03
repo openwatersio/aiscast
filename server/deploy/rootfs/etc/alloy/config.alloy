@@ -10,7 +10,7 @@ prometheus.exporter.unix "host" {
 
 	systemd {
 		enable_restarts = true
-		unit_include    = "(aiscast|caddy|alloy)\\.service"
+		unit_include    = "(aiscast|caddy|alloy|clickhouse-server)\\.service"
 	}
 }
 
@@ -31,6 +31,23 @@ prometheus.scrape "caddy" {
 	targets    = [{"__address__" = "127.0.0.1:2019"}]
 	job_name   = "caddy"
 	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+// ClickHouse exports thousands of series; these few are its memory, CPU, inserts, failures, merges, and size.
+prometheus.scrape "clickhouse" {
+	targets    = [{"__address__" = "127.0.0.1:9363"}]
+	job_name   = "clickhouse"
+	forward_to = [prometheus.relabel.clickhouse.receiver]
+}
+
+prometheus.relabel "clickhouse" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	rule {
+		source_labels = ["__name__"]
+		regex         = "ClickHouseMetrics_(MemoryTracking|Merge|Query)|ClickHouseProfileEvents_(InsertedRows|FailedQuery|FailedInsertQuery|OSCPUVirtualTimeMicroseconds)|ClickHouseAsyncMetrics_(MaxPartCountForPartition|TotalBytesOfMergeTreeTables|TotalRowsOfMergeTreeTables)"
+		action        = "keep"
+	}
 }
 
 prometheus.remote_write "grafana_cloud" {
