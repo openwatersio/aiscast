@@ -73,9 +73,12 @@ systemctl restart systemd-journald
 systemctl enable aiscast caddy fail2ban
 systemctl reload-or-restart fail2ban
 # caddy validate opens the access log, and run as root it would create it root-owned, which the caddy
-# user then cannot open: Caddy fails to start. The file is made the caddy user's first.
+# user then cannot open: Caddy fails to start. The file is the caddy user's before validating, whether it
+# is new or was left root-owned by an earlier validation; its contents are kept.
 install -d -o caddy -g caddy /var/log/caddy
-[ -e /var/log/caddy/access.log ] || install -m 600 -o caddy -g caddy /dev/null /var/log/caddy/access.log
+touch /var/log/caddy/access.log
+chown caddy:caddy /var/log/caddy/access.log
+chmod 600 /var/log/caddy/access.log
 caddy validate --config /etc/caddy/Caddyfile
 # The Caddyfile's stream_close_delay keeps the reload from blocking on open WebSockets; the
 # restart is the bounded fallback if it hangs anyway.
