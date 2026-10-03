@@ -46,6 +46,7 @@ type Event struct {
 	Synthesized  bool
 	Own          bool // an own-ship sentence (!AIVDO): the sender reporting itself, not a reception
 	rebuilt      bool // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
+	unserved     bool // kept out of history by the ClickHouse writer though not implausible to the stream: a stale report it does not believe
 	LowTrust     bool // from a source that cannot be authenticated (UDP)
 	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
 	Implausible  bool // position implying an impossible speed from the vessel's last; archived, not emitted
@@ -89,8 +90,10 @@ type Pipeline struct {
 	closing     atomic.Bool
 
 	seen     map[string]time.Time
-	seenHW   time.Time // newest event time folded into seen; prune cutoff, so replay needs no wall clock
-	normGate time.Time // replay warm-up: records received before this are state-building only, not written
+	bad      map[string]time.Time    // dedupe keys of transmissions the fold judged implausible, by time, pruned with seen
+	folding  map[string][]trackPoint // keys whose accepted copy is still folding, with the copies that arrived meanwhile
+	seenHW   time.Time               // newest event time folded into seen; prune cutoff, so replay needs no wall clock
+	normGate time.Time               // replay warm-up: records received before this are state-building only, not written
 	nSeen    int
 
 	vmu        sync.RWMutex
@@ -111,7 +114,9 @@ type Pipeline struct {
 	ised       isedStats                      // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
 	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
 	ch         *chStore                       // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
-	chQueue    []trackPoint                   // positions folded since the last flush to ClickHouse; guarded by vmu
+	chMu       sync.Mutex                     // guards chQueue; taken after vmu when both are held
+	chQueue    []trackPoint                   // copies received since the last flush to ClickHouse; nil until it connects
+	chOn       atomic.Bool                    // ClickHouse is attached, so copies are worth building
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
 	storesClosed bool       // set by closeStore; flushes after it do nothing
@@ -152,6 +157,8 @@ func newPipeline(arch *archive) *Pipeline {
 		pending: map[string][]fragment{},
 		ownOf:   map[string]string{},
 		seen:    map[string]time.Time{},
+		bad:     map[string]time.Time{},
+		folding: map[string][]trackPoint{},
 		vessels: map[uint32]*vessel{},
 		cells:   map[cellKey]map[uint32]*vessel{},
 		subs:    map[*subscriber]struct{}{},
@@ -392,8 +399,21 @@ func (p *Pipeline) emit(ev *Event) {
 	key := string(ev.Payload) + string(ev.Channel)
 	p.mu.Lock()
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
+		bad := p.bad[key].Equal(prev)
+		// Until the fold has judged the accepted copy, its verdict is unknown, so this copy waits on the key
+		// and settleFold writes it with the verdict. Both happen under mu, so no copy is written unjudged.
+		held := false
+		if waiting, folding := p.folding[key]; folding && p.chOn.Load() {
+			if pt, ok := copyPoint(ev, key, prev); ok {
+				p.folding[key] = append(waiting, pt)
+			}
+			held = true
+		}
 		p.mu.Unlock()
 		p.writeCopy(ev, key, prev) // prev is the accepted transmission: proximity alone is ambiguous between two of them
+		if p.chOn.Load() && !held {
+			p.noteCopy(ev, key, prev, bad)
+		}
 		p.stats.dup.Add(1)
 		p.usage.dups.add(time.Now())
 		p.stations.dup(ev)
@@ -404,6 +424,9 @@ func (p *Pipeline) emit(ev *Event) {
 		return
 	}
 	p.seen[key] = ev.Time
+	if p.chOn.Load() {
+		p.folding[key] = nil
+	}
 	if ev.Time.After(p.seenHW) {
 		p.seenHW = ev.Time
 	}
@@ -415,16 +438,23 @@ func (p *Pipeline) emit(ev *Event) {
 				delete(p.seen, k)
 			}
 		}
+		for k, v := range p.bad {
+			if v.Before(cutoff) {
+				delete(p.bad, k)
+			}
+		}
 	}
 	p.mu.Unlock()
 
-	sum := sha256.Sum256([]byte(key))
-	ev.ID = hex.EncodeToString(sum[:16])
+	ev.ID = eventID(key)
 	ev.Type = typeName(ev.Packet)
 	ev.MMSI = ev.Packet.GetHeader().UserID
 	ev.LowTrust = lowTrust(ev.Source)
 	p.updateVessel(ev)
-	p.writeEvent(ev) // flagged or not: the normalized archive keeps what the raw archive keeps
+	p.writeEvent(ev)                     // flagged or not: the normalized archive keeps what the raw archive keeps
+	if p.chOn.Load() || ev.Implausible { // without ClickHouse, nothing waits on the verdict
+		p.settleFold(key, ev)
+	}
 	if ev.Implausible {
 		p.stats.implausible.Add(1)
 		return
@@ -466,6 +496,34 @@ const (
 	dedupeWindow = 10 * time.Second
 	replayAge    = 60 * time.Second // buffered receptions older than this go to the archive only
 )
+
+// settleFold records the fold's verdict on an accepted transmission: one kept out of history, implausible to
+// the stream or a stale report the ClickHouse writer does not believe, has later copies that carry its
+// position, so they are written implausible too, and so are the copies that arrived while it folded.
+func (p *Pipeline) settleFold(key string, ev *Event) {
+	bad := ev.Implausible || ev.unserved
+	p.mu.Lock()
+	waiting, folding := p.folding[key]
+	delete(p.folding, key)
+	if bad {
+		p.bad[key] = ev.Time
+	}
+	p.mu.Unlock()
+	if !folding {
+		return
+	}
+	for _, pt := range waiting {
+		pt.implausible = bad
+		p.noteReception(pt)
+	}
+}
+
+// eventID is an event's id: a hash of its payload and channel, the dedupe key, so every copy of a transmission
+// computes the same one.
+func eventID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:16])
+}
 
 func absDur(d time.Duration) time.Duration {
 	if d < 0 {

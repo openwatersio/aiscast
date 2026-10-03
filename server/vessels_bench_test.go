@@ -64,6 +64,8 @@ func benchFold(b *testing.B, recorded bool) {
 	if recorded {
 		p.dirty = map[uint32]struct{}{}
 		p.tracks, p.trackQueue = &trackStore{}, make([]trackPoint, 0, maxPending)
+		p.ch, p.chQueue = &chStore{}, make([]trackPoint, 0, maxPending)
+		p.chOn.Store(true)
 	}
 	start := time.Now()
 	b.ReportAllocs()

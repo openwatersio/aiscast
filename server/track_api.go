@@ -156,7 +156,7 @@ func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time)
 			return q, http.StatusBadRequest, "interval=<seconds> or a duration such as 5m"
 		}
 	}
-	q.interval = p.answeredStep(q.from, q.interval, now)
+	q.interval = p.answeredStep(q.from, q.to, q.interval, now)
 	return q, 0, ""
 }
 
@@ -241,17 +241,17 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 	return points, pointSources(points), more, nil
 }
 
-// answeredStep is the step an answer starting at from can keep: interval, or the window of the rollup ClickHouse
-// reads a range from when the range is older than every finer table, as for interval 0 past the raw table's 30
-// days. The whole answer is thinned to it and reports it, so no part claims more positions than it holds.
-func (p *Pipeline) answeredStep(from time.Time, interval time.Duration, now time.Time) time.Duration {
+// answeredStep is the step an answer from from to to can keep: interval, or the window of the rollup ClickHouse
+// reads a range from when the range is too long for every position, as for interval 0 over more than
+// chFineSpan. The whole answer is thinned to it and reports it, so no part claims more positions than it holds.
+func (p *Pipeline) answeredStep(from, to time.Time, interval time.Duration, now time.Time) time.Duration {
 	p.vmu.RLock()
 	ch := p.ch
 	p.vmu.RUnlock()
 	if ch == nil || ch.r == nil || !from.Before(now.Add(-trackWindow)) {
 		return interval
 	}
-	_, window := chTable(from, interval, now)
+	_, window := chTable(from, to, interval, now)
 	return max(interval, window)
 }
 
@@ -564,7 +564,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 		}
 		interval = defaultInterval(span, limit)
 	}
-	interval = p.answeredStep(from, interval, now)
+	interval = p.answeredStep(from, to, interval, now)
 	var points []trackPoint
 	var sources []string
 	var more bool
