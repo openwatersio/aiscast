@@ -100,8 +100,8 @@ test("Back after a reload skips vessels opened one after another on the map", as
 });
 
 test("Back skips vessels opened one after another when one's address is corrected", async ({ page }) => {
-  // Every record names its vessel otherwise than the map does, as a vessel's can until the
-  // stream hears its static data, so a page opened by the name on the map redirects.
+  // Every record names its vessel differently from the map, which happens for real until the
+  // stream hears a vessel's static data. A page opened by the map's name then redirects.
   await page.route(/\/v1\/vessels\/\d+$/, async (route) => {
     const response = await route.fetch();
     const feature = await response.json();
