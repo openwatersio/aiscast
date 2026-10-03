@@ -2,34 +2,6 @@ import type { YouTubeChannel } from "./explore";
 
 export const cruisingChannels: YouTubeChannel[] = [
   {
-    id: "mv-freedom",
-    name: "MV Freedom",
-    crew: "Shawn & Elizabeth",
-    youtube: "https://www.youtube.com/mvfreedom",
-    boats: [
-      {
-        name: "Freedom",
-        model: "Nordhavn 43",
-        chapter: "Liveaboard cruising",
-        source: "https://www.mvfreedomseattle.com/theboat",
-      },
-    ],
-  },
-  {
-    id: "argonaut",
-    name: "Argonaut II",
-    crew: "Nicholas Verrochi",
-    youtube: "https://www.youtube.com/@MV_Argonaut",
-    boats: [
-      {
-        name: "Argonaut II",
-        model: "1922 wooden motor yacht, 73 feet",
-        chapter: "Restoration & cruising",
-        source: "https://woodenboat.org/boat/argonaut-ii2025verrochi/",
-      },
-    ],
-  },
-  {
     id: "the-71-percent",
     name: "The 71 Percent",
     crew: "Nathan & Lindsey",
@@ -60,20 +32,6 @@ export const cruisingChannels: YouTubeChannel[] = [
     ],
   },
   {
-    id: "mermaid-monster",
-    name: "Aboard Mermaid Monster",
-    crew: "Brooke & Braden Palmer and family",
-    youtube: "https://www.youtube.com/@ABOARDMERMAIDMONSTER",
-    boats: [
-      {
-        name: "Mermaid Monster",
-        model: "Nordhavn 55",
-        chapter: "Family cruising",
-        source: "https://www.highfieldboats.com/story/aboard-mermaid-monster/",
-      },
-    ],
-  },
-  {
     id: "lady-liselot",
     name: "Henk | Cruising MV Lady Liselot",
     crew: "Henk-Jan van Essen",
@@ -87,6 +45,48 @@ export const cruisingChannels: YouTubeChannel[] = [
         mmsi: 244129609,
         identitySource:
           "https://www.vesselfinder.com/vessels/details/244129609",
+      },
+    ],
+  },
+  {
+    id: "mv-freedom",
+    name: "MV Freedom",
+    crew: "Shawn & Elizabeth",
+    youtube: "https://www.youtube.com/mvfreedom",
+    boats: [
+      {
+        name: "Freedom",
+        model: "Nordhavn 43",
+        chapter: "Liveaboard cruising",
+        source: "https://www.mvfreedomseattle.com/theboat",
+      },
+    ],
+  },
+  {
+    id: "argonaut",
+    name: "Argonaut II",
+    crew: "Nicholas Verrochi",
+    youtube: "https://www.youtube.com/@MV_Argonaut",
+    boats: [
+      {
+        name: "Argonaut II",
+        model: "1922 wooden motor yacht, 73 feet",
+        chapter: "Restoration & cruising",
+        source: "https://woodenboat.org/boat/argonaut-ii2025verrochi/",
+      },
+    ],
+  },
+  {
+    id: "mermaid-monster",
+    name: "Aboard Mermaid Monster",
+    crew: "Brooke & Braden Palmer and family",
+    youtube: "https://www.youtube.com/@ABOARDMERMAIDMONSTER",
+    boats: [
+      {
+        name: "Mermaid Monster",
+        model: "Nordhavn 55",
+        chapter: "Family cruising",
+        source: "https://www.highfieldboats.com/story/aboard-mermaid-monster/",
       },
     ],
   },

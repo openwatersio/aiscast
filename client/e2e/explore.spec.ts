@@ -141,16 +141,41 @@ test("the YouTube directory links sailors and cruisers, with usable cruiser card
   await expect(
     page.getByRole("heading", { level: 1, name: "YouTube channels" }),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: /Sailors/ })).toHaveAttribute(
-    "href",
-    "/ais/explore/youtube/sailors",
-  );
-  await page.getByRole("link", { name: /Cruisers/ }).click();
+  await expect(page.locator("article")).toHaveCount(2);
+  expect(
+    await page
+      .locator("article")
+      .evaluateAll((cards) => cards.map((card) => card.id)),
+  ).toEqual(["wynns", "the-71-percent"]);
+  await expect(
+    page
+      .locator("#wynns")
+      .getByRole("link", { name: "Open Undra in the AIS viewer", exact: true }),
+  ).toHaveAttribute("href", "/ais/vessels/368478440");
+  await expect(
+    page
+      .locator("#the-71-percent")
+      .getByRole("link", {
+        name: "Open Ruth Pearl II in the AIS viewer",
+        exact: true,
+      }),
+  ).toHaveAttribute("href", "/ais/vessels/503190280");
+  await expect(
+    page.getByRole("link", { name: "Browse all sailors", exact: true }),
+  ).toHaveAttribute("href", "/ais/explore/youtube/sailors");
+  await page
+    .getByRole("link", { name: "Browse all cruisers", exact: true })
+    .click();
   await expect(page).toHaveURL(/\/ais\/explore\/youtube\/cruisers$/);
   await expect(
     page.getByRole("heading", { level: 1, name: "YouTube cruisers" }),
   ).toBeVisible();
   await expect(page.locator("article")).toHaveCount(8);
+  expect(
+    await page
+      .locator("article")
+      .evaluateAll((cards) => cards.slice(0, 2).map((card) => card.id)),
+  ).toEqual(["the-71-percent", "lady-liselot"]);
   await expect(page.getByRole("link", { name: / on YouTube$/ })).toHaveCount(8);
   for (const name of [
     "MV Freedom",
@@ -170,12 +195,10 @@ test("the YouTube directory links sailors and cruisers, with usable cruiser card
   await expect(page.locator("#tula")).toContainText("LaurieSue");
   await expect(page.locator("#the-71-percent")).toContainText("Selene 49");
   await expect(
-    page
-      .locator("#lady-liselot")
-      .getByRole("link", {
-        name: "Open Lady Liselot in the AIS viewer",
-        exact: true,
-      }),
+    page.locator("#lady-liselot").getByRole("link", {
+      name: "Open Lady Liselot in the AIS viewer",
+      exact: true,
+    }),
   ).toHaveAttribute("href", "/ais/vessels/244129609");
   await expect(page.locator("#map, .sheet")).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
