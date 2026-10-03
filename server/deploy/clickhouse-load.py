@@ -75,18 +75,22 @@ def from_lake(first, last):
         con.execute(s)
     for d in days(first, last):
         with tempfile.NamedTemporaryFile(suffix=".parquet") as f:
-            # A copy's day is the day it arrived, which can be the day after its transmission's, so positions
-            # join from the day before as well. The lake keeps -1 for a missing navigational status and nulls
-            # for missing motion; the server writes 15, 1023, 3600, and 511. A source reduces to its kind.
+            # A copy's day is the day it arrived, which can be the day after its transmission's: the server drops
+            # a copy more than a day behind. So positions join from the day before as well, and a copy is the
+            # accepted one only if it arrived first among the copies of both days, or a late copy of yesterday's
+            # transmission would count as a first copy today. The lake keeps -1 for a missing navigational status
+            # and nulls for missing motion; the server writes 15, 1023, 3600, and 511. A source reduces to its kind.
             con.execute(f"""COPY (
                 SELECT r.mmsi::UINTEGER AS mmsi, r.ts, lower(hex(r.id)) AS id, r.recv_ts, p.lat6, p.lon6,
                        coalesce(p.sog10, 1023)::USMALLINT AS sog10, coalesce(p.cog10, 3600)::USMALLINT AS cog10,
                        coalesce(p.heading, 511)::USMALLINT AS heading,
                        (CASE WHEN p.navstat BETWEEN 0 AND 14 THEN p.navstat ELSE 15 END)::UTINYINT AS navstat,
-                       split_part(r.source, ':', 1) AS source, r.station,
-                       row_number() OVER (PARTITION BY r.id, r.ts ORDER BY r.recv_ts) = 1 AS accepted,
+                       split_part(r.source, ':', 1) AS source, r.station, r.accepted,
                        coalesce(p.corroborated, true) AS corroborated
-                FROM lake.ais.receptions r
+                FROM (
+                    SELECT *, row_number() OVER (PARTITION BY id, ts ORDER BY recv_ts) = 1 AS accepted
+                    FROM lake.ais.receptions WHERE day BETWEEN DATE '{d}' - 1 AND DATE '{d}'
+                ) r
                 JOIN lake.ais.positions p ON p.id = r.id AND p.ts = r.ts
                 WHERE r.day = DATE '{d}' AND p.day BETWEEN DATE '{d}' - 1 AND DATE '{d}' AND p.lat6 IS NOT NULL
             ) TO '{f.name}' (FORMAT parquet)""")
