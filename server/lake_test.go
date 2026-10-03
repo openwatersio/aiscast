@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ type fakeLake struct {
 	cap       int              // rows per response, like an engine with a row limit; 0 = none
 	empty     bool             // the catalog has no tables yet
 	queries   atomic.Int64
+	tracksSQL atomic.Value // the last query for track positions
 }
 
 func (f *fakeLake) query(_ context.Context, q string, each func(map[string]json.RawMessage) error) error {
@@ -25,6 +27,9 @@ func (f *fakeLake) query(_ context.Context, q string, each func(map[string]json.
 		return errLakeEmpty
 	}
 	rows := f.positions
+	if !strings.Contains(q, "ais.vessels") {
+		f.tracksSQL.Store(q)
+	}
 	if strings.Contains(q, "ais.vessels") {
 		var after, limit int
 		fmt.Sscanf(q[strings.Index(q, "WHERE mmsi > "):], "WHERE mmsi > %d ORDER BY mmsi LIMIT %d", &after, &limit)
@@ -79,6 +84,9 @@ func TestTrackStitchesTheLake(t *testing.T) {
 	if tr.Properties.Sog[0] == nil || *tr.Properties.Sog[0] != 11.2 {
 		t.Errorf("lake encodings decode: %v", tr.Properties.Sog[0])
 	}
+	if q, _ := f.tracksSQL.Load().(string); !strings.Contains(q, "FROM lake.ais.tracks") {
+		t.Errorf("history reads the rolled-up tracks, not every position: %s", q)
+	}
 
 	// Every vessel-day is read once.
 	n := f.queries.Load()
@@ -122,9 +130,12 @@ func TestTrackArchiveIsATier(t *testing.T) {
 		t.Errorf("MCP past the window: %q", msg)
 	}
 	allowAnon = true
-	long := time.Now().Add(-9 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+time.Now().Add(-300*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 200 {
+		t.Errorf("most of a year: %d %s", w.Code, w.Body)
+	}
+	long := time.Now().Add(-367 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	if w := get(t, p, "/v1/vessels/257000001/track?from="+long); w.Code != 400 {
-		t.Errorf("more than 7 days: %d", w.Code)
+		t.Errorf("more than 366 days: %d", w.Code)
 	}
 }
 
@@ -334,7 +345,7 @@ func TestLakeCacheTrimsByBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var kept []string
-	rows, err := p.tracks.db.Query(`SELECT day FROM lake_days ORDER BY day`)
+	rows, err := p.tracks.db.Query(`SELECT day FROM lake_track_days ORDER BY day`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,5 +371,76 @@ func TestLakePositionsAreDespiked(t *testing.T) {
 	points, _, _, err := p.trackPoints(context.Background(), 257000001, t0.Add(-time.Hour), t0.Add(time.Hour), 0, 100, now)
 	if err != nil || len(points) != 3 || points[2].lat6 != int32(59.00933*600000) {
 		t.Errorf("the displaced fix should be dropped: %v %+v", err, points)
+	}
+}
+
+func TestTrackPastTheWindowIsAPositionAMinuteAtMost(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-3 * 24 * time.Hour).Truncate(time.Hour)
+	f := &fakeLake{positions: []map[string]any{lakePosition(old, 59.0), lakePosition(old.Add(time.Minute), 59.01)}}
+	p := lakePipeline(t, f)
+	sail(t, p, 257000001, time.Hour, 50*time.Minute)
+	from := now.Add(-4 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	for _, q := range []string{"&interval=0", "&interval=10s", "&interval=30"} {
+		if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+q); tr.Properties.Interval != 60 {
+			t.Errorf("%q past the window: interval %d, want 60", q, tr.Properties.Interval)
+		}
+	}
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&interval=1h"); tr.Properties.Interval != 3600 {
+		t.Errorf("a coarser step stands: %d", tr.Properties.Interval)
+	}
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?interval=0"); tr.Properties.Interval != 0 || tr.Properties.Points != 2 {
+		t.Errorf("inside the window every position is still there to ask for: %+v", tr.Properties)
+	}
+	// A short range just past the window spreads its limit at no step at all, and still reads the lake.
+	edge := now.Add(-trackWindow - time.Minute)
+	short := "from=" + edge.UTC().Format(time.RFC3339) + "&to=" + edge.Add(10*time.Second).UTC().Format(time.RFC3339)
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?"+short); tr.Properties.Interval != 60 {
+		t.Errorf("short range past the window: interval %d, want 60", tr.Properties.Interval)
+	}
+	var out mcpTrack
+	args := map[string]any{"mmsi": 257000001, "from": edge.UTC().Format(time.RFC3339), "to": edge.Add(10 * time.Second).UTC().Format(time.RFC3339)}
+	cs := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, &Claims{Sub: "fleet", Role: "partner"}))
+	if msg := mcpCall(t, cs, "get_vessel_track", args, &out); msg != "" || out.IntervalS != 60 {
+		t.Errorf("MCP short range past the window: %q interval_s %d, want 60", msg, out.IntervalS)
+	}
+}
+
+func TestOpeningTheTrackStoreDropsTheCacheOfEveryPosition(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tracks.db")
+	ts, err := openTracks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.db.Exec(`CREATE TABLE lake_days (mmsi INTEGER, day TEXT, points BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	ts.close()
+	if ts, err = openTracks(path); err != nil {
+		t.Fatal(err)
+	}
+	defer ts.close()
+	var n int
+	ts.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'lake_days'`).Scan(&n)
+	if n != 0 {
+		t.Error("lake_days survives")
+	}
+}
+
+func TestTrackKeepsTheEarlierOfAMinutesRowsAcrossDays(t *testing.T) {
+	// The packager rolls each day up from its own arrivals, so a report relayed late gives its minute a
+	// second row in the next day's partition. Thinned by minute, the earlier of the two is the track's.
+	now := time.Now()
+	minute := now.Add(-4 * 24 * time.Hour).Truncate(time.Minute)
+	onTime := lakePosition(minute.Add(40*time.Second), 59.0)
+	late := lakePosition(minute.Add(10*time.Second), 59.001)
+	late["day"] = minute.Add(24 * time.Hour).UTC().Format("2006-01-02")
+	p := lakePipeline(t, &fakeLake{positions: []map[string]any{onTime, late}})
+	sail(t, p, 257000001, time.Hour)
+	from := minute.Add(-time.Hour).UTC().Format(time.RFC3339)
+	to := minute.Add(time.Hour).UTC().Format(time.RFC3339)
+	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=0")
+	if tr.Properties.Points != 1 || tr.Properties.Times[0] != minute.Add(10*time.Second).UTC().Format(time.RFC3339) {
+		t.Errorf("one point, the late report's earlier one: %d %v", tr.Properties.Points, tr.Properties.Times)
 	}
 }

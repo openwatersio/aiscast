@@ -52,6 +52,7 @@ type testTrack struct {
 	Properties struct {
 		From, To  string
 		Points    int
+		Interval  int64
 		Truncated bool
 		Name      string
 		Times     []string
