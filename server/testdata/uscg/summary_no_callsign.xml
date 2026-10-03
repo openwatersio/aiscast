@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><getVesselSummaryXMLStringResponse xmlns="https://cgmix.uscg.mil"><getVesselSummaryXMLStringResult>&lt;NewDataSet&gt;
+  &lt;VesselSummary&gt;
+    &lt;VesselId&gt;955001&lt;/VesselId&gt;
+    &lt;VesselName&gt;DOCKSIDE DREAM&lt;/VesselName&gt;
+    &lt;ServiceType&gt;Recreational&lt;/ServiceType&gt;
+    &lt;ConstructionCompletedYear&gt;1979&lt;/ConstructionCompletedYear&gt;
+    &lt;StatusLookupName&gt;Active&lt;/StatusLookupName&gt;
+    &lt;Identification&gt;1307977&lt;/Identification&gt;
+    &lt;CountryLookupName&gt;UNITED STATES&lt;/CountryLookupName&gt;
+  &lt;/VesselSummary&gt;
+  &lt;VesselSummary&gt;
+    &lt;VesselId&gt;955002&lt;/VesselId&gt;
+    &lt;VesselName&gt;NO KEYS AT ALL&lt;/VesselName&gt;
+    &lt;ServiceType&gt;Recreational&lt;/ServiceType&gt;
+    &lt;ConstructionCompletedYear&gt;1979&lt;/ConstructionCompletedYear&gt;
+    &lt;StatusLookupName&gt;Active&lt;/StatusLookupName&gt;
+    &lt;CountryLookupName&gt;UNITED STATES&lt;/CountryLookupName&gt;
+  &lt;/VesselSummary&gt;
+&lt;/NewDataSet&gt;</getVesselSummaryXMLStringResult></getVesselSummaryXMLStringResponse></soap:Body></soap:Envelope>

@@ -160,7 +160,7 @@ func TestNormCallSign(t *testing.T) {
 
 func TestFetchPSIX(t *testing.T) {
 	url, _ := fakePSIX(t, nil)
-	got, err := fetchPSIX(t.Context(), url, time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC))
+	got, err := fetchPSIX(t.Context(), url, time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), map[string]bool{"1307977": true, "VA1208BP": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,10 +169,18 @@ func TestFetchPSIX(t *testing.T) {
 		ids[id] = v.Name
 	}
 	// The three DUPLICATE OF records under WCZ5696 are left out; CERULEAN comes from the 1978 listing.
+	// DOCKSIDE DREAM and VA08BP have no call sign and are kept for their official numbers, which the
+	// FCC licenses join; a row with neither key is left out.
 	want := map[int]string{1097015: "MAERSK KENSINGTON", 507140: "NICOLE LEIGH REINAUER", 607128: "CONGRESSMAN ROBERT A. ROE",
-		171966: "PAIGE MARIE", 872923: "ANNALISE", 167771: "CERULEAN"}
+		171966: "PAIGE MARIE", 872923: "ANNALISE", 167771: "CERULEAN", 955001: "DOCKSIDE DREAM", 1205346: "VA08BP"}
 	if !reflect.DeepEqual(ids, want) {
 		t.Errorf("listed %v", ids)
+	}
+	if v := got[955001]; v.callsign != "" || v.officialKey != "1307977" {
+		t.Errorf("ident-only row: %+v", *v)
+	}
+	if v := got[1205346]; v.officialKey != "VA1208BP" {
+		t.Errorf("normalized key: %+v", *v)
 	}
 	if v := got[507140]; v.callsign != "WCZ5696" || v.Service != "Towing Vessel" || v.Status != "Active" || v.YearBuilt != 1999 || v.Identification == "" {
 		t.Errorf("summary: %+v", *v)
@@ -233,7 +241,13 @@ func TestUSCGSync(t *testing.T) {
 		t.Errorf("failed listing recorded %q", last)
 	}
 	fail.Store(false)
-	if !p.syncUSCGIfDue(now, url) || p.uscg.vessels.Load() != 6 {
+	if err := p.store.replaceFCC(map[uint32]*fccShip{
+		368168720: {MMSI: 368168720, USI: 1, CallSign: "WDQ5444", Name: "DOCKSIDE DREAM", Official: "1307977"},
+		366999999: {MMSI: 366999999, USI: 2, CallSign: "WDX0000", Name: "VA08BP", Official: "VA1208BP"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if !p.syncUSCGIfDue(now, url) || p.uscg.vessels.Load() != 8 {
 		t.Fatalf("listing: vessels %d", p.uscg.vessels.Load())
 	}
 	before := requests.Load()
@@ -308,10 +322,21 @@ func TestUSCGSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := get(t, p, "/metrics").Body.String()
-	for _, want := range []string{"aiscast_uscg_vessels 6\n", fmt.Sprintf("aiscast_uscg_last_success_timestamp_seconds %d\n", now.Unix())} {
+	for _, want := range []string{"aiscast_uscg_vessels 8\n", fmt.Sprintf("aiscast_uscg_last_success_timestamp_seconds %d\n", now.Unix())} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/metrics lacks %q", want)
 		}
+	}
+
+	// A license sync newer than the listing re-runs it early, even within the week.
+	if err := p.store.replaceFCC(map[uint32]*fccShip{
+		368168720: {MMSI: 368168720, USI: 1, CallSign: "WDQ5444", Name: "DOCKSIDE DREAM", Official: "1307977"},
+		366999999: {MMSI: 366999999, USI: 2, CallSign: "WDX0000", Name: "VA08BP", Official: "VA1208BP"},
+	}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !p.syncUSCGIfDue(now.Add(2*time.Minute), url) {
+		t.Error("a newer license sync did not re-run the listing")
 	}
 }
 
@@ -351,5 +376,50 @@ func TestReplaceUSCGListing(t *testing.T) {
 	psixMinVessels = 10
 	if err := p.store.replaceUSCGListing(listing(1, 2, 3, 4, 5), time.Now()); err == nil {
 		t.Error("a listing under the minimum was stored")
+	}
+}
+
+// A vessel whose stored call sign is blank padding must join no ident-only row: the join compares
+// trimmed values, so the guard has to test the trimmed side too.
+func TestUSCGDuePaddedCallsign(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(366000011, "PADDED GHOST", "X"))
+	mustFlush(t, p)
+	if _, err := p.store.db.Exec(`UPDATE vessels SET callsign = '   ' WHERE mmsi = 366000011`); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.store.replaceUSCGListing(map[int]*uscgVessel{
+		910001: {ID: 910001, License: psixLicense, Name: "PADDED GHOST", Identification: "1222333", officialKey: "1222333"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if due, err := p.store.uscgDue(now.Add(time.Hour)); err != nil || len(due) != 0 {
+		t.Errorf("padded call sign joined: %+v, %v", due, err)
+	}
+}
+
+// The listing replace at the scale keeping ident-only rows reaches: several hundred thousand rows in
+// one transaction must stay well inside the ingest writer's 5 s busy timeout.
+func BenchmarkReplaceUSCGListing500k(b *testing.B) {
+	dir := b.TempDir()
+	st, err := openStore(dir + "/bench.db")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.close()
+	vessels := make(map[int]*uscgVessel, 500_000)
+	for i := range 500_000 {
+		vessels[i+1] = &uscgVessel{ID: i + 1, Name: fmt.Sprintf("VESSEL %d", i), Identification: fmt.Sprintf("%07d", i+1000000),
+			officialKey: fmt.Sprintf("%07d", i+1000000), Service: "Recreational", Status: "Active", YearBuilt: 1990}
+	}
+	old := psixMinVessels
+	psixMinVessels = 1
+	defer func() { psixMinVessels = old }()
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		if err := st.replaceUSCGListing(vessels, time.Now().Add(time.Duration(i)*time.Second)); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
