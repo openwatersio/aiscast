@@ -3,7 +3,8 @@ package main
 // The enrichment sources merged into one document. Each synced source keeps its own table and its own
 // shape; this file folds them into a single vocabulary served on /v1/vessels/{mmsi} and the MCP
 // get_vessels tool, so a client never reads per-source keys. provenance names the source of each field it
-// serves, and sources carries the credit, license, and the source's own page for the vessel. A new source
+// serves, and sources carries the credit, license, and the source's page for the vessel, or its public
+// search when it keeps no per-vessel pages. A new source
 // adds fields to the vocabulary and a rank to the merge here, and no response key is named after it.
 
 import "strconv"
@@ -12,7 +13,7 @@ import "strconv"
 type sourceRef struct {
 	Credit  string `json:"credit" jsonschema:"display credit for the source"`
 	License string `json:"license"`
-	URL     string `json:"url,omitempty" jsonschema:"the source's own page for this vessel"`
+	URL     string `json:"url,omitempty" jsonschema:"the source's page for this vessel, or its public search when the source keeps no per-vessel pages"`
 }
 
 // particulars is the merged document: one vocabulary, metres and tonnes, no source names.
@@ -167,8 +168,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		sources["wikidata"] = sourceRef{Credit: "Wikidata", License: wikidataLicense, URL: wd.URL}
 	}
 	if cg != nil {
-		sources["uscg"] = sourceRef{Credit: "U.S. Coast Guard PSIX", License: psixLicense,
-			URL: "https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=" + strconv.Itoa(cg.ID)}
+		sources["uscg"] = sourceRef{Credit: "U.S. Coast Guard PSIX", License: psixLicense, URL: psixSearchPage}
 	}
 	if fd != nil {
 		sources["fiskeridir"] = sourceRef{Credit: "Norwegian Directorate of Fisheries", License: fdirLicense}
@@ -181,7 +181,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		sources["tc"] = sourceRef{Credit: "Transport Canada vessel registry", License: tcLicense}
 	}
 	if is != nil {
-		sources["ised"] = sourceRef{Credit: "ISED Canadian MMSI registry", License: isedLicense, URL: isedSearchURL(is.MMSI)}
+		sources["ised"] = sourceRef{Credit: "ISED Canadian MMSI registry", License: isedLicense, URL: isedSearchPage}
 	}
 	return m, prov, sources
 }

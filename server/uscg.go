@@ -38,7 +38,10 @@ const (
 	psixEvery        = 7 * 24 * time.Hour
 	psixDetailsEvery = 90 * 24 * time.Hour
 	psixLicense      = "public domain (U.S. government work)"
-	psixFirstYear    = 1800 // the oldest recreational build year PSIX holds
+	// psixSearchPage is the public search the records come from, for the credit: PSIX's per-vessel
+	// pages answer only inside a browsing session, so there is no per-vessel link.
+	psixSearchPage = "https://cgmix.uscg.mil/PSIX/PSIXSearch.aspx"
+	psixFirstYear  = 1800 // the oldest recreational build year PSIX holds
 )
 
 var (

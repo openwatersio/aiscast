@@ -14,7 +14,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -233,7 +232,6 @@ func (p *Pipeline) backfillISED(now time.Time, endpoint string, budget time.Dura
 	return n
 }
 
-// isedSearchURL is the public search the data comes from, for the per-vessel credit.
-func isedSearchURL(mmsi uint32) string {
-	return "https://ised-isde.canada.ca/mmsi-ismm/eng/shipSearch.html?" + url.Values{"mmsi": {strconv.FormatUint(uint64(mmsi), 10)}}.Encode()
-}
+// isedSearchPage is the public search the data comes from, for the credit. The page reads no URL
+// parameters, so there is no per-vessel link; a reader pastes the MMSI.
+const isedSearchPage = "https://ised-isde.canada.ca/mmsi-ismm/eng/shipSearch.html"
