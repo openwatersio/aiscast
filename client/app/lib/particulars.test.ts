@@ -72,10 +72,12 @@ describe("particularsFacts", () => {
     ]);
   });
 
-  it("shows the documented name when AIS abbreviates it", () => {
+  it("shows the documented name unless it matches exactly, case aside", () => {
     const facts = particularsFacts({ ...kensington, registered_name: "GOVERNOR THOMAS H. KEAN" }, "GOV THOMAS H KEAN");
     expect(facts[0]).toEqual(["Documented as", "GOVERNOR THOMAS H. KEAN"]);
-    expect(particularsFacts({ ...kensington, registered_name: "THOMAS D. WITTE" }, "THOMAS D WITTE")[0]?.[1]).toBeUndefined();
+    // AIS cannot carry punctuation, so a punctuation-only difference is information.
+    expect(particularsFacts({ registered_name: "RUBY'S STAR" }, "RUBYS STAR")[0]).toEqual(["Documented as", "RUBY'S STAR"]);
+    expect(particularsFacts({ registered_name: "Cerulean" }, "CERULEAN")[0]?.[1]).toBeUndefined();
   });
 
   it("says which measure tonnage outside the Convention is", () => {
