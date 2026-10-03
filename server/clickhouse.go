@@ -194,7 +194,7 @@ func openClickHouse(ctx context.Context, url string) (*chConn, error) {
 		conn.Close()
 		return nil, fmt.Errorf("clickhouse migration: %w", err)
 	}
-	for _, stmt := range chSchema {
+	for _, stmt := range slices.Concat(chSchema, historySchema) {
 		if err := conn.Exec(ctx, strings.ReplaceAll(stmt, "{db}", db)); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("clickhouse schema: %w", err)

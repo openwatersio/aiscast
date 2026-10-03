@@ -117,6 +117,7 @@ type Pipeline struct {
 	chMu       sync.Mutex                     // guards chQueue; taken after vmu when both are held
 	chQueue    []trackPoint                   // copies received since the last flush to ClickHouse; nil until it connects
 	chOn       atomic.Bool                    // ClickHouse is attached, so copies are worth building
+	history    *historyStats                  // historical archives loaded into ClickHouse (history.go); nil unless a source is on
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
 	storesClosed bool       // set by closeStore; flushes after it do nothing

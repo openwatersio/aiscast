@@ -178,6 +178,14 @@ func main() {
 	}
 	if url := os.Getenv("CLICKHOUSE_URL"); url != "" {
 		go p.runClickHouse(url)
+		var sources []historySource
+		if os.Getenv("MARINECADASTRE") != "" {
+			sources = append(sources, marineCadastre(mcFrom()))
+		}
+		if len(sources) > 0 {
+			p.history = newHistoryStats(sources)
+			go p.runHistory(sources)
+		}
 	}
 	go p.logStats()
 	go p.runStationNames()

@@ -248,6 +248,13 @@ groups:
         annotations:
           summary: The lake's vessels have not merged into the record for two days
           description: New history is not reaching vessel lookups or first_seen. Check the import lines in journalctl -u aiscast, the packager's last run, and the LAKE_CATALOG_TOKEN.
+      - alert: HistoryArchiveStale
+        expr: time() - aiscast_history_latest_day_timestamp_seconds{source="marinecadastre"} > 150 * 86400 or increase(aiscast_history_files_total{result="failed"}[1d]) > 3
+        for: 6h
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $labels.source }} history is behind or failing to load'
+          description: MarineCadastre publishes a quarter about two months after it closes, so its newest day loaded should never be five months old, and files should not keep failing. Check the history lines in journalctl -u aiscast and history_loads in ClickHouse.
       - alert: TracksWritesSlow
         expr: rate(aiscast_tracks_write_seconds_total[15m]) > 0.5
         for: 15m

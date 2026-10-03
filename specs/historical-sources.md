@@ -38,10 +38,10 @@ Every source here is published for anyone to download, and none forbids storing 
 ClickHouse is the record of history. Every copy of every transmission is a row in `receptions`, from live feeds and archives alike. An archive row is a reception like any other, delivered days or months late by a feed the network does not run, just as AISHub delivers its rows a minute late. `positions` is a view that keeps the earliest copy of each transmission. Static data goes to `vessel_statics`. Nothing goes to the lake.
 
 ```
-live writer ────────────────────────────────────────────────┐
-source file → ClickHouse table function → history_in (Null) ┴→ receptions (local, then R2) ─┬→ positions_15m, positions_1h (accepted copies)
-                                                │                                           ├→ coverage, coverage_stations
-                                                └→ vessel_statics                           └→ positions (view)
+live writer ───────────────────────────────────────────────────┐
+source file → ClickHouse table function → staging table → match ┴→ receptions (local, then R2) ─┬→ positions_15m, positions_1h (accepted copies)
+                                              │                                                 ├→ coverage, coverage_stations
+                                              └→ vessel_statics                                 └→ positions (view)
 ```
 
 ### Tables
@@ -77,7 +77,7 @@ SETTINGS storage_policy = 'tiered', non_replicated_deduplication_window = 1000;
 - `corroborated` carries the live writer's corroboration rule, the one `/v1/nmea` and the AISHub feed apply, so bulk re-serving can leave out uncorroborated reports. Archive rows are corroborated by their source.
 - `implausible` and `clock_bad` mark copies that history leaves out (see [Validity](#validity)). They are stored, not dropped, so a purge or a changed rule never needs a reload.
 
-Measured on the box on 2026-10-02 over 44 days, `positions` costs 6.8 bytes per row. With `tx`, `recv_ts`, `station`, and the flags, a reception should cost 17 to 22 bytes.
+Measured on the box on 2026-10-02 over 44 days, `positions` costs 6.8 bytes per row. A real MarineCadastre day loaded into `receptions` costs 14.2 bytes per row: 10.6 M rows in 143 MiB.
 
 The `tiered` policy has a local volume and a cold volume on R2, with a 10 to 20 GB local filesystem cache in front of R2. Merges on the cold volume are turned off, so R2 is written once per part. Partitions are monthly, because a table kept forever would collect thousands of daily partitions. Every part spans every vessel, because the sort is `(mmsi, ts)`, so a one-vessel read of a cold month touches every part in it. The number of parts per cold month is therefore what decides how fast a cold read is. Live parts merge locally for 30 days before they move. Archive rows are older than the TTL on arrival, so loads control their own moves (see [Loading](#loading)).
 
@@ -99,15 +99,15 @@ The motion columns follow the same pattern. The parameters put the vessel and ti
 
 `positions_15m` and `positions_1h` fill from `receptions` through the same views as now, reading `WHERE accepted AND NOT implausible AND NOT clock_bad`. Each keeps the first position in its window. Reading only accepted copies matters: AISHub stamps are the main reason `despike()` exists, and if every copy reached the rollups, a mis-stamped AISHub copy could win a window and then be dropped on read, leaving the window empty. `positions_15m` keeps 13 months, and `positions_1h` keeps everything. Measured on the box, both cost about 20 bytes per row.
 
-`history_in` is a `Null` table with every column a source can give: position, motion, and static data. One insert into it fills `receptions` and `vessel_statics` through two views, so each source file is downloaded and parsed once.
+Each file is downloaded and parsed once, into a staging table with every column a source can give: position, motion, and static data. `receptions` and `vessel_statics` are both filled from it, and it is dropped after the load. A view on a `Null` table could not do this: judging a row against its neighbors needs the whole file sorted, and a view sees one insert block at a time.
 
 `vessel_statics` is an `AggregatingMergeTree` keyed by `(mmsi, source)`. It keeps each vessel's earliest report, its latest position, and the latest non-empty value of each static field. Archives feed it first. Once the live writer feeds it too, it replaces `ais.vessels` as the record import's input.
 
 ### Loading
 
-The aiscast server runs the loads. It already holds the ClickHouse connection, the R2 client, a daily job, and `/metrics`, so loading needs no new service, timer, or runner. Once a day, after the record import, it lists each source's index and compares it with `history_loads`. That table has one row per source file: size, checksum or ETag, rows read, rows dropped by reason, rows matched to a stored transmission, new transmissions, and load time. Each new or changed file is one `INSERT INTO history_in SELECT ... FROM <table function>`. ClickHouse downloads, decompresses, and parses the file itself. A changed file first deletes its rows.
+The aiscast server runs the loads. It already holds the ClickHouse connection, the R2 client, a daily job, and `/metrics`, so loading needs no new service, timer, or runner. Every six hours it lists each source's files and compares them with `history_loads`. That table has one row per source file: size, ETag, rows read, rows without a place, repeats, rows kept, rows matched to a stored transmission, implausible rows, and load time. Each new or changed file is staged with one `CREATE TABLE ... AS SELECT ... FROM <table function>`; ClickHouse downloads, decompresses, and parses the file itself. A file loaded before, or begun, first has its day's rows from that source deleted.
 
-Loads must never starve the live writer. The writer treats any ClickHouse error as a refusal and drops a refused batch after 10 minutes, so a load that runs ClickHouse out of memory would lose live positions. Loads therefore run as their own ClickHouse user with a settings profile: `max_memory_usage` about 1.5 GB, `max_threads` and `max_insert_threads` 1 to 2, and the default insert block size of about a million rows. Default blocks keep each view's aggregation small. `max_server_memory_usage` keeps headroom above the profile. Step 1 also tries ClickHouse 26's `CREATE WORKLOAD` scheduling.
+Loads must never starve the live writer. The writer treats any ClickHouse error as a refusal and drops a refused batch after 10 minutes, so a load that runs ClickHouse out of memory would lose live positions. Every load query therefore carries its own settings: `max_memory_usage` 1.5 GB, `max_threads` 2, `max_insert_threads` 1, and external sorting and grouping past 500 MB. A day's receptions go in eight passes of whole vessels, so no query sorts the whole day. Measured on a real MarineCadastre day, 10.6 M rows, the largest query peaked at 1.15 GiB, and the day took under three minutes, most of it the download. Default insert blocks keep each view's aggregation small. `max_server_memory_usage` keeps headroom above the settings.
 
 Default blocks produce many parts, and archive rows are past the TTL, so left alone they would move to R2 unmerged. A bulk load therefore moves its own months:
 
@@ -226,8 +226,8 @@ Measured on the box on 2026-10-02: about 28 M accepted positions a day, `positio
 
 | Store | One year | Notes |
 | --- | --- | --- |
-| Archive rows in `receptions`, on R2 | 150 to 170 GB | About $2.50 a month. DMA is about 20 M rows a day and MarineCadastre about 9 M, at 17 to 22 bytes each |
-| Live rows in `receptions`, on R2 | 28 M a day times copies per transmission, at 17 to 22 bytes | Measure copies per transmission from the lake first: `ais.receptions` rows over `ais.positions` rows per day. At 1.5 copies, about 230 GB a year, $3.50 a month |
+| Archive rows in `receptions`, on R2 | 150 to 160 GB | About $2.40 a month. MarineCadastre is about 10.6 M rows and 150 MB a day, 55 GB a year, measured. DMA is about 20 M rows a day at the same cost per row, about 100 GB a year |
+| Live rows in `receptions`, on R2 | 28 M a day times copies per transmission, at about 14 bytes | Measure copies per transmission from the lake first: `ais.receptions` rows over `ais.positions` rows per day. At 1.5 copies, about 230 GB a year, $3.50 a month |
 | `positions_15m`, local | 34 GB live plus 17 GB archive | Kept 13 months |
 | `positions_1h`, local | 10 GB live plus 4 GB archive, each year | Kept indefinitely |
 | R2 cache, local | 10 to 20 GB | Fixed |
@@ -248,7 +248,7 @@ Each step is one pull request. Each includes tests, the server README, `openapi.
    - Measure one overlap day before switching the rollups: count the 15-minute windows whose winner differs between accepted-only and all copies, and whether the all-copies winner fails `despike()`. That confirms reading `accepted` is needed.
 
    This stands on its own: live history stops expiring, and the lake is no longer needed for positions.
-2. **The loader and MarineCadastre's last year.** `history_in`, `vessel_statics`, `history_loads`, the loader's ClickHouse user and profile, and the month moves. The source registry entries. Metrics for the latest loaded day per source, rows loaded, and load failures, and an alert when a daily source is more than a week behind. Load 2025-10-01 to 2026-06-30, then check daily for new quarters. Check rows per day against the source files, and check drop rates. Render one vessel each in Puget Sound, the Gulf of Mexico, and the Great Lakes. This is the first step anyone can see.
+2. **The loader and MarineCadastre's last year.** The staging load, `vessel_statics`, `history_loads`, and the per-query settings. The month moves wait for the R2 cold tier. The source registry entries. Metrics for the latest loaded day per source, rows loaded, and load failures, and an alert when a daily source is more than a week behind. Load 2025-10-01 to 2026-06-30, then check daily for new quarters. Check rows per day against the source files, and check drop rates. Render one vessel each in Puget Sound, the Gulf of Mexico, and the Great Lakes. This is the first step anyone can see.
 3. **Vessel record import from `vessel_statics`.** Vessels known only from MarineCadastre get pages, appear in search, and appear in the sitemap.
 4. **DMA.** The SQL for both schema eras. Load 2025-10-01 to now, then daily. Change DMA's row in `docs/policy.md`.
 5. **HAIS and BSH.** Order HAIS for 2025-10-01 to 2026-08-19 and load it through staging. Load BSH daily.

@@ -287,6 +287,25 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "aiscast_import_last_success_timestamp_seconds %d\n", t)
 		}
 	}
+	if h := p.history; h != nil {
+		h.mu.Lock()
+		metricHead(w, "aiscast_history_latest_day_timestamp_seconds", "gauge", "the newest day of each historical archive loaded into ClickHouse")
+		for _, s := range h.sources {
+			if t := h.latest[s]; !t.IsZero() {
+				fmt.Fprintf(w, "aiscast_history_latest_day_timestamp_seconds{source=%q} %d\n", s, t.Unix())
+			}
+		}
+		h.mu.Unlock()
+		metricHead(w, "aiscast_history_files_total", "counter", "historical archive files loaded, or failed and left for the next check")
+		for _, s := range h.sources {
+			fmt.Fprintf(w, "aiscast_history_files_total{source=%q,result=\"loaded\"} %d\n", s, h.loaded[s].Load())
+			fmt.Fprintf(w, "aiscast_history_files_total{source=%q,result=\"failed\"} %d\n", s, h.failed[s].Load())
+		}
+		metricHead(w, "aiscast_history_rows_total", "counter", "receptions loaded from historical archives")
+		for _, s := range h.sources {
+			fmt.Fprintf(w, "aiscast_history_rows_total{source=%q} %d\n", s, h.rows[s].Load())
+		}
+	}
 	if p.store != nil {
 		metricHead(w, "aiscast_wikidata_syncs_total", "counter", "weekly syncs of vessel particulars from Wikidata")
 		fmt.Fprintf(w, "aiscast_wikidata_syncs_total %d\n", p.wikidata.runs.Load())
