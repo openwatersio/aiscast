@@ -3,7 +3,6 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { speedAt } from "../lib/ais";
 import { cn } from "../lib/cn";
 import { publicApiBase, storedToken, trackPath } from "../lib/api";
-import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
 import { useLive } from "../lib/live";
 import { earlier, later, rangeBounds, rangeLabel, timeTicks, TRACK_RANGES, utcMoment, type TrackRange, type TrackSpan } from "../lib/trackRange";
 import type { LoadedTrack, TrackFailure } from "../lib/useTrack";
@@ -15,15 +14,6 @@ import { Section } from "./ui/Section";
 const PLAY_STEPS = 240;
 const PLAY_TICK_MS = 90;
 
-/** Why the track stops at 48 hours, and how a reader earns more: feeding makes a token a feeder's. */
-function ReachNote() {
-  return (
-    <>
-      Positions older than 48 hours need a feeder or commercial token. <a href={CONTRIBUTE}>{CONTRIBUTE_PROMPT}</a>
-    </>
-  );
-}
-
 /** A moment on this track, dated when the track is not simply the last day. */
 const momentOn = (track: LoadedTrack, t: number) => utcMoment(t, !track.live || track.to - track.from > 24 * 3600e3);
 
@@ -31,7 +21,7 @@ const momentOn = (track: LoadedTrack, t: number) => utcMoment(t, !track.live || 
  * The Track section: the vessel's speed over a chosen range, which is also how its past
  * positions are replayed on the map. Pointing at a moment on the chart puts the vessel where
  * it was then; letting go hands the map back to the live position. The range ends now or
- * pages back through the history the visitor's token reaches.
+ * pages back through the vessel's history.
  */
 export function VesselTrack({
   mmsi,
@@ -88,9 +78,8 @@ export function VesselTrack({
     onRangeChange(next);
   };
   const { from } = rangeBounds(range);
-  // Once the server has said the token reaches no further, or the vessel was not yet heard,
-  // an earlier page can only be empty.
-  const atEarliest = failure === "forbidden" || !!track?.limited || (firstSeen != null && from <= firstSeen);
+  // Before the vessel was first heard, an earlier page can only be empty.
+  const atEarliest = firstSeen != null && from <= firstSeen;
 
   const speeds = (track?.sog ?? []).filter((s): s is number => s != null);
   const avg = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : undefined;
@@ -178,19 +167,11 @@ export function VesselTrack({
             ? "Loading…"
             : track && points === 1
               ? `Heard once, at ${momentOn(track, track.times[0]!)} UTC.`
-              : failure === "forbidden"
-                ? <ReachNote />
-                : failure === "unavailable"
-                  ? "The track is unavailable right now."
-                  : range.end == null && !track?.limited
-                    ? `Not heard in the ${label.toLowerCase()}.`
-                    : "Not heard in this period."}
-        </p>
-      )}
-
-      {track?.limited && (
-        <p className="mt-1 text-footnote text-fg-muted">
-          <ReachNote />
+              : failure === "unavailable"
+                ? "The track is unavailable right now."
+                : range.end == null
+                  ? `Not heard in the ${label.toLowerCase()}.`
+                  : "Not heard in this period."}
         </p>
       )}
 
