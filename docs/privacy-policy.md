@@ -8,9 +8,9 @@ We publish what vessels broadcast over AIS. The track of a small boat can point 
 
 ## Vessel data
 
-AIS is an open radio broadcast. Vessels send their identity (MMSI), name, call sign, position, course, speed, destination, and dimensions, unencrypted, so that other vessels can see them. We receive these broadcasts from government open-data feeds, other AIS exchanges, and volunteer stations. We add public registry details, such as build year, tonnage, owner, operator, and home port, from Wikidata and the US Coast Guard.
+AIS is an open radio broadcast. Vessels send their identity (MMSI), name, call sign, position, course, speed, destination, and dimensions, unencrypted, so that other vessels can see them. We receive these broadcasts from government open-data feeds, other AIS exchanges, and volunteer stations. We add public registry details, such as build year, tonnage, owner, operator, and home port, from Wikidata, the US Coast Guard, the FCC, and Norway's Directorate of Fisheries. We take no owner names from the FCC, and none from the Norwegian register unless the owner is a company.
 
-We publish this data as a live stream, current positions, vessel tracks, and an archive, under open licenses. We keep each vessel's last known position and details, and every reception in our archive, indefinitely. Our server also keeps every position from the past two to three days, to answer track queries quickly.
+We publish this data as a live stream, current positions, vessel tracks, and an archive, under open licenses. We keep each vessel's last known position and details, and every reception in our archive, indefinitely. Our server also keeps every position from the past two to three days, to answer track queries quickly. Pages for named vessels heard in the past 30 days are listed for search engines.
 
 Most AIS traffic is commercial shipping, and that is not personal data. A small craft linked to a person is different. A vessel registry can connect the MMSI to an owner, and the track can then show where that person is or lives.
 
@@ -20,9 +20,9 @@ We publish this data on the basis of legitimate interest. The vessel's own equip
 
 If your vessel is a small craft linked to you, you can ask us to stop publishing it. Email hello@openwaters.io with the MMSI and anything that shows your connection to the vessel. A photo, an insurance or mooring document, or a club listing is enough. You do not have to be the registered owner. A vessel registered to a company counts if you are its only user.
 
-The opt-out is free, and a person handles each request. Within 30 days we stop publishing the vessel in the live stream, on the map, and in track and history queries. We delete it from the archive we control and confirm this to you in writing. We keep the MMSI on a list so that we do not publish the vessel again. We delete the proof you sent once we have handled the request.
+The opt-out is free, and a person handles each request. Within 30 days we stop publishing the vessel in the live stream, on the map, in track and history queries, and on its vessel page, and we remove the page from the list we give search engines. We delete it from the archive we control and confirm this to you in writing. We keep the MMSI on a list so that we do not publish the vessel again. We delete the proof you sent once we have handled the request.
 
-There are limits. Copies of the archive that others took under an open license are beyond our control. Anyone with a receiver can still hear your transponder. Other tracking sites are separate, and you must ask each of them.
+There are limits. Copies of the archive that others took under an open license are beyond our control. Anyone with a receiver can still hear your transponder. Search engines may keep their own copies of a vessel page for a while. Other tracking sites are separate, and you must ask each of them.
 
 The opt-out does not cover vessels that must carry AIS by law, such as commercial ships.
 
@@ -52,6 +52,7 @@ The map at openwaters.io/ais/vessels, with its vessel, station, and network page
 - **Starting location.** Cloudflare estimates your approximate location from your IP address. The map uses that estimate to open near you. We do not store it. The map then keeps its current view in the page's address, so a link you share shows the area you were looking at.
 - **Your location.** If you choose "Near me" or the locate button, your browser asks for your permission and then shares your location with the map. The locate button keeps it in your browser. A search sorted by distance sends your location, or the center of the map, to our API. The map also sends the area on your screen. Our API log keeps these only to about 10 km. The web server log drops them, but it keeps the exact map tiles you load.
 - **Other services.** The map loads its base map from [OpenFreeMap](https://openfreemap.org/), and vessel photos straight from [Wikimedia Commons](https://commons.wikimedia.org/). Those services receive your IP address and the site you came from. Their own privacy policies apply. The map's server looks up which photos exist, so Wikimedia does not see those lookups come from you.
+- **Error reports.** When the map hits an error, about half of page loads send a report to our own server. It holds the kind of error, its message and stack trace, the section of the app, and your browser's user agent. We remove the query part of web addresses, tokens, email addresses, and precise coordinates before we store it. The report itself holds no IP address and nothing that links one report to another. Reports are kept in Cloudflare Workers Logs. Cloudflare's own record of the request, described below, includes your address, as it does for any request to the map.
 
 The other pages on openwaters.io, including the Open Waters AIS home page, are covered by the [Open Waters privacy page](https://openwaters.io/privacy/).
 
