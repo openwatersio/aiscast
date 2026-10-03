@@ -105,6 +105,8 @@ type Pipeline struct {
 	imports    importStats                    // the daily merge of the lake's vessels into the record (import.go)
 	wikidata   wikidataStats                  // the weekly sync of vessel particulars from Wikidata (wikidata.go)
 	uscg       uscgStats                      // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
+	fiskeridir fdirStats                      // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
+	fcc        fccStats                       // the weekly sync of FCC ship station licenses (fcc.go)
 	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's

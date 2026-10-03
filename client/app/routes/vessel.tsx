@@ -11,7 +11,7 @@ import { serverEnv } from "../lib/context";
 import { liveInstance } from "../lib/live";
 import { mediaKey } from "../lib/media";
 import { firstPhoto } from "../lib/media.server";
-import { pageMeta } from "../lib/meta";
+import { pageMeta, SITE } from "../lib/meta";
 import type { Route } from "./+types/vessel";
 
 /** Awaited for a server render, possibly still in flight for navigation inside the app. */
@@ -80,19 +80,30 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
     ? `Live AIS position for ${label}${country ? `, ${country}` : ""}. ${CLASS_LABELS[shipClass(props.kind, props.type)]}. ` +
       `Last heard ${new Date(props.seen).toUTCString()}.`
     : `AIS vessel ${label}.`;
+  const path = vesselPath(mmsi, name);
+  const photo = "photo" in loaderData ? loaderData.photo : undefined;
   return pageMeta({
     title: `${label}${name ? ` (${mmsi})` : ""} live position | Open Waters AIS`,
     description,
-    path: vesselPath(mmsi, name),
-    noindex: !feature && !loading,
-    image: "photo" in loaderData ? loaderData.photo : undefined,
-    jsonLd: feature
+    // An MMSI the network has never heard has no page of its own to point at.
+    path: feature || loading ? path : undefined,
+    // A vessel that has never sent its name is a page about a bare MMSI, and the sitemap
+    // leaves it out for the same reason. Its links are still worth following.
+    noindex: !loading && !name,
+    image: photo,
+    // schema.org has no ship, and Vehicle covers transport over water. The flag is not
+    // countryOfOrigin, which is where a thing was made, so it is left out.
+    jsonLd: feature && name
       ? {
           "@context": "https://schema.org",
           "@type": "Vehicle",
           name: label,
-          identifier: String(mmsi),
-          ...(country ? { countryOfOrigin: country } : {}),
+          url: `${SITE}${path}`,
+          identifier: [
+            { "@type": "PropertyValue", propertyID: "MMSI", value: String(mmsi) },
+            ...(props?.imo ? [{ "@type": "PropertyValue", propertyID: "IMO", value: String(props.imo) }] : []),
+          ],
+          ...(photo ? { image: photo } : {}),
         }
       : undefined,
   });
