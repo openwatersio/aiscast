@@ -1,0 +1,24 @@
+<!-- ClickHouse beside the aiscast server on one box. It listens on loopback only, its default. -->
+<clickhouse>
+    <!-- The default is 90% of RAM; this leaves the live server most of the box. -->
+    <max_server_memory_usage>4294967296</max_server_memory_usage>
+    <!-- Alloy scrapes this and keeps a few series; see /etc/alloy/config.alloy. -->
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+    </prometheus>
+    <logger>
+        <level>warning</level>
+    </logger>
+    <!-- System tables written every second, which cost disk and CPU and duplicate what Alloy ships. -->
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <trace_log remove="1"/>
+    <text_log remove="1"/>
+    <query_log>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+    </query_log>
+</clickhouse>

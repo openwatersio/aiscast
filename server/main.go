@@ -161,6 +161,9 @@ func main() {
 	for _, l := range p.udp {
 		go runUDP(p, l)
 	}
+	if url := os.Getenv("CLICKHOUSE_URL"); url != "" {
+		go p.runClickHouse(url)
+	}
 	go p.logStats()
 	go p.runStationNames()
 	go func() {
@@ -190,6 +193,9 @@ func main() {
 		}
 		if err := p.closeStore(); err != nil {
 			log.Printf("store: %v", err)
+		}
+		if err := p.drainClickHouse(); err != nil {
+			log.Printf("clickhouse: %v", err)
 		}
 		os.Exit(0)
 	}()
