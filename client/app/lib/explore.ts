@@ -169,7 +169,7 @@ export const sailingChannels: SailingChannel[] = [
     youtube: "https://www.youtube.com/@samholmessailing",
     boats: [
       {
-        name: "Schionning catamaran",
+        name: "Pickled Catfish",
         model: "43-foot Schionning catamaran",
         chapter: "Current boat",
         source: "https://www.patreon.com/posts/tour-of-our-next-125870605",
