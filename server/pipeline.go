@@ -46,6 +46,7 @@ type Event struct {
 	Synthesized  bool
 	Own          bool // an own-ship sentence (!AIVDO): the sender reporting itself, not a reception
 	rebuilt      bool // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
+	unserved     bool // kept out of history by the ClickHouse writer though not implausible to the stream: a stale report it does not believe
 	LowTrust     bool // from a source that cannot be authenticated (UDP)
 	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
 	Implausible  bool // position implying an impossible speed from the vessel's last; archived, not emitted
@@ -496,13 +497,15 @@ const (
 	replayAge    = 60 * time.Second // buffered receptions older than this go to the archive only
 )
 
-// settleFold records the fold's verdict on an accepted transmission: an implausible one's later copies carry
-// its position, so they are written implausible too, and so are the copies that arrived while it folded.
+// settleFold records the fold's verdict on an accepted transmission: one kept out of history, implausible to
+// the stream or a stale report the ClickHouse writer does not believe, has later copies that carry its
+// position, so they are written implausible too, and so are the copies that arrived while it folded.
 func (p *Pipeline) settleFold(key string, ev *Event) {
+	bad := ev.Implausible || ev.unserved
 	p.mu.Lock()
 	waiting, folding := p.folding[key]
 	delete(p.folding, key)
-	if ev.Implausible {
+	if bad {
 		p.bad[key] = ev.Time
 	}
 	p.mu.Unlock()
@@ -510,7 +513,7 @@ func (p *Pipeline) settleFold(key string, ev *Event) {
 		return
 	}
 	for _, pt := range waiting {
-		pt.implausible = ev.Implausible
+		pt.implausible = bad
 		p.noteReception(pt)
 	}
 }

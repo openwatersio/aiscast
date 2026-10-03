@@ -361,6 +361,7 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale bool) {
 			p.ch.rebuiltLate.Add(1)
 		}
 		pt.implausible = volunteer(ev.Source) || v.jumps(pt)
+		ev.unserved = pt.implausible // its dedupe copies inherit it; the stream's own flags stay as they were
 	}
 	p.noteReception(pt)
 }

@@ -728,3 +728,23 @@ func TestClickHouseRemembersOnlyWhatItWrites(t *testing.T) {
 		t.Fatalf("the stale copy is the only one written, accepted: %+v", q)
 	}
 }
+
+// A stale report kept out of history passes that on to the copies dedupe matches to it, so purging the
+// report's source cannot bring it back through one of them. The stream's own flags stay as they were.
+func TestClickHouseCopiesOfAnUnservedReportAreFlagged(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	p.ingestPacket("kystverket", "kystverket", t0.Add(10*time.Second), t0.Add(10*time.Second), posReport(mmsi, 59.91, 10.7))
+	late := posReport(mmsi, 59.906, 10.7)
+	p.ingestPacket("udp:feeder", "udp:feeder", t0.Add(6*time.Second), t0.Add(70*time.Second), late)
+	p.ingestPacket("barentswatch", "barentswatch", t0.Add(7*time.Second), t0.Add(71*time.Second), late)
+	q := queued(p, mmsi)
+	if len(q) != 3 || !q[1].implausible || !q[2].dup || !q[2].implausible || q[2].tx != q[1].tx {
+		t.Fatalf("the late report and its copy are both kept out: %+v", q)
+	}
+	if p.stats.implausible.Load() != 0 {
+		t.Errorf("the stream counted a stale report implausible")
+	}
+}
