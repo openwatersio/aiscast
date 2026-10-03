@@ -51,6 +51,7 @@ type enrichment struct {
 	fd *fdirVessel
 	fc *fccShip
 	tc *tcVessel
+	is *isedShip
 }
 
 // mergeParticulars folds the sources into the served document. Per field, deterministically: a flag
@@ -58,8 +59,8 @@ type enrichment struct {
 // winner by the field's JSON name. The flag states never meet: a vessel flies one flag at a time.
 // An FCC license ranks below PSIX, the vessel registry proper, and above Wikidata for what it documents.
 func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string]sourceRef) {
-	wd, cg, fd, fc, tcv := e.wd, e.cg, e.fd, e.fc, e.tc
-	if wd == nil && cg == nil && fd == nil && fc == nil && tcv == nil {
+	wd, cg, fd, fc, tcv, is := e.wd, e.cg, e.fd, e.fc, e.tc, e.is
+	if wd == nil && cg == nil && fd == nil && fc == nil && tcv == nil && is == nil {
 		return nil, nil, nil
 	}
 	m := &particulars{}
@@ -132,6 +133,12 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		str("home_port", "tc", tcv.HomePort, &m.HomePort)
 		str("registry", "tc", "Canada", &m.Registry)
 	}
+	if is != nil {
+		// The MMSI registry's answer: thin, but it is the flag state's own name for the boat, and for
+		// most Canadian small craft it is the only registered fact any source holds.
+		str("registered_name", "ised", is.Name, &m.RegisteredName)
+		str("registry", "ised", "Canada", &m.Registry)
+	}
 	if wd != nil {
 		str("ship_type", "wikidata", wd.ShipType, &m.ShipType)
 		str("builder", "wikidata", wd.Builder, &m.Builder)
@@ -170,6 +177,9 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	}
 	if tcv != nil {
 		sources["tc"] = sourceRef{Credit: "Transport Canada vessel registry", License: tcLicense}
+	}
+	if is != nil {
+		sources["ised"] = sourceRef{Credit: "ISED Canadian MMSI registry", License: isedLicense, URL: isedSearchURL(is.MMSI)}
 	}
 	return m, prov, sources
 }

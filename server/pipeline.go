@@ -108,6 +108,7 @@ type Pipeline struct {
 	fiskeridir fdirStats                      // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
 	fcc        fccStats                       // the weekly sync of FCC ship station licenses (fcc.go)
 	tc         tcStats                        // the weekly sync of Transport Canada's vessel register (tc.go)
+	ised       isedStats                      // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
 	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
 	ch         *chStore                       // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
 	chQueue    []trackPoint                   // positions folded since the last flush to ClickHouse; guarded by vmu

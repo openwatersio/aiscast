@@ -107,6 +107,12 @@ func main() {
 			if env("TC", "1") == "1" {
 				go p.runTC(env("TC_URL", tcEndpoint))
 			}
+			if err := p.loadISEDStats(); err != nil {
+				log.Printf("ised: %v", err)
+			}
+			if env("ISED", "1") == "1" {
+				go p.runISED(env("ISED_URL", isedEndpoint))
+			}
 			go p.runRecordCounts()
 		}
 	}

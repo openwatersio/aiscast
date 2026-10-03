@@ -124,6 +124,14 @@ CREATE TABLE IF NOT EXISTS fiskeridir (
 	owner         TEXT    NOT NULL DEFAULT ''  -- the owning company; people are dropped at sync
 );
 CREATE INDEX IF NOT EXISTS fiskeridir_callsign ON fiskeridir (callsign);
+-- answers from ISED's Canadian MMSI registry, asked on demand for heard CA-flag vessels; an empty name
+-- is a vessel asked about that had no record (ised.go)
+CREATE TABLE IF NOT EXISTS ised (
+	mmsi       INTEGER PRIMARY KEY,
+	name       TEXT    NOT NULL DEFAULT '',
+	callsign   TEXT    NOT NULL DEFAULT '',
+	checked_at INTEGER NOT NULL DEFAULT 0 -- unix ms of the last ask
+);
 -- Canadian vessels with an IMO from Transport Canada's Register of Large Vessels, replaced weekly (tc.go)
 CREATE TABLE IF NOT EXISTS tc (
 	imo           INTEGER PRIMARY KEY,

@@ -781,6 +781,7 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 		if tcv := p.tcOf(cur.IMO)[cur.IMO]; tcv != nil && namesAgree(cur.Name, tcv.Name) {
 			e.tc = tcv
 		}
+		e.is = p.isedOf(mmsi)[mmsi]
 	}
 	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources = mergeParticulars(e)
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
