@@ -299,7 +299,8 @@ func fetchPSIX(ctx context.Context, endpoint string, now time.Time, licensed map
 		asks = append(asks, ask{"Recreational", strconv.Itoa(y)})
 	}
 	out := map[int]*uscgVessel{}
-	for i, a := range asks {
+	for i := 0; i < len(asks); i++ {
+		a := asks[i]
 		if i > 0 {
 			select {
 			case <-time.After(psixPause):
@@ -309,6 +310,18 @@ func fetchPSIX(ctx context.Context, endpoint string, now time.Time, licensed map
 		}
 		rows, err := psixListing(ctx, endpoint, a.service, a.year)
 		if err != nil {
+			// A service the service answers with no result has outgrown what PSIX can build whole, as
+			// Recreational did first and Commercial Fishing Vessel did in October 2026. Its vessels are
+			// still there a build year at a time, so the service's years join the queue instead of
+			// failing the sync. A year that fails stays fatal: one bad ask must not quietly thin a
+			// listing the halving guard would accept.
+			if a.year == "" && strings.Contains(err.Error(), "no result") {
+				log.Printf("uscg: %s: listing by build year", a.service)
+				for y := psixFirstYear; y <= now.Year()+1; y++ {
+					asks = append(asks, ask{a.service, strconv.Itoa(y)})
+				}
+				continue
+			}
 			return nil, fmt.Errorf("%s %s: %w", a.service, a.year, err)
 		}
 		for _, r := range rows {
@@ -507,8 +520,9 @@ func (s *store) uscgByCallSign(callsigns []string) (map[string][]*uscgVessel, er
 // uscgDue is the listed vessels matched to a US-flag vessel in the record whose dimensions and tonnage were
 // read before cutoff or never, most recently heard first, so the backfill reaches the vessels on the water
 // before those long gone.
-func (s *store) uscgDue(cutoff time.Time) ([]*uscgVessel, error) {
-	rows, err := s.db.Query(`SELECT * FROM (
+// uscgDueSQL is the backfill's due query, a named constant so the plan test can hold it to its
+// indexes.
+const uscgDueSQL = `SELECT * FROM (
 		SELECT v.mmsi, v.name, v.seen, 0 AS via, u.vessel_id, u.callsign, u.name AS uname, u.identification, u.service, u.status,
 			u.year_built, u.length, u.beam, u.depth, u.gross_tonnage, u.net_tonnage, u.tonnage_measure, u.details_at
 			FROM vessels v JOIN uscg u ON u.callsign = upper(trim(v.callsign))
@@ -517,8 +531,11 @@ func (s *store) uscgDue(cutoff time.Time) ([]*uscgVessel, error) {
 		SELECT v.mmsi, v.name, v.seen, 1 AS via, u.vessel_id, u.callsign, u.name AS uname, u.identification, u.service, u.status,
 			u.year_built, u.length, u.beam, u.depth, u.gross_tonnage, u.net_tonnage, u.tonnage_measure, u.details_at
 			FROM vessels v JOIN fcc f ON f.mmsi = v.mmsi JOIN uscg u ON u.official_key = f.official
-			WHERE v.flag = 'US' AND f.official != ''
-		) ORDER BY seen DESC, mmsi`)
+			WHERE v.flag = 'US' AND f.official != '' AND u.official_key != ''
+		) ORDER BY seen DESC, mmsi`
+
+func (s *store) uscgDue(ctx context.Context, cutoff time.Time) ([]*uscgVessel, error) {
+	rows, err := s.db.QueryContext(ctx, uscgDueSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -674,7 +691,7 @@ func (s *store) uscgByIdentification(ids []string) (map[string][]*uscgVessel, er
 	for i, c := range ids {
 		args[i] = c
 	}
-	rows, err := s.db.Query(`SELECT `+uscgCols+` FROM uscg WHERE official_key IN (?`+strings.Repeat(",?", len(ids)-1)+`)`, args...)
+	rows, err := s.db.Query(`SELECT `+uscgCols+` FROM uscg WHERE official_key != '' AND official_key IN (?`+strings.Repeat(",?", len(ids)-1)+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -771,13 +788,15 @@ const psixFailuresInARow = 3
 // none are left or budget runs out. A vessel whose read fails is passed over until the next round, so one
 // bad record cannot hold up the rest; psixFailuresInARow failures end the round.
 func (p *Pipeline) backfillUSCG(now time.Time, endpoint string, budget time.Duration) int {
-	due, err := p.store.uscgDue(now.Add(-psixDetailsEvery))
+	// The budget bounds the due query too: a query gone quadratic once pinned a CPU for hours here,
+	// unbounded, because the context used to start after it.
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	due, err := p.store.uscgDue(ctx, now.Add(-psixDetailsEvery))
 	if err != nil {
 		log.Printf("uscg: %v", err)
 		return 0
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
 	n, failed := 0, 0
 	for i, v := range due {
 		if i > 0 {
