@@ -1,7 +1,16 @@
-import type { Page, WebSocket } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { vesselPath } from "../app/lib/ais";
 import { namedVessel } from "./data";
-import { expect, openMap, openVesselOnMap, test, waitForFlight, waitForVessels } from "./fixtures";
+import {
+  expect,
+  mapStatus,
+  openMap,
+  openVesselOnMap,
+  test,
+  useOneStreamToken,
+  waitForFlight,
+  waitForVessels,
+} from "./fixtures";
 
 // The map writes its camera into the address's hash as it moves.
 const HOME = /\/ais\/vessels(#.*)?$/;
@@ -91,12 +100,17 @@ test("Back after a reload skips vessels opened one after another on the map", as
 });
 
 test("one map and one stream last through search, stations, a station, a vessel and back", async ({ page }) => {
-  const sockets: WebSocket[] = [];
-  page.on("websocket", (ws) => sockets.push(ws));
+  // The stream's socket is in a SharedWorker, out of Playwright's sight. With a token allowed
+  // one stream, a second would be refused, and the map would say so.
+  await useOneStreamToken(page.context());
   const { mmsi, name } = await namedVessel();
 
   await openMap(page);
-  await page.evaluate(() => ((window as { firstMap?: unknown }).firstMap = window.aiscastMap));
+  await page.evaluate(() => {
+    const w = window as { firstMap?: unknown; firstStream?: unknown };
+    w.firstMap = window.aiscastMap;
+    w.firstStream = window.aiscastStream;
+  });
 
   await openStationFromHome(page);
   await page.getByRole("link", { name: /MMSI \d+/ }).first().click();
@@ -116,10 +130,9 @@ test("one map and one stream last through search, stations, a station, a vessel 
   await expect(page).toHaveURL(HOME);
 
   expect(await page.evaluate(() => (window as { firstMap?: unknown }).firstMap === window.aiscastMap)).toBe(true);
+  expect(await page.evaluate(() => (window as { firstStream?: unknown }).firstStream === window.aiscastStream)).toBe(true);
   await expect(page.getByRole("region", { name: "Map" })).toHaveCount(1);
-  const streams = sockets.filter((ws) => new URL(ws.url()).pathname === "/v1/stream");
-  expect(streams).toHaveLength(1);
-  expect(streams[0]!.isClosed()).toBe(false);
+  await expect(mapStatus(page)).toHaveText("Live");
 });
 
 test("the bar takes the page's title once the large title scrolls under its buttons", async ({ page }) => {

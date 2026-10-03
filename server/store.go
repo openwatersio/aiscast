@@ -109,6 +109,29 @@ CREATE TABLE IF NOT EXISTS uscg (
 	details_at      INTEGER NOT NULL DEFAULT 0   -- unix ms of the last dimensions and tonnage read; 0 before
 );
 CREATE INDEX IF NOT EXISTS uscg_callsign ON uscg (callsign);
+CREATE INDEX IF NOT EXISTS uscg_identification ON uscg (identification);
+-- Norwegian fishing vessels with a call sign from the Directorate of Fisheries' open register, replaced
+-- weekly (fiskeridir.go)
+CREATE TABLE IF NOT EXISTS fiskeridir (
+	vessel_id     TEXT    PRIMARY KEY,         -- the register's id
+	callsign      TEXT    NOT NULL,
+	name          TEXT    NOT NULL,
+	registration  TEXT    NOT NULL DEFAULT '', -- the registration mark, such as VL0148AV
+	year_built    INTEGER NOT NULL DEFAULT 0,
+	length        REAL    NOT NULL DEFAULT 0,  -- metres
+	beam          REAL    NOT NULL DEFAULT 0,
+	gross_tonnage INTEGER NOT NULL DEFAULT 0,  -- London Convention tonnage only
+	owner         TEXT    NOT NULL DEFAULT ''  -- the owning company; people are dropped at sync
+);
+CREATE INDEX IF NOT EXISTS fiskeridir_callsign ON fiskeridir (callsign);
+-- active FCC ship station licenses with an MMSI, replaced weekly from the ULS bulk files (fcc.go)
+CREATE TABLE IF NOT EXISTS fcc (
+	mmsi     INTEGER PRIMARY KEY,
+	usi      INTEGER NOT NULL,             -- the license's unique system identifier
+	callsign TEXT    NOT NULL DEFAULT '',
+	name     TEXT    NOT NULL DEFAULT '',
+	official TEXT    NOT NULL DEFAULT ''   -- official number or state registration
+);
 `
 
 // storeAddedCols are columns a file created by an earlier build lacks. SQLite has no ADD COLUMN IF NOT
@@ -183,6 +206,8 @@ type store struct {
 	db     *sql.DB
 	path   string
 	mirror *recordMirror // every row in memory, refreshed after every write (mirror.go)
+
+	sitemap sitemapMemo
 
 	// read by /metrics
 	flushes, flushFailures, rowsWritten atomic.Int64

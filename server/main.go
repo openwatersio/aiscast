@@ -86,6 +86,18 @@ func main() {
 			if env("USCG", "1") == "1" {
 				go p.runUSCG(env("USCG_URL", psixEndpoint))
 			}
+			if err := p.loadFiskeridirStats(); err != nil {
+				log.Printf("fiskeridir: %v", err)
+			}
+			if env("FISKERIDIR", "1") == "1" {
+				go p.runFiskeridir(env("FISKERIDIR_URL", fdirEndpoint))
+			}
+			if err := p.loadFCCStats(); err != nil {
+				log.Printf("fcc: %v", err)
+			}
+			if env("FCC", "1") == "1" {
+				go p.runFCC(env("FCC_URL", fccEndpoint))
+			}
 			go p.runRecordCounts()
 		}
 	}
@@ -214,6 +226,7 @@ func routes(p *Pipeline) map[string]http.HandlerFunc {
 		"/health":                       p.serveHealth,
 		"/metrics":                      p.serveMetrics,
 		"/robots.txt":                   serveRobots,
+		"/sitemap/vessels":              p.api(corsHeaders, p.serveVesselSitemap),
 		"/openapi.json":                 p.api(corsHeaders, serveOpenAPI),
 	}
 }
