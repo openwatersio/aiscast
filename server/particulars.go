@@ -20,6 +20,7 @@ type particulars struct {
 	RegisteredName string   `json:"registered_name,omitempty" jsonschema:"name as documented with the flag state, when it differs from what AIS reports"`
 	Identification string   `json:"identification,omitempty" jsonschema:"the flag state's number for the vessel: a documented vessel's official number, else its state registration"`
 	Service        string   `json:"service,omitempty" jsonschema:"flag-state service type, e.g. Towing Vessel, Passenger (Inspected), Recreational"`
+	CallSign       string   `json:"callsign,omitempty" jsonschema:"call sign as registered; the callsign in the vessel's own properties is the one AIS reports"`
 	Status         string   `json:"status,omitempty" jsonschema:"flag-state status, e.g. Active, Laid Up"`
 	ShipType       string   `json:"ship_type,omitempty" jsonschema:"kind of ship, e.g. bulk carrier, container ship, ferry"`
 	Builder        string   `json:"builder,omitempty" jsonschema:"shipyard or builder"`
@@ -134,9 +135,10 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		str("registry", "tc", "Canada", &m.Registry)
 	}
 	if is != nil {
-		// The MMSI registry's answer: thin, but it is the flag state's own name for the boat, and for
-		// most Canadian small craft it is the only registered fact any source holds.
+		// The MMSI registry's answer: thin, but it is the flag state's own name and call sign for the
+		// boat, and for most Canadian small craft the only registered facts any source holds.
 		str("registered_name", "ised", is.Name, &m.RegisteredName)
+		str("callsign", "ised", is.CallSign, &m.CallSign)
 		str("registry", "ised", "Canada", &m.Registry)
 	}
 	if wd != nil {

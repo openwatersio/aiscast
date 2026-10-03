@@ -78,10 +78,10 @@ func TestISEDRoundsAndServe(t *testing.T) {
 	var f props
 	json.Unmarshal(get(t, p, "/v1/vessels/316061185").Body.Bytes(), &f)
 	m := f.Properties.Particulars
-	if m == nil || m.RegisteredName != "RUBY'S STAR" || m.Registry != "Canada" {
+	if m == nil || m.RegisteredName != "RUBY'S STAR" || m.CallSign != "CFN5678" || m.Registry != "Canada" {
 		t.Errorf("particulars: %+v", m)
 	}
-	if f.Properties.Provenance["registered_name"] != "ised" ||
+	if f.Properties.Provenance["registered_name"] != "ised" || f.Properties.Provenance["callsign"] != "ised" ||
 		f.Properties.Sources["ised"].URL != "https://ised-isde.canada.ca/mmsi-ismm/eng/shipSearch.html?mmsi=316061185" {
 		t.Errorf("provenance %v sources %+v", f.Properties.Provenance, f.Properties.Sources)
 	}
