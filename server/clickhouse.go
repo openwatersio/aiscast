@@ -93,8 +93,8 @@ func chRollupView(name, window string) string {
 
 // chPositionsView is one row per transmission: the copy that arrived first, among those with a believable
 // clock, of each transmission no copy of which the fold judged implausible. A transmission is judged as a
-// whole because every copy carries its position: filtering copies before grouping would serve a flagged
-// position through an unflagged copy. It takes the vessel and range as parameters so the filter reaches
+// whole, over every copy, because every copy carries its position: filtering copies before grouping would
+// serve a flagged position through an unflagged copy, and a bad clock only rules a copy out as the one served. It takes the vessel and range as parameters so the filter reaches
 // receptions' sort key before the grouping; a view without them would group the vessel's whole history on
 // every read. The 10 seconds either side catch the copies of a transmission near the edge of the range, whose
 // stamps differ by a second or two. It holds no data, so it is replaced at every start and a database always
@@ -102,12 +102,12 @@ func chRollupView(name, window string) string {
 const chPositionsView = `CREATE OR REPLACE VIEW {db}.positions AS
 	SELECT mmsi, tx, f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
 	FROM (
-		SELECT mmsi, tx, argMin((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), recv_ts) AS f
+		SELECT mmsi, tx, argMinIf((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), recv_ts, NOT clock_bad) AS f
 		FROM {db}.receptions
-		WHERE mmsi = {mmsi:UInt32} AND NOT clock_bad
+		WHERE mmsi = {mmsi:UInt32}
 		  AND ts >= {from:DateTime64(3, 'UTC')} - INTERVAL 10 SECOND AND ts <= {to:DateTime64(3, 'UTC')} + INTERVAL 10 SECOND
 		GROUP BY mmsi, tx
-		HAVING NOT max(implausible)
+		HAVING NOT max(implausible) AND countIf(NOT clock_bad) > 0
 	)
 	WHERE ts >= {from:DateTime64(3, 'UTC')} AND ts <= {to:DateTime64(3, 'UTC')}`
 

@@ -599,7 +599,16 @@ func TestClickHouseKeepsEveryCopyAndServesOne(t *testing.T) {
 	if got := served(); len(got) != 1 || !got[0].ts.Equal(t0) {
 		t.Errorf("only the plausible transmission is served: %+v", got)
 	}
-	if err := conn.conn.Exec(ctx, "DELETE FROM "+db+".receptions WHERE tx = 42"); err != nil {
+	// The same when the implausible copy also has a bad clock: the clock picks which copy is served, never
+	// whether a flagged transmission is.
+	jump.tx, copied.tx, jump.clockBad = 43, 43, true
+	if err := conn.insert(ctx, "jump-clock", []trackPoint{jump, copied}); err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); len(got) != 1 || !got[0].ts.Equal(t0) {
+		t.Errorf("an implausible copy with a bad clock still keeps its transmission out: %+v", got)
+	}
+	if err := conn.conn.Exec(ctx, "DELETE FROM "+db+".receptions WHERE tx IN (42, 43)"); err != nil {
 		t.Fatal(err)
 	}
 
