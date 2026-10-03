@@ -6,12 +6,16 @@ import { logServerError } from "./lib/report.server";
 
 /** Loader, action and render errors, in place of React Router's own console.error. */
 export const handleError: HandleErrorFunction = (error, { request }) => {
-  // A reader who navigated away, or a request the app refuses, such as a POST to a page, is
-  // not a fault in the app.
-  if (request.signal.aborted || (isRouteErrorResponse(error) && error.status < 500)) return;
-  // A 5xx response React Router made from a thrown error keeps it, untyped, as `error`.
-  const cause = isRouteErrorResponse(error) ? (error as { error?: unknown }).error : undefined;
-  logServerError("request", cause ?? error, request);
+  if (request.signal.aborted) return;
+  if (isRouteErrorResponse(error)) {
+    // A response React Router made from a thrown error keeps it, untyped, as `error`. One
+    // without is a response a route threw on purpose, such as the 503 for an API outage,
+    // which the API's own monitoring covers. A 4xx, such as a POST to a page, is the request's.
+    const cause = (error as { error?: unknown }).error;
+    if (cause === undefined || error.status < 500) return;
+    return logServerError("request", cause, request);
+  }
+  logServerError("request", error, request);
 };
 
 export default async function handleRequest(
