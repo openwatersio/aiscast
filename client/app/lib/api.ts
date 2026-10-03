@@ -126,6 +126,7 @@ export interface SourceRef {
 export interface VesselFeature {
   type: "Feature";
   id: number;
+  attribution?: Record<string, string>;
   /** Null for a vessel the network has heard but never had a position from. */
   geometry: { type: "Point"; coordinates: [number, number] } | null;
   properties: VesselProps;
