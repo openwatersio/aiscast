@@ -1,5 +1,5 @@
 import type { VesselFeature } from "./api";
-import type { BoatVersion } from "./tracking";
+import type { BoatVersion } from "./explore";
 
 export function previewPosition(
   boat: BoatVersion,

@@ -3,7 +3,7 @@ import { DirectoryLayout } from "../components/DirectoryLayout";
 import { VesselMapPreview } from "../components/VesselMapPreview";
 import { vesselPath } from "../lib/ais";
 import { pageMeta } from "../lib/meta";
-import { sailingChannels, SAILORS_PATH } from "../lib/tracking";
+import { sailingChannels, SAILORS_PATH } from "../lib/explore";
 
 export const handle = { directory: true };
 export const meta = () =>
@@ -21,9 +21,9 @@ export default function YoutubeSailors() {
         aria-label="Breadcrumb"
         className="mb-5 flex flex-wrap gap-2 text-subhead text-fg-muted"
       >
-        <a href="/ais/tracking">Tracking</a>
+        <a href="/ais/explore">Explore</a>
         <span aria-hidden>/</span>
-        <a href="/ais/tracking/youtube">YouTube</a>
+        <a href="/ais/explore/youtube">YouTube</a>
         <span aria-hidden>/</span>
         <span aria-current="page">Sailors</span>
       </nav>

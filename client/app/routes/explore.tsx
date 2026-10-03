@@ -1,20 +1,20 @@
 import { DirectoryLayout } from "../components/DirectoryLayout";
 import { pageMeta } from "../lib/meta";
-import { SAILORS_PATH } from "../lib/tracking";
+import { SAILORS_PATH } from "../lib/explore";
 
 export const handle = { directory: true };
 export const meta = () =>
   pageMeta({
-    title: "Vessel tracking directories | Open Waters AIS",
+    title: "Explore vessels | Open Waters AIS",
     description:
       "Browse collections of vessels and open their positions in the Open Waters AIS viewer.",
-    path: "/tracking",
+    path: "/explore",
   });
 
-export default function Tracking() {
+export default function Explore() {
   return (
     <DirectoryLayout>
-      <h1 className="text-3xl font-semibold tracking-tight">Vessel tracking</h1>
+      <h1 className="text-3xl font-semibold tracking-tight">Explore vessels</h1>
       <p className="mt-3 text-body text-fg-secondary">
         Browse a collection, then open a vessel in the AIS viewer.
       </p>

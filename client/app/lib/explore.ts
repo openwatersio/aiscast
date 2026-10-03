@@ -1,5 +1,5 @@
-export const TRACKING_PATH = "/tracking";
-export const SAILORS_PATH = `${TRACKING_PATH}/youtube/sailors`;
+export const EXPLORE_PATH = "/explore";
+export const SAILORS_PATH = `${EXPLORE_PATH}/youtube/sailors`;
 
 export interface BoatVersion {
   name: string;

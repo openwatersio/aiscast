@@ -14,8 +14,8 @@ export default [
   // Station ids contain slashes (`kystverket/2573010`).
   route("stations/*", "routes/station.tsx"),
   route("network", "routes/network.tsx"),
-  route("tracking", "routes/tracking.tsx"),
-  route("tracking/youtube", "routes/tracking-youtube.ts"),
-  route("tracking/youtube/sailors", "routes/youtube-sailors.tsx"),
+  route("explore", "routes/explore.tsx"),
+  route("explore/youtube", "routes/explore-youtube.ts"),
+  route("explore/youtube/sailors", "routes/youtube-sailors.tsx"),
   route("*", "routes/not-found.tsx"),
 ] satisfies RouteConfig;

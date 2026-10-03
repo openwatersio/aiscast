@@ -11,11 +11,12 @@ test("the sailors directory has channel links and map previews without the live 
       headers: { "access-control-allow-origin": "*" },
     }),
   );
-  await page.goto("/ais/tracking/youtube/sailors");
+  await page.goto("/ais/explore/youtube/sailors");
   await expect(
     page.getByRole("heading", { level: 1, name: "YouTube sailors" }),
   ).toBeVisible();
   await expect(page.locator("article")).toHaveCount(9);
+  await expect(page.getByRole("link", { name: "Explore", exact: true })).toHaveAttribute("href", "/ais/explore");
   await expect(
     page.locator('article a[href^="https://www.youtube.com/"]'),
   ).toHaveCount(9);
@@ -77,7 +78,7 @@ test("a preview reports its date and opens that boat, while an API failure leave
           headers: { "access-control-allow-origin": "*" },
         });
   });
-  await page.goto("/ais/tracking/youtube/sailors");
+  await page.goto("/ais/explore/youtube/sailors");
   const card = page.locator("#la-vagabonde");
   await expect(card.locator("time")).toHaveAttribute(
     "datetime",

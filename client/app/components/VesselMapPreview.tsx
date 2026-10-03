@@ -6,8 +6,8 @@ import type { loader } from "../root";
 import { vesselPath } from "../lib/ais";
 import { browserAuth, getVessel, type VesselFeature } from "../lib/api";
 import { resolveTheme } from "../lib/theme";
-import type { BoatVersion } from "../lib/tracking";
-import { previewPosition } from "../lib/tracking-preview";
+import type { BoatVersion } from "../lib/explore";
+import { previewPosition } from "../lib/explore-preview";
 
 export function VesselMapPreview({ boat }: { boat: BoatVersion }) {
   const container = useRef<HTMLDivElement>(null);

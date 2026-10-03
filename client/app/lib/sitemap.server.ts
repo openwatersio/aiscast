@@ -13,7 +13,7 @@ const PAGES_SITEMAP = "/ais/sitemap-pages.xml";
 const VESSELS_SITEMAP = /^\/ais\/sitemap-vessels-([1-9]\d{0,3})\.xml$/;
 
 /** The app's own pages. They change with the network, not on a date worth stating. */
-const APP_PAGES = ["/vessels", "/stations", "/network", "/tracking", "/tracking/youtube/sailors"];
+const APP_PAGES = ["/vessels", "/stations", "/network", "/explore", "/explore/youtube/sailors"];
 
 /** A station unheard for this long is a page about a receiver that has gone quiet. */
 const STATION_MAX_AGE_S = 30 * 24 * 3600;

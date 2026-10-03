@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { VesselFeature } from "./api";
-import { previewPosition } from "./tracking-preview";
+import { previewPosition } from "./explore-preview";
 
 const boat = {
   name: "Example",
