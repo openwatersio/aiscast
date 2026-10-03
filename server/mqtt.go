@@ -240,6 +240,9 @@ func (p *Pipeline) serveMQTT(ctx context.Context, c *websocket.Conn, r *http.Req
 	if err != nil {
 		return
 	}
+	if code == mqttAccepted {
+		noteClaims(r, cl) // CONNECT can name a token the upgrade request did not carry
+	}
 	if code == mqttAccepted && (reqClaims == nil || cl.Sub != reqClaims.Sub) && !wsConnectLimit.allow(cl.Sub) {
 		p.stats.rateLimited.Add(1)
 		code = mqttUnavailable

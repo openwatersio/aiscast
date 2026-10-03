@@ -5,7 +5,7 @@ One box, one binary: the aiscast server. The WebSocket/HTTP side is `ais.openwat
 Everything the box needs lives in this directory, and changing any of it is a pull request:
 
 - [`rootfs/`](rootfs/) mirrors the managed files on the box, copied to `/` verbatim: the systemd unit, [Caddyfile](rootfs/etc/caddy/Caddyfile), the [Alloy config](rootfs/etc/alloy/config.alloy), sshd hardening, and the fail2ban jail. Add a file here (a new unit, a timer) and merge; the next deploy installs it.
-- [`apply.sh`](apply.sh) converges a box and restarts the service: installs packages (alloy and caddy from their vendors' apt repositories, since Ubuntu's caddy is too old for the Caddyfile, plus curl, fail2ban, unattended-upgrades), creates the `aiscast` user and its directories, copies `rootfs/`, validates sshd and the Caddyfile before reloading them, installs the bundled binary, and restarts aiscast exactly once. Binary and config always ship together, so they cannot get out of step. It is idempotent and safe to rerun; it seeds `/etc/aiscast.env` and `/etc/alloy.env` only when missing and never overwrites them.
+- [`apply.sh`](apply.sh) converges a box and restarts the service: installs packages (alloy and caddy from their vendors' apt repositories, since Ubuntu's caddy is too old for the Caddyfile, plus curl, fail2ban, jq for reading the logs, unattended-upgrades), creates the `aiscast` user and its directories, copies `rootfs/`, validates sshd and the Caddyfile before reloading them, installs the bundled binary, and restarts aiscast exactly once. Binary and config always ship together, so they cannot get out of step. It is idempotent and safe to rerun; it seeds `/etc/aiscast.env` and `/etc/alloy.env` only when missing and never overwrites them.
 - [`deploy.sh`](deploy.sh) is the whole deploy: build (or take a prebuilt binary), send the bundle over ssh, run `apply.sh`. The same command sets up a fresh box and updates the live one: `server/deploy/deploy.sh root@<ip>`.
 - [`aiscast.env.example`](aiscast.env.example) lists every variable `/etc/aiscast.env` holds, and [`alloy.env.example`](alloy.env.example) the Grafana Cloud credentials in `/etc/alloy.env`. The real files stay on the box; secrets never enter the repo.
 - [`grafana/`](grafana/) holds the alert rules and the capacity dashboard, applied to Grafana Cloud by [`grafana/push.sh`](grafana/push.sh).
@@ -16,7 +16,7 @@ Everything the box needs lives in this directory, and changing any of it is a pu
 - Firewall `ais-server`: in 22/tcp, 80/tcp, 443/tcp, 10110/udp, ICMP.
 - SSH: root logs in with `bkeepers-ed25519` (the 1Password agent key) and the CI deploy key (`DEPLOY_SSH_KEY` secret). sshd is key-only with the settings in [rootfs](rootfs/etc/ssh/sshd_config.d/10-hardening.conf) plus fail2ban (3 tries / 10 min → 1 h ban): the box gets continuous root-password brute force, and with sshd defaults those attempts fill the pre-auth slots and randomly drop real connections, including CI deploys.
 - On the box: user `aiscast` runs `/opt/aiscast/aiscast` with state under `/var/lib/aiscast/{archive,aiscast.db,tracks.db,vessels-usage.json}` and config in `/etc/aiscast.env` (0600). The issuer *seed* for minting tokens lives only in the repo's untracked `.env` as `ISSUER_SEED`/`ISSUER_KID`.
-- Public: `https://ais.openwaters.io` serves `/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, and `/health`. The request path is a DNS-only A record → Caddy → aiscast on `127.0.0.1:8080`. The Caddyfile sets the Let's Encrypt cert, `zstd`/`gzip` response compression, a block on `/metrics`, which stays reachable only on the box, and per-request metrics on Caddy's admin endpoint at `localhost:2019`. Cloudflare proxying is off for the beta, and `TRUST_CF_HEADERS=1` re-enables it if the box needs DDoS cover.
+- Public: `https://ais.openwaters.io` serves `/v0/stream`, `/v1/stream`, `/v1/vessels`, `/v1/receive`, and `/health`. The request path is a DNS-only A record → Caddy → aiscast on `127.0.0.1:8080`. The Caddyfile sets the Let's Encrypt cert, `zstd`/`gzip` response compression, a block on `/metrics`, which stays reachable only on the box, per-request metrics on Caddy's admin endpoint at `localhost:2019`, and the access log described under [Access logs](#access-logs). Cloudflare proxying is off for the beta, and `TRUST_CF_HEADERS=1` re-enables it if the box needs DDoS cover.
 - UDP ingest at `udp.ais.openwaters.io:10110`, a DNS-only name for the same box. It is separate from the API name so that name can be proxied: a proxied name drops UDP, and a forwarder resolves its target once and keeps sending to that address until restarted, so feeders still using the API name stop silently at their next restart once it is proxied. `UDP_ADDR` can bind one labelled listener per address, counted apart in `/metrics`, which becomes useful if the UDP name ever gets its own address.
 - Upstreams: Kystverket, BarentsWatch, Digitraffic, aisstream.io. Credentials go in `/etc/aiscast.env`.
 - Archive hours upload to R2 `ais-archive` over the S3 API on rotation and on shutdown. The bucket is the archive and the box is only staging. An hour closes and uploads once receptions are five minutes past its end, since sources interleave two hours near a boundary. Rotation uploads but never deletes, because a reception that arrives later still reopens that hour and appends to it; a file deleted at rotation would come back as a stub and overwrite the complete object. An hourly sweep does the deleting. It skips any file the writer still holds open, since deleting one would strand the gzip footer, and among the rest it takes only files untouched for two hours. It deletes a file the bucket already holds at the same size, uploads one that is missing or short, and leaves alone any object larger than its local file, which means a stub is sitting over a good upload and needs a human. Steady-state disk is a few hours of traffic, well under 1 GB.
@@ -68,6 +68,40 @@ GRAFANA_URL=https://<stack>.grafana.net GRAFANA_TOKEN=<token> ALERT_EMAIL=<addre
 ```
 
 `grep -v '^namespace:' server/deploy/grafana/rules.yaml | promtool check rules` checks the rules locally.
+
+## Access logs
+
+Two logs record every request, and the request id joins them.
+
+- aiscast's access log, in its own private R2 bucket (`ACCESS_BUCKET`, `ais-access`) under `access/v1/YYYY/MM/DD/HH.gz`, kept 90 days. It must never share a bucket with the archive, which is meant to become public. Lines are personal data, since the hash key can recover an address from its /24, and the bucket keeps them 90 days. The bucket and its rule were made with wrangler, logged in to the Open Waters account:
+
+```sh
+wrangler r2 bucket create ais-access
+wrangler r2 bucket lifecycle add ais-access access-90-days access/ --expire-days 90 --force
+wrangler r2 bucket lifecycle list ais-access   # the 90-day rule beside R2's default multipart abort rule
+```
+
+Public access stays off: no r2.dev URL and no custom domain. The server's R2 token needs read and write on `ais-access`, and `/etc/aiscast.env` needs `ACCESS_BUCKET=ais-access`. Until both are set, the hours stay under `ACCESS_DIR`, the sweep deletes them at 90 days, and it uploads the rest once the bucket is set. It names a client by its /24 or /48 and a keyed hash of its address, and a token by its subject. It is the one to analyze. [server/README.md](../README.md#access-log) lists its fields.
+- Caddy's access log, `/var/log/caddy/access.log` on the box, in Caddy's JSON format, with the full client address, the URI, status, timing, and sizes, and the request id. No request header is written, since a token can arrive under any header name. The URI loses the usual token parameters (`key`, `token`, `api_key`, `access_token`, any case), any token in it in the usual encodings, and the `around` and `bbox` parameters, so no search position or view sits beside a full address; aiscast's log keeps those coordinates rounded and the user agent and origin with tokens redacted. Tile paths stay whole: Caddy's filters cannot coarsen them. It rolls daily and at 100 MiB, gzips what it rolls, and deletes rolled files after 12 days, so no address stays two weeks. It lives only on the box and goes with it.
+
+To find the address behind load, take the busiest clients for the window from the R2 log:
+
+```sql
+SELECT client, net, sub, any_value(ua) AS ua, count(*) AS n, sum(ms) / 1000 AS busy_s, any_value(id) AS id
+FROM read_json_auto('access/v1/2026/10/02/*.gz') GROUP BY ALL ORDER BY busy_s DESC LIMIT 10;
+```
+
+Then look one of its request ids up on the box:
+
+```sh
+ssh root@2.29.0.215 "zcat -f /var/log/caddy/access*.log* | grep -F '\"request_id\":\"<id>\"' | jq -r .request.client_ip"
+```
+
+While it is still happening, the Caddy log answers alone:
+
+```sh
+ssh root@2.29.0.215 "tail -n 200000 /var/log/caddy/access.log | jq -r .request.client_ip | sort | uniq -c | sort -rn | head"
+```
 
 ## Profiling
 
