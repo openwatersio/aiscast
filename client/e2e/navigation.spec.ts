@@ -99,6 +99,37 @@ test("Back after a reload skips vessels opened one after another on the map", as
   await expect(page).toHaveURL(HOME);
 });
 
+test("Back skips vessels opened one after another when one's address is corrected", async ({ page }) => {
+  // Every record names its vessel otherwise than the map does, as a vessel's can until the
+  // stream hears its static data, so a page opened by the name on the map redirects.
+  await page.route(/\/v1\/vessels\/\d+$/, async (route) => {
+    const response = await route.fetch();
+    const feature = await response.json();
+    await route.fulfill({ response, json: { ...feature, properties: { ...feature.properties, name: "E2E RENAMED" } } });
+  });
+  await openMap(page);
+  const first = await openVesselOnMap(page);
+  await waitForFlight(page);
+  await page.evaluate(() => window.aiscastMap!.jumpTo({ zoom: 8 }));
+  await waitForVessels(page);
+  // With a name from the stream the page opens from that and never asks the record, so the
+  // stream is made not to have heard one. Its reports and the tiles would give it one back.
+  const second = await openVesselOnMap(page, [first], (mmsi) =>
+    page.evaluate((mmsi) => {
+      const heard = window.aiscastStream!.vessels.get(mmsi);
+      if (heard) Object.defineProperty(heard, "name", { get: () => undefined, set: () => {}, configurable: true });
+    }, mmsi),
+  );
+  await expect(page).toHaveURL(new RegExp(`/ais/vessels/${second}-e2e-renamed(#|$)`));
+  // The state is put back just after the redirect lands.
+  await expect
+    .poll(() => page.evaluate(() => (history.state as { usr?: { backSteps?: number } } | null)?.usr?.backSteps))
+    .toBe(2);
+
+  await back(page);
+  await expect(page).toHaveURL(HOME);
+});
+
 test("one map and one stream last through search, stations, a station, a vessel and back", async ({ page }) => {
   // The stream's socket is in a SharedWorker, out of Playwright's sight. With a token allowed
   // one stream, a second would be refused, and the map would say so.

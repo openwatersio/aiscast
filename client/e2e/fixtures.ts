@@ -68,7 +68,8 @@ export async function waitForFlight(page: Page) {
 
 /**
  * A vessel drawn on the map that a click will land on: nothing over it but the map, and no
- * other vessel near enough to take the click instead.
+ * other vessel near enough to take the click instead. One that will stay where it is drawn
+ * comes first.
  */
 export async function vesselOnMap(page: Page, exclude: number[] = []) {
   const deadline = Date.now() + 15_000;
@@ -102,9 +103,19 @@ function findVessel(page: Page, exclude: number[]) {
       .queryRenderedFeatures({ layers: ["vessel-still", "vessel-moving", "tile-still", "tile-moving"] })
       // A tile's copy of a vessel the stream is drawing is there but hidden.
       .filter((f) => f.source === "vessels" || !f.state.live)
-      .map((f) => ({ mmsi: Number(f.properties.mmsi), at: map.project((f.geometry as GeoJSON.Point).coordinates as [number, number]) }))
-      // The order features are drawn in changes as the stream redraws, and samples are compared.
-      .sort((a, b) => a.mmsi - b.mmsi);
+      .map((f) => ({
+        mmsi: Number(f.properties.mmsi),
+        at: map.project((f.geometry as GeoJSON.Point).coordinates as [number, number]),
+        // The stream moves a vessel it draws a little with each report. A tile's copy is where
+        // the vessel was when the tile was built, which for one under way can be far behind,
+        // and once the stream hears the vessel the copy is hidden and the click finds nothing.
+        // A stationary vessel's copy is where the stream will draw it.
+        steady:
+          f.source === "vessels" || Number(f.properties.sog ?? Infinity) < 0.5 || [1, 5].includes(Number(f.properties.nav_status)),
+      }))
+      // Steady ones first. The order features are drawn in changes as the stream redraws, and
+      // samples are compared.
+      .sort((a, b) => Number(b.steady) - Number(a.steady) || a.mmsi - b.mmsi);
     seen.drawn = drawn.length;
     const clear = (x: number, y: number) =>
       [[0, 0], [-12, 0], [12, 0], [0, -12], [0, 12]].every(([dx, dy]) => document.elementFromPoint(x + dx!, y + dy!) === canvas);
@@ -120,12 +131,35 @@ function findVessel(page: Page, exclude: number[]) {
   }, exclude);
 }
 
-/** Clicks a vessel on the map and waits for its page. */
-export async function openVesselOnMap(page: Page, exclude: number[] = []) {
-  const { mmsi, x, y } = await vesselOnMap(page, exclude);
-  await page.mouse.click(x, y);
-  await expect(page).toHaveURL(new RegExp(`/ais/vessels/${mmsi}(-|#|$)`));
-  return mmsi;
+/**
+ * Clicks a vessel on the map and waits for its page. A vessel can still leave the spot between
+ * finding it and the click, which then opens nothing, so another is tried. `beforeClick` runs
+ * just before each click, with the vessel about to be clicked.
+ */
+export async function openVesselOnMap(page: Page, exclude: number[] = [], beforeClick?: (mmsi: number) => Promise<unknown>) {
+  const from = new URL(page.url()).pathname;
+  const missed: number[] = [];
+  for (let attempt = 1; ; attempt++) {
+    const { mmsi, x, y } = await vesselOnMap(page, [...exclude, ...missed]);
+    // A click taken for a miss can still open its vessel, only slowly.
+    const now = new URL(page.url()).pathname;
+    const late = now !== from && /\/ais\/vessels\/(\d+)/.exec(now);
+    if (late) return Number(late[1]);
+    await beforeClick?.(mmsi);
+    await page.mouse.click(x, y);
+    const left = await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5_000 })
+      .not.toBe(from)
+      .then(
+        () => true,
+        () => false,
+      );
+    if (left || attempt === 3) {
+      await expect(page).toHaveURL(new RegExp(`/ais/vessels/${mmsi}(-|#|$)`));
+      return mmsi;
+    }
+    missed.push(mmsi);
+  }
 }
 
 /** The chip over the map that says whether it is live. Search has a status of its own. */
