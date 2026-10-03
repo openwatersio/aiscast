@@ -1,6 +1,6 @@
 import { DirectoryLayout } from "../components/DirectoryLayout";
 import { pageMeta } from "../lib/meta";
-import { SAILORS_PATH, sailingChannels } from "../lib/explore";
+import { YOUTUBE_PATH } from "../lib/explore";
 
 export const handle = { directory: true };
 export const meta = () =>
@@ -19,13 +19,12 @@ export default function Explore() {
         Browse a collection, then open a vessel in the AIS viewer.
       </p>
       <a
-        href={`/ais${SAILORS_PATH}`}
+        href={`/ais${YOUTUBE_PATH}`}
         className="mt-8 block max-w-xl rounded-xl border border-line p-6 hover:bg-accent-bg"
       >
-        <h2 className="text-title">YouTube sailors</h2>
+        <h2 className="text-title">YouTube channels</h2>
         <p className="mt-2 text-body text-fg-secondary">
-          {sailingChannels.length} sailing channels, their crews, and their
-          boats past and present.
+          Sailors and cruisers, their crews, and their boats past and present.
         </p>
       </a>
     </DirectoryLayout>

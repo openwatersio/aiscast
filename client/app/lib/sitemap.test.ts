@@ -67,6 +67,8 @@ describe("sitemap", () => {
     expect(body).toContain("<url><loc>https://openwaters.io/ais/vessels</loc></url>");
     expect(body).toContain("<url><loc>https://openwaters.io/ais/network</loc></url>");
     expect(body).toContain("<url><loc>https://openwaters.io/ais/explore/youtube/sailors</loc></url>");
+    expect(body).toContain("<url><loc>https://openwaters.io/ais/explore/youtube</loc></url>");
+    expect(body).toContain("<url><loc>https://openwaters.io/ais/explore/youtube/cruisers</loc></url>");
     expect(body).toContain("<loc>https://openwaters.io/ais/stations/kystverket/2573010</loc><lastmod>2026-10-02T10:00:00Z</lastmod>");
     expect(body).not.toContain("stations/aishub");
     expect(body).not.toContain("udp:");

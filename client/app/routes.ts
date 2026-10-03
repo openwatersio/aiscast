@@ -15,7 +15,8 @@ export default [
   route("stations/*", "routes/station.tsx"),
   route("network", "routes/network.tsx"),
   route("explore", "routes/explore.tsx"),
-  route("explore/youtube", "routes/explore-youtube.ts"),
+  route("explore/youtube", "routes/explore-youtube.tsx"),
   route("explore/youtube/sailors", "routes/youtube-sailors.tsx"),
+  route("explore/youtube/cruisers", "routes/youtube-cruisers.tsx"),
   route("*", "routes/not-found.tsx"),
 ] satisfies RouteConfig;

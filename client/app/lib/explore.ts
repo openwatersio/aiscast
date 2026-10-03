@@ -1,5 +1,7 @@
 export const EXPLORE_PATH = "/explore";
-export const SAILORS_PATH = `${EXPLORE_PATH}/youtube/sailors`;
+export const YOUTUBE_PATH = `${EXPLORE_PATH}/youtube`;
+export const SAILORS_PATH = `${YOUTUBE_PATH}/sailors`;
+export const CRUISERS_PATH = `${YOUTUBE_PATH}/cruisers`;
 
 export interface BoatVersion {
   name: string;
@@ -10,7 +12,7 @@ export interface BoatVersion {
   identitySource?: string;
 }
 
-export interface SailingChannel {
+export interface YouTubeChannel {
   id: string;
   name: string;
   crew: string;
@@ -18,7 +20,7 @@ export interface SailingChannel {
   boats: BoatVersion[];
 }
 
-export const sailingChannels: SailingChannel[] = [
+export const sailingChannels: YouTubeChannel[] = [
   {
     id: "wynns",
     name: "Gone With The Wynns",
@@ -79,6 +81,76 @@ export const sailingChannels: SailingChannel[] = [
         mmsi: 257528790,
         identitySource:
           "https://www.vesselfinder.com/vessels/details/257528790",
+      },
+    ],
+  },
+  {
+    id: "phoenix",
+    name: "Sailing With Phoenix",
+    crew: "Oliver Widger & Phoenix the cat",
+    youtube: "https://www.youtube.com/channel/UCAub01nC6godaiC7iI9kasw",
+    boats: [
+      {
+        name: "Phoenix do Mar",
+        model: "Pacific Seacraft 40",
+        chapter: "Current boat",
+        source: "https://www.youtube.com/watch?v=fASS2iAo5FU",
+        mmsi: 368448560,
+        identitySource:
+          "https://www.vesselfinder.com/vessels/details/368448560",
+      },
+      {
+        name: "Phoenix",
+        model: "33-foot cruising sailboat",
+        chapter: "Previous boat",
+        source:
+          "https://www.buzzsprout.com/2321035/episodes/16992754-salty-podcast-58-sailing-oregon-to-hawaii-sailing_with_phoenix-prepares-to-cross-the-pacific",
+      },
+    ],
+  },
+  {
+    id: "distant-shores",
+    name: "Distant Shores",
+    crew: "Paul & Sheryl Shard",
+    youtube: "https://www.youtube.com/@DistantShoresTV",
+    boats: [
+      {
+        name: "Distant Shores IV",
+        model: "Enksail Orion 49 aluminum sailboat",
+        chapter: "Fourth Distant Shores boat",
+        source:
+          "https://www.patreon.com/distantshorestv/posts/new-video-shores-103883084",
+        mmsi: 232057925,
+        identitySource:
+          "https://www.harbourmaps.com/ship/journey/q?mmsi=232057925",
+      },
+      {
+        name: "Distant Shores III",
+        model: "Southerly 480",
+        chapter: "Previous boat",
+        source:
+          "https://www.distantshores.ca/boatblog_files/category-distant-shores-iii.php",
+      },
+      {
+        name: "Distant Shores II",
+        model: "Southerly 49",
+        chapter: "Earlier boat",
+        source:
+          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
+      },
+      {
+        name: "Distant Shores",
+        model: "Southerly 42",
+        chapter: "First Distant Shores boat",
+        source:
+          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
+      },
+      {
+        name: "Two-Step",
+        model: "Classic 37",
+        chapter: "Original boat",
+        source:
+          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
       },
     ],
   },
@@ -208,30 +280,6 @@ export const sailingChannels: SailingChannel[] = [
     ],
   },
   {
-    id: "phoenix",
-    name: "Sailing With Phoenix",
-    crew: "Oliver Widger & Phoenix the cat",
-    youtube: "https://www.youtube.com/channel/UCAub01nC6godaiC7iI9kasw",
-    boats: [
-      {
-        name: "Phoenix do Mar",
-        model: "Pacific Seacraft 40",
-        chapter: "Current boat",
-        source: "https://www.youtube.com/watch?v=fASS2iAo5FU",
-        mmsi: 368448560,
-        identitySource:
-          "https://www.vesselfinder.com/vessels/details/368448560",
-      },
-      {
-        name: "Phoenix",
-        model: "33-foot cruising sailboat",
-        chapter: "Previous boat",
-        source:
-          "https://www.buzzsprout.com/2321035/episodes/16992754-salty-podcast-58-sailing-oregon-to-hawaii-sailing_with_phoenix-prepares-to-cross-the-pacific",
-      },
-    ],
-  },
-  {
     id: "alluring-arctic",
     name: "Alluring Arctic",
     crew: "Juho Karhu & Sohvi Kangasluoma",
@@ -265,52 +313,6 @@ export const sailingChannels: SailingChannel[] = [
         model: "Grinde 27",
         chapter: "Solo sailing",
         source: "https://windhippie.com/about-my-boat/",
-      },
-    ],
-  },
-  {
-    id: "distant-shores",
-    name: "Distant Shores",
-    crew: "Paul & Sheryl Shard",
-    youtube: "https://www.youtube.com/@DistantShoresTV",
-    boats: [
-      {
-        name: "Distant Shores IV",
-        model: "Enksail Orion 49 aluminum sailboat",
-        chapter: "Fourth Distant Shores boat",
-        source:
-          "https://www.patreon.com/distantshorestv/posts/new-video-shores-103883084",
-        mmsi: 232057925,
-        identitySource:
-          "https://www.harbourmaps.com/ship/journey/q?mmsi=232057925",
-      },
-      {
-        name: "Distant Shores III",
-        model: "Southerly 480",
-        chapter: "Previous boat",
-        source:
-          "https://www.distantshores.ca/boatblog_files/category-distant-shores-iii.php",
-      },
-      {
-        name: "Distant Shores II",
-        model: "Southerly 49",
-        chapter: "Earlier boat",
-        source:
-          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
-      },
-      {
-        name: "Distant Shores",
-        model: "Southerly 42",
-        chapter: "First Distant Shores boat",
-        source:
-          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
-      },
-      {
-        name: "Two-Step",
-        model: "Classic 37",
-        chapter: "Original boat",
-        source:
-          "https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php",
       },
     ],
   },

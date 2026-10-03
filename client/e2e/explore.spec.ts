@@ -19,14 +19,14 @@ test("the sailors directory has channel links and map previews without the live 
   await expect(
     page.getByRole("link", { name: "Explore", exact: true }),
   ).toHaveAttribute("href", "/ais/explore");
-  await expect(
-    page.getByRole("link", { name: / on YouTube$/ }),
-  ).toHaveCount(14);
+  await expect(page.getByRole("link", { name: / on YouTube$/ })).toHaveCount(
+    14,
+  );
   expect(
     await page
       .locator("article")
-      .evaluateAll((cards) => cards.slice(0, 3).map((card) => card.id)),
-  ).toEqual(["wynns", "tally-ho", "nbjs"]);
+      .evaluateAll((cards) => cards.slice(0, 5).map((card) => card.id)),
+  ).toEqual(["wynns", "tally-ho", "nbjs", "phoenix", "distant-shores"]);
   await expect(page.locator("#phoenix")).toContainText("Phoenix do Mar");
   await expect(page.locator("#alluring-arctic")).toContainText("Lumi");
   await expect(page.locator("#wind-hippie")).toContainText("Gecko");
@@ -123,4 +123,71 @@ test("a preview reports its date and opens that boat, while an API failure leave
     .click();
   await expect(page).toHaveURL(/\/ais\/vessels\/268233302/);
   await expect(page.locator("#map")).toBeVisible();
+});
+
+test("the YouTube directory links sailors and cruisers, with usable cruiser cards on mobile", async ({
+  page,
+}) => {
+  await page.route(`${API}/v1/vessels/*`, (route) =>
+    route.fulfill({
+      status: 404,
+      json: {},
+      headers: { "access-control-allow-origin": "*" },
+    }),
+  );
+  await page.goto("/ais/explore");
+  await page.getByRole("link", { name: /YouTube channels/ }).click();
+  await expect(page).toHaveURL(/\/ais\/explore\/youtube$/);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "YouTube channels" }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: /Sailors/ })).toHaveAttribute(
+    "href",
+    "/ais/explore/youtube/sailors",
+  );
+  await page.getByRole("link", { name: /Cruisers/ }).click();
+  await expect(page).toHaveURL(/\/ais\/explore\/youtube\/cruisers$/);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "YouTube cruisers" }),
+  ).toBeVisible();
+  await expect(page.locator("article")).toHaveCount(8);
+  await expect(page.getByRole("link", { name: / on YouTube$/ })).toHaveCount(8);
+  for (const name of [
+    "MV Freedom",
+    "Argonaut II",
+    "The 71 Percent",
+    "Aboard Mermaid Monster",
+    "Henk | Cruising MV Lady Liselot",
+    "Tony Fleming",
+    "Adventures of Motor Yacht OLOH",
+    "Tula’s Endless Summer",
+  ]) {
+    await expect(
+      page.getByRole("heading", { level: 2, name, exact: true }),
+    ).toHaveCount(1);
+  }
+  await expect(page.locator("#tula")).toContainText("Sunset");
+  await expect(page.locator("#tula")).toContainText("LaurieSue");
+  await expect(page.locator("#the-71-percent")).toContainText("Selene 49");
+  await expect(
+    page
+      .locator("#lady-liselot")
+      .getByRole("link", {
+        name: "Open Lady Liselot in the AIS viewer",
+        exact: true,
+      }),
+  ).toHaveAttribute("href", "/ais/vessels/244129609");
+  await expect(page.locator("#map, .sheet")).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#tula").scrollIntoViewIfNeeded();
+  await expect(
+    page.locator("#tula").getByRole("heading", { level: 2 }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.getByRole("link", { name: "Sailors", exact: true }).click();
+  await expect(page).toHaveURL(/\/ais\/explore\/youtube\/sailors$/);
 });
