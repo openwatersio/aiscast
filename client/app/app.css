@@ -583,3 +583,19 @@ input[type="search"]::-webkit-search-cancel-button {
     left: calc(var(--map-left, 0px) + var(--gap));
   }
 }
+
+/* The coverage key (components/CoverageKey.tsx) is centered in the part of the map the panel
+   leaves: on the status chip's line on a wide screen, and a line under it on a phone, where
+   the screen's center would put it over the chip. The chip is 36px tall. */
+.coverage-key-dock {
+  top: calc(var(--header-bottom) + 2 * var(--gap) + 36px);
+  left: 50%;
+  translate: -50% 0;
+}
+@media (min-width: 768px) {
+  .coverage-key-dock {
+    top: calc(var(--header-bottom) + var(--gap));
+    left: calc(var(--map-left, 0px) + (100vw - var(--map-left, 0px)) / 2);
+  }
+}
+
