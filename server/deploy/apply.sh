@@ -96,7 +96,10 @@ else
 	systemctl --no-block start clickhouse-server || echo 'clickhouse-server did not start' >&2
 fi
 systemctl reload-or-restart fail2ban
-caddy validate --config /etc/caddy/Caddyfile
+install -d -o caddy -g caddy /var/log/caddy
+chown -h caddy:caddy /var/log/caddy/access.log 2>/dev/null || true # -h: never follow a link the caddy user planted
+# as root, validate would create the access log root-owned, which Caddy then cannot open
+runuser -u caddy -- env HOME=/var/lib/caddy caddy validate --config /etc/caddy/Caddyfile
 # The Caddyfile's stream_close_delay keeps the reload from blocking on open WebSockets; the
 # restart is the bounded fallback if it hangs anyway.
 systemctl reload-or-restart caddy || systemctl restart caddy

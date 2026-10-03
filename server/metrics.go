@@ -295,7 +295,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_uscg_syncs_total %d\n", p.uscg.runs.Load())
 		metricHead(w, "aiscast_uscg_sync_failures_total", "counter", "PSIX listings that failed; the next hourly check retries")
 		fmt.Fprintf(w, "aiscast_uscg_sync_failures_total %d\n", p.uscg.failures.Load())
-		metricHead(w, "aiscast_uscg_vessels", "gauge", "US-flag vessels with a call sign listed from PSIX")
+		metricHead(w, "aiscast_uscg_vessels", "gauge", "US-flag vessels with a call sign or an official number listed from PSIX")
 		fmt.Fprintf(w, "aiscast_uscg_vessels %d\n", p.uscg.vessels.Load())
 		metricHead(w, "aiscast_uscg_details_total", "counter", "matched vessels whose dimensions and tonnage were read from PSIX")
 		fmt.Fprintf(w, "aiscast_uscg_details_total %d\n", p.uscg.details.Load())
