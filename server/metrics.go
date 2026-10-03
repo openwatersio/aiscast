@@ -329,6 +329,22 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 			metricHead(w, "aiscast_fcc_last_success_timestamp_seconds", "gauge", "when the licenses were last synced")
 			fmt.Fprintf(w, "aiscast_fcc_last_success_timestamp_seconds %d\n", t)
 		}
+		metricHead(w, "aiscast_tc_syncs_total", "counter", "weekly syncs of Transport Canada's vessel register")
+		fmt.Fprintf(w, "aiscast_tc_syncs_total %d\n", p.tc.runs.Load())
+		metricHead(w, "aiscast_tc_sync_failures_total", "counter", "register syncs that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_tc_sync_failures_total %d\n", p.tc.failures.Load())
+		metricHead(w, "aiscast_tc_vessels", "gauge", "registered Canadian vessels with an IMO stored")
+		fmt.Fprintf(w, "aiscast_tc_vessels %d\n", p.tc.vessels.Load())
+		if t := p.tc.lastSuccess.Load(); t > 0 {
+			metricHead(w, "aiscast_tc_last_success_timestamp_seconds", "gauge", "when the register was last synced")
+			fmt.Fprintf(w, "aiscast_tc_last_success_timestamp_seconds %d\n", t)
+		}
+		metricHead(w, "aiscast_ised_checked_total", "counter", "Canadian vessels asked about in ISED's MMSI registry")
+		fmt.Fprintf(w, "aiscast_ised_checked_total %d\n", p.ised.checked.Load())
+		metricHead(w, "aiscast_ised_check_failures_total", "counter", "registry asks that failed; the vessel waits for the next round")
+		fmt.Fprintf(w, "aiscast_ised_check_failures_total %d\n", p.ised.failures.Load())
+		metricHead(w, "aiscast_ised_ships", "gauge", "Canadian vessels with a registry record stored")
+		fmt.Fprintf(w, "aiscast_ised_ships %d\n", p.ised.ships.Load())
 	}
 
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")

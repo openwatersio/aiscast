@@ -26,7 +26,7 @@ On `/v1/vessels/{mmsi}` and the MCP `get_vessels` tool, three properties replace
 
 - `particulars` is the merged document: one vocabulary, one unit system (metres, tonnes), no source names in field names. Consumers who do not care about provenance read this and nothing else.
 - `provenance` says which source supplied each present field. Its values are keys of `sources`.
-- `sources` is the structured attribution for the record: one entry per source that contributed, with a display credit, the license, and a URL to the source's own page for this vessel, so a reader can check the claim. The top-level `attribution` map keeps its existing meaning, credit lines for the position feed, and is not touched; mixing object values into that string map would break every client that renders it.
+- `sources` is the structured attribution for the record: one entry per source that contributed, with a display credit, the license, and a URL where the claim can be checked: the source's page for this vessel, or its public search when it keeps no per-vessel pages. The top-level `attribution` map keeps its existing meaning, credit lines for the position feed, and is not touched; mixing object values into that string map would break every client that renders it.
 
 The field vocabulary is the union of what the sources supply, each concept once:
 

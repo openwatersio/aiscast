@@ -278,11 +278,10 @@ func TestUSCGSync(t *testing.T) {
 		json.Unmarshal(get(t, p, fmt.Sprintf("/v1/vessels/%d", mmsi)).Body.Bytes(), &f)
 		return f
 	}
-	psixURL := func(id int) string {
-		return fmt.Sprintf("https://cgmix.uscg.mil/PSIX/PSIXDetails.aspx?VesselID=%d", id)
-	}
-	// Listed but not yet measured: the summary alone.
-	if f := vessel(366000004); f.Properties.Particulars == nil || f.Properties.Sources["uscg"].URL != psixURL(1097015) ||
+	// Listed but not yet measured: the summary alone. The literal URL, not a constant: the per-vessel
+	// pages answer only inside a browsing session, so a VesselID link must fail here.
+	if f := vessel(366000004); f.Properties.Particulars == nil ||
+		f.Properties.Sources["uscg"].URL != "https://cgmix.uscg.mil/PSIX/PSIXSearch.aspx" ||
 		f.Properties.Particulars.Service != "Freight Ship" || f.Properties.Particulars.YearBuilt != 2007 || f.Properties.Particulars.Length != 0 {
 		t.Errorf("before the backfill: %+v", f.Properties)
 	}
@@ -313,11 +312,13 @@ func TestUSCGSync(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("/v1/vessels: %+v, want %+v", got, want)
 	}
-	for mmsi, id := range map[uint32]int{367000001: 507140, 367000002: 607128, 368168720: 167771, 367000003: 0, 257000009: 0} {
+	// Which record matched shows in the documented name, now that the credit URL names no vessel.
+	for mmsi, name := range map[uint32]string{367000001: "NICOLE LEIGH REINAUER", 367000002: "CONGRESSMAN ROBERT A. ROE",
+		368168720: "CERULEAN", 367000003: "", 257000009: ""} {
 		f := vessel(mmsi)
-		cg, ok := f.Properties.Sources["uscg"]
-		if (id == 0) == ok || ok && cg.URL != psixURL(id) {
-			t.Errorf("%d: %+v, want PSIX vessel %d", mmsi, f.Properties, id)
+		_, ok := f.Properties.Sources["uscg"]
+		if (name == "") == ok || ok && f.Properties.Particulars.RegisteredName != name {
+			t.Errorf("%d: %+v, want documented name %q", mmsi, f.Properties.Particulars, name)
 		}
 	}
 
