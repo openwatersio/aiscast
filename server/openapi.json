@@ -145,7 +145,7 @@
                           "properties": {
                             "particulars": { "$ref": "#/components/schemas/Particulars" },
                             "provenance": { "type": "object", "additionalProperties": { "type": "string" }, "description": "The source of each `particulars` field, by the field's name; values are keys of `sources`." },
-                            "sources": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/SourceRef" }, "description": "Each contributing enrichment source's credit, license, and its own page for this vessel." }
+                            "sources": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/SourceRef" }, "description": "Each contributing enrichment source's credit, license, and where its record is: the source's page for this vessel, or its public search when it keeps no per-vessel pages." }
                           }
                         }
                       }
@@ -767,7 +767,7 @@
         "properties": {
           "credit": { "type": "string", "description": "Display credit for the source.", "example": "Wikidata" },
           "license": { "type": "string", "description": "The source's license. `CC0-1.0` and `public domain (U.S. government work)` require no credit line.", "example": "CC0-1.0" },
-          "url": { "type": "string", "format": "uri", "description": "The source's own page for this vessel." }
+          "url": { "type": "string", "format": "uri", "description": "The source's page for this vessel, or its public search when the source keeps no per-vessel pages." }
         }
       },
       "Station": {
