@@ -436,11 +436,14 @@ func (p *Pipeline) notePosition(mmsi uint32, ts time.Time, u *vessel, source str
 		}
 	}
 	if p.chQueue != nil {
+		// A full queue gives up its oldest tenth, so it holds the latest positions; a batch waiting to be sent
+		// again is kept apart and still goes. A tenth at a time keeps the copy rare.
 		if len(p.chQueue) >= maxPending {
-			p.ch.dropped.Add(1)
-		} else {
-			p.chQueue = append(p.chQueue, pt)
+			n := maxPending / 10
+			p.ch.dropped.Add(int64(n))
+			p.chQueue = append(p.chQueue[:0], p.chQueue[n:]...)
 		}
+		p.chQueue = append(p.chQueue, pt)
 	}
 }
 
