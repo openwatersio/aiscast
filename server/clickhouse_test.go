@@ -682,3 +682,31 @@ func TestClickHouseMigratesThePositionsTable(t *testing.T) {
 func chTxOf(id, ts string) string {
 	return "bitXor(reinterpretAsUInt64(reverse(unhex(substring(" + id + ", 1, 16)))), toUInt64(toUnixTimestamp64Milli(" + ts + ")))"
 }
+
+// A copy dedupe matches while its transmission is still folding waits for the fold's verdict, so a copy of an
+// implausible transmission is never written unflagged.
+func TestClickHouseHoldsACopyUntilTheFoldDecides(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	key := "payload" + "A"
+	p.mu.Lock()
+	p.seen[key], p.folding[key] = t0, nil // accepted, and still folding
+	p.mu.Unlock()
+	p.emit(&Event{Payload: []byte("payload"), Channel: 'A', Time: t0.Add(time.Second), RecvTime: t0.Add(time.Second),
+		Source: "barentswatch", Station: "barentswatch", Packet: posReport(mmsi, 65.0, 10.7)})
+	if q := queued(p, mmsi); len(q) != 0 {
+		t.Fatalf("a copy is written before the fold decides: %+v", q)
+	}
+	p.settleFold(key, &Event{Time: t0, Implausible: true})
+	q := queued(p, mmsi)
+	if len(q) != 1 || !q[0].implausible || !q[0].dup || q[0].tx != txOf(eventID(key), t0) {
+		t.Fatalf("the waiting copy is written with the verdict: %+v", q)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, folding := p.folding[key]; folding || !p.bad[key].Equal(t0) {
+		t.Errorf("the key is settled: folding %v, bad %v", folding, p.bad[key])
+	}
+}

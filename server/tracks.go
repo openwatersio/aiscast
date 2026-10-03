@@ -592,15 +592,22 @@ func (p *Pipeline) noteReception(pt trackPoint) {
 // accepted copy's position, so it needs no fold, and it is implausible when that copy was: otherwise a read that
 // skips flagged copies would serve the position through this one.
 func (p *Pipeline) noteCopy(ev *Event, key string, tx time.Time, implausible bool) {
+	if pt, ok := copyPoint(ev, key, tx); ok {
+		pt.implausible = implausible
+		p.noteReception(pt)
+	}
+}
+
+// copyPoint is a dedupe copy as a reception, or false when it carries no position.
+func copyPoint(ev *Event, key string, tx time.Time) (trackPoint, bool) {
 	u, hasPos, _ := foldOf(ev.Packet)
 	if !hasPos {
-		return
+		return trackPoint{}, false
 	}
 	pt := newTrackPoint(ev.Packet.GetHeader().UserID, ev.Time, u, ev.Source)
 	pt.tx, pt.dup = txOf(eventID(key), tx), true
 	pt.recv, pt.station = ev.RecvTime, ev.Station
 	pt.uncorroborated = lowTrust(ev.Source)
-	pt.implausible = implausible
 	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge
-	p.noteReception(pt)
+	return pt, true
 }

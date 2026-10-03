@@ -89,9 +89,10 @@ type Pipeline struct {
 	closing     atomic.Bool
 
 	seen     map[string]time.Time
-	bad      map[string]time.Time // dedupe keys of transmissions the fold judged implausible, by time, pruned with seen
-	seenHW   time.Time            // newest event time folded into seen; prune cutoff, so replay needs no wall clock
-	normGate time.Time            // replay warm-up: records received before this are state-building only, not written
+	bad      map[string]time.Time    // dedupe keys of transmissions the fold judged implausible, by time, pruned with seen
+	folding  map[string][]trackPoint // keys whose accepted copy is still folding, with the copies that arrived meanwhile
+	seenHW   time.Time               // newest event time folded into seen; prune cutoff, so replay needs no wall clock
+	normGate time.Time               // replay warm-up: records received before this are state-building only, not written
 	nSeen    int
 
 	vmu        sync.RWMutex
@@ -156,6 +157,7 @@ func newPipeline(arch *archive) *Pipeline {
 		ownOf:   map[string]string{},
 		seen:    map[string]time.Time{},
 		bad:     map[string]time.Time{},
+		folding: map[string][]trackPoint{},
 		vessels: map[uint32]*vessel{},
 		cells:   map[cellKey]map[uint32]*vessel{},
 		subs:    map[*subscriber]struct{}{},
@@ -397,9 +399,18 @@ func (p *Pipeline) emit(ev *Event) {
 	p.mu.Lock()
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {
 		bad := p.bad[key].Equal(prev)
+		// Until the fold has judged the accepted copy, its verdict is unknown, so this copy waits on the key
+		// and settleFold writes it with the verdict. Both happen under mu, so no copy is written unjudged.
+		held := false
+		if waiting, folding := p.folding[key]; folding && p.chOn.Load() {
+			if pt, ok := copyPoint(ev, key, prev); ok {
+				p.folding[key] = append(waiting, pt)
+			}
+			held = true
+		}
 		p.mu.Unlock()
 		p.writeCopy(ev, key, prev) // prev is the accepted transmission: proximity alone is ambiguous between two of them
-		if p.chOn.Load() {
+		if p.chOn.Load() && !held {
 			p.noteCopy(ev, key, prev, bad)
 		}
 		p.stats.dup.Add(1)
@@ -412,6 +423,9 @@ func (p *Pipeline) emit(ev *Event) {
 		return
 	}
 	p.seen[key] = ev.Time
+	if p.chOn.Load() {
+		p.folding[key] = nil
+	}
 	if ev.Time.After(p.seenHW) {
 		p.seenHW = ev.Time
 	}
@@ -436,13 +450,12 @@ func (p *Pipeline) emit(ev *Event) {
 	ev.MMSI = ev.Packet.GetHeader().UserID
 	ev.LowTrust = lowTrust(ev.Source)
 	p.updateVessel(ev)
-	p.writeEvent(ev) // flagged or not: the normalized archive keeps what the raw archive keeps
+	p.writeEvent(ev)                     // flagged or not: the normalized archive keeps what the raw archive keeps
+	if p.chOn.Load() || ev.Implausible { // without ClickHouse, nothing waits on the verdict
+		p.settleFold(key, ev)
+	}
 	if ev.Implausible {
 		p.stats.implausible.Add(1)
-		// Its later copies carry the same position, so they are written implausible too.
-		p.mu.Lock()
-		p.bad[key] = ev.Time
-		p.mu.Unlock()
 		return
 	}
 	// Per-vessel monotonic stream: a late copy of an already-superseded report (AISHub lags minutes)
@@ -482,6 +495,25 @@ const (
 	dedupeWindow = 10 * time.Second
 	replayAge    = 60 * time.Second // buffered receptions older than this go to the archive only
 )
+
+// settleFold records the fold's verdict on an accepted transmission: an implausible one's later copies carry
+// its position, so they are written implausible too, and so are the copies that arrived while it folded.
+func (p *Pipeline) settleFold(key string, ev *Event) {
+	p.mu.Lock()
+	waiting, folding := p.folding[key]
+	delete(p.folding, key)
+	if ev.Implausible {
+		p.bad[key] = ev.Time
+	}
+	p.mu.Unlock()
+	if !folding {
+		return
+	}
+	for _, pt := range waiting {
+		pt.implausible = ev.Implausible
+		p.noteReception(pt)
+	}
+}
 
 // eventID is an event's id: a hash of its payload and channel, the dedupe key, so every copy of a transmission
 // computes the same one.
