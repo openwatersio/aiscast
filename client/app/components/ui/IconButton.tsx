@@ -6,7 +6,7 @@ import { cn } from "../../lib/cn";
 /** A round, icon-only control. The target is 32px, or 28px when `small`. */
 export function iconButtonClass(small = false, className?: string): string {
   return cn(
-    "inline-flex shrink-0 items-center justify-center rounded-full text-fg-secondary no-underline transition-colors hover:bg-surface-subtle hover:text-fg",
+    "inline-flex shrink-0 items-center justify-center rounded-full text-fg-secondary no-underline transition-colors hover:bg-surface-subtle hover:text-fg disabled:pointer-events-none disabled:opacity-40",
     small ? "size-7" : "size-8",
     className,
   );
