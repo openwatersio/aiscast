@@ -142,7 +142,9 @@ const (
 // chTable is the table that answers a step, and its window: the coarsest that holds the range and whose window
 // divides the step. A rollup keeps the first position per window, which is what thinning every position keeps,
 // so a step of whole windows reads the same answer from it. A range older than every finer table reads the
-// rollup that holds it, at one position per window, which still keeps the step's at-most-one promise.
+// rollup that holds it, at one position per window, which still keeps the step's at-most-one promise; a step
+// its windows do not divide can then show a later position in a bucket, or none, since a window keeps only its
+// first. Every default step divides its window.
 func chTable(from time.Time, step time.Duration, now time.Time) (string, time.Duration) {
 	age := now.Sub(from)
 	switch {
@@ -171,7 +173,13 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 		// range not aligned to the window can miss positions in its first window
 		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMinMerge(first) AS f FROM " + c.db + "." + table +
 			" WHERE mmsi = ? AND slot >= ? AND slot <= ? GROUP BY intDiv(toUnixTimestamp(slot), ?)) WHERE f.1 >= ? AND f.1 <= ? ORDER BY f.1 DESC LIMIT ?"
-		args = []any{mmsi, from.Truncate(window), to, int64(max(step, window) / time.Second), from, to, limit + 1}
+		// Windows group into the step only when they divide it; otherwise each window's first position comes
+		// back alone, and the caller's thinning puts it in the step bucket of its own time.
+		group := window
+		if step%window == 0 {
+			group = max(step, window)
+		}
+		args = []any{mmsi, from.Truncate(window), to, int64(group / time.Second), from, to, limit + 1}
 	case step > 0:
 		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMin(" + row + ", ts) AS f FROM " + c.db +
 			".positions WHERE mmsi = ? AND ts >= ? AND ts <= ? GROUP BY intDiv(toUnixTimestamp64Milli(ts), ?)) ORDER BY f.1 DESC LIMIT ?"

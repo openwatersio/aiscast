@@ -392,6 +392,23 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 	if tr := getTrack(t, p, "/v1/vessels/257000002/track?from="+from+"&to="+dayTo+"&interval=2h&limit=10"); tr.Properties.Points != 10 || !tr.Properties.Truncated {
 		t.Errorf("a rollup at the limit: %d points, truncated %v", tr.Properties.Points, tr.Properties.Truncated)
 	}
+	// Past the raw table's 30 days, a 20-minute step reads 15-minute windows, which do not divide it. Each
+	// position falls in the step bucket of its own time: 15:21, first in its window, opens the 15:20 bucket.
+	old := time.Now().Add(-40 * 24 * time.Hour).Truncate(time.Hour)
+	var sparse []trackPoint
+	for _, m := range []int{5, 21, 31} {
+		sparse = append(sparse, trackPoint{mmsi: 257000003, ts: old.Add(time.Duration(m) * time.Minute), lat6: int32(57 * 600000),
+			lon6: int32(10.7 * 600000), sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"})
+	}
+	if err := conn.insert(context.Background(), "sparse", sparse); err != nil {
+		t.Fatal(err)
+	}
+	oldFrom, oldTo := old.Add(-time.Hour).UTC().Format(time.RFC3339), old.Add(time.Hour).UTC().Format(time.RFC3339)
+	tr := getTrack(t, p, "/v1/vessels/257000003/track?from="+oldFrom+"&to="+oldTo+"&interval=20m")
+	if want := fmt.Sprint([]string{old.Add(5 * time.Minute).UTC().Format(time.RFC3339), old.Add(21 * time.Minute).UTC().Format(time.RFC3339)}); fmt.Sprint(tr.Properties.Times) != want {
+		t.Errorf("a 20-minute step over 15-minute windows: %v, want %v", tr.Properties.Times, want)
+	}
+
 	// A step under a millisecond keeps every position, as the track store does.
 	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=500us"); tr.Properties.Points != 120 {
 		t.Errorf("a sub-millisecond step: %d points", tr.Properties.Points)
