@@ -59,6 +59,7 @@ type vessel struct {
 	// for a vessel restored from it, and a reconstruction is synthesized instead.
 	lastPos    *Event
 	lastStatic *Event
+	recent     []recentPos // accepted positions of the last few minutes, for matching rebuilt copies (tracks.go)
 
 	cell    cellKey                // index cell of the position, valid while indexed (index.go)
 	indexed bool                   // filed in the spatial index; true exactly when HasPos
@@ -242,6 +243,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 { // dt first: nm() is trig, and tied stamps are common
 			if d := nm(v.Lat, v.Lon, u.Lat, u.Lon); d > implausibleJumpNM && d/(dt/3600) > implausibleKnots {
 				ev.Implausible = true
+				p.noteFolded(ev, v, u, false)
 				p.vmu.Unlock()
 				return
 			}
@@ -259,6 +261,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		}
 	}
 	ev.Corroborated = !ev.LowTrust || ev.Time.Sub(v.TrustedAt) < corroborationWindow
+	if hasPos {
+		p.noteFolded(ev, v, u, stale)
+	}
 	if u.NavStatus != 15 && !stale {
 		v.NavStatus = u.NavStatus
 	}
@@ -319,6 +324,41 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		p.dirty[ev.MMSI] = struct{}{}
 	}
 	p.vmu.Unlock()
+}
+
+// noteFolded queues a position the fold judged, whatever it decided: an accepted position joins the vessel's
+// recent ones, and a stale rebuilt copy at one of them is a copy of that transmission. A stale report that
+// matches none is a real report that arrived late, which history keeps though the stream withholds it, but
+// only as far as a live report would be believed. The fold never tests a stale report for an impossible jump,
+// so it is tested here against the vessel's position nearest it in time. Late reports are believed only from
+// the feeds the server pulls: a volunteer station's backlog never reaches the fold, so a station has no late
+// reports to deliver, and anyone can run one, token or not, and stamp a report into any vessel's past. The
+// caller holds vmu.
+func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale bool) {
+	if !p.chOn.Load() {
+		return
+	}
+	pt := newTrackPoint(ev.MMSI, ev.Time, u, ev.Source)
+	pt.tx, pt.recv, pt.station = txOf(ev.ID, ev.Time), ev.RecvTime, ev.Station
+	pt.uncorroborated = ev.LowTrust && !ev.Corroborated
+	pt.implausible = ev.Implausible
+	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge
+	switch {
+	case ev.Implausible:
+	case !stale:
+		v.remember(pt)
+	default:
+		if ev.rebuilt {
+			if tx, ok := v.repeats(pt); ok {
+				pt.tx, pt.dup = tx, true
+				p.ch.rebuiltMatched.Add(1)
+				break
+			}
+			p.ch.rebuiltLate.Add(1)
+		}
+		pt.implausible = volunteer(ev.Source) || v.jumps(pt)
+	}
+	p.noteReception(pt)
 }
 
 // markTrusted records that a trusted source heard the vessel's position at t (used when its copy was deduplicated).

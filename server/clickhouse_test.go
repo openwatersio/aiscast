@@ -9,6 +9,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/BertoldVdb/go-ais"
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 // fakeCH records every batch and token it is handed, and fails the first `fail` of them: with a refusal when
@@ -172,7 +175,7 @@ func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
 
 	ctx := context.Background()
 	var n uint64
-	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions WHERE mmsi = 257000001").Scan(&n); err != nil || n != 3 {
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".receptions WHERE mmsi = 257000001").Scan(&n); err != nil || n != 3 {
 		t.Fatalf("every position: %d %v", n, err)
 	}
 	for _, rollup := range []string{"positions_15m", "positions_1h"} {
@@ -274,17 +277,25 @@ func TestClickHouseTableForAStep(t *testing.T) {
 		step   time.Duration
 		table  string
 		window time.Duration
+		span   time.Duration // the range's length; zero reaches to now
 	}{
-		{3 * 24 * time.Hour, 0, "positions", 0},
-		{3 * 24 * time.Hour, 10 * time.Minute, "positions", 0},
-		{3 * 24 * time.Hour, 15 * time.Minute, "positions_15m", 15 * time.Minute},
-		{40 * 24 * time.Hour, time.Minute, "positions_15m", 15 * time.Minute}, // past the raw 30 days
-		{3 * 24 * time.Hour, 2 * time.Hour, "positions_1h", time.Hour},
-		{400 * 24 * time.Hour, 15 * time.Minute, "positions_1h", time.Hour}, // past the 15-minute rollup's 13 months
-		{3 * 24 * time.Hour, 20 * time.Minute, "positions", 0},              // not whole 15-minute windows
-		{3 * 24 * time.Hour, 90 * time.Minute, "positions_15m", 15 * time.Minute},
+		{3 * 24 * time.Hour, 0, "positions", 0, 0},
+		{3 * 24 * time.Hour, 10 * time.Minute, "positions", 0, 0},
+		{3 * 24 * time.Hour, 15 * time.Minute, "positions_15m", 15 * time.Minute, 0},
+		{40 * 24 * time.Hour, time.Minute, "positions_15m", 15 * time.Minute, 0},  // longer than the positions view reads
+		{40 * 24 * time.Hour, time.Minute, "positions", 0, 2 * time.Hour},         // any age, within its span
+		{400 * 24 * time.Hour, 0, "positions", 0, 31 * 24 * time.Hour},            // every position, a month a year back
+		{400 * 24 * time.Hour, 0, "positions_1h", time.Hour, 32 * 24 * time.Hour}, // and past the span, the rollup that holds it
+		{3 * 24 * time.Hour, 2 * time.Hour, "positions_1h", time.Hour, 0},
+		{400 * 24 * time.Hour, 15 * time.Minute, "positions_1h", time.Hour, 0}, // past the 15-minute rollup's 13 months
+		{3 * 24 * time.Hour, 20 * time.Minute, "positions", 0, 0},              // not whole 15-minute windows
+		{3 * 24 * time.Hour, 90 * time.Minute, "positions_15m", 15 * time.Minute, 0},
 	} {
-		if table, window := chTable(now.Add(-c.age), c.step, now); table != c.table || window != c.window {
+		from, to := now.Add(-c.age), now
+		if c.span > 0 {
+			to = from.Add(c.span)
+		}
+		if table, window := chTable(from, to, c.step, now); table != c.table || window != c.window {
 			t.Errorf("%v back at %v: %s %v, want %s %v", c.age, c.step, table, window, c.table, c.window)
 		}
 	}
@@ -392,8 +403,7 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 	if tr := getTrack(t, p, "/v1/vessels/257000002/track?from="+from+"&to="+dayTo+"&interval=2h&limit=10"); tr.Properties.Points != 10 || !tr.Properties.Truncated {
 		t.Errorf("a rollup at the limit: %d points, truncated %v", tr.Properties.Points, tr.Properties.Truncated)
 	}
-	// Past the raw table's 30 days, a 20-minute step reads 15-minute windows, which do not divide it. Each
-	// position falls in the step bucket of its own time: 15:21, first in its window, opens the 15:20 bucket.
+	// 40 days back, a 20-minute step reads every position and keeps the first in each 20-minute bucket.
 	old := time.Now().Add(-40 * 24 * time.Hour).Truncate(time.Hour)
 	var sparse []trackPoint
 	for _, m := range []int{5, 21, 31} {
@@ -409,10 +419,9 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 		t.Errorf("a 20-minute step over 15-minute windows: %v, want %v", tr.Properties.Times, want)
 	}
 
-	// Every position past the raw table's 30 days is beyond what ClickHouse keeps: the answer is the
-	// 15-minute rollup's, and it says so rather than claim to be every position.
-	if tr := getTrack(t, p, "/v1/vessels/257000003/track?from="+oldFrom+"&to="+oldTo+"&interval=0"); tr.Properties.Interval != 900 || tr.Properties.Points != 3 {
-		t.Errorf("interval=0 40 days back: interval %d, %d points; want 900 and 3", tr.Properties.Interval, tr.Properties.Points)
+	// Every position 40 days back: receptions keep everything, so a short range is every position at any age.
+	if tr := getTrack(t, p, "/v1/vessels/257000003/track?from="+oldFrom+"&to="+oldTo+"&interval=0"); tr.Properties.Interval != 0 || tr.Properties.Points != 3 {
+		t.Errorf("interval=0 40 days back: interval %d, %d points; want 0 and 3", tr.Properties.Interval, tr.Properties.Points)
 	}
 
 	// A step under a millisecond keeps every position, as the track store does.
@@ -447,4 +456,229 @@ func TestTrackKeepsTheExtraHistoryRowAsTheSpikeAnchor(t *testing.T) {
 	if !tr.Properties.Truncated {
 		t.Error("older positions were left out, and the answer should say so")
 	}
+}
+
+// queued is what the pipeline has queued for ClickHouse for one vessel.
+func queued(p *Pipeline, mmsi uint32) []trackPoint {
+	p.chMu.Lock()
+	defer p.chMu.Unlock()
+	var out []trackPoint
+	for _, pt := range p.chQueue {
+		if pt.mmsi == mmsi {
+			out = append(out, pt)
+		}
+	}
+	return out
+}
+
+func TestClickHouseQueuesEveryCopy(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	at := func(source string, d time.Duration, pkt ais.Packet) {
+		p.ingestPacket(source, source, t0.Add(d), t0.Add(d), pkt)
+	}
+	first := posReport(mmsi, 59.90, 10.7)
+	at("kystverket", 0, first)
+	at("barentswatch", time.Second, first) // the same payload: dedupe's copy
+	at("kystverket", 10*time.Second, posReport(mmsi, 59.91, 10.7))
+	// AISHub's copy of the first report: a minute late, so stale, its own payload, and a stamp seconds off.
+	again := posReport(mmsi, 59.90, 10.7).(ais.PositionReport)
+	again.Sog = 5
+	p.ingestPacket("aishub", "aishub", t0.Add(3*time.Second), t0.Add(time.Minute), again)
+	// A late report at a position the vessel never accepted is a report of its own.
+	p.ingestPacket("aishub", "aishub", t0.Add(5*time.Second), t0.Add(time.Minute), posReport(mmsi, 59.905, 10.7))
+	// A jump of a few hundred miles in seconds, and another source's copy of it.
+	at("kystverket", 20*time.Second, posReport(mmsi, 65.0, 10.7))
+	at("barentswatch", 21*time.Second, posReport(mmsi, 65.0, 10.7))
+	// A late report from a sender that cannot be authenticated, near where the vessel was.
+	p.ingestPacket("udp:feeder", "udp:feeder", t0.Add(6*time.Second), t0.Add(70*time.Second), posReport(mmsi, 59.906, 10.7))
+	// A late report from a trusted source 60 miles from where the vessel was seconds later.
+	p.ingestPacket("aishub", "aishub", t0.Add(7*time.Second), t0.Add(70*time.Second), posReport(mmsi, 61.0, 10.7))
+	// A late report from a station with a token, near where the vessel was.
+	p.ingestPacket("station:someone", "station:someone", t0.Add(8*time.Second), t0.Add(70*time.Second), posReport(mmsi, 59.907, 10.7))
+
+	q := queued(p, mmsi)
+	if len(q) != 10 {
+		t.Fatalf("%d copies queued, want 10: %+v", len(q), q)
+	}
+	accepted := q[0]
+	if accepted.dup || accepted.tx == 0 || accepted.station != "kystverket" || accepted.recv.IsZero() {
+		t.Errorf("the accepted copy: %+v", accepted)
+	}
+	if c := q[1]; !c.dup || c.tx != accepted.tx || c.station != "barentswatch" {
+		t.Errorf("dedupe's copy names the accepted transmission: %+v", c)
+	}
+	if c := q[2]; c.dup || c.tx == accepted.tx {
+		t.Errorf("the next report is a transmission of its own: %+v", c)
+	}
+	if c := q[3]; !c.dup || c.tx != accepted.tx || c.source != "aishub" {
+		t.Errorf("AISHub's stale copy at the first position names that transmission: %+v", c)
+	}
+	if c := q[4]; c.dup || c.tx == accepted.tx || c.tx == q[2].tx {
+		t.Errorf("a late report matching no recent position is accepted on its own: %+v", c)
+	}
+	if c := q[5]; !c.implausible {
+		t.Errorf("the jump is kept and flagged: %+v", c)
+	}
+	if c := q[6]; !c.dup || c.tx != q[5].tx || !c.implausible {
+		t.Errorf("a copy of the jump is flagged with it, so no read serves the jump through it: %+v", c)
+	}
+	if c := q[7]; !c.implausible {
+		t.Errorf("an unauthenticated sender's late report stays out of history: %+v", c)
+	}
+	if c := q[8]; !c.implausible || c.dup {
+		t.Errorf("a late report the fold never tested is tested for the jump: %+v", c)
+	}
+	if c := q[9]; !c.implausible {
+		t.Errorf("a volunteer station's late report stays out of history, token or not: %+v", c)
+	}
+	body := get(t, p, "/metrics").Body.String()
+	for _, want := range []string{`aiscast_clickhouse_rebuilt_copies_total{matched="true"} 1`, `aiscast_clickhouse_rebuilt_copies_total{matched="false"} 4`} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("/metrics lacks %s", want)
+		}
+	}
+}
+
+func TestClickHouseKeepsEveryCopyAndServesOne(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(context.Background(), strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: conn, r: conn})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-2 * time.Hour).Truncate(15 * time.Minute)
+	first := posReport(mmsi, 59.90, 10.7)
+	p.ingestPacket("kystverket", "kystverket", t0, t0, first)
+	p.ingestPacket("barentswatch", "barentswatch/terra", t0.Add(time.Second), t0.Add(time.Second), first)
+	p.ingestPacket("kystverket", "kystverket", t0.Add(20*time.Second), t0.Add(20*time.Second), posReport(mmsi, 65.0, 10.7))
+	if err := p.flushClickHouse(); err != nil {
+		t.Fatal(err)
+	}
+
+	var n uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".receptions WHERE mmsi = ?", mmsi).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("every copy, the implausible one too: %d %v", n, err)
+	}
+	served := func() []trackPoint {
+		t.Helper()
+		points, err := conn.history(ctx, mmsi, t0.Add(-time.Minute), t0.Add(time.Minute), 0, 100, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return points
+	}
+	if got := served(); len(got) != 1 || got[0].source != "kystverket" || !got[0].ts.Equal(t0) {
+		t.Fatalf("one transmission, its first copy: %+v", got)
+	}
+	var source string
+	q := "SELECT tupleElement(argMinMerge(first), 8) FROM " + db + ".positions_15m WHERE mmsi = ?"
+	if err := conn.conn.QueryRow(ctx, q, mmsi).Scan(&source); err != nil || source != "kystverket" {
+		t.Errorf("the rollup keeps the accepted copy: %q %v", source, err)
+	}
+
+	// A transmission with one implausible copy is never served, through any of its copies.
+	jump := trackPoint{mmsi: mmsi, ts: t0.Add(30 * time.Second), lat6: int32(59.0 * 600000), lon6: int32(10.7 * 600000),
+		sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "kystverket", tx: 42, recv: t0.Add(30 * time.Second), implausible: true}
+	copied := jump
+	copied.source, copied.recv, copied.implausible, copied.dup = "barentswatch", t0.Add(31*time.Second), false, true
+	if err := conn.insert(ctx, "jump", []trackPoint{jump, copied}); err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); len(got) != 1 || !got[0].ts.Equal(t0) {
+		t.Errorf("only the plausible transmission is served: %+v", got)
+	}
+	// The same when the implausible copy also has a bad clock: the clock picks which copy is served, never
+	// whether a flagged transmission is.
+	jump.tx, copied.tx, jump.clockBad = 43, 43, true
+	if err := conn.insert(ctx, "jump-clock", []trackPoint{jump, copied}); err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); len(got) != 1 || !got[0].ts.Equal(t0) {
+		t.Errorf("an implausible copy with a bad clock still keeps its transmission out: %+v", got)
+	}
+	if err := conn.conn.Exec(ctx, "DELETE FROM "+db+".receptions WHERE tx IN (42, 43)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Purging a source leaves its transmissions to the copies other sources delivered.
+	if err := conn.conn.Exec(ctx, "DELETE FROM "+db+".receptions WHERE source = 'kystverket'"); err != nil {
+		t.Fatal(err)
+	}
+	if got := served(); len(got) != 1 || got[0].source != "barentswatch" {
+		t.Errorf("after the purge, the other copy: %+v", got)
+	}
+
+	// The lake load names transmissions in ClickHouse, so it must agree with txOf.
+	id := eventID("payload" + "A")
+	var tx uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT "+chTxOf("?", "toDateTime64(?, 3, 'UTC')"), id, chTime(t0)).Scan(&tx); err != nil || tx != txOf(id, t0) {
+		t.Errorf("tx in ClickHouse %d, txOf %d: %v", tx, txOf(id, t0), err)
+	}
+}
+
+func TestClickHouseMigratesThePositionsTable(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	opts, err := clickhouse.ParseDSN(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { raw.Exec(ctx, "DROP DATABASE IF EXISTS "+db); raw.Close() })
+	// The schema before receptions: a positions table with rollup views reading it.
+	for _, stmt := range []string{
+		"CREATE DATABASE " + db,
+		"CREATE TABLE " + db + ".positions (mmsi UInt32, ts DateTime64(3, 'UTC'), lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String)) ENGINE = MergeTree PARTITION BY toYYYYMMDD(ts) ORDER BY (mmsi, ts)",
+		strings.ReplaceAll(chRollup("15m", ""), "{db}", db),
+		"CREATE MATERIALIZED VIEW " + db + ".positions_15m_mv TO " + db + ".positions_15m AS SELECT mmsi, toDateTime(toStartOfInterval(ts, INTERVAL 15 MINUTE), 'UTC') AS slot, argMinState((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), ts) AS first FROM " + db + ".positions GROUP BY mmsi, slot",
+		"INSERT INTO " + db + ".positions VALUES (257000001, now64(3), 1, 1, 1023, 3600, 511, 15, 'aishub')",
+	} {
+		if err := raw.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 { // and again over itself
+		conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn.conn.Close()
+	}
+	var engine string
+	var kept uint64
+	if err := raw.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = 'positions'", db).Scan(&engine); err != nil || engine != "View" {
+		t.Errorf("positions is the view: %q %v", engine, err)
+	}
+	if err := raw.QueryRow(ctx, "SELECT count() FROM "+db+".positions_old").Scan(&kept); err != nil || kept != 1 {
+		t.Errorf("the old table is kept for the load: %d %v", kept, err)
+	}
+	var source string
+	if err := raw.QueryRow(ctx, "SELECT create_table_query FROM system.tables WHERE database = ? AND name = 'positions_15m_mv'", db).Scan(&source); err != nil || !strings.Contains(source, ".receptions") {
+		t.Errorf("the rollup view reads receptions: %v %s", err, source)
+	}
+}
+
+// chTxOf is txOf in ClickHouse, for a hex event id and a time: the id's first 64 bits, read big-endian as
+// ParseUint reads them, XORed with the time in milliseconds. clickhouse-load.py uses the same expression.
+func chTxOf(id, ts string) string {
+	return "bitXor(reinterpretAsUInt64(reverse(unhex(substring(" + id + ", 1, 16)))), toUInt64(toUnixTimestamp64Milli(" + ts + ")))"
 }

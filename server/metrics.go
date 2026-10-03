@@ -253,7 +253,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	metricHead(w, "aiscast_clickhouse_up", "gauge", "1 when ClickHouse is connected and took the last batch; 0 while CLICKHOUSE_URL is unset, it has not answered, or batches are failing")
 	fmt.Fprintf(w, "aiscast_clickhouse_up %d\n", chUp)
 	if c != nil {
-		metricHead(w, "aiscast_clickhouse_points_written_total", "counter", "positions written to ClickHouse")
+		metricHead(w, "aiscast_clickhouse_points_written_total", "counter", "copies of position reports written to ClickHouse")
 		fmt.Fprintf(w, "aiscast_clickhouse_points_written_total %d\n", c.written.Load())
 		metricHead(w, "aiscast_clickhouse_write_failures_total", "counter", "ClickHouse batches that failed; the positions are retried on the next flush")
 		fmt.Fprintf(w, "aiscast_clickhouse_write_failures_total %d\n", c.failures.Load())
@@ -261,6 +261,9 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_clickhouse_write_seconds_total %.3f\n", float64(c.writeNanos.Load())/1e9)
 		metricHead(w, "aiscast_clickhouse_points_dropped_total", "counter", "positions dropped because the ClickHouse writer fell behind by more than its queue holds, or in a batch ClickHouse refused for 10 minutes")
 		fmt.Fprintf(w, "aiscast_clickhouse_points_dropped_total %d\n", c.dropped.Load())
+		metricHead(w, "aiscast_clickhouse_rebuilt_copies_total", "counter", "stale copies from rebuilt sources: matched to a transmission the vessel sent in the last five minutes, or kept as a late report of its own")
+		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"true\"} %d\n", c.rebuiltMatched.Load())
+		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"false\"} %d\n", c.rebuiltLate.Load())
 	}
 	if l := p.lake; l != nil {
 		metricHead(w, "aiscast_lake_queries_total", "counter", "lake queries for track history and the record import")
