@@ -855,3 +855,38 @@ func TestManyBoxesStayUnderTheParameterLimit(t *testing.T) {
 		}
 	}
 }
+
+// Punctuation never decides whether a search finds a boat: AIS carries apostrophes and periods, and
+// people type them or not.
+func TestSearchIgnoresPunctuation(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(316061185, 49.3, -123.1))
+	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(316061185, "RUBY'S STAR", ""))
+	mustFlush(t, p)
+	for _, q := range []string{"RUBYS STAR", "RUBY'S STAR", "rubys", "PACIFIC"} {
+		body := get(t, p, "/v1/vessels?q="+url.QueryEscape(q)).Body.String()
+		found := strings.Contains(body, "316061185")
+		if want := q != "PACIFIC"; found != want {
+			t.Errorf("q=%q found=%v want %v", q, found, want)
+		}
+	}
+
+	// A file from before searchKey finds her after the one-boot reindex.
+	for _, stmt := range []string{`UPDATE vessels SET search = upper(trim(name))`, `DELETE FROM meta WHERE key = 'search_key'`} {
+		if _, err := p.store.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := p.store.path
+	p.store.close()
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	var key string
+	if err := st.db.QueryRow(`SELECT search FROM vessels WHERE mmsi = 316061185`).Scan(&key); err != nil || key != "RUBYS STAR" {
+		t.Errorf("reindexed search = %q, %v", key, err)
+	}
+}

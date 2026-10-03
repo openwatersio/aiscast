@@ -28,7 +28,7 @@ const storeSchema = `
 CREATE TABLE IF NOT EXISTS vessels (
 	mmsi        INTEGER PRIMARY KEY,
 	name        TEXT    NOT NULL DEFAULT '',
-	search      TEXT    NOT NULL DEFAULT '',   -- name trimmed and upper-cased, for prefix search
+	search      TEXT    NOT NULL DEFAULT '',   -- the name through searchKey, for prefix search
 	kind        TEXT    NOT NULL DEFAULT 'vessel',
 	class       TEXT    NOT NULL DEFAULT '',   -- A or B, from the position report types
 	ship_type   INTEGER NOT NULL DEFAULT 0,
@@ -278,6 +278,58 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
+	// A file from before searchKey carries punctuation in its search column, so names like RUBY'S
+	// STAR cannot be found without it; one boot rewrites the column, a few seconds, marked in meta.
+	var reindexed string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'search_key'`).Scan(&reindexed); err != nil {
+		rows, err := db.Query(`SELECT mmsi, name FROM vessels WHERE name != ''`)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		type kv struct {
+			mmsi uint32
+			key  string
+		}
+		var todo []kv
+		for rows.Next() {
+			var m uint32
+			var name string
+			if err := rows.Scan(&m, &name); err != nil {
+				rows.Close()
+				db.Close()
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			todo = append(todo, kv{m, searchKey(name)})
+		}
+		rows.Close()
+		tx, err := db.Begin()
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		st, err := tx.Prepare(`UPDATE vessels SET search = ? WHERE mmsi = ? AND search != ?`)
+		if err == nil {
+			for _, x := range todo {
+				if _, err = st.Exec(x.key, x.mmsi, x.key); err != nil {
+					break
+				}
+			}
+			st.Close()
+		}
+		if err == nil {
+			_, err = tx.Exec(`INSERT INTO meta (key, value) VALUES ('search_key', '1')`)
+		}
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			tx.Rollback()
+		}
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	s := &store{db: db, path: path}
 	if s.mirror, err = loadMirror(s); err != nil {
 		db.Close()
@@ -343,7 +395,7 @@ func (s *store) upsert(rows []record) error {
 			cell = int64(cellOf(v.Lat, v.Lon))
 		}
 		seen := unixMs(v.Seen)
-		if _, err := st.Exec(r.mmsi, v.Name, strings.ToUpper(strings.TrimSpace(v.Name)), v.Kind, v.Class, v.ShipType,
+		if _, err := st.Exec(r.mmsi, v.Name, searchKey(v.Name), v.Kind, v.Class, v.ShipType,
 			flagOf(r.mmsi), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
 			v.Dim.A, v.Dim.B, v.Dim.C, v.Dim.D,
 			v.HasPos, v.Lat, v.Lon, cell, v.Cog, v.Sog, v.Heading, v.NavStatus, unixMs(v.PosAt),
@@ -467,12 +519,12 @@ func (q recordQuery) where() (clause string, args []any, none, byCell bool) {
 			args = append(args, lo, hi)
 		} else {
 			where = append(where, "search GLOB ?")
-			args = append(args, globPrefix(strings.ToUpper(q.prefix)))
+			args = append(args, globPrefix(searchKey(q.prefix)))
 		}
 	}
 	if q.contains != "" {
 		where = append(where, "instr(search, ?) > 0")
-		args = append(args, strings.ToUpper(q.contains))
+		args = append(args, searchKey(q.contains))
 	}
 	if q.flag != "" {
 		where = append(where, "flag = ?")
@@ -668,6 +720,19 @@ func (s *store) get(mmsi uint32) (record, bool, error) {
 		return record{}, false, err
 	}
 	return rs[0], true, nil
+}
+
+// searchKey is a name as the search column stores and queries it: upper-cased, punctuation dropped,
+// spaces collapsed. AIS carries apostrophes and periods and people type them or not, so RUBY'S STAR
+// is found by RUBYS STAR and by its own spelling alike.
+func searchKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(s) {
+		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // globPrefix is a GLOB pattern matching strings that start with p. GLOB rather than LIKE because it is
