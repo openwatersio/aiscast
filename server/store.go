@@ -523,14 +523,21 @@ func (q recordQuery) where() (clause string, args []any, none, byCell bool) {
 		if lo, hi, ok := mmsiRange(q.prefix); ok {
 			where = append(where, "mmsi BETWEEN ? AND ?")
 			args = append(args, lo, hi)
+		} else if key := searchKey(q.prefix); key == "" {
+			// Punctuation alone normalizes to nothing, and an empty pattern would match every vessel.
+			where = append(where, "0")
 		} else {
 			where = append(where, "search GLOB ?")
-			args = append(args, globPrefix(searchKey(q.prefix)))
+			args = append(args, globPrefix(key))
 		}
 	}
 	if q.contains != "" {
-		where = append(where, "instr(search, ?) > 0")
-		args = append(args, searchKey(q.contains))
+		if key := searchKey(q.contains); key == "" {
+			where = append(where, "0")
+		} else {
+			where = append(where, "instr(search, ?) > 0")
+			args = append(args, key)
+		}
 	}
 	if q.flag != "" {
 		where = append(where, "flag = ?")

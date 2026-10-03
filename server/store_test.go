@@ -864,10 +864,10 @@ func TestSearchIgnoresPunctuation(t *testing.T) {
 	p.ingestPacket("kystverket", "kystverket", now, now, posReport(316061185, 49.3, -123.1))
 	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(316061185, "RUBY'S STAR", ""))
 	mustFlush(t, p)
-	for _, q := range []string{"RUBYS STAR", "RUBY'S STAR", "rubys", "PACIFIC"} {
+	for _, q := range []string{"RUBYS STAR", "RUBY'S STAR", "rubys", "PACIFIC", "!!"} {
 		body := get(t, p, "/v1/vessels?q="+url.QueryEscape(q)).Body.String()
 		found := strings.Contains(body, "316061185")
-		if want := q != "PACIFIC"; found != want {
+		if want := q != "PACIFIC" && q != "!!"; found != want {
 			t.Errorf("q=%q found=%v want %v", q, found, want)
 		}
 	}
