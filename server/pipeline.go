@@ -100,8 +100,7 @@ type Pipeline struct {
 	tiles      tileCache                      // encoded vector tiles, shared for tileTTL (tiles.go)
 	dirty      map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
 	store      *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
-	tracks     *trackStore                    // recent positions (tracks.go); nil without a record, whose writer also writes tracks
-	lake       *lake                          // packaged history for tracks past the window (lake.go); nil without LAKE_CATALOG_TOKEN or tracks
+	lake       *lake                          // packaged vessels for the record import (lake.go); nil without LAKE_CATALOG_TOKEN or a record
 	imports    importStats                    // the daily merge of the lake's vessels into the record (import.go)
 	wikidata   wikidataStats                  // the weekly sync of vessel particulars from Wikidata (wikidata.go)
 	uscg       uscgStats                      // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
@@ -109,7 +108,6 @@ type Pipeline struct {
 	fcc        fccStats                       // the weekly sync of FCC ship station licenses (fcc.go)
 	tc         tcStats                        // the weekly sync of Transport Canada's vessel register (tc.go)
 	ised       isedStats                      // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
-	trackQueue []trackPoint                   // positions folded since the last flush to tracks; guarded by vmu
 	ch         *chStore                       // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
 	chQueue    []trackPoint                   // positions folded since the last flush to ClickHouse; guarded by vmu
 

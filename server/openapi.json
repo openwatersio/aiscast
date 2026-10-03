@@ -229,7 +229,7 @@
           },
           "429": { "$ref": "#/components/responses/RateLimited" },
           "503": {
-            "description": "A server running without the track store.",
+            "description": "A server running without ClickHouse, where tracks are kept.",
             "content": { "text/plain": { "schema": { "type": "string" } } }
           }
         }

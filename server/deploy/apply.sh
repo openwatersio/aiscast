@@ -66,6 +66,8 @@ chown -R aiscast:aiscast /var/lib/aiscast
 systemctl disable --now packager.timer packager.service 2>/dev/null || true
 rm -f /etc/systemd/system/packager.timer /etc/systemd/system/packager.service /opt/aiscast/packager.py
 rm -rf /var/lib/aiscast/packager
+# Tracks read from ClickHouse. Boxes converged before that may still carry the SQLite track store.
+rm -f /var/lib/aiscast/tracks.db /var/lib/aiscast/tracks.db-*
 
 # Seed only: secrets live on the box, never in the repo.
 if [ ! -f /etc/aiscast.env ]; then

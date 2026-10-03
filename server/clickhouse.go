@@ -5,12 +5,13 @@ package main
 // vessel and time. positions_15m and positions_1h hold each vessel's first position in each epoch-aligned
 // window, which is what the track endpoint's thinning keeps, so a step that is a whole number of windows reads
 // the same answer from a rollup as from every position. ClickHouse being slow or down never holds up ingest:
-// its queue is bounded like the track store's, and what falls out is counted. A batch whose insert failed is
+// its queue is bounded, and what falls out is counted. A batch whose insert failed is
 // sent again whole, under the same deduplication token, since a failure can come after ClickHouse committed it.
 
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -29,7 +30,7 @@ import (
 const chDatabase = "aiscast"
 
 // chSchema creates what the writer and the rollups need, in order; {db} is the database. Positions use the
-// track store's encodings, 15 in navstat for not available, and a source kind rather than a full source.
+// track encodings, 15 in navstat for not available, and a source kind rather than a full source.
 var chSchema = []string{
 	`CREATE DATABASE IF NOT EXISTS {db}`,
 	`CREATE TABLE IF NOT EXISTS {db}.positions (
@@ -83,13 +84,14 @@ type chWriter interface {
 // chReader reads one vessel's history; tests fake it.
 type chReader interface {
 	history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error)
+	first(ctx context.Context, mmsi uint32, from, to time.Time) (time.Time, bool, error)
 }
 
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
 // /metrics reports about it.
 type chStore struct {
 	w chWriter
-	r chReader // nil keeps tracks on the lake
+	r chReader
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -144,11 +146,12 @@ const (
 // so a step of whole windows reads the same answer from it. A range older than every finer table reads the
 // rollup that holds it, at one position per window, which still keeps the step's at-most-one promise; a step
 // its windows do not divide can then show a later position in a bucket, or none, since a window keeps only its
-// first. Every default step divides its window.
+// first. Every default step divides its window. A range inside the 48-hour window reads every position: a
+// rollup window that starts before from would leave out the positions in its part of the range.
 func chTable(from time.Time, step time.Duration, now time.Time) (string, time.Duration) {
 	age := now.Sub(from)
 	switch {
-	case age < chRawKeep && (step < 15*time.Minute || step%(15*time.Minute) != 0):
+	case age <= trackWindow || age < chRawKeep && (step < 15*time.Minute || step%(15*time.Minute) != 0):
 		return "positions", 0
 	case age < chRollupKeep && (step < time.Hour || step%time.Hour != 0):
 		return "positions_15m", 15 * time.Minute
@@ -204,6 +207,16 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 	}
 	slices.Reverse(points)
 	return points, rows.Err()
+}
+
+// first is the time of the vessel's first position between from and to in positions, so within its 30 days;
+// ok is false when it has none there.
+func (c *chConn) first(ctx context.Context, mmsi uint32, from, to time.Time) (ts time.Time, ok bool, err error) {
+	err = c.conn.QueryRow(ctx, "SELECT ts FROM "+c.db+".positions WHERE mmsi = ? AND ts >= ? AND ts <= ? ORDER BY ts LIMIT 1", mmsi, from, to).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ts, false, nil
+	}
+	return ts, err == nil, err
 }
 
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
