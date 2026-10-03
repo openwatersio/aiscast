@@ -310,7 +310,7 @@ func fetchPSIX(ctx context.Context, endpoint string, now time.Time, licensed map
 		}
 		rows, err := psixListing(ctx, endpoint, a.service, a.year)
 		if err != nil {
-			// A service the service answers with no result has outgrown what PSIX can build whole, as
+			// A service whose whole listing comes back with no result has outgrown what PSIX can build, as
 			// Recreational did first and Commercial Fishing Vessel did in October 2026. Its vessels are
 			// still there a build year at a time, so the service's years join the queue instead of
 			// failing the sync. A year that fails stays fatal: one bad ask must not quietly thin a
