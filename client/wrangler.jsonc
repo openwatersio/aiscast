@@ -12,6 +12,7 @@
     { "pattern": "openwaters.io/ais/vessels*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/stations*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/network*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/tracking*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/assets/*", "zone_name": "openwaters.io" },
     // sitemap.xml, the index, and the sitemap-*.xml files it lists (app/lib/sitemap.server.ts).
     { "pattern": "openwaters.io/ais/sitemap*", "zone_name": "openwaters.io" },
