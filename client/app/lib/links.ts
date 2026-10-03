@@ -9,6 +9,8 @@ export const ABOUT = `${WEBSITE}/ais/`;
 export const DEVELOPERS = `${WEBSITE}/api/ais/`;
 /** How to connect a receiver. A section of the landing page until the website gives it a page. */
 export const CONTRIBUTE = `${WEBSITE}/ais/#contribute`;
+/** What the map and the API collect about visitors, stations, and vessels. */
+export const PRIVACY = `${WEBSITE}/ais/privacy/`;
 export const SIGNALK_PLUGIN = "https://github.com/openwatersio/aiscast/tree/main/signalk-plugin#readme";
 export const GITHUB = "https://github.com/openwatersio/aiscast";
 
