@@ -335,6 +335,10 @@ func (p *Pipeline) updateVessel(ev *Event) {
 // reports to deliver, and anyone can run one, token or not, and stamp a report into any vessel's past. The
 // caller holds vmu.
 func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale bool) {
+	// The ring and the queue switch on together, so a position is remembered exactly when it is written, and a
+	// stale copy only ever matches a transmission receptions holds. A copy of one folded before ClickHouse
+	// connected, which was never written, matches nothing and is kept as the only copy, accepted, so the
+	// rollups have it; matching a transmission receptions lacks would leave it a copy of nothing.
 	if !p.chOn.Load() {
 		return
 	}

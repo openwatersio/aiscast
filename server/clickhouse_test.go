@@ -710,3 +710,21 @@ func TestClickHouseHoldsACopyUntilTheFoldDecides(t *testing.T) {
 		t.Errorf("the key is settled: folding %v, bad %v", folding, p.bad[key])
 	}
 }
+
+// A position folded before ClickHouse connects is neither written nor remembered, so a stale copy of it that
+// arrives after is kept as the only copy, accepted, rather than as a copy of a transmission never written.
+func TestClickHouseRemembersOnlyWhatItWrites(t *testing.T) {
+	p := testPipeline(t)
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	p.ingestPacket("kystverket", "kystverket", t0, t0, posReport(mmsi, 59.90, 10.7))
+	p.ingestPacket("kystverket", "kystverket", t0.Add(10*time.Second), t0.Add(10*time.Second), posReport(mmsi, 59.91, 10.7))
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	late := posReport(mmsi, 59.90, 10.7).(ais.PositionReport)
+	late.Sog = 5
+	p.ingestPacket("aishub", "aishub", t0.Add(3*time.Second), t0.Add(time.Minute), late)
+	q := queued(p, mmsi)
+	if len(q) != 1 || q[0].dup || q[0].implausible || q[0].source != "aishub" {
+		t.Fatalf("the stale copy is the only one written, accepted: %+v", q)
+	}
+}
