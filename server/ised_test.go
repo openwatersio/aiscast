@@ -43,6 +43,12 @@ func TestISEDRoundsAndServe(t *testing.T) {
 	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(316000002, "NO RECORD BOAT", ""))
 	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(366000777, "AMERICAN BOAT", ""))
 	mustFlush(t, p)
+	// A Canadian base station is not a vessel and must never cost a registry ask.
+	if _, err := p.store.db.Exec(`UPDATE vessels SET kind = 'base' WHERE mmsi = 316000002`); err != nil {
+		t.Fatal(err)
+	}
+	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(316000003, "NO RECORD BOAT", ""))
+	mustFlush(t, p)
 
 	if n := p.backfillISED(now, url, time.Minute); n != 2 {
 		t.Fatalf("checked %d vessels, want 2", n)

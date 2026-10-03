@@ -130,7 +130,8 @@ func (s *store) isedByMMSI(mmsis []uint32) (map[uint32]*isedShip, error) {
 // the CA-flag vessels the network has heard that were never asked about, or not in a season, most
 // recently heard first.
 const isedDueSQL = `SELECT v.mmsi FROM vessels v LEFT JOIN ised i ON i.mmsi = v.mmsi
-	WHERE v.flag = 'CA' AND (i.mmsi IS NULL OR i.checked_at < ?) ORDER BY v.seen DESC, v.mmsi LIMIT 2000`
+	WHERE v.flag = 'CA' AND v.kind = 'vessel' AND (i.mmsi IS NULL OR i.checked_at < ?)
+	ORDER BY v.seen DESC, v.mmsi LIMIT 2000`
 
 func (s *store) isedDue(ctx context.Context, cutoff time.Time) ([]uint32, error) {
 	rows, err := s.db.QueryContext(ctx, isedDueSQL, cutoff.UnixMilli())
