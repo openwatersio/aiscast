@@ -60,9 +60,12 @@ func TestISEDRoundsAndServe(t *testing.T) {
 	if n := p.backfillISED(now, url, time.Minute); n != 0 || requests.Load() != 2 {
 		t.Errorf("re-asked within the season: n=%d requests=%d", n, requests.Load())
 	}
-	// After the recheck window both are due again.
+	// After the recheck window both are due again, and the fleet gauge stays a count, not a tally.
 	if n := p.backfillISED(now.Add(isedRecheck+time.Hour), url, time.Minute); n != 2 {
 		t.Errorf("recheck round checked %d, want 2", n)
+	}
+	if g := p.ised.ships.Load(); g != 1 {
+		t.Errorf("ships gauge %d after a recheck, want 1", g)
 	}
 
 	type props struct {

@@ -221,11 +221,13 @@ func (p *Pipeline) backfillISED(now time.Time, endpoint string, budget time.Dura
 		failed = 0
 		n++
 		p.ised.checked.Add(1)
-		if v.Name != "" {
-			p.ised.ships.Add(1)
-		}
 	}
 	if n > 0 {
+		// The gauge is recounted from the table rather than incremented per answer: a recheck updates
+		// a row without changing the count, and a record can also disappear.
+		if err := p.loadISEDStats(); err != nil {
+			log.Printf("ised: %v", err)
+		}
 		log.Printf("ised: checked %d Canadian vessels", n)
 	}
 	return n
