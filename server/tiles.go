@@ -116,12 +116,16 @@ func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 	b := p.tiles.get(fmt.Sprintf("%d/%d/%d?%s", z, x, y, vals.Encode()), now, func() []byte {
 		return gzipBytes(p.vesselTile(z, x, y, f, now))
 	})
+	writeTile(w, r, b, "public, max-age=10")
+}
+
+// writeTile answers a gzipped tile. It is gzipped once per build and served as is; Caddy's encoder leaves a
+// response that already has a Content-Encoding alone.
+func writeTile(w http.ResponseWriter, r *http.Request, b []byte, cacheControl string) {
 	h := w.Header()
 	h.Set("Content-Type", "application/vnd.mapbox-vector-tile")
-	h.Set("Cache-Control", "public, max-age=10")
+	h.Set("Cache-Control", cacheControl)
 	h.Set("Vary", "Accept-Encoding")
-	// Gzipped once per build and served as is. Caddy's encoder leaves a response that already has a
-	// Content-Encoding alone.
 	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
 		h.Set("Content-Encoding", "gzip")
 		w.Write(b)
@@ -363,6 +367,7 @@ type tileCache struct {
 	mu    sync.Mutex
 	m     map[string]*tileEntry
 	slots chan struct{} // one per build in progress, tileBuilds at most
+	ttl   time.Duration // how long a build is shared; zero is tileTTL
 }
 
 type tileEntry struct {
@@ -378,15 +383,16 @@ const tileCacheMax = 10000
 // get returns the entry for key, building it when missing or expired. Concurrent requests for one tile wait
 // on the same build, and builds past tileBuilds wait for a slot.
 func (c *tileCache) get(key string, now time.Time, build func() []byte) []byte {
+	ttl := cmp.Or(c.ttl, tileTTL)
 	c.mu.Lock()
 	e := c.m[key]
-	if e == nil || now.Sub(e.at) >= tileTTL {
+	if e == nil || now.Sub(e.at) >= ttl {
 		if c.m == nil {
 			c.m = map[string]*tileEntry{}
 		}
 		if len(c.m) >= tileCacheMax {
 			for k, old := range c.m {
-				if now.Sub(old.at) >= tileTTL {
+				if now.Sub(old.at) >= ttl {
 					delete(c.m, k)
 				}
 			}
@@ -471,7 +477,7 @@ func (p *Pipeline) serveTileJSON(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ---- Mapbox Vector Tile encoding (spec 2.1), points only ----
+// ---- Mapbox Vector Tile encoding (spec 2.1): points, and polygons of one ring ----
 
 type mvtProp struct {
 	key string
@@ -493,6 +499,26 @@ func newMVTLayer(name string) *mvtLayer {
 }
 
 func (l *mvtLayer) point(id uint64, x, y int32, props []mvtProp) {
+	geom := binary.AppendUvarint([]byte{9}, zigzag(x)) // 9: MoveTo, count 1
+	geom = binary.AppendUvarint(geom, zigzag(y))
+	l.feature(id, 1, props, geom) // 1: POINT
+}
+
+// polygon adds a feature with one ring, given without its closing point. The ring must wind clockwise on
+// screen, with y down, which the spec calls a positive area and reads as an exterior ring.
+func (l *mvtLayer) polygon(id uint64, ring [][2]int32, props []mvtProp) {
+	geom := binary.AppendUvarint([]byte{9}, zigzag(ring[0][0])) // 9: MoveTo, count 1
+	geom = binary.AppendUvarint(geom, zigzag(ring[0][1]))
+	geom = binary.AppendUvarint(geom, uint64(len(ring)-1)<<3|2) // LineTo, count n-1
+	for i := 1; i < len(ring); i++ {
+		geom = binary.AppendUvarint(geom, zigzag(ring[i][0]-ring[i-1][0]))
+		geom = binary.AppendUvarint(geom, zigzag(ring[i][1]-ring[i-1][1]))
+	}
+	geom = append(geom, 15)       // ClosePath, count 1
+	l.feature(id, 3, props, geom) // 3: POLYGON
+}
+
+func (l *mvtLayer) feature(id uint64, typ byte, props []mvtProp, geom []byte) {
 	var tags []byte
 	for _, p := range props {
 		k, ok := l.keyIdx[p.key]
@@ -509,11 +535,9 @@ func (l *mvtLayer) point(id uint64, x, y int32, props []mvtProp) {
 		}
 		tags = binary.AppendUvarint(binary.AppendUvarint(tags, k), v)
 	}
-	geom := binary.AppendUvarint([]byte{9}, zigzag(x)) // 9: MoveTo, count 1
-	geom = binary.AppendUvarint(geom, zigzag(y))
 	f := binary.AppendUvarint([]byte{0x08}, id) // 1: id
 	f = pbBytes(f, 0x12, tags)                  // 2: tags, packed
-	f = append(f, 0x18, 1)                      // 3: type POINT
+	f = append(f, 0x18, typ)                    // 3: type
 	f = pbBytes(f, 0x22, geom)                  // 4: geometry, packed
 	l.features = pbBytes(l.features, 0x12, f)   // layer 2: features
 }

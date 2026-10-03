@@ -95,6 +95,10 @@ var chMigrations = []string{
 	FROM {db}.receptions WHERE accepted AND ` + chUsable,
 	5: chVesselStatics,
 	6: chHistoryLoads,
+	// coverage, filled from receptions as they are written (coveragemap.go)
+	7: chCoverageTable,
+	8: `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.coverage_mv TO {db}.coverage AS ` + chCoverageSelect("{db}.receptions", chUsable),
+	9: `CREATE TABLE IF NOT EXISTS {db}.coverage_backfilled (day Date) ENGINE = ReplacingMergeTree ORDER BY day`,
 }
 
 // positions_1m is each vessel's track at one position a minute while it moves, and one every 30 minutes for each
@@ -207,8 +211,9 @@ type chReader interface {
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
 // /metrics reports about it.
 type chStore struct {
-	w chWriter
-	r chReader
+	w   chWriter
+	r   chReader
+	cov coverageSource // nil leaves the coverage map unavailable
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -512,7 +517,7 @@ func (p *Pipeline) runClickHouse(url string) {
 		conn, err := openClickHouse(ctx, url)
 		cancel()
 		if err == nil {
-			p.attachClickHouse(&chStore{w: conn, r: conn})
+			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn})
 			log.Printf("clickhouse: writing receptions to %s", conn.db)
 			break
 		}

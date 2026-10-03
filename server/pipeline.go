@@ -104,6 +104,7 @@ type Pipeline struct {
 	dirty      map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
 	store      *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
 	lake       *lake                          // packaged vessels for the record import (lake.go); nil without LAKE_CATALOG_TOKEN or a record
+	coverage   *coverageMap                   // where there are vessel positions, from ClickHouse (coveragemap.go); nil without CLICKHOUSE_URL
 	imports    importStats                    // the daily merge of the lake's vessels into the record (import.go)
 	wikidata   wikidataStats                  // the weekly sync of vessel particulars from Wikidata (wikidata.go)
 	uscg       uscgStats                      // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
