@@ -10,8 +10,11 @@ export interface TrackRange {
   end: number | null;
 }
 
-/** The lengths offered. The server answers at most 366 days per request. */
-export const TRACK_RANGES: TrackSpan[] = [6, 12, 24, 48, 168, "month", "year"];
+/**
+ * The lengths offered. The server answers at most 366 days per request.
+ * ponytail: "year" is left out until history reaches back 12 months; add it here then.
+ */
+export const TRACK_RANGES: TrackSpan[] = [6, 12, 24, 48, 168, "month"];
 
 /** The start of the UTC month or year `n` after the one holding t. */
 function calendar(t: number, span: "month" | "year", n = 0): number {
