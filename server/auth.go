@@ -236,7 +236,9 @@ func requestToken(r *http.Request) string {
 // authorize: token from the request, verified, role allows action, IP allowed. With ALLOW_ANON a missing or
 // bad token yields an anonymous admin identity (local development only).
 func (p *Pipeline) authorize(r *http.Request, action string) (*Claims, error) {
-	return p.authorizeToken(requestToken(r), clientIP(r), action)
+	c, err := p.authorizeToken(requestToken(r), clientIP(r), action)
+	noteClaims(r, c)
+	return c, err
 }
 
 // forbiddenError marks a token that verified but may not do this, here or from this address, as distinct
@@ -289,6 +291,7 @@ func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
 		}
 		return nil, err
 	}
+	noteClaims(r, c)
 	if !c.allowsIP(clientIP(r)) {
 		return nil, errors.New("token not valid from this address")
 	}
