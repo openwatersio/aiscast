@@ -42,7 +42,7 @@ POSITIONS_SCHEMA = pa.schema([
     # joined after the first days were packaged and a new column goes at the end
     ("source", pa.string()),
 ])
-# A vessel's track at one position a minute, what the server answers tracks from past its 48-hour window.
+# A vessel's track at one position a minute.
 TRACKS_SCHEMA = pa.schema([
     ("mmsi", pa.int32()), ("ts", pa.timestamp("us")), ("lat6", pa.int32()), ("lon6", pa.int32()), ("sog10", pa.int16()),
     ("cog10", pa.int16()), ("heading", pa.int16()), ("navstat", pa.int8()), ("source", pa.string()), ("day", pa.date32()),

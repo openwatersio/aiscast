@@ -200,12 +200,12 @@ groups:
 
       # The vessel record answers lookups past the cache's 30 minutes.
       - alert: StoreDown
-        expr: aiscast_store_up == 0 or aiscast_tracks_up == 0
+        expr: aiscast_store_up == 0
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: aiscast is running without the vessel record or the track store
-          description: Lookups past 30 minutes, search, or tracks fail. Check the store and tracks lines in journalctl -u aiscast and the files aiscast.db and tracks.db in /var/lib/aiscast.
+          summary: aiscast is running without the vessel record
+          description: Lookups past 30 minutes and search fail. Check the store lines in journalctl -u aiscast and the file aiscast.db in /var/lib/aiscast.
       - alert: StoreWritesFailing
         expr: increase(aiscast_store_flush_failures_total[10m]) > 0
         labels: {severity: warning}
@@ -226,19 +226,27 @@ groups:
         annotations:
           summary: Vessel record writes take {{ $value | humanizePercentage }} of each second
           description: The writer is near its budget. Check disk latency and the record's size on the capacity dashboard.
-      # Recent positions ride on the same writer; a stalled disk shows as failures, then as drops once the queue is full.
-      - alert: TracksWritesFailing
-        expr: increase(aiscast_tracks_write_failures_total[10m]) > 0 or increase(aiscast_tracks_points_dropped_total[10m]) > 0
+      # Tracks read from ClickHouse, and every accepted position is written there.
+      - alert: ClickHouseDown
+        expr: aiscast_clickhouse_up == 0
+        for: 5m
         labels: {severity: warning}
         annotations:
-          summary: The track store is failing writes or dropping positions
-          description: Recent tracks have gaps. Check the tracks lines in journalctl -u aiscast and free disk.
+          summary: aiscast is not writing to ClickHouse
+          description: Tracks have gaps, and track requests may fail. Check the clickhouse lines in journalctl -u aiscast and systemctl status clickhouse-server.
+      # A stalled ClickHouse shows as failures, then as drops once the queue is full.
+      - alert: ClickHouseWritesFailing
+        expr: increase(aiscast_clickhouse_write_failures_total[10m]) > 0 or increase(aiscast_clickhouse_points_dropped_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: ClickHouse is failing writes or dropping positions
+          description: Tracks have gaps. Check the clickhouse lines in journalctl -u aiscast, journalctl -u clickhouse-server, and free disk.
       - alert: LakeQueriesFailing
         expr: increase(aiscast_lake_query_failures_total[15m]) > 5
         labels: {severity: warning}
         annotations:
           summary: '{{ $value | printf "%.0f" }} lake queries failed in 15 minutes'
-          description: Tracks past 48 hours are failing. Check the lake and duckdb lines in journalctl -u aiscast, the LAKE_CATALOG_TOKEN, and the Cloudflare status page.
+          description: The record import is failing. Check the lake, duckdb, and import lines in journalctl -u aiscast, the LAKE_CATALOG_TOKEN, and the Cloudflare status page.
       - alert: ImportStale
         # The import runs daily after 03:00 UTC. The timestamp is absent until the first import succeeds, and every
         # import metric is absent on a server without the lake, which the runs counter tells apart.
@@ -248,13 +256,13 @@ groups:
         annotations:
           summary: The lake's vessels have not merged into the record for two days
           description: New history is not reaching vessel lookups or first_seen. Check the import lines in journalctl -u aiscast, the packager's last run, and the LAKE_CATALOG_TOKEN.
-      - alert: TracksWritesSlow
-        expr: rate(aiscast_tracks_write_seconds_total[15m]) > 0.5
+      - alert: ClickHouseWritesSlow
+        expr: rate(aiscast_clickhouse_write_seconds_total[15m]) > 0.5
         for: 15m
         labels: {severity: warning}
         annotations:
-          summary: Track store writes take {{ $value | humanizePercentage }} of each second
-          description: The writer is near its budget. Check disk latency and the track store's size on the capacity dashboard.
+          summary: ClickHouse writes take {{ $value | humanizePercentage }} of each second
+          description: The writer is near its budget. Check ClickHouse's CPU and disk latency.
 
       - alert: DiskFreeLow
         expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.2

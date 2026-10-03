@@ -45,7 +45,7 @@ d = first
 while d <= last:
     with tempfile.NamedTemporaryFile(suffix=".parquet") as f:
         # The lake keeps -1 for a missing navigational status and nulls for missing motion; the server
-        # writes 15, 1023, 3600, and 511. A source reduces to its kind, as the track store keeps it.
+        # writes 15, 1023, 3600, and 511. A source reduces to its kind, as the server writes it.
         con.execute(f"""COPY (
             SELECT mmsi::UINTEGER AS mmsi, ts, lat6, lon6,
                    coalesce(sog10, 1023)::USMALLINT AS sog10, coalesce(cog10, 3600)::USMALLINT AS cog10,

@@ -739,11 +739,10 @@ func (p *Pipeline) attachStore(s *store) error {
 	return nil
 }
 
-// flushStore writes the vessels folded since the last flush to the record, and the positions to the track
-// store. What it writes is copied under the cache lock and written outside it, so a slow disk delays the
-// stores and never the fold.
+// flushStore writes the vessels folded since the last flush to the record. What it writes is copied under the
+// cache lock and written outside it, so a slow disk delays the record and never the fold.
 func (p *Pipeline) flushStore() error {
-	if p.store == nil && p.tracks == nil {
+	if p.store == nil {
 		return nil
 	}
 	p.flushMu.Lock()
@@ -751,13 +750,13 @@ func (p *Pipeline) flushStore() error {
 	if p.storesClosed {
 		return nil
 	}
-	return p.flushLocked()
+	return p.flushRecord()
 }
 
-// closeStore writes what is left and closes the record and the track store. It waits for a flush already
-// running, and every flush after it does nothing, so a database is never closed under a write.
+// closeStore writes what is left and closes the record. It waits for a flush already running, and every flush
+// after it does nothing, so the database is never closed under a write.
 func (p *Pipeline) closeStore() error {
-	if p.store == nil && p.tracks == nil {
+	if p.store == nil {
 		return nil
 	}
 	p.flushMu.Lock()
@@ -765,20 +764,8 @@ func (p *Pipeline) closeStore() error {
 	if p.storesClosed {
 		return nil
 	}
-	err := p.flushLocked()
 	p.storesClosed = true
-	if p.store != nil {
-		err = errors.Join(err, p.store.close())
-	}
-	if p.tracks != nil {
-		err = errors.Join(err, p.tracks.close())
-	}
-	return err
-}
-
-// flushLocked is flushStore's work; the caller holds flushMu.
-func (p *Pipeline) flushLocked() error {
-	return errors.Join(p.flushRecord(), p.flushTracks())
+	return errors.Join(p.flushRecord(), p.store.close())
 }
 
 func (p *Pipeline) flushRecord() error {

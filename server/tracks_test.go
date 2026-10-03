@@ -1,35 +1,78 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"math/rand/v2"
-	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// trackPipeline is a test pipeline with a vessel record and a track store in a temporary directory.
-func trackPipeline(t testing.TB) (*Pipeline, string) {
+// memCH is ClickHouse in memory: it keeps every position it is sent, and reads history the way chConn does,
+// the first position in each step bucket and the newest limit+1 of those.
+type memCH struct {
+	mu     sync.Mutex
+	points []trackPoint
+}
+
+func (m *memCH) insert(_ context.Context, _ string, points []trackPoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.points = append(m.points, points...)
+	return nil
+}
+
+func (m *memCH) history(_ context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, _ time.Time) ([]trackPoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []trackPoint
+	for _, pt := range m.points {
+		if pt.mmsi == mmsi && !pt.ts.Before(from) && !pt.ts.After(to) {
+			out = append(out, pt)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b trackPoint) int { return a.ts.Compare(b.ts) })
+	if ms := step.Milliseconds(); ms > 0 {
+		kept, last := out[:0], int64(-1)
+		for _, pt := range out {
+			if b := pt.ts.UnixMilli() / ms; b != last {
+				kept, last = append(kept, pt), b
+			}
+		}
+		out = kept
+	}
+	return out[max(len(out)-limit-1, 0):], nil
+}
+
+func (m *memCH) first(_ context.Context, mmsi uint32, from, to time.Time) (ts time.Time, ok bool, _ error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, pt := range m.points {
+		if pt.mmsi == mmsi && !pt.ts.Before(from) && !pt.ts.After(to) && (!ok || pt.ts.Before(ts)) {
+			ts, ok = pt.ts, true
+		}
+	}
+	return ts, ok, nil
+}
+
+// trackPipeline is a test pipeline with a vessel record in a temporary directory and ClickHouse in memory.
+func trackPipeline(t testing.TB) (*Pipeline, *memCH) {
 	t.Helper()
 	p := testPipeline(nil)
-	dir := t.TempDir()
-	st, err := openStore(filepath.Join(dir, "aiscast.db"))
+	st, err := openStore(filepath.Join(t.TempDir(), "aiscast.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := p.attachStore(st); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "tracks.db")
-	ts, err := openTracks(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.attachTracks(ts)
+	ch := &memCH{}
+	p.attachClickHouse(&chStore{w: ch, r: ch})
 	t.Cleanup(func() { p.closeStore() })
-	return p, path
+	return p, ch
 }
 
 // sail folds position reports for mmsi at the given ages, moving north a little each time, and flushes.
@@ -42,6 +85,9 @@ func sail(t *testing.T, p *Pipeline, mmsi uint32, ages ...time.Duration) {
 		p.ingestPacket("kystverket", "kystverket", at, at, posReport(mmsi, 59.9+float64(i)/1000, 10.7))
 	}
 	mustFlush(t, p)
+	if err := p.flushClickHouse(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type testTrack struct {
@@ -93,11 +139,6 @@ func TestTrackEndpoint(t *testing.T) {
 	if tr := getTrack(t, p, base+"?from="+from); tr.Properties.Points != 6 {
 		t.Errorf("a range inside the window: %d points", tr.Properties.Points)
 	}
-	old := time.Now().Add(-100 * time.Hour).UTC().Format(time.RFC3339)
-	tr = getTrack(t, p, base+"?from="+old)
-	if at, _ := time.Parse(time.RFC3339, tr.Properties.From); time.Since(at) > trackWindow+time.Minute {
-		t.Errorf("from is clamped to the window: %s", tr.Properties.From)
-	}
 
 	if tr := getTrack(t, p, base+"?interval=2h"); tr.Properties.Points >= 5 || tr.Properties.Points < 2 {
 		t.Errorf("thinned to one per two hours: %d", tr.Properties.Points)
@@ -136,7 +177,7 @@ func TestTrackEndpoint(t *testing.T) {
 }
 
 func TestTrackTierCap(t *testing.T) {
-	p, _ := trackPipeline(t)
+	p, ch := trackPipeline(t)
 	now := time.Now()
 	var points []trackPoint
 	for i := range 300 {
@@ -144,9 +185,7 @@ func TestTrackTierCap(t *testing.T) {
 		v.Lat, v.Lon = 59.9, 10.7
 		points = append(points, newTrackPoint(257000001, now.Add(-time.Duration(i)*time.Minute), v, "kystverket"))
 	}
-	if err := p.tracks.write(points, now); err != nil {
-		t.Fatal(err)
-	}
+	ch.insert(context.Background(), "", points)
 	allowAnon = false
 	t.Cleanup(func() { allowAnon = true })
 	if tr := getTrack(t, p, "/v1/vessels/257000001/track?limit=5000&interval=0"); tr.Properties.Points != 200 || !tr.Properties.Truncated {
@@ -154,65 +193,37 @@ func TestTrackTierCap(t *testing.T) {
 	}
 }
 
-func TestTrackDaysExpire(t *testing.T) {
-	p, path := trackPipeline(t)
-	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-	v := newVessel()
-	v.Lat, v.Lon = 59.9, 10.7
-	points := []trackPoint{
-		newTrackPoint(257000001, now.Add(-72*time.Hour), v, "kystverket"), // older than any window: skipped
-		newTrackPoint(257000001, now.Add(-36*time.Hour), v, "kystverket"),
-		newTrackPoint(257000001, now.Add(-time.Hour), v, "digitraffic"),
-	}
-	if err := p.tracks.write(points, now); err != nil {
-		t.Fatal(err)
-	}
-	if !p.tracks.days["20260927"] || !p.tracks.days["20260928"] || p.tracks.days["20260925"] {
-		t.Errorf("day tables: %v", p.tracks.days)
-	}
-	got, _, err := p.tracks.track(257000001, now.Add(-48*time.Hour), now, 0, 10)
-	if err != nil || len(got) != 2 || got[1].source != "digitraffic" {
-		t.Errorf("read across days: %v %+v", err, got)
-	}
-
-	// Two days on, the window has left the 27th.
-	if err := p.tracks.write(nil, now.Add(48*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if p.tracks.days["20260927"] || !p.tracks.days["20260928"] {
-		t.Errorf("expiry: %v", p.tracks.days)
-	}
-
-	// The day tables and source names survive a reopen.
-	again, err := openTracks(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer again.close()
-	got, _, err = again.track(257000001, now.Add(-2*time.Hour), now, 0, 10)
-	if err != nil || len(got) != 1 || got[0].source != "digitraffic" || !again.days["20260928"] {
-		t.Errorf("after reopen: %v %+v %v", err, got, again.days)
-	}
-}
-
-func TestTrackWriteFailureRetries(t *testing.T) {
+func TestTrackHistoryIsATier(t *testing.T) {
 	p, _ := trackPipeline(t)
-	now := time.Now()
-	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 59.9, 10.7))
-	p.tracks.db.Close()
-	if err := p.flushStore(); err == nil {
-		t.Fatal("write to a closed database succeeded")
+	sail(t, p, 257000001, time.Hour)
+	allowAnon = false
+	t.Cleanup(func() { allowAnon = true })
+	from := time.Now().Add(-3 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	old := time.Now().Add(-2*24*time.Hour - time.Hour).UTC().Format(time.RFC3339)
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+old); w.Code != 403 || !strings.Contains(w.Body.String(), "feeder") {
+		t.Errorf("anonymous past the window: %d %s", w.Code, w.Body)
 	}
-	if len(p.trackQueue) != 1 || p.tracks.writeFailures.Load() != 1 {
-		t.Errorf("failed positions not kept for the next flush: %d", len(p.trackQueue))
+	// A range that overlaps the window is clamped to it, as a client asking for 48 hours a moment early does.
+	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from)
+	if at, _ := time.Parse(time.RFC3339, tr.Properties.From); tr.Properties.Points == 0 || time.Since(at) > trackWindow+time.Minute {
+		t.Errorf("anonymous overlapping the window: %+v", tr.Properties)
+	}
+	var out mcpTrack
+	if msg := mcpCall(t, mcpClient(t, p), "get_vessel_track", map[string]any{"mmsi": 257000001, "from": from, "to": old}, &out); !strings.Contains(msg, "feeder") {
+		t.Errorf("MCP past the window: %q", msg)
+	}
+	allowAnon = true
+	long := time.Now().Add(-400 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+long); w.Code != 400 {
+		t.Errorf("more than a year: %d", w.Code)
 	}
 }
 
-func TestReplayPipelineKeepsNoTracks(t *testing.T) {
+func TestReplayPipelineWritesNoHistory(t *testing.T) {
 	p := testPipeline(t)
 	p.ingestPacket("kystverket", "kystverket", time.Now(), time.Now(), posReport(257000001, 59.9, 10.7))
-	if p.tracks != nil || p.trackQueue != nil {
-		t.Fatalf("tracks %v queue %v", p.tracks, p.trackQueue)
+	if p.ch != nil || p.chQueue != nil {
+		t.Fatalf("clickhouse %v queue %v", p.ch, p.chQueue)
 	}
 }
 
@@ -241,63 +252,6 @@ func TestMCPGetVesselTrack(t *testing.T) {
 	}
 }
 
-// BenchmarkTrackWrite times a once-a-second flush: 400 positions from a 60k-vessel fleet into a day table
-// already holding a few hundred thousand rows.
-func BenchmarkTrackWrite(b *testing.B) {
-	p, _ := trackPipeline(b)
-	r := rand.New(rand.NewPCG(1, 2))
-	v := newVessel()
-	v.Lat, v.Lon, v.Sog, v.Cog = 59.9, 10.7, 11.2, 123.4
-	now := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
-	at := now.Add(-6 * time.Hour)
-	batch := func() []trackPoint {
-		pts := make([]trackPoint, 400)
-		for i := range pts {
-			at = at.Add(2500 * time.Microsecond)
-			pts[i] = newTrackPoint(uint32(200000000+r.IntN(60000)), at, v, "aishub")
-		}
-		return pts
-	}
-	for range 1000 {
-		if err := p.tracks.write(batch(), now); err != nil {
-			b.Fatal(err)
-		}
-	}
-	b.ReportAllocs()
-	for b.Loop() {
-		if err := p.tracks.write(batch(), now); err != nil {
-			b.Fatal(err)
-		}
-	}
-	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/400, "ns/point")
-}
-
-// Raw reports with equal stamps survive dedupe as distinct data, so a track keeps both unless they are the
-// same point.
-func TestTrackKeepsEqualTimeReports(t *testing.T) {
-	p, _ := trackPipeline(t)
-	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-	at := now.Add(-time.Hour)
-	here, there := newVessel(), newVessel()
-	here.Lat, here.Lon, there.Lat, there.Lon = 59.9, 10.7, 59.91, 10.71
-	points := []trackPoint{
-		newTrackPoint(257000001, at, here, "kystverket"),
-		newTrackPoint(257000001, at, there, "station"),
-		newTrackPoint(257000001, at, here, "aishub"), // the same point again
-	}
-	if err := p.tracks.write(points, now); err != nil {
-		t.Fatal(err)
-	}
-	got, _, err := p.tracks.track(257000001, now.Add(-2*time.Hour), now, 0, 10)
-	if err != nil || len(got) != 2 {
-		t.Fatalf("%v %+v", err, got)
-	}
-	sources := map[string]bool{got[0].source: true, got[1].source: true}
-	if !sources["kystverket"] || !sources["station"] {
-		t.Errorf("the first write of a point stays, and each keeps its source: %+v", got)
-	}
-}
-
 func TestTrackRangeOutsideTheWindow(t *testing.T) {
 	p, _ := trackPipeline(t)
 	sail(t, p, 257000001, time.Hour)
@@ -314,50 +268,12 @@ func TestTrackRangeOutsideTheWindow(t *testing.T) {
 			t.Errorf("%s: %d points, %s to %s", q, tr.Properties.Points, tr.Properties.From, tr.Properties.To)
 		}
 	}
-	w := httptest.NewRecorder()
-	p.serveMetrics(w, httptest.NewRequest("GET", "/metrics", nil))
-	if !strings.Contains(w.Body.String(), "aiscast_tracks_up 1") {
-		t.Error("aiscast_tracks_up missing")
-	}
-}
-
-// Every connection holds its own page cache, so both pools are bounded, and many readers wait their turn
-// beside the writer rather than opening more.
-func TestTrackStorePoolsAreBounded(t *testing.T) {
-	p, _ := trackPipeline(t)
-	if w, r := p.tracks.db.Stats().MaxOpenConnections, p.tracks.rdb.Stats().MaxOpenConnections; w != 1 || r != trackReaders {
-		t.Fatalf("writer pool %d, reader pool %d", w, r)
-	}
-	if n := p.store.db.Stats().MaxOpenConnections; n != storeConns {
-		t.Fatalf("record pool %d", n)
-	}
-	now := time.Now()
-	v := newVessel()
-	v.Lat, v.Lon = 59.9, 10.7
-	done := make(chan error, 32)
-	for i := range 32 {
-		go func() {
-			_, _, err := p.tracks.track(257000001, now.Add(-time.Hour), now, 0, 100)
-			done <- err
-		}()
-		if err := p.tracks.write([]trackPoint{newTrackPoint(257000001, now.Add(-time.Duration(i)*time.Second), v, "kystverket")}, now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for range 32 {
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if open := p.tracks.rdb.Stats().OpenConnections; open > trackReaders {
-		t.Errorf("%d reader connections open", open)
-	}
 }
 
 // Reports whose stamps disagree with their fixes (AISHub snapshots, broken GPS) pass the ingest
 // gate's teleport floor but draw kinks; the track leaves them out.
 func TestTrackDespikesImpossibleSpeeds(t *testing.T) {
-	p, _ := trackPipeline(t)
+	p, ch := trackPipeline(t)
 	now := time.Now()
 	mk := func(mmsi uint32, age time.Duration, lat float64, sog float64) trackPoint {
 		v := newVessel()
@@ -377,9 +293,7 @@ func TestTrackDespikesImpossibleSpeeds(t *testing.T) {
 		mk(257000002, 9*time.Minute+30*time.Second, 59.00625, 45),
 		mk(257000002, 9*time.Minute, 59.0125, 45),
 	}
-	if err := p.tracks.write(points, now); err != nil {
-		t.Fatal(err)
-	}
+	ch.insert(context.Background(), "", points)
 	if tr := getTrack(t, p, "/v1/vessels/257000001/track?interval=0"); tr.Properties.Points != 5 {
 		t.Errorf("the displaced fix stays, jitter under the floor stays: %d points, want 5", tr.Properties.Points)
 	}
@@ -418,31 +332,6 @@ func TestDespikeReanchorsAfterARun(t *testing.T) {
 	}
 }
 
-// The row past the limit anchors despiking: the page's oldest row is judged the same way a larger
-// request would judge it, not kept unconditionally as the first point seen.
-func TestTrackDespikeAnchorsAcrossTheLimit(t *testing.T) {
-	p, _ := trackPipeline(t)
-	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-	mk := func(age time.Duration, lat float64) trackPoint {
-		v := newVessel()
-		v.Lat, v.Lon, v.Sog = lat, 10.7, 16
-		return newTrackPoint(257000001, now.Add(-age), v, "aishub")
-	}
-	points := []trackPoint{
-		mk(2*time.Minute, 59.0),
-		mk(90*time.Second, 59.00111),
-		mk(60*time.Second, 59.00933), // displaced 0.49 NM ahead: 59 kn against the row past the limit
-		mk(30*time.Second, 59.00333),
-	}
-	if err := p.tracks.write(points, now); err != nil {
-		t.Fatal(err)
-	}
-	got, more, err := p.tracks.track(257000001, now.Add(-time.Hour), now, 0, 2)
-	if err != nil || !more || len(got) != 1 || got[0].lat6 != points[3].lat6 {
-		t.Errorf("the displaced fix should fall to the anchor past the limit: more=%v err=%v %+v", more, err, got)
-	}
-}
-
 func TestDefaultIntervalCoversTheRange(t *testing.T) {
 	for _, c := range []struct {
 		span  time.Duration
@@ -463,7 +352,7 @@ func TestDefaultIntervalCoversTheRange(t *testing.T) {
 
 	// A vessel reporting every 10 seconds for six hours: without an interval the track spans all six hours
 	// instead of the last half hour, and says what spacing it used.
-	p, _ := trackPipeline(t)
+	p, ch := trackPipeline(t)
 	now := time.Now()
 	var points []trackPoint
 	v := newVessel()
@@ -471,9 +360,7 @@ func TestDefaultIntervalCoversTheRange(t *testing.T) {
 	for i := range 6 * 360 {
 		points = append(points, newTrackPoint(257000001, now.Add(-time.Duration(i)*10*time.Second), v, "kystverket"))
 	}
-	if err := p.tracks.write(points, now); err != nil {
-		t.Fatal(err)
-	}
+	ch.insert(context.Background(), "", points)
 	var raw struct {
 		Properties struct {
 			Interval  int64
