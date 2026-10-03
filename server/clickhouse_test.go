@@ -78,10 +78,14 @@ func TestClickHouseDropsWhatItsQueueCannotHold(t *testing.T) {
 	p.attachClickHouse(&chStore{w: &fakeCH{}})
 	p.vmu.Lock()
 	p.chQueue = make([]trackPoint, maxPending)
+	p.chQueue[maxPending/10].mmsi = 1 // the oldest position that should survive
 	p.vmu.Unlock()
 	ingestAt(p, 257000001, time.Now(), 59.9)
-	if p.ch.dropped.Load() != 1 {
-		t.Errorf("a full queue drops the newest position and counts it: %d", p.ch.dropped.Load())
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	if n := len(p.chQueue); p.ch.dropped.Load() != maxPending/10 || n != maxPending-maxPending/10+1 ||
+		p.chQueue[0].mmsi != 1 || p.chQueue[n-1].mmsi != 257000001 {
+		t.Errorf("a full queue drops its oldest tenth, counted, and keeps the newest: dropped %d, %d queued", p.ch.dropped.Load(), n)
 	}
 }
 
