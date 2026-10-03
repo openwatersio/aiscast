@@ -303,6 +303,12 @@ func openStore(path string) (*store, error) {
 			todo = append(todo, kv{m, searchKey(name)})
 		}
 		rows.Close()
+		// An iteration error would truncate the list silently, and the flag below would then mark a
+		// half-reindexed file as done for good.
+		if err := rows.Err(); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 		tx, err := db.Begin()
 		if err != nil {
 			db.Close()
