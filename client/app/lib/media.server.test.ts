@@ -10,11 +10,14 @@ function fakeWikimedia({
   categories,
   taken,
   p18,
+  items,
   wikidataDown = false,
 }: {
   categories: Record<string, string[]>;
   taken: Record<string, string>;
   p18?: string;
+  /** The items search finds for the IMO, in the order it answers; one carrying `p18` when absent. */
+  items?: Array<{ qid: string; p18?: string }>;
   wikidataDown?: boolean;
 }) {
   return vi.fn(async (input: string | URL) => {
@@ -22,8 +25,9 @@ function fakeWikimedia({
     const q = url.searchParams;
     if (url.host === "www.wikidata.org") {
       if (wikidataDown) return new Response("", { status: 503 });
-      const pageprops = p18 ? { page_image_free: p18 } : undefined;
-      return Response.json({ query: { pages: [{ title: "Q52380920", pageprops }] } });
+      const found = items ?? [{ qid: "Q52380920", p18 }];
+      const pages = found.map((it) => ({ title: it.qid, pageprops: it.p18 ? { page_image_free: it.p18 } : undefined }));
+      return Response.json({ query: { pages } });
     }
     if (q.get("list") === "categorymembers") {
       const members = (categories[q.get("cmtitle")!] ?? []).map((title) => ({ ns: title.startsWith("Category:") ? 14 : 6, title }));
@@ -86,6 +90,21 @@ describe("vessel photos", () => {
     expect(pages(media)).toEqual(["File:Rotterdam.jpg", "File:Yacht.jpg", "File:Hamburg.jpg"]);
     expect(media.links.commonsCategory).toBe(`https://commons.wikimedia.org/wiki/Category:IMO_${IMO}`);
     expect(cacheControl).toMatch(/max-age=604800/);
+  });
+
+  it("takes the photo of the lowest QID when an IMO is on more than one item", async () => {
+    const items = [
+      { qid: "Q107073444", p18: "Yacht.jpg" },
+      { qid: "Q52380920", p18: "Hamburg.jpg" },
+    ];
+    vi.stubGlobal("fetch", fakeWikimedia({ categories: triton, taken, items }));
+    expect(pages((await lookup()).media)[0]).toBe("File:Hamburg.jpg");
+  });
+
+  it("takes no other item's photo when the lowest QID has none", async () => {
+    const items = [{ qid: "Q107073444", p18: "Hamburg.jpg" }, { qid: "Q52380920" }];
+    vi.stubGlobal("fetch", fakeWikimedia({ categories: triton, taken, items }));
+    expect(pages((await lookup()).media)).toEqual(["File:Yacht.jpg", "File:Rotterdam.jpg", "File:Hamburg.jpg"]);
   });
 
   it("shows Wikidata's photo when the category does not hold it", async () => {

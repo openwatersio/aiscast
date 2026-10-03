@@ -73,19 +73,22 @@ function taken(meta: Record<string, { value?: string }>): number {
 /**
  * The photo Wikidata gives the ship with this IMO (P458): its P18, which Wikidata serves as the
  * item's page image. An editor chose it for this hull, where a Commons category is filed by
- * hand and can hold another ship of the same name. Undefined when no item has one.
+ * hand and can hold another ship of the same name. An IMO on more than one item takes the lowest
+ * QID, as the API's particulars do (server/wikidata.go), so the photo is that item's or none.
  */
 async function wikidataPhoto(imo: number): Promise<string | undefined> {
   const body = await wikimedia(WIKIDATA, {
     action: "query",
     generator: "search",
     gsrsearch: `haswbstatement:P458=${imo}`,
-    gsrlimit: "5",
+    gsrlimit: "50",
     prop: "pageprops",
     ppprop: "page_image_free",
   });
-  const pages: Array<{ pageprops?: { page_image_free?: string } }> = body.query?.pages ?? [];
-  const file = pages.map((p) => p.pageprops?.page_image_free).find(Boolean);
+  const pages: Array<{ title: string; pageprops?: { page_image_free?: string } }> = body.query?.pages ?? [];
+  const qid = (p: { title: string }) => Number(p.title.slice(1));
+  const item = pages.filter((p) => /^Q\d+$/.test(p.title)).sort((a, b) => qid(a) - qid(b))[0];
+  const file = item?.pageprops?.page_image_free;
   return file ? `File:${file.replace(/_/g, " ")}` : undefined;
 }
 
