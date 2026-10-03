@@ -90,6 +90,7 @@ func TestReopenedHourUploadsCompleteDespiteReordering(t *testing.T) {
 	<-store.readDone                                                                                                              // that upload now holds the short hour
 	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: hour.Add(59 * time.Minute), Body: "straggler"})      // reopens hour 12
 	a.shutdown()
+	a.uploads.Wait()
 
 	body := store.object(key)
 	if body == nil {
@@ -115,6 +116,7 @@ func TestUploadsOfOneKeyAreSerialized(t *testing.T) {
 		a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: rx, Body: string(rune('a' + i))})
 	}
 	a.shutdown()
+	a.uploads.Wait()
 	if n := store.maxConcurrentPerKey(); n > 1 {
 		t.Fatalf("%d concurrent uploads of one key", n)
 	}
@@ -308,17 +310,56 @@ func TestInterleavedHoursDoNotThrashUploads(t *testing.T) {
 	a.write(Reception{Source: "norm", RecvTime: fetch.Add(hourGrace + time.Second), Body: `{"later":1}`}) // past hour 14's grace
 	a.write(Reception{Source: "norm", RecvTime: fetch.Add(hourGrace + time.Minute), Body: `{"later":2}`})
 	a.shutdown()
+	a.uploads.Wait()
 	if n := store.count(h14); n != 1 {
 		t.Fatalf("hour 14 uploaded %d times, want once", n)
 	}
-	if n := store.count(h15); n != 1 {
-		t.Fatalf("hour 15 uploaded %d times, want once, at shutdown", n)
+	if n := len(gunzipLines(t, store.objects[h14])); n != want[h14] {
+		t.Fatalf("%s holds %d records, want %d", h14, n, want[h14])
 	}
-	for _, k := range []string{h14, h15} {
-		if n := len(gunzipLines(t, store.objects[k])); n != want[k] {
-			t.Fatalf("%s holds %d records, want %d", k, n, want[k])
-		}
+	if n := store.count(h15); n != 0 {
+		t.Fatalf("hour 15 uploaded %d times, want none: shutdown leaves it to the next sweep", n)
 	}
+	b, err := os.ReadFile(a.dirPath(h15))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(gunzipLines(t, b)); n != want[h15] {
+		t.Fatalf("%s holds %d records on disk, want %d", h15, n, want[h15])
+	}
+}
+
+// A deploy must not wait on uploads. Shutdown closes the open hour, complete, without sending it, and the
+// next process's sweep at boot sends it while the hour is still too recent to delete.
+func TestShutdownLeavesTheOpenHourToTheNextSweep(t *testing.T) {
+	dir := t.TempDir()
+	store := &countStore{puts: map[string]int{}, objects: map[string][]byte{}}
+	a := newArchive(dir, store)
+	now := time.Now().UTC()
+	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now, Body: "one"})
+	a.write(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now, Body: "two"})
+	a.shutdown()
+	key := a.key("kystverket", now.Truncate(time.Hour))
+	if n := store.count(key); n != 0 {
+		t.Fatalf("shutdown uploaded the open hour %d times, want none", n)
+	}
+
+	next := newArchive(dir, store)
+	next.sweep()
+	if n := store.count(key); n != 1 {
+		t.Fatalf("the next sweep uploaded the hour %d times, want once", n)
+	}
+	if lines := gunzipLines(t, store.objects[key]); len(lines) != 2 {
+		t.Fatalf("bucket holds %v, want both records", lines)
+	}
+	if _, err := os.Stat(next.dirPath(key)); err != nil {
+		t.Fatalf("the sweep deleted an hour inside the grace window: %v", err)
+	}
+	next.sweep()
+	if n := store.count(key); n != 1 {
+		t.Fatalf("a second sweep uploaded the hour again (%d uploads); the bucket already held it", n)
+	}
+	next.shutdown()
 }
 
 // The reception that crosses an hour's close time closes it, even when nothing arrives after it: the

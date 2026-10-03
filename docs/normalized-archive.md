@@ -15,7 +15,7 @@ The raw archive is the input log and the normalized archive is derived from it. 
 
 ## Layout
 
-One merged stream holds every source. Each hour is one gzip file of line-delimited JSON at `normalized/v1/YYYY/MM/DD/HH.gz` in the `ais-archive` bucket, beside the raw archive. The server stages it locally under `NORMALIZED_DIR`, which mirrors the bucket's layout, and uploads it through the same rotation, shutdown flush, and disk sweep as raw. `NORMALIZED_BUCKET` names the bucket. The writer is off unless `NORMALIZED_BUCKET` or `NORMALIZED_DIR` is set, so an env that predates the stream never stages hours nothing uploads.
+One merged stream holds every source. Each hour is one gzip file of line-delimited JSON at `normalized/v1/YYYY/MM/DD/HH.gz` in the `ais-archive` bucket, beside the raw archive. The server stages it locally under `NORMALIZED_DIR`, which mirrors the bucket's layout, and uploads it through the same rotation and disk sweep as raw. `NORMALIZED_BUCKET` names the bucket. The writer is off unless `NORMALIZED_BUCKET` or `NORMALIZED_DIR` is set, so an env that predates the stream never stages hours nothing uploads.
 
 An hour stays open until the newest receive time the writer has seen is five minutes past its end, then closes and uploads. Receptions near a boundary can arrive a little out of receive-time order, as queued work from the end of one hour lands after the next has begun, and closing an hour on every switch would upload a file still being written. Rotation runs on the receive clock, so replay closes hours where live did, and a reception for an hour already closed reopens it and appends.
 

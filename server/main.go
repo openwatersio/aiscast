@@ -32,6 +32,9 @@ func main() {
 		case "normdiff":
 			runNormDiff(os.Args[2:])
 			return
+		case "sweep":
+			runSweep()
+			return
 		}
 	}
 	arch := newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv())
@@ -173,7 +176,7 @@ func main() {
 			}
 		}
 	}()
-	go func() { // SIGTERM/SIGINT: flush and upload the open archive hours, save state, exit
+	go func() { // SIGTERM/SIGINT: close the open archive hours, save state, exit; the next process uploads the hours
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 		<-sig

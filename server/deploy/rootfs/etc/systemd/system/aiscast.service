@@ -13,7 +13,8 @@ WorkingDirectory=/var/lib/aiscast
 ExecStart=/opt/aiscast/aiscast
 Restart=always
 RestartSec=2
-# SIGTERM: snapshot + flush/upload open archive hours; give it time
+# SIGTERM: drain the archive queues to disk, close the open hours, save state. Uploads are left to the next
+# process, so this takes seconds; the timeout covers a slow disk.
 KillSignal=SIGTERM
 TimeoutStopSec=120
 LimitNOFILE=65536
