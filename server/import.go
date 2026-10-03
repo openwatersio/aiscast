@@ -121,7 +121,7 @@ func (s *store) importRows(rows []historyRow) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.refreshIndex(len(rows), func(i int) uint32 { return rows[i].mmsi })
+	s.refreshMirror(len(rows), func(i int) uint32 { return rows[i].mmsi })
 	return nil
 }
 

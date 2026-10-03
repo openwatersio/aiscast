@@ -203,15 +203,16 @@ type record struct {
 }
 
 type store struct {
-	db   *sql.DB
-	path string
-	idx  *recordIndex // the record's positions in memory, refreshed after every write (recindex.go)
+	db     *sql.DB
+	path   string
+	mirror *recordMirror // every row in memory, refreshed after every write (mirror.go)
 
 	sitemap sitemapMemo
 
 	// read by /metrics
 	flushes, flushFailures, rowsWritten atomic.Int64
 	flushNanos                          atomic.Int64
+	mirrorFailures                      atomic.Int64 // refreshes of the mirror that failed
 }
 
 func openStore(path string) (*store, error) {
@@ -256,7 +257,7 @@ func openStore(path string) (*store, error) {
 		}
 	}
 	s := &store{db: db, path: path}
-	if s.idx, err = loadRecordIndex(s); err != nil {
+	if s.mirror, err = loadMirror(s); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -331,19 +332,19 @@ func (s *store) upsert(rows []record) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.refreshIndex(len(rows), func(i int) uint32 { return rows[i].mmsi })
+	s.refreshMirror(len(rows), func(i int) uint32 { return rows[i].mmsi })
 	return nil
 }
 
-// refreshIndex files again the n rows just written. A failure leaves those vessels a write behind in the
-// index, until their next write, and never fails the write itself.
-func (s *store) refreshIndex(n int, mmsi func(int) uint32) {
+// refreshMirror never fails the write: the mirror retries with the next one.
+func (s *store) refreshMirror(n int, mmsi func(int) uint32) {
 	mmsis := make([]uint32, n)
 	for i := range mmsis {
 		mmsis[i] = mmsi(i)
 	}
-	if err := s.idx.refresh(s, mmsis); err != nil {
-		log.Printf("record index: %v", err)
+	if err := s.mirror.refresh(s, mmsis); err != nil {
+		s.mirrorFailures.Add(1)
+		log.Printf("record mirror: %v", err)
 	}
 }
 
@@ -491,6 +492,9 @@ func (q recordQuery) bounded() (clause string, args []any, none, byCell bool, er
 
 // count is the number of rows q matches, ignoring its limit.
 func (s *store) count(q recordQuery) (int, error) {
+	if s.mirror.answers(q) {
+		return s.mirror.count(q)
+	}
 	clause, args, none, _, err := q.bounded()
 	if err != nil || none {
 		return 0, err
@@ -500,9 +504,16 @@ func (s *store) count(q recordQuery) (int, error) {
 	return n, err
 }
 
-// counts counts every vessel in the record, and those heard and first heard within each window. Each
-// window is a range on its own index.
+// counts counts every vessel in the record, and those heard and first heard within each window.
 func (s *store) counts(now time.Time) (*recordCounts, error) {
+	if s.mirror != nil {
+		return s.mirror.counts(now), nil
+	}
+	return s.countsSQL(now)
+}
+
+// countsSQL is counts from SQLite: each window is a range on its own index.
+func (s *store) countsSQL(now time.Time) (*recordCounts, error) {
 	c := &recordCounts{Heard: map[string]int{}, New: map[string]int{}}
 	if err := s.db.QueryRow("SELECT count(*) FROM vessels").Scan(&c.Total); err != nil {
 		return nil, err
@@ -523,6 +534,9 @@ func (s *store) counts(now time.Time) (*recordCounts, error) {
 
 // countFirstSeen is the number of vessels first heard at or after since.
 func (s *store) countFirstSeen(since time.Time) (int, error) {
+	if s.mirror != nil {
+		return s.mirror.countFirstSeen(since), nil
+	}
 	var n int
 	err := s.db.QueryRow("SELECT count(*) FROM vessels WHERE first_seen >= ?", unixMs(since)).Scan(&n)
 	return n, err
@@ -559,6 +573,9 @@ type storedPos struct {
 // positions is where each vessel q matches was last placed, ignoring its limit: the few columns a ranking
 // by distance needs, read for every match so none is cut before it is ranked.
 func (s *store) positions(q recordQuery) ([]storedPos, error) {
+	if s.mirror.answers(q) {
+		return s.mirror.positions(q)
+	}
 	clause, args, none, _, err := q.bounded()
 	if err != nil || none {
 		return nil, err
@@ -581,11 +598,24 @@ func (s *store) positions(q recordQuery) ([]storedPos, error) {
 	return out, rows.Err()
 }
 
+// find is the rows q matches, most recently heard first: from the mirror, or from SQLite for a text search.
 func (s *store) find(q recordQuery) ([]record, error) {
+	if s.mirror.answers(q) {
+		return s.mirror.find(q)
+	}
+	return s.findSQL(q)
+}
+
+func (s *store) findSQL(q recordQuery) ([]record, error) {
 	sqlText, args, none, err := q.sql()
 	if err != nil || none {
 		return nil, err
 	}
+	return s.scan(sqlText, args...)
+}
+
+// scan reads the records a statement selecting recordCols answers.
+func (s *store) scan(sqlText string, args ...any) ([]record, error) {
 	rows, err := s.db.Query(sqlText, args...)
 	if err != nil {
 		return nil, err

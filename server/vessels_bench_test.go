@@ -96,9 +96,8 @@ func BenchmarkTileZ4Skagerrak(b *testing.B) { benchTile(b, 4, 8, 4) }
 func BenchmarkTileZ8Oslofjord(b *testing.B) { benchTile(b, 8, 135, 74) }
 
 // benchTileRecord adds 300,000 record rows heard over the last two weeks, half of them last reported
-// stationary, to the 60,000-vessel cache: the low-zoom tiles read most of them. busy places 70% of the rows
-// as benchFleet places vessels, so a busy mid-zoom tile reads tens of thousands.
-func benchTileRecord(b *testing.B, z, x, y int, busy bool) {
+// stationary, to the 60,000-vessel cache: the low-zoom tiles read most of them.
+func benchTileRecord(b *testing.B, z, x, y int, busy bool) { // busy clusters rows like production, as benchFleet does
 	p := testPipeline(nil)
 	benchFleet(p, 60000)
 	st, err := openStore(b.TempDir() + "/aiscast.db")
@@ -147,8 +146,7 @@ func BenchmarkTileRecordBusyZ0(b *testing.B)          { benchTileRecord(b, 0, 0,
 func BenchmarkTileRecordBusyZ4Skagerrak(b *testing.B) { benchTileRecord(b, 4, 8, 4, true) }
 func BenchmarkTileRecordBusyZ8Oslofjord(b *testing.B) { benchTileRecord(b, 8, 135, 74, true) }
 
-// BenchmarkStoreFlush times one second's flush at production's write rate: 650 vessels with new positions
-// upserted into a record of 300,000, every index moving with them.
+// BenchmarkStoreFlush is one second's flush at production's rate: 650 rows into 300,000.
 func BenchmarkStoreFlush(b *testing.B) {
 	st, err := openStore(b.TempDir() + "/aiscast.db")
 	if err != nil {

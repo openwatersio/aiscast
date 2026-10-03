@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -106,6 +107,18 @@ func TestTierOf(t *testing.T) {
 	for want, c := range cases {
 		if got := tierOf(c); got != want {
 			t.Errorf("%+v: tier %q, want %q", c, got, want)
+		}
+	}
+}
+
+// /metrics carries the garbage collector's cost, which the record mirror adds to.
+func TestRuntimeMetrics(t *testing.T) {
+	p := testPipeline(t)
+	w := httptest.NewRecorder()
+	p.serveMetrics(w, httptest.NewRequest("GET", "/metrics", nil))
+	for _, m := range runtimeMetrics {
+		if !regexp.MustCompile(`(?m)^` + m.name + ` [0-9.e+-]+$`).MatchString(w.Body.String()) {
+			t.Errorf("no %s sample in /metrics", m.name)
 		}
 	}
 }

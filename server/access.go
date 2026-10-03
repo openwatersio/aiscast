@@ -1,19 +1,6 @@
 package main
 
-// The access log: one JSON line per HTTP request, written when the response finishes, in hourly gzip files
-// uploaded under access/v1/ to ACCESS_BUCKET. It answers who asked for what and what it cost, after the
-// fact: the load behind a latency spike, and how clients use the API. It has a bucket of its own, never the
-// archive's: the raw archive is meant to become publicly mirrorable, and R2 opens a whole bucket at once.
-//
-// A line never holds a token, a full address, or a precise location. It names a verified token by its
-// subject, and a client by its network (the /24 or /48) and a keyed hash of the address, so one client's
-// requests group across days without the address being written. The key is stable so abuse can be followed
-// over weeks, and whoever holds it can recover an address from its /24, so the lines are personal data and
-// kept 90 days (accessRetention). Coordinates in the query (around, a search ranked from
-// the visitor's own position, and bbox, the view) are rounded to 0.1°, and a tile deeper than z12 is logged
-// as the z12 tile holding it: about 10 km either way, enough to see where load falls and too coarse to
-// place a home or a berth. Caddy keeps the full address in its own short log on the box, and the request id
-// joins a line here to its line there.
+// The access log: who asked for what and what it cost; never a token, a full address, or a precise location (README: Access log).
 
 import (
 	"context"
@@ -62,8 +49,7 @@ type accessNote struct{ sub, role string }
 
 type accessNoteKey struct{}
 
-// noteClaims records a verified token's subject and role for the request's access line. Anonymous claims are
-// never noted: their subject holds the address.
+// noteClaims never notes anonymous claims: their subject holds the address.
 func noteClaims(r *http.Request, c *Claims) {
 	if c == nil || c.Role == "anonymous" {
 		return
@@ -110,8 +96,7 @@ func accessLineFor(r *http.Request, n *accessNote, route string, status int, byt
 	return b
 }
 
-// clientNet is an address's /24 (IPv4) or /48 (IPv6), and its keyed hash. The key is STATION_SALT under a
-// label of its own, so these hashes cannot be matched against UDP station ids, which hash addresses too.
+// clientNet keys its hash under its own label, so it cannot be matched against UDP station ids.
 func clientNet(ip string) (network, hash string) {
 	a, err := netip.ParseAddr(ip)
 	if err != nil {
@@ -140,16 +125,13 @@ var tokenPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(tokenPrefix) + `
 var knownSegments = map[string]bool{"": true, "v0": true, "v1": true, "mcp": true, "health": true, "metrics": true,
 	"openapi.json": true, "robots.txt": true, "favicon.ico": true}
 
-// stationIDShape is what a station id looks like (udp:<hex>, station:ed25519:<key>[/n2k], mmsi:<n>), so a
-// path such as a tile's numbers under /v1/stations/ is logged as x.
+// stationIDShape keeps anything else under /v1/stations/, such as a tile path, out of the log.
 var stationIDShape = regexp.MustCompile(`^(?:station|udp|mmsi):[A-Za-z0-9:_./-]{1,120}$`)
 
 // accessTileZoom is the deepest tile the access log names: a z12 tile is about 10 km across.
 const accessTileZoom = 12
 
-// canonicalPath is the path a line keeps: the matched route with its path values filled in only where they
-// are plain numbers (an MMSI, a tile's coordinates, coarsened), and x for anything else, so coordinates or
-// a token put where a number belongs never reach the log. A path no route matched keeps its first segment.
+// canonicalPath keeps only numeric path values, so coordinates or a token where a number belongs never reach the log.
 func canonicalPath(r *http.Request, route string) (string, int) {
 	switch {
 	case route == "other":
@@ -183,9 +165,7 @@ func canonicalPath(r *http.Request, route string) (string, int) {
 	return strings.Join(parts, "/"), 0
 }
 
-// coarseTilePath names a tile no deeper than accessTileZoom, with the requested zoom. Each coordinate is
-// read from its leading digits, so a tile URL with an extension (.pbf, .mvt) is still named coarse; one
-// whose numbers do not parse is named invalid.
+// coarseTilePath reads leading digits, so a tile URL with an extension (.pbf, .mvt) is still logged coarse.
 func coarseTilePath(zs, xs, ys string) (string, int) {
 	const prefix = "/v1/vessels/tiles/"
 	var nums [3]int
@@ -206,8 +186,7 @@ func coarseTilePath(zs, xs, ys string) (string, int) {
 	return fmt.Sprintf("%s%d/%d/%d", prefix, min(z, accessTileZoom), x, y), z
 }
 
-// coarseCoords rounds each number in a comma-separated coordinate list to 0.1°. A part that is not a
-// number is dropped, so nothing precise survives a malformed value.
+// coarseCoords drops a non-number, so nothing precise survives a malformed value.
 func coarseCoords(s string) string {
 	parts := strings.Split(s, ",")
 	out := parts[:0]
@@ -228,8 +207,7 @@ func stripQuery(s string) string {
 	return u.String()
 }
 
-// viaProxy reports a request Caddy forwarded: only Caddy and a local browser connect from loopback, and only
-// then are its headers about the client to be believed.
+// viaProxy: only Caddy and a local browser connect from loopback, so only then are client headers believed.
 func viaProxy(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	return err == nil && net.ParseIP(host).IsLoopback()
@@ -243,8 +221,7 @@ func accessDir() string {
 	return ""
 }
 
-// accessStoreFromEnv is ACCESS_BUCKET, in the raw archive's account and with its keys: never R2_BUCKET or
-// NORMALIZED_BUCKET, even when ACCESS_BUCKET names one of them.
+// accessStoreFromEnv refuses the archive buckets: the raw archive is meant to become public, and R2 opens a whole bucket.
 func accessStoreFromEnv() *s3Client {
 	b := os.Getenv("ACCESS_BUCKET")
 	if b != "" && (b == os.Getenv("R2_BUCKET") || b == os.Getenv("NORMALIZED_BUCKET")) {
@@ -254,13 +231,10 @@ func accessStoreFromEnv() *s3Client {
 	return s3BucketFromEnv(b)
 }
 
-// accessPrefix is the access log's top-level directory. Its hour keys have the shape of raw ones, so replay
-// and the replay job's sync skip it by name, as they skip normPrefix, should a copy ever share a tree with
-// the raw archive.
+// accessPrefix: its keys look like raw hours, so replay and the replay sync skip it by name.
 const accessPrefix = "access"
 
-// accessRetention is how long access lines are kept: long enough to follow abuse across weeks. The bucket
-// enforces it with a lifecycle rule; without a bucket, the sweep deletes older hours on disk.
+// accessRetention: the bucket enforces it with a lifecycle rule, the sweep on disk without one.
 const accessRetention = 90 * 24 * time.Hour
 
 // newAccessArchive is the archive writer configured for the access log: one file per hour, a line per request.
@@ -273,8 +247,7 @@ func newAccessArchive(dir string, s3 *s3Client) *archive {
 	return a
 }
 
-// logAccess queues a finished request's line, dropping it when the writer has fallen behind: a line is worth
-// less than the request it describes, which must not wait on the disk.
+// logAccess drops a line rather than make the request wait on the disk.
 func (p *Pipeline) logAccess(r *http.Request, n *accessNote, route string, status int, bytes int64, start, end time.Time) {
 	if p.access.dir == "" {
 		return
