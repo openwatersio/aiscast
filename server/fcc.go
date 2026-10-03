@@ -249,6 +249,25 @@ func (s *store) replaceFCC(ships map[uint32]*fccShip, at time.Time) error {
 	return tx.Commit()
 }
 
+// fccOfficials is the set of normalized official numbers the active licenses carry, which the PSIX
+// listing keeps ident-only rows for.
+func (s *store) fccOfficials() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT official FROM fcc WHERE official != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var o string
+		if err := rows.Scan(&o); err != nil {
+			return nil, err
+		}
+		out[o] = true
+	}
+	return out, rows.Err()
+}
+
 // fccByMMSI is the licensed ships among the given MMSIs.
 func (s *store) fccByMMSI(mmsis []uint32) (map[uint32]*fccShip, error) {
 	out := map[uint32]*fccShip{}
@@ -346,6 +365,8 @@ func (p *Pipeline) syncFCCIfDue(now time.Time, endpoint string) bool {
 	}
 	p.fcc.ships.Store(int64(len(ships)))
 	p.fcc.lastSuccess.Store(now.Unix())
+	// The PSIX listing re-runs when its stamp is older than this sync's (syncUSCGIfDue), so a fresh
+	// license set makes ident-only rows joinable within the hour.
 	log.Printf("fcc: stored %d active ship licenses with an MMSI", len(ships))
 	return true
 }

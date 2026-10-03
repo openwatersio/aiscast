@@ -1,11 +1,16 @@
 import "maplibre-gl/dist/maplibre-gl.css";
+import { useEffect } from "react";
 import { isRouteErrorResponse, Links, Meta, Scripts, ScrollRestoration, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/root";
 import "./app.css";
 import { Shell } from "./components/Shell";
 import { setPublicApi } from "./lib/api";
 import { serverEnv } from "./lib/context";
+import { installErrorReporting, reportError } from "./lib/report";
 import { themeFromCookie } from "./lib/theme";
+
+// Here rather than in an effect, so an error during hydration is heard.
+installErrorReporting();
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://tiles.openfreemap.org", crossOrigin: "anonymous" },
@@ -62,6 +67,9 @@ export default function App({ loaderData }: Route.ComponentProps) {
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   const notFound = isRouteErrorResponse(error) && error.status === 404;
+  useEffect(() => {
+    if (!isRouteErrorResponse(error)) reportError("boundary", error);
+  }, [error]);
   return (
     <main className="p-6">
       <h1 className="text-title text-fg">{notFound ? "Not found" : "Something went wrong"}</h1>

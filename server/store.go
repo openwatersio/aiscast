@@ -89,13 +89,14 @@ CREATE TABLE IF NOT EXISTS wikidata (
 	commons_category TEXT    NOT NULL DEFAULT '',
 	image            TEXT    NOT NULL DEFAULT ''
 );
--- US-flag vessels with a call sign from the Coast Guard's PSIX, listed weekly, with dimensions and tonnage
--- read for the vessels AIS matches to them (uscg.go)
+-- US-flag vessels with a call sign or an official number from the Coast Guard's PSIX, listed weekly, with
+-- dimensions and tonnage read for the vessels AIS matches to them (uscg.go)
 CREATE TABLE IF NOT EXISTS uscg (
 	vessel_id       INTEGER PRIMARY KEY,         -- PSIX's id
 	callsign        TEXT    NOT NULL,
 	name            TEXT    NOT NULL,
 	identification  TEXT    NOT NULL DEFAULT '',
+	official_key    TEXT    NOT NULL DEFAULT '', -- identification through normOfficial, which the FCC licenses join
 	service         TEXT    NOT NULL DEFAULT '',
 	status          TEXT    NOT NULL DEFAULT '',
 	year_built      INTEGER NOT NULL DEFAULT 0,
@@ -109,7 +110,6 @@ CREATE TABLE IF NOT EXISTS uscg (
 	details_at      INTEGER NOT NULL DEFAULT 0   -- unix ms of the last dimensions and tonnage read; 0 before
 );
 CREATE INDEX IF NOT EXISTS uscg_callsign ON uscg (callsign);
-CREATE INDEX IF NOT EXISTS uscg_identification ON uscg (identification);
 -- Norwegian fishing vessels with a call sign from the Directorate of Fisheries' open register, replaced
 -- weekly (fiskeridir.go)
 CREATE TABLE IF NOT EXISTS fiskeridir (
@@ -231,6 +231,27 @@ func openStore(path string) (*store, error) {
 	}
 	for _, col := range storeAddedCols {
 		if _, err := db.Exec("ALTER TABLE vessels ADD COLUMN " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	// A file from before official_key gains the column, and its sync stamp is cleared so the next hourly
+	// check re-lists, filling the keys, rather than serving empty ones for up to a week. The old
+	// identification index, which nothing queries now, goes with it.
+	if _, err := db.Exec("ALTER TABLE uscg ADD COLUMN official_key TEXT NOT NULL DEFAULT ''"); err == nil {
+		if _, err := db.Exec("DELETE FROM meta WHERE key = 'uscg_sync'"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	} else if !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for _, stmt := range []string{
+		"DROP INDEX IF EXISTS uscg_identification",
+		"CREATE INDEX IF NOT EXISTS uscg_official_key ON uscg (official_key) WHERE official_key != ''",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
