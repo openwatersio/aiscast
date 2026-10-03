@@ -70,10 +70,14 @@ func TestFCCSyncAndServe(t *testing.T) {
 		t.Fatalf("stored: %+v, %v", ships, err)
 	}
 
-	// A PSIX record whose call sign AIS mangles: only the license's official number can find it.
+	// A PSIX record whose call sign AIS mangles: only the license's official number can find it. And an
+	// ident-only record with no call sign at all, listed under a spaced registration that must match the
+	// license's normalized FL8656LB.
 	if err := p.store.replaceUSCGListing(map[int]*uscgVessel{
-		900001: {ID: 900001, License: psixLicense, Name: "RESOLUTE II", Identification: "1257727",
+		900001: {ID: 900001, License: psixLicense, Name: "RESOLUTE II", Identification: "1257727", officialKey: "1257727",
 			Service: "Towing Vessel", Status: "Active", YearBuilt: 1999, callsign: "WXY9999"},
+		900002: {ID: 900002, License: psixLicense, Name: "SEA TOW 42", Identification: "FL 8656-LB", officialKey: "FL8656LB",
+			Service: "Recreational", Status: "Active", YearBuilt: 2015},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -100,22 +104,30 @@ func TestFCCSyncAndServe(t *testing.T) {
 		t.Errorf("provenance %v sources %+v", f.Properties.Provenance, f.Properties.Sources)
 	}
 
-	// The official-matched record is also what the dimension backfill works through, even though no
-	// call sign joins it.
+	// The official-matched records are also what the dimension backfill works through, even though no
+	// call sign joins them, and a vessel whose stored call sign is blank padding joins nothing.
+	if _, err := p.store.db.Exec(`UPDATE vessels SET callsign = '   ' WHERE mmsi = 366000009`); err != nil {
+		t.Fatal(err)
+	}
 	due, err := p.store.uscgDue(now.Add(time.Hour))
-	if err != nil || len(due) != 1 || due[0].ID != 900001 {
+	ids := map[int]bool{}
+	for _, v := range due {
+		ids[v.ID] = true
+	}
+	if err != nil || len(due) != 2 || !ids[900001] || !ids[900002] {
 		t.Errorf("backfill due: %+v, %v", due, err)
 	}
 
-	// A licensed vessel PSIX does not list still gets its license facts, decoded into a fresh struct so
-	// nothing lingers from the previous vessel's answer.
+	// A licensed vessel with no usable call sign anywhere reaches its ident-only PSIX record through the
+	// official number alone, decoded into a fresh struct so nothing lingers from the previous answer.
 	f = props{}
 	json.Unmarshal(get(t, p, "/v1/vessels/367000300").Body.Bytes(), &f)
 	m = f.Properties.Particulars
-	if m == nil || m.RegisteredName != "SEA TOW 42" || m.Identification != "FL8656LB" || m.Registry != "United States" {
-		t.Errorf("license-only particulars: %+v", m)
+	if m == nil || m.RegisteredName != "SEA TOW 42" || m.Service != "Recreational" || m.YearBuilt != 2015 ||
+		m.Identification != "FL 8656-LB" || m.Registry != "United States" {
+		t.Errorf("ident-only particulars: %+v", m)
 	}
-	if f.Properties.Provenance["identification"] != "fcc" {
+	if f.Properties.Provenance["service"] != "uscg" || f.Properties.Provenance["identification"] != "uscg" {
 		t.Errorf("provenance: %v", f.Properties.Provenance)
 	}
 
