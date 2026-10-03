@@ -181,7 +181,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		sources["tc"] = sourceRef{Credit: "Transport Canada vessel registry", License: tcLicense}
 	}
 	if is != nil {
-		sources["ised"] = sourceRef{Credit: "ISED Canadian MMSI registry", License: isedLicense, URL: isedSearchURL(is.MMSI)}
+		sources["ised"] = sourceRef{Credit: "ISED Canadian MMSI registry", License: isedLicense, URL: isedSearchPage}
 	}
 	return m, prov, sources
 }

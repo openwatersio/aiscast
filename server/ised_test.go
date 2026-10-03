@@ -82,7 +82,7 @@ func TestISEDRoundsAndServe(t *testing.T) {
 		t.Errorf("particulars: %+v", m)
 	}
 	if f.Properties.Provenance["registered_name"] != "ised" || f.Properties.Provenance["callsign"] != "ised" ||
-		f.Properties.Sources["ised"].URL != "https://ised-isde.canada.ca/mmsi-ismm/eng/shipSearch.html?mmsi=316061185" {
+		f.Properties.Sources["ised"].URL != isedSearchPage {
 		t.Errorf("provenance %v sources %+v", f.Properties.Provenance, f.Properties.Sources)
 	}
 	// A no-record answer serves nothing, and stays answered.
