@@ -77,6 +77,7 @@ describe("particularsFacts", () => {
     expect(facts[0]).toEqual(["Documented as", "GOVERNOR THOMAS H. KEAN"]);
     // AIS cannot carry punctuation, so a punctuation-only difference is information.
     expect(particularsFacts({ registered_name: "RUBY'S STAR" }, "RUBYS STAR")[0]).toEqual(["Documented as", "RUBY'S STAR"]);
+    expect(particularsFacts({ registered_name: "L'ÉTOILE DU NORD" }, "LETOILE DU NORD")[0]).toEqual(["Documented as", "L'ÉTOILE DU NORD"]);
     expect(particularsFacts({ registered_name: "Cerulean" }, "CERULEAN")[0]?.[1]).toBeUndefined();
   });
 
