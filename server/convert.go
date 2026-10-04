@@ -7,11 +7,13 @@ package main
 // deciding whether a vessel was moving, which a single SQL statement cannot carry through a vessel's day.
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -144,6 +146,32 @@ func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor)
 			at[r.tx] = first{r.ts, r.recv, r.accepted}
 		}
 	}
+	// Each transmission takes its id's byte, or the next one free among the vessel's transmissions stamped in the
+	// same millisecond, in the order they were accepted, as the live writer's freeDisc does.
+	order := make([]uint64, 0, len(at))
+	for tx := range at {
+		order = append(order, tx)
+	}
+	slices.SortFunc(order, func(x, y uint64) int {
+		if c := at[x].recv.Compare(at[y].recv); c != 0 {
+			return c
+		}
+		return cmp.Compare(x, y)
+	})
+	disc := make(map[uint64]uint8, len(at))
+	used := map[int64][]uint8{}
+	for _, tx := range order {
+		ms := at[tx].ts.UnixMilli()
+		d := uint8(tx ^ uint64(ms))
+		for range 256 {
+			if !slices.Contains(used[ms], d) {
+				break
+			}
+			d++
+		}
+		used[ms] = append(used[ms], d)
+		disc[tx] = d
+	}
 	a := anchors[rows[0].mmsi]
 	if a == nil {
 		a = &anchor{}
@@ -156,7 +184,7 @@ func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor)
 		}
 		txAt := at[r.tx].ts
 		pt := trackPoint{mmsi: r.mmsi, ts: r.ts, lat6: r.lat6, lon6: r.lon6, sog10: r.sog10, cog10: r.cog10, heading: r.heading,
-			navStatus: r.navstat, source: r.source, txAt: txAt, txDisc: uint8(r.tx ^ uint64(txAt.UnixMilli())), recv: r.recv,
+			navStatus: r.navstat, source: r.source, txAt: txAt, txDisc: disc[r.tx], recv: r.recv,
 			station: r.station, dup: !r.accepted, uncorroborated: !r.corroborated, implausible: r.implausible, clockBad: r.clockBad}
 		pt.still = a.still(pt, nil, r.accepted && !r.implausible && !r.clockBad)
 		out = append(out, pt)

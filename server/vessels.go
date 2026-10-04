@@ -357,9 +357,7 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 	pt.uncorroborated = ev.LowTrust && !ev.Corroborated
 	pt.implausible = ev.Implausible
 	switch {
-	case ev.Implausible:
-	case !stale:
-		v.remember(pt)
+	case ev.Implausible, !stale:
 	default:
 		if ev.rebuilt {
 			if at, disc, ok := v.repeats(pt); ok {
@@ -371,6 +369,14 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 		}
 		pt.implausible = volunteer(ev.Source) || v.jumps(pt)
 		ev.unserved = pt.implausible // its dedupe copies inherit it; the stream's own flags stay as they were
+	}
+	// A transmission of its own takes a byte free in its millisecond, and one positions may serve joins the
+	// recent ones its copies find it among.
+	if !pt.dup {
+		v.freeDisc(&pt)
+		if !pt.implausible {
+			v.remember(pt)
+		}
 	}
 	p.noteReception(pt)
 }

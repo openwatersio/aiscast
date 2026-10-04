@@ -935,11 +935,30 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 	was := convertBatch
 	convertBatch = 2
 	t.Cleanup(func() { convertBatch = was })
+	// Two more transmissions of a third vessel, stamped in one millisecond, whose ids share a byte.
+	var idx, idy string
+	for i := 0; idy == ""; i++ {
+		id := eventID(fmt.Sprint("collide", i))
+		switch {
+		case idx == "":
+			idx = id
+		case discOf(id) == discOf(idx):
+			idy = id
+		}
+	}
+	for i, id := range []string{idx, idy} {
+		h, _ := strconv.ParseUint(id[:16], 16, 64)
+		tx := h ^ uint64(noon.UnixMilli())
+		if err := conn.conn.Exec(ctx, "INSERT INTO "+db+".receptions_v1 VALUES (257000003, ?, ?, ?, ?, ?, 0, 3600, 511, 15, 'aishub', 'aishub', true, true, false, false)",
+			noon, tx, noon.Add(time.Duration(i+1)*time.Second), int32(58*600000)+int32(i*1000), int32(10.7*600000)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	n, err := conn.convertDay(ctx, day, map[uint32]*anchor{})
-	if err != nil || n != len(copies) {
+	if err != nil || n != len(copies)+2 {
 		t.Fatalf("converted %d of %d: %v", n, len(copies), err)
 	}
-	rows, err := conn.conn.Query(ctx, "SELECT mmsi, ts, tx_off, tx_disc, recv_delay, accepted, implausible, moving FROM "+db+".receptions ORDER BY mmsi, ts")
+	rows, err := conn.conn.Query(ctx, "SELECT mmsi, ts, tx_off, tx_disc, recv_delay, accepted, implausible, moving FROM "+db+".receptions WHERE mmsi != 257000003 ORDER BY mmsi, ts")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -968,6 +987,9 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = '2026-09-01 00:00:00', to = '2026-09-02 00:00:00')").Scan(&served); err != nil || served != 2 {
 		t.Errorf("the view serves each transmission once: %d %v", served, err)
 	}
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000003, from = '2026-09-01 00:00:00', to = '2026-09-02 00:00:00')").Scan(&served); err != nil || served != 2 {
+		t.Errorf("two transmissions in one millisecond with one byte are still two: %d %v", served, err)
+	}
 }
 
 // A report that arrives a day or more after its stamp is kept out of positions_1m, so it must not move the
@@ -990,5 +1012,31 @@ func TestALateReportDoesNotMoveTheAnchor(t *testing.T) {
 	q := queued(p, mmsi)
 	if len(q) != 1 || !q[0].clockBad || v.moved != was {
 		t.Fatalf("the late report is clock_bad and leaves the anchor where it was: %+v, anchor %+v", q, v.moved)
+	}
+}
+
+// Two distinct reports of a vessel stamped in one millisecond whose ids share a byte are still two
+// transmissions: the second takes the next free byte, and a copy of it follows it there.
+func TestATransmissionsByteIsFreeInItsMillisecond(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	a, b := "first", ""
+	for i := 0; b == ""; i++ {
+		if c := fmt.Sprint("second", i); discOf(eventID(c+"A")) == discOf(eventID(a+"A")) {
+			b = c
+		}
+	}
+	report := func(payload, source string, recv time.Duration, lat float64) {
+		p.emit(&Event{Payload: []byte(payload), Channel: 'A', Time: t0, RecvTime: t0.Add(recv),
+			Source: source, Station: source, Packet: posReport(mmsi, lat, 10.7)})
+	}
+	report(a, "aishub", 0, 59.900)
+	report(b, "aishub", time.Second, 59.901)
+	report(b, "barentswatch", 2*time.Second, 59.901) // dedupe's copy of the second
+	q := queued(p, mmsi)
+	if len(q) != 3 || q[0].txDisc == q[1].txDisc || q[1].dup || !q[2].dup || txKey(q[2]) != txKey(q[1]) {
+		t.Fatalf("two transmissions with two bytes, and the copy with the second's: %+v", q)
 	}
 }
