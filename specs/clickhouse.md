@@ -1,6 +1,6 @@
 # History in ClickHouse
 
-History the app serves moves to ClickHouse, a self-hosted analytical database on the box's local disk. The server writes positions to it as they are accepted and reads every history feature from it: vessel tracks over any range, and in later steps station series, coverage cells, and area playback. A new history feature becomes a table, a materialized view, or a projection, not new infrastructure. The normalized archive on R2 stays the source of truth, and the lake stays the public dataset, but the server stops reading the lake to answer requests.
+History the app serves moves to ClickHouse, a self-hosted analytical database on the box's local disk. The server writes positions to it as they are accepted and reads every history feature from it: vessel tracks over any range, and in later steps station series, coverage cells, and area playback. A new history feature becomes a table, a materialized view, or a projection, not new infrastructure. ClickHouse is the source of truth for history, as [historical-sources.md](historical-sources.md#where-it-lands) sets out. The normalized archive on R2 is a log of live ingest, and the lake stays the public dataset, but the server stops reading the lake to answer requests.
 
 The plan starts with a spike on the box that decides go or no-go from measurements, then moves tracks, then the other history features.
 
@@ -26,15 +26,17 @@ The rule: state the server needs to start or to answer live requests stays in SQ
 | Vessel record, the latest state per vessel | SQLite |
 | Station records: names, owners, bound addresses | SQLite |
 | Tokens, usage counters, dedupe state | SQLite and files, as now |
-| Positions and their rollups | ClickHouse |
-| Receptions, weather | ClickHouse, in a later step |
+| Receptions, the `positions` view, `positions_1m` | ClickHouse, the source of truth |
+| Weather | ClickHouse, in a later step |
 | Station series, coverage cells | ClickHouse views, in later steps |
-| The normalized archive, every accepted event and copy | R2, the source of truth |
+| The normalized archive, every accepted event and copy | R2, a log of live ingest |
 | The public dataset | The lake on R2, written by the packager |
 
-Hetzner's nightly server backups cover the box's local disk, where ClickHouse and SQLite keep their files. ClickHouse writes each part once and never edits it, so a backup taken while it runs is recoverable. Anything newer than the last backup is replayed from the archive. Data moved to an R2-backed disk is durable on R2.
+Backups, the R2 cold tier, and recovery from losing the box are in [historical-sources.md](historical-sources.md#durability).
 
 ## Schema
+
+This section is the spike's schema. [historical-sources.md](historical-sources.md#tables) holds the current one.
 
 Positions use the lake's integer encodings, so loading from the lake and comparing answers is direct.
 
@@ -147,5 +149,5 @@ Read times include the busiest vessel of a day, about 1,440 rows a day in a roll
 
 - **Memory beside the live server.** The box has 15 GB, and the server uses 1 to 2 GB. A 4 GB cap leaves room, and the spike measures it under real ingest.
 - **One more service.** Upgrades, config, and alerts on disk use, insert failures, and part counts. The config lives in the repo with the other managed files.
-- **One node.** Hetzner's backups and the archive cover loss of the box, and replaying the archive into ClickHouse is the slow path back.
-- **R2 as a ClickHouse disk.** Moving parts to R2 is needed only if bytes per row run high. The spike checks that R2 works as an S3 disk before anything depends on it.
+- **One node.** ClickHouse's nightly backup to a separate R2 bucket covers loss of the box (see [Durability](historical-sources.md#durability)).
+- **R2 as a ClickHouse disk.** `receptions` moves to R2 after 30 days. The tier is tested against an S3-compatible store, not yet against R2 itself.

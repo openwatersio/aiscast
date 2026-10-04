@@ -113,9 +113,12 @@ const clockBadAge = 24 * time.Hour
 // copy at one of their positions is a copy of that transmission. A vessel underway moves between reports, so its
 // position names one; a moored one repeats its position, and any of those transmissions is the same point.
 const (
-	recentKeep  = 5 * time.Minute
-	recentMax   = 32 // positions a vessel keeps, enough for one reporting every 10 s
-	recentNearA = 3  // wire units of latitude or longitude, about 5 m, for a source that rounds its coordinates
+	recentKeep = 5 * time.Minute
+	recentMax  = 32 // positions a vessel keeps, enough for one reporting every 10 s
+	// recentNearA is how far, in wire units of latitude or longitude (1/600,000 of a degree), a copy may sit
+	// from its transmission: 4, about 0.75 m. A source that rounds to 5 decimal places, as MarineCadastre does,
+	// is off by up to 3, and converting its float back can add one.
+	recentNearA = 4
 )
 
 type recentPos struct {

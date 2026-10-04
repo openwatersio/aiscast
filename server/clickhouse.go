@@ -1,18 +1,15 @@
 package main
 
 // History in ClickHouse: every copy of every position report the network receives, written once a second over
-// the native protocol, and two rollups ClickHouse keeps as the copies arrive. receptions holds every copy,
-// sorted by vessel and time, with the transmission it belongs to; the positions view keeps the earliest copy of
-// each transmission. positions_15m and positions_1h hold each vessel's first accepted position in each
-// epoch-aligned window, which is what the track endpoint's thinning keeps, so a step that is a whole number of
-// windows reads the same answer from a rollup as from every position. ClickHouse being slow or down never holds
-// up ingest: its queue is bounded, and what falls out is counted. A batch whose insert failed is sent again
-// whole, under the same deduplication token, since a failure can come after ClickHouse committed it.
+// the native protocol. receptions holds every copy, sorted by vessel and time, with the transmission it belongs
+// to; the positions view keeps the earliest copy of each transmission, and positions_1m, which ClickHouse fills
+// as copies arrive, keeps each vessel's track a minute at a time while it moves. ClickHouse being slow or down
+// never holds up ingest: its queue is bounded, and what falls out is counted. A batch whose insert failed is
+// sent again whole, under the same deduplication token, since a failure can come after ClickHouse committed it.
 
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -31,19 +28,24 @@ import (
 // chDatabase is the database the schema lives in when CLICKHOUSE_URL names none.
 const chDatabase = "aiscast"
 
-// chSchema creates what the writer and positions_1m need, in order; {db} is the database. Receptions use the
-// track encodings, 15 in navstat for not available, and a source kind rather than a full source; station is
-// the full one. Nothing expires: receptions are the record of history.
+// chMigrations brings a database to the current layout, one numbered step at a time, each recorded in
+// schema_migrations when it succeeds, so a step runs once. Steps only ever add: a table, a column, a view. A
+// server built before a step still writes to a database after it, because every column it adds has a default,
+// so rolling back a deploy never stops history. Anything that drops or rewrites data runs only from a command
+// (aiscast clickhouse-cleanup), never at start. No step renames a table: a materialized view keeps reading the
+// table it was created over, not one that takes its name, so a rename silently stops every view over it.
+// {db} is the database. Receptions use the track encodings, 15 in navstat for not available, and a source kind
+// rather than a full source; station is the full one. Nothing expires: receptions are the record of history.
 //
 // A copy names its transmission without a hash that would not compress: the transmission is the vessel, the
 // time its accepted copy was stamped, ts plus tx_off, and tx_disc, one byte of that copy's event id, which
 // tells apart transmissions stamped in the same millisecond. Most copies are their transmission's accepted one,
 // so tx_off is almost always 0. recv_delay is when the copy arrived, as milliseconds after ts. Measured on
 // three hours of production receptions, this costs 11.4 bytes a row where a 64-bit hash and a second
-// timestamp cost 19.8.
-var chSchema = []string{
-	`CREATE DATABASE IF NOT EXISTS {db}`,
-	`CREATE TABLE IF NOT EXISTS {db}.receptions (
+// timestamp cost 19.8. A database from before this layout has tx and recv_ts as well; step 2 adds the columns
+// beside them, and aiscast convert-receptions rewrites its rows.
+var chMigrations = []string{
+	1: `CREATE TABLE IF NOT EXISTS {db}.receptions (
 		mmsi         UInt32,
 		ts           DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD),
 		tx_off       Int32 CODEC(T64, ZSTD),
@@ -66,7 +68,12 @@ var chSchema = []string{
 	PARTITION BY toYYYYMM(ts)
 	ORDER BY (mmsi, ts)
 	SETTINGS non_replicated_deduplication_window = 1000`,
-	`CREATE TABLE IF NOT EXISTS {db}.positions_1m (
+	2: `ALTER TABLE {db}.receptions
+		ADD COLUMN IF NOT EXISTS tx_off Int32 CODEC(T64, ZSTD) AFTER ts,
+		ADD COLUMN IF NOT EXISTS tx_disc UInt8 CODEC(ZSTD) AFTER tx_off,
+		ADD COLUMN IF NOT EXISTS recv_delay Int32 CODEC(T64, ZSTD) AFTER tx_disc,
+		ADD COLUMN IF NOT EXISTS moving Bool DEFAULT true`,
+	3: `CREATE TABLE IF NOT EXISTS {db}.positions_1m (
 		mmsi    UInt32,
 		slot    DateTime('UTC') CODEC(DoubleDelta, ZSTD),
 		cell    UInt32 CODEC(ZSTD),
@@ -81,23 +88,30 @@ var chSchema = []string{
 	) ENGINE = ReplacingMergeTree(ts)
 	PARTITION BY toYYYYMM(slot)
 	ORDER BY (mmsi, slot, cell)`,
-	`CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.positions_1m_mv TO {db}.positions_1m AS
-	SELECT mmsi, if(moving, toDateTime(toStartOfMinute(ts), 'UTC'), toDateTime(toStartOfDay(ts), 'UTC')) AS slot,
+	4: `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.positions_1m_mv TO {db}.positions_1m AS
+	SELECT mmsi, toDateTime(if(moving, toStartOfMinute(ts), toStartOfInterval(ts, INTERVAL 30 MINUTE)), 'UTC') AS slot,
 	       if(moving, 0, ` + chCell + `) AS cell, ts, lat6, lon6, sog10, cog10, heading, navstat, source
 	FROM {db}.receptions WHERE accepted AND ` + chUsable,
-	chPositionsView,
 }
 
-// positions_1m is each vessel's track at one position a minute while it moves, and one a day for each place it
-// sat still: a heartbeat that says it was heard there that day. A vessel underway reports every few seconds, so
-// a minute keeps the shape of its track; one moored or at anchor reports every few minutes from the same place,
-// which a day's row says as well. Each window keeps its latest report, so a heartbeat is when the vessel was
-// last heard there that day. On 2026-08-28 it kept 10 M rows of 42 M accepted positions, at 12.4 bytes a row
-// in plain columns; a window reduced to an aggregate state cost twice that. Any step of a minute or more reads
-// from it, grouped by the step, so coarser summaries are never needed to answer one. Places are cells of a
-// hundredth of a degree, about a kilometer, so a vessel moored at two harbors in a day has a heartbeat at each.
-// Nothing in it expires, as in receptions.
+// positions_1m is each vessel's track at one position a minute while it moves, and one every 30 minutes for each
+// place it sits still: a heartbeat that says it was heard there then, on the same 30 minutes that make a vessel
+// active on the live map. A vessel underway reports every few seconds, so a minute keeps the shape of its track;
+// one moored or at anchor reports every few minutes from the same place, which a heartbeat says as well. Each
+// window keeps its latest report. A range finds a vessel sitting still in every window it overlaps but the last,
+// whose report may fall after the range ends, so a moored vessel is missing from at most the last 30 minutes of
+// a range. Its moving rows bound when it arrived and left to the minute. On 2026-10-02 it kept 12.4 M rows of
+// 53 M accepted positions, at 12.4 bytes a row in plain columns: 10.2 M minutes underway and 2.2 M heartbeats,
+// where one a day would keep 0.15 M; a window reduced to an aggregate state cost twice that. Any step of a minute
+// or more reads from it, grouped by the step, so coarser summaries are never needed to answer one. Places are
+// cells of a hundredth of a degree, about a kilometer, so a vessel that moves between harbors in 30 minutes has
+// a heartbeat at each. Nothing in it expires, as in receptions.
 const chCell = `toUInt32((intDiv(lat6, 6000) + 9000) * 36000 + (intDiv(lon6, 6000) + 18000))`
+
+// chCellOf is chCell over other columns.
+func chCellOf(lat6, lon6 string) string {
+	return strings.NewReplacer("lat6", lat6, "lon6", lon6).Replace(chCell)
+}
 
 // chUsable is the condition every history read puts on receptions: copies the fold judged an impossible jump,
 // or whose clock put them a day or more before they arrived, are kept but never served.
@@ -108,61 +122,67 @@ const chUsable = "NOT implausible AND NOT clock_bad"
 // whole, over every copy, because every copy carries its position: filtering copies before grouping would
 // serve a flagged position through an unflagged copy, and a bad clock only rules a copy out as the one served.
 // It takes the vessel and range as parameters so the filter reaches receptions' sort key before the grouping;
-// a view without them would group the vessel's whole history on every read. The 10 seconds either side catch
-// the copies of a transmission near the edge of the range, whose stamps differ by a second or two. It holds no
-// data, so it is replaced at every start and a database always reads by the current definition.
-const chPositionsView = `CREATE OR REPLACE VIEW {db}.positions AS
+// a view without them would group the vessel's whole history on every read. A copy is stamped up to 5 minutes
+// from its transmission, the reach of the fold's match for a rebuilt copy, so the copies are read 5 minutes
+// either side and a transmission is in the range by its own time, not its copies': a page boundary never splits
+// one into two. It holds no data, so it is replaced at every start and a database always reads by the current
+// definition.
+//
+// legacy is a database that still has rows from before tx_off, named by tx, a 64-bit hash, and arriving at
+// recv_ts. Until aiscast convert-receptions rewrites them they are served too, grouped by tx, except on a day
+// receptions_converted says is rewritten, where the rewritten rows serve it. A server rolled back to before the
+// current layout writes such rows again; on a day already rewritten they wait, unserved, for the converter to
+// do the day again.
+func chPositionsView(legacy bool) string {
+	return `CREATE OR REPLACE VIEW {db}.positions AS
 	SELECT mmsi, f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
-	FROM (
-		SELECT mmsi, argMinIf((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), toUnixTimestamp64Milli(ts) + recv_delay, NOT clock_bad) AS f
-		FROM {db}.receptions
-		WHERE mmsi = {mmsi:UInt32}
-		  AND ts >= {from:DateTime64(3, 'UTC')} - INTERVAL 10 SECOND AND ts <= {to:DateTime64(3, 'UTC')} + INTERVAL 10 SECOND
-		GROUP BY mmsi, toUnixTimestamp64Milli(ts) + tx_off, tx_disc
-		HAVING NOT max(implausible) AND countIf(NOT clock_bad) > 0
-	)
-	WHERE ts >= {from:DateTime64(3, 'UTC')} AND ts <= {to:DateTime64(3, 'UTC')}`
+	FROM (` + chFirstCopies(legacy, `mmsi = {mmsi:UInt32}
+		  AND ts >= {from:DateTime64(3, 'UTC')} - INTERVAL 5 MINUTE AND ts <= {to:DateTime64(3, 'UTC')} + INTERVAL 5 MINUTE`) + `)
+	WHERE sent >= toUnixTimestamp64Milli({from:DateTime64(3, 'UTC')}) AND sent <= toUnixTimestamp64Milli({to:DateTime64(3, 'UTC')})`
+}
 
-// chMigrate moves a database to the current layout, in steps, each run once. A positions table from before
-// receptions becomes positions_old. Receptions in the first layout, with a 64-bit tx and recv_ts, become
-// receptions_v1, which aiscast convert-receptions copies into the current one. positions_15m and
-// positions_1h, which positions_1m replaces, go with their views at either step: positions_1m fills from
-// receptions as they are loaded or converted. Run before chSchema.
-func chMigrate(ctx context.Context, conn driver.Conn, db string) error {
-	exec := func(stmts ...string) error {
-		for _, stmt := range stmts {
-			if err := conn.Exec(ctx, strings.ReplaceAll(stmt, "{db}", db)); err != nil {
-				return err
-			}
-		}
-		return nil
+// chFirstCopies is each transmission among the receptions where holds, by its time in milliseconds, sent, and
+// f, the tuple of the copy the positions view serves, with that copy's verdict on moving last.
+func chFirstCopies(legacy bool, where string) string {
+	group, arrival := "toUnixTimestamp64Milli(ts) + tx_off AS tx_ms, tx_disc", "toUnixTimestamp64Milli(ts) + recv_delay"
+	if legacy {
+		group = "tx, if(tx = 0, toUnixTimestamp64Milli(ts) + tx_off, 0) AS tx_ms, if(tx = 0, tx_disc, 0)"
+		arrival = "if(tx = 0, toUnixTimestamp64Milli(ts) + recv_delay, toUnixTimestamp64Milli(recv_ts))"
+		where += " AND (tx = 0 OR toDate(ts) NOT IN (SELECT day FROM {db}.receptions_converted))"
 	}
-	var engine string
-	err := conn.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = 'positions'", db).Scan(&engine)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	return `SELECT mmsi, min(toUnixTimestamp64Milli(ts) + tx_off) AS sent,
+		       argMinIf((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source), moving), ` + arrival + `, NOT clock_bad) AS f
+		FROM {db}.receptions
+		WHERE ` + where + `
+		GROUP BY mmsi, ` + group + `
+		HAVING NOT max(implausible) AND countIf(NOT clock_bad) > 0`
+}
+
+// rebuildPositions1m rebuilds positions_1m for one UTC day from receptions, taking each transmission's first
+// copy as the positions view does. positions_1m keeps the copy accepted when it was written, and a purge or a
+// reload does not move accepted to the copy left, so either is followed by this for each day it touched. Rows
+// the live writer adds meanwhile are kept: positions_1m keeps the latest row per window, so the two agree. It
+// groups in receptions' order, a vessel at a time, so a day stays within the memory a query may take.
+func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
+	end := day.Add(24 * time.Hour)
+	legacy, err := c.legacy(ctx)
+	if err != nil {
 		return err
 	}
-	if err == nil && engine != "View" {
-		if err := exec("DROP VIEW IF EXISTS {db}.positions_15m_mv", "DROP VIEW IF EXISTS {db}.positions_1h_mv",
-			"DROP TABLE IF EXISTS {db}.positions_15m", "DROP TABLE IF EXISTS {db}.positions_1h",
-			"RENAME TABLE {db}.positions TO {db}.positions_old"); err != nil {
-			return err
-		}
-		log.Printf("clickhouse: renamed %s.positions to positions_old; receptions replaces it", db)
-	}
-	var v1 uint64
-	if err := conn.QueryRow(ctx, "SELECT count() FROM system.columns WHERE database = ? AND table = 'receptions' AND name = 'tx'", db).Scan(&v1); err != nil {
+	if err := c.conn.Exec(ctx, "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ?", day, end); err != nil {
 		return err
 	}
-	if v1 > 0 {
-		if err := exec("DROP VIEW IF EXISTS {db}.positions_15m_mv", "DROP VIEW IF EXISTS {db}.positions_1h_mv",
-			"DROP TABLE IF EXISTS {db}.positions_15m", "DROP TABLE IF EXISTS {db}.positions_1h",
-			"RENAME TABLE {db}.receptions TO {db}.receptions_v1"); err != nil {
-			return err
-		}
-		log.Printf("clickhouse: renamed %s.receptions to receptions_v1 for conversion; positions_1m replaces positions_15m and positions_1h", db)
-	}
-	return nil
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "optimize_aggregation_in_order": 1,
+		"max_threads": 2, "max_execution_time": 3600,
+	}))
+	q := `INSERT INTO {db}.positions_1m
+	SELECT mmsi, toDateTime(if(f.9, toStartOfMinute(f.1), toStartOfInterval(f.1, INTERVAL 30 MINUTE)), 'UTC') AS slot,
+	       if(f.9, 0, ` + chCellOf("f.2", "f.3") + `) AS cell,
+	       f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
+	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE") + `)
+	WHERE f.1 >= ? AND f.1 < ?`
+	return c.conn.Exec(ctx, strings.ReplaceAll(q, "{db}", c.db), day, end, day, end)
 }
 
 // chWriter inserts a batch of positions under a deduplication token, so ClickHouse skips a batch it already
@@ -204,10 +224,13 @@ type chConn struct {
 // openClickHouse connects to url, a clickhouse:// DSN, and creates the schema in the database it names, or
 // in chDatabase. The connection itself opens on the server's default database, since the named one may not
 // exist yet.
-func openClickHouse(ctx context.Context, url string) (*chConn, error) {
+func openClickHouse(ctx context.Context, url string, with ...func(*clickhouse.Options)) (*chConn, error) {
 	opts, err := clickhouse.ParseDSN(url)
 	if err != nil {
 		return nil, err
+	}
+	for _, f := range with {
+		f(opts)
 	}
 	db := opts.Auth.Database
 	if db == "" {
@@ -218,17 +241,84 @@ func openClickHouse(ctx context.Context, url string) (*chConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := chMigrate(ctx, conn, db); err != nil {
+	c := &chConn{conn: conn, db: db}
+	if err := c.migrate(ctx); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("clickhouse migration: %w", err)
 	}
-	for _, stmt := range chSchema {
-		if err := conn.Exec(ctx, strings.ReplaceAll(stmt, "{db}", db)); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("clickhouse schema: %w", err)
+	return c, nil
+}
+
+// exec runs statements in order, with {db} the database.
+func (c *chConn) exec(ctx context.Context, stmts ...string) error {
+	for _, stmt := range stmts {
+		if err := c.conn.Exec(ctx, strings.ReplaceAll(stmt, "{db}", c.db)); err != nil {
+			return err
 		}
 	}
-	return &chConn{conn: conn, db: db}, nil
+	return nil
+}
+
+// migrate runs the steps of chMigrations the database has not recorded, then replaces the positions view.
+func (c *chConn) migrate(ctx context.Context) error {
+	if err := c.exec(ctx, "CREATE DATABASE IF NOT EXISTS {db}",
+		"CREATE TABLE IF NOT EXISTS {db}.schema_migrations (version UInt32, applied DateTime DEFAULT now()) ENGINE = MergeTree ORDER BY version"); err != nil {
+		return err
+	}
+	done, err := chColumn[uint32](ctx, c.conn, "SELECT version FROM "+c.db+".schema_migrations")
+	if err != nil {
+		return err
+	}
+	for v := 1; v < len(chMigrations); v++ {
+		if slices.Contains(done, uint32(v)) {
+			continue
+		}
+		if err := c.exec(ctx, chMigrations[v]); err != nil {
+			return fmt.Errorf("step %d: %w", v, err)
+		}
+		if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".schema_migrations (version) VALUES (?)", uint32(v)); err != nil {
+			return err
+		}
+		log.Printf("clickhouse: %s migrated to step %d", c.db, v)
+	}
+	if n := slices.Max(append(done, 0)); int(n) >= len(chMigrations) {
+		log.Printf("clickhouse: %s is at step %d, past this build's %d; writing on, since every step only adds", c.db, n, len(chMigrations)-1)
+	}
+	legacy, err := c.legacy(ctx)
+	if err != nil {
+		return err
+	}
+	if legacy {
+		if err := c.exec(ctx, "CREATE TABLE IF NOT EXISTS {db}.receptions_converted (day Date, rows UInt64) ENGINE = ReplacingMergeTree ORDER BY day"); err != nil {
+			return err
+		}
+	}
+	return c.exec(ctx, chPositionsView(legacy))
+}
+
+// chColumn reads a query's single column.
+func chColumn[T any](ctx context.Context, conn driver.Conn, query string, args ...any) ([]T, error) {
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []T
+	for rows.Next() {
+		var v T
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// legacy reports whether receptions still has the columns of its first layout, tx and recv_ts.
+func (c *chConn) legacy(ctx context.Context) (bool, error) {
+	var n uint64
+	err := c.conn.QueryRow(ctx, "SELECT count() FROM system.columns WHERE database = ? AND table = 'receptions' AND name = 'tx'", c.db).Scan(&n)
+	return n > 0, err
 }
 
 // chFineSpan is the longest range a step under a minute reads from the positions view, which groups every copy
@@ -263,8 +353,8 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 	var args []any
 	switch {
 	case window > 0:
-		// FINAL keeps one row per window where parts have not merged yet. A heartbeat's window starts at
-		// midnight, so the slot bound reaches back to the day's start, and the rows are bounded by their own times.
+		// FINAL keeps one row per window where parts have not merged yet. A heartbeat's window is 30 minutes, so
+		// the slot bound reaches back to the start of the one from falls in, and rows are bounded by their own times.
 		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMin(" + row + ", ts) AS f FROM " + c.db + "." + table +
 			" FINAL WHERE mmsi = ? AND slot >= ? AND slot <= ? AND ts >= ? AND ts <= ? GROUP BY intDiv(toUnixTimestamp64Milli(ts), ?))" +
 			" ORDER BY f.1 DESC LIMIT ?"
@@ -274,7 +364,7 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 		if step%window == 0 {
 			group = max(step, window)
 		}
-		args = []any{mmsi, from.UTC().Truncate(24 * time.Hour), to, from, to, group.Milliseconds(), limit + 1}
+		args = []any{mmsi, from.UTC().Truncate(30 * time.Minute), to, from, to, group.Milliseconds(), limit + 1}
 	case step > 0:
 		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMin(" + row + ", ts) AS f FROM " + view +
 			" GROUP BY intDiv(toUnixTimestamp64Milli(ts), ?)) ORDER BY f.1 DESC LIMIT ?"
@@ -301,14 +391,23 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 }
 
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
+	return c.write(ctx, token, points, false)
+}
+
+// write inserts points; converted also writes each one's arrival to recv_ts, which marks a row aiscast
+// convert-receptions wrote until cleanup drops the column.
+func (c *chConn) write(ctx context.Context, token string, points []trackPoint, converted bool) error {
 	// A report whose clock is far off can spread one batch over more daily partitions than ClickHouse allows in
 	// an insert by default; it warns instead of refusing the batch.
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"insert_deduplication_token":               token,
 		"throw_on_max_partitions_per_insert_block": 0,
 	}))
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".receptions (mmsi, ts, tx_off, tx_disc, recv_delay, lat6, lon6,"+
-		" sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad, moving)")
+	cols := "mmsi, ts, tx_off, tx_disc, recv_delay, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad, moving"
+	if converted {
+		cols += ", recv_ts"
+	}
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".receptions ("+cols+")")
 	if err != nil {
 		return refusal(err)
 	}
@@ -323,9 +422,13 @@ func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) 
 		if !pt.recv.IsZero() {
 			delay = pt.recv.Sub(pt.ts).Milliseconds()
 		}
-		if err := batch.Append(pt.mmsi, pt.ts, clampInt32(txAt.Sub(pt.ts).Milliseconds()), disc, clampInt32(delay),
+		row := []any{pt.mmsi, pt.ts, clampInt32(txAt.Sub(pt.ts).Milliseconds()), disc, clampInt32(delay),
 			pt.lat6, pt.lon6, pt.sog10, pt.cog10, pt.heading, pt.navStatus, pt.source,
-			pt.station, !pt.dup, !pt.uncorroborated, pt.implausible, pt.clockBad, !pt.still); err != nil {
+			pt.station, !pt.dup, !pt.uncorroborated, pt.implausible, pt.clockBad, !pt.still}
+		if converted {
+			row = append(row, pt.recv)
+		}
+		if err := batch.Append(row...); err != nil {
 			batch.Abort()
 			return chRefused{err}
 		}

@@ -35,6 +35,12 @@ func main() {
 		case "convert-receptions":
 			runConvertReceptions(os.Args[2:])
 			return
+		case "clickhouse-cleanup":
+			runClickHouseCleanup()
+			return
+		case "rebuild-positions-1m":
+			runRebuildPositions1m(os.Args[2:])
+			return
 		case "sweep":
 			runSweep()
 			return
