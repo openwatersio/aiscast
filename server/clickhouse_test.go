@@ -714,6 +714,27 @@ func TestClickHouseMigratesInPlace(t *testing.T) {
 	if err := raw.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = now64(3) - INTERVAL 1 HOUR, to = now64(3) + INTERVAL 1 MINUTE)").Scan(&served); err != nil || served != 2 {
 		t.Errorf("the view serves the first layout's transmission and the current one: %d %v", served, err)
 	}
+	// A first-layout transmission whose AISHub copy is stamped 40 seconds early is in a range by the copy
+	// served, the accepted one, as main's view placed it.
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		ts, recv time.Time
+		source   string
+		accepted bool
+	}{{at, at.Add(time.Second), "kystverket", true}, {at.Add(-40 * time.Second), at.Add(time.Minute), "aishub", false}} {
+		if err := raw.Exec(ctx, "INSERT INTO "+db+".receptions (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted)"+
+			" VALUES (257000007, ?, 5, ?, 1, 1, 1023, 3600, 511, 15, ?, ?, ?)", c.ts, c.recv, c.source, c.source, c.accepted); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		from, to time.Time
+		want     uint64
+	}{{at.Add(-time.Minute), at.Add(-20 * time.Second), 0}, {at.Add(-10 * time.Second), at.Add(10 * time.Second), 1}} {
+		if err := raw.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000007, from = ?, to = ?)", chTime(c.from), chTime(c.to)).Scan(&served); err != nil || served != c.want {
+			t.Errorf("%v to %v: %d served, want %d, %v", c.from, c.to, served, c.want, err)
+		}
+	}
 }
 
 // chDiscOf is discOf in ClickHouse, for a hex event id: the low byte of the id's first 64 bits, read
