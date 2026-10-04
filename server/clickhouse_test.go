@@ -920,6 +920,11 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 		{257000004, 2 * time.Minute, 2 * time.Minute, 5 * time.Minute, eventID("g"), 60, 0, "aishub", true, false},
 		{257000004, 4 * time.Minute, 4 * time.Minute, 4*time.Minute + time.Second, eventID("h"), 30, 0, "kystverket", true, false},
 		{257000004, 6 * time.Minute, 6 * time.Minute, 6*time.Minute + time.Second, eventID("i"), 100, 0, "kystverket", true, false},
+		// Still at 0 m, then moving at 100 m: AISHub's copy of the still report, stamped after, is still with it.
+		{257000005, 0, 0, time.Second, eventID("j"), 0, 0, "kystverket", true, false},
+		{257000005, 3 * time.Minute, 3 * time.Minute, 3*time.Minute + time.Second, eventID("k"), 0, 0, "kystverket", true, false},
+		{257000005, 3*time.Minute + time.Second, 3*time.Minute + time.Second, 3*time.Minute + 2*time.Second, eventID("l"), 100, 0, "kystverket", true, false},
+		{257000005, 3*time.Minute + 2*time.Second, 3 * time.Minute, 4 * time.Minute, eventID("k"), 0, 0, "aishub", false, false},
 	}
 	batch, err := conn.conn.PrepareBatch(ctx, "INSERT INTO "+db+".receptions_v1")
 	if err != nil {
@@ -969,7 +974,7 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	wantMoving := []bool{true, true, true, true, false, true, true, true, false, true}
+	wantMoving := []bool{true, true, true, true, false, true, true, true, false, true, true, false, true, false}
 	i := 0
 	for rows.Next() {
 		var mmsi uint32
@@ -1087,5 +1092,26 @@ func TestImplausibleReportsNeverEvictPlausibleOnes(t *testing.T) {
 	}
 	if len(v.recent) != recentMax || good != recentMax-1 || v.recent[recentMax-1].ms != t0.Add(time.Duration(recentMax+39)*time.Second).UnixMilli() {
 		t.Fatalf("the plausible ones stay and the newest implausible one replaces the last: %d of %d %+v", good, len(v.recent), v.recent)
+	}
+}
+
+// A copy is still or moving with its transmission, not by where the vessel has gone since, so positions_1m
+// rebuilt from it after its source is purged keeps the track's shape.
+func TestACopyIsStillWithItsTransmission(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	report := func(payload, source string, at, recv time.Time, lat float64) {
+		p.emit(&Event{Payload: []byte(payload), Channel: 'A', Time: at, RecvTime: recv,
+			Source: source, Station: source, Packet: posReport(mmsi, lat, 10.7)})
+	}
+	report("a", "kystverket", t0, t0, 59.900)
+	report("b", "kystverket", t0.Add(time.Minute), t0.Add(time.Minute), 59.900)
+	report("c", "kystverket", t0.Add(70*time.Second), t0.Add(70*time.Second), 59.901) // 111 m on: moving
+	report("b", "barentswatch", t0.Add(time.Minute), t0.Add(75*time.Second), 59.900)
+	q := queued(p, mmsi)
+	if len(q) != 4 || !q[1].still || q[2].still || !q[3].dup || !q[3].still {
+		t.Fatalf("the copy of the still report is still: %+v", q)
 	}
 }

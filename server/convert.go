@@ -191,6 +191,8 @@ func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor)
 		anchors[rows[0].mmsi] = a
 	}
 	var out []trackPoint
+	var txs []uint64
+	still := map[uint64]bool{}
 	for i, r := range rows {
 		if r.ts.Before(day) || !r.ts.Before(end) {
 			continue
@@ -200,7 +202,17 @@ func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor)
 			navStatus: r.navstat, source: r.source, txAt: txAt, txDisc: disc[r.tx], recv: r.recv,
 			station: r.station, dup: !r.accepted, uncorroborated: !r.corroborated, implausible: r.implausible, clockBad: r.clockBad}
 		pt.still = a.still(pt, nil, r.accepted && !stale[i] && !r.implausible && !r.clockBad)
-		out = append(out, pt)
+		if r.accepted {
+			still[r.tx] = pt.still
+		}
+		out, txs = append(out, pt), append(txs, r.tx)
+	}
+	// A copy carries its transmission's verdict on moving, as the live writer's do; one whose accepted copy fell
+	// on the day before keeps the anchor's verdict on it.
+	for j := range out {
+		if s, ok := still[txs[j]]; ok && out[j].dup {
+			out[j].still = s
+		}
 	}
 	return out
 }

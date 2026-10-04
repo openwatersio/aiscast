@@ -123,6 +123,7 @@ type recentPos struct {
 	lat6, lon6 int32
 	disc       uint8
 	bad        bool // implausible: never repeated or tested against, but its byte stays taken
+	still      bool // the transmission's verdict on moving, which its copies carry
 }
 
 // remember adds a transmission of the vessel's own to its recent ones, dropping those too old to be repeated.
@@ -144,12 +145,12 @@ func (v *vessel) remember(pt trackPoint) {
 		}
 		keep = slices.Delete(keep, max(drop, 0), max(drop, 0)+1)
 	}
-	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.txDisc, pt.implausible})
+	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.txDisc, pt.implausible, pt.still})
 }
 
-// repeats is the transmission among the vessel's recent positions that pt is a copy of, its time and byte: the
-// nearest in time at pt's position.
-func (v *vessel) repeats(pt trackPoint) (time.Time, uint8, bool) {
+// repeats is the transmission among the vessel's recent positions that pt is a copy of: the nearest in time at
+// pt's position.
+func (v *vessel) repeats(pt trackPoint) (recentPos, bool) {
 	ms := pt.ts.UnixMilli()
 	var best recentPos
 	bestDt := int64(-1)
@@ -159,7 +160,7 @@ func (v *vessel) repeats(pt trackPoint) (time.Time, uint8, bool) {
 			best, bestDt = r, dt
 		}
 	}
-	return time.UnixMilli(best.ms), best.disc, bestDt >= 0
+	return best, bestDt >= 0
 }
 
 // jumps reports whether pt implies an impossible speed from the vessel's position nearest it in time, among its
@@ -207,28 +208,33 @@ func (v *vessel) freeDisc(pt *trackPoint) {
 	}
 }
 
-// discAt is the byte of the vessel's recent transmission stamped at ms at the position, the one its copies take:
-// a dedupe copy carries its transmission's payload, so the same position, and the byte freeDisc may have moved.
-func (v *vessel) discAt(ms int64, lat6, lon6 int32) (uint8, bool) {
+// sent is the vessel's recent transmission stamped at ms at the position: a dedupe copy carries its
+// transmission's payload, so the same position.
+func (v *vessel) sent(ms int64, lat6, lon6 int32) (recentPos, bool) {
 	for _, r := range v.recent {
 		if r.ms == ms && r.lat6 == lat6 && r.lon6 == lon6 {
-			return r.disc, true
+			return r, true
 		}
 	}
-	return 0, false
+	return recentPos{}, false
 }
 
-// discFor is the byte a copy of the transmission accepted at tx takes: its transmission's, from the vessel's
-// recent ones, or else def, the byte of the id. The caller holds no lock.
-func (p *Pipeline) discFor(pt trackPoint, def uint8) uint8 {
+// fromTransmission gives a dedupe copy its transmission's byte, which freeDisc may have moved, and its verdict
+// on moving, so a rebuild of positions_1m from the copy after a purge keeps the track's shape. A transmission
+// the vessel no longer keeps leaves the id's byte, and the vessel's anchor judges the copy without moving. The
+// caller holds no lock.
+func (p *Pipeline) fromTransmission(pt *trackPoint) {
 	p.vmu.RLock()
 	defer p.vmu.RUnlock()
-	if v := p.vessels[pt.mmsi]; v != nil {
-		if d, ok := v.discAt(pt.txAt.UnixMilli(), pt.lat6, pt.lon6); ok {
-			return d
-		}
+	v := p.vessels[pt.mmsi]
+	if v == nil {
+		return
 	}
-	return def
+	if r, ok := v.sent(pt.txAt.UnixMilli(), pt.lat6, pt.lon6); ok {
+		pt.txDisc, pt.still = r.disc, r.still
+		return
+	}
+	pt.still = v.moved.still(*pt, nil, false) // neither seeds nor moves the anchor, so a read lock holds
 }
 
 func absInt(n int32) int32 {
@@ -684,7 +690,7 @@ func (p *Pipeline) noteReception(pt trackPoint) {
 func (p *Pipeline) noteCopy(ev *Event, key string, tx time.Time, implausible bool) {
 	if pt, ok := copyPoint(ev, key, tx); ok {
 		pt.implausible = implausible
-		pt.txDisc = p.discFor(pt, pt.txDisc)
+		p.fromTransmission(&pt)
 		p.noteReception(pt)
 	}
 }

@@ -360,8 +360,8 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 	case ev.Implausible, !stale:
 	default:
 		if ev.rebuilt {
-			if at, disc, ok := v.repeats(pt); ok {
-				pt.txAt, pt.txDisc, pt.dup = at, disc, true
+			if r, ok := v.repeats(pt); ok {
+				pt.txAt, pt.txDisc, pt.still, pt.dup = time.UnixMilli(r.ms), r.disc, r.still, true
 				p.ch.rebuiltMatched.Add(1)
 				break
 			}
