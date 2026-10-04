@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -30,16 +31,24 @@ import (
 // chDatabase is the database the schema lives in when CLICKHOUSE_URL names none.
 const chDatabase = "aiscast"
 
-// chSchema creates what the writer and the rollups need, in order; {db} is the database. Receptions use the
+// chSchema creates what the writer and positions_1m need, in order; {db} is the database. Receptions use the
 // track encodings, 15 in navstat for not available, and a source kind rather than a full source; station is
 // the full one. Nothing expires: receptions are the record of history.
+//
+// A copy names its transmission without a hash that would not compress: the transmission is the vessel, the
+// time its accepted copy was stamped, ts plus tx_off, and tx_disc, one byte of that copy's event id, which
+// tells apart transmissions stamped in the same millisecond. Most copies are their transmission's accepted one,
+// so tx_off is almost always 0. recv_delay is when the copy arrived, as milliseconds after ts. Measured on
+// three hours of production receptions, this costs 11.4 bytes a row where a 64-bit hash and a second
+// timestamp cost 19.8.
 var chSchema = []string{
 	`CREATE DATABASE IF NOT EXISTS {db}`,
 	`CREATE TABLE IF NOT EXISTS {db}.receptions (
 		mmsi         UInt32,
 		ts           DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD),
-		tx           UInt64,
-		recv_ts      DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD),
+		tx_off       Int32 CODEC(T64, ZSTD),
+		tx_disc      UInt8 CODEC(ZSTD),
+		recv_delay   Int32 CODEC(T64, ZSTD),
 		lat6         Int32 CODEC(Delta, ZSTD),
 		lon6         Int32 CODEC(Delta, ZSTD),
 		sog10        UInt16 CODEC(ZSTD),
@@ -51,89 +60,107 @@ var chSchema = []string{
 		accepted     Bool DEFAULT true,
 		corroborated Bool DEFAULT true,
 		implausible  Bool DEFAULT false,
-		clock_bad    Bool DEFAULT false
+		clock_bad    Bool DEFAULT false,
+		moving       Bool DEFAULT true
 	) ENGINE = MergeTree
 	PARTITION BY toYYYYMM(ts)
 	ORDER BY (mmsi, ts)
 	SETTINGS non_replicated_deduplication_window = 1000`,
-	chRollup("15m", "TTL slot + INTERVAL 13 MONTH DELETE"),
-	chRollupView("15m", "15 MINUTE"),
-	chRollup("1h", ""),
-	chRollupView("1h", "1 HOUR"),
+	`CREATE TABLE IF NOT EXISTS {db}.positions_1m (
+		mmsi    UInt32,
+		slot    DateTime('UTC') CODEC(DoubleDelta, ZSTD),
+		cell    UInt32 CODEC(ZSTD),
+		ts      DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD),
+		lat6    Int32 CODEC(Delta, ZSTD),
+		lon6    Int32 CODEC(Delta, ZSTD),
+		sog10   UInt16 CODEC(ZSTD),
+		cog10   UInt16 CODEC(ZSTD),
+		heading UInt16 CODEC(ZSTD),
+		navstat UInt8 CODEC(ZSTD),
+		source  LowCardinality(String)
+	) ENGINE = ReplacingMergeTree(ts)
+	PARTITION BY toYYYYMM(slot)
+	ORDER BY (mmsi, slot, cell)`,
+	`CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.positions_1m_mv TO {db}.positions_1m AS
+	SELECT mmsi, if(moving, toDateTime(toStartOfMinute(ts), 'UTC'), toDateTime(toStartOfDay(ts), 'UTC')) AS slot,
+	       if(moving, 0, ` + chCell + `) AS cell, ts, lat6, lon6, sog10, cog10, heading, navstat, source
+	FROM {db}.receptions WHERE accepted AND ` + chUsable,
 	chPositionsView,
 }
 
-// chUsable is the condition every history read and rollup puts on receptions: copies the fold judged an
-// impossible jump, or whose clock put them a day or more before they arrived, are kept but never served.
+// positions_1m is each vessel's track at one position a minute while it moves, and one a day for each place it
+// sat still: a heartbeat that says it was heard there that day. A vessel underway reports every few seconds, so
+// a minute keeps the shape of its track; one moored or at anchor reports every few minutes from the same place,
+// which a day's row says as well. Each window keeps its latest report, so a heartbeat is when the vessel was
+// last heard there that day. On 2026-08-28 it kept 10 M rows of 42 M accepted positions, at 12.4 bytes a row
+// in plain columns; a window reduced to an aggregate state cost twice that. Any step of a minute or more reads
+// from it, grouped by the step, so coarser summaries are never needed to answer one. Places are cells of a
+// hundredth of a degree, about a kilometer, so a vessel moored at two harbors in a day has a heartbeat at each.
+const chCell = `toUInt32((intDiv(lat6, 6000) + 9000) * 36000 + (intDiv(lon6, 6000) + 18000))`
+
+// chUsable is the condition every history read puts on receptions: copies the fold judged an impossible jump,
+// or whose clock put them a day or more before they arrived, are kept but never served.
 const chUsable = "NOT implausible AND NOT clock_bad"
-
-// chFirst is a rollup's per-window aggregate: the earliest position, whenever a late report arrives.
-const chFirst = `AggregateFunction(argMin, Tuple(DateTime64(3, 'UTC'), Int32, Int32, UInt16, UInt16, UInt16, UInt8, String), DateTime64(3, 'UTC'))`
-
-func chRollup(name, ttl string) string {
-	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {db}.positions_%s (
-		mmsi  UInt32,
-		slot  DateTime('UTC'),
-		first %s
-	) ENGINE = AggregatingMergeTree
-	PARTITION BY toYYYYMM(slot)
-	ORDER BY (mmsi, slot)
-	%s`, name, chFirst, ttl)
-}
-
-// chRollupView fills a rollup from accepted copies only, which are what positions held before receptions: a
-// later copy of the same transmission carries its source's stamp, and AISHub's run tens of seconds off, so one
-// could win a window that despike then empties.
-func chRollupView(name, window string) string {
-	return fmt.Sprintf(`CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.positions_%s_mv TO {db}.positions_%s AS
-	SELECT mmsi, toDateTime(toStartOfInterval(ts, INTERVAL %s), 'UTC') AS slot,
-	       argMinState((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), ts) AS first
-	FROM {db}.receptions WHERE accepted AND %s GROUP BY mmsi, slot`, name, name, window, chUsable)
-}
 
 // chPositionsView is one row per transmission: the copy that arrived first, among those with a believable
 // clock, of each transmission no copy of which the fold judged implausible. A transmission is judged as a
 // whole, over every copy, because every copy carries its position: filtering copies before grouping would
-// serve a flagged position through an unflagged copy, and a bad clock only rules a copy out as the one served. It takes the vessel and range as parameters so the filter reaches
-// receptions' sort key before the grouping; a view without them would group the vessel's whole history on
-// every read. The 10 seconds either side catch the copies of a transmission near the edge of the range, whose
-// stamps differ by a second or two. It holds no data, so it is replaced at every start and a database always
-// reads by the current definition.
+// serve a flagged position through an unflagged copy, and a bad clock only rules a copy out as the one served.
+// It takes the vessel and range as parameters so the filter reaches receptions' sort key before the grouping;
+// a view without them would group the vessel's whole history on every read. The 10 seconds either side catch
+// the copies of a transmission near the edge of the range, whose stamps differ by a second or two. It holds no
+// data, so it is replaced at every start and a database always reads by the current definition.
 const chPositionsView = `CREATE OR REPLACE VIEW {db}.positions AS
-	SELECT mmsi, tx, f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
+	SELECT mmsi, f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
 	FROM (
-		SELECT mmsi, tx, argMinIf((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), recv_ts, NOT clock_bad) AS f
+		SELECT mmsi, argMinIf((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), toUnixTimestamp64Milli(ts) + recv_delay, NOT clock_bad) AS f
 		FROM {db}.receptions
 		WHERE mmsi = {mmsi:UInt32}
 		  AND ts >= {from:DateTime64(3, 'UTC')} - INTERVAL 10 SECOND AND ts <= {to:DateTime64(3, 'UTC')} + INTERVAL 10 SECOND
-		GROUP BY mmsi, tx
+		GROUP BY mmsi, toUnixTimestamp64Milli(ts) + tx_off, tx_disc
 		HAVING NOT max(implausible) AND countIf(NOT clock_bad) > 0
 	)
 	WHERE ts >= {from:DateTime64(3, 'UTC')} AND ts <= {to:DateTime64(3, 'UTC')}`
 
-// chMigrate moves a database from the positions table to receptions. Its rollup views read the table, so they
-// go first and the schema recreates them over receptions; the table is renamed positions_old rather than
-// dropped, a copy to go back to until clickhouse-load.py has filled receptions from the lake. Run before
-// chSchema.
+// chMigrate moves a database to the current layout, in steps, each run once. A positions table from before
+// receptions becomes positions_old. Receptions in the first layout, with a 64-bit tx and recv_ts, become
+// receptions_v1, which clickhouse-load.py --convert copies into the current one. positions_15m and
+// positions_1h, which positions_1m replaces, go with their views at either step: positions_1m fills from
+// receptions as they are loaded or converted. Run before chSchema.
 func chMigrate(ctx context.Context, conn driver.Conn, db string) error {
-	var engine string
-	err := conn.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = 'positions'", db).Scan(&engine)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && engine == "View" {
+	exec := func(stmts ...string) error {
+		for _, stmt := range stmts {
+			if err := conn.Exec(ctx, strings.ReplaceAll(stmt, "{db}", db)); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
-	if err != nil {
+	var engine string
+	err := conn.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = 'positions'", db).Scan(&engine)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	for _, stmt := range []string{
-		"DROP VIEW IF EXISTS {db}.positions_15m_mv",
-		"DROP VIEW IF EXISTS {db}.positions_1h_mv",
-		"RENAME TABLE {db}.positions TO {db}.positions_old",
-	} {
-		if err := conn.Exec(ctx, strings.ReplaceAll(stmt, "{db}", db)); err != nil {
+	if err == nil && engine != "View" {
+		if err := exec("DROP VIEW IF EXISTS {db}.positions_15m_mv", "DROP VIEW IF EXISTS {db}.positions_1h_mv",
+			"DROP TABLE IF EXISTS {db}.positions_15m", "DROP TABLE IF EXISTS {db}.positions_1h",
+			"RENAME TABLE {db}.positions TO {db}.positions_old"); err != nil {
 			return err
 		}
+		log.Printf("clickhouse: renamed %s.positions to positions_old; receptions replaces it", db)
 	}
-	log.Printf("clickhouse: renamed %s.positions to positions_old; receptions replaces it", db)
+	var v1 uint64
+	if err := conn.QueryRow(ctx, "SELECT count() FROM system.columns WHERE database = ? AND table = 'receptions' AND name = 'tx'", db).Scan(&v1); err != nil {
+		return err
+	}
+	if v1 > 0 {
+		if err := exec("DROP VIEW IF EXISTS {db}.positions_15m_mv", "DROP VIEW IF EXISTS {db}.positions_1h_mv",
+			"DROP TABLE IF EXISTS {db}.positions_15m", "DROP TABLE IF EXISTS {db}.positions_1h",
+			"RENAME TABLE {db}.receptions TO {db}.receptions_v1"); err != nil {
+			return err
+		}
+		log.Printf("clickhouse: renamed %s.receptions to receptions_v1 for conversion; positions_1m replaces positions_15m and positions_1h", db)
+	}
 	return nil
 }
 
@@ -203,28 +230,19 @@ func openClickHouse(ctx context.Context, url string) (*chConn, error) {
 	return &chConn{conn: conn, db: db}, nil
 }
 
-// chRollupKeep is how long positions_15m holds its windows; the schema's TTL.
-const chRollupKeep = 13 * 30 * 24 * time.Hour
-
-// chFineSpan is the longest range a step under 15 minutes reads from the positions view, which groups every copy
-// in the range before it thins; a longer range reads the rollups instead.
+// chFineSpan is the longest range a step under a minute reads from the positions view, which groups every copy
+// in the range before it thins; a longer range reads positions_1m instead.
 const chFineSpan = 31 * 24 * time.Hour
 
-// chTable is the table that answers a step, and its window: the coarsest that holds the range and whose window
-// divides the step. A rollup keeps the first position per window, which is what thinning every position keeps,
-// so a step of whole windows reads the same answer from it. A range too long for the positions view reads the
-// rollup that holds it, at one position per window, which still keeps the step's at-most-one promise; a step
-// its windows do not divide can then show a later position in a bucket, or none, since a window keeps only its
-// first. Every default step divides its window.
+// chTable is the table that answers a step, and its window: every position, through the positions view, for a
+// step under a minute over a range positions can group, and otherwise positions_1m, a window a minute wide. A
+// step of whole minutes reads positions_1m's minutes grouped by the step, so a vessel underway gets the same
+// answer from it as from every position, to within the minute; a still vessel gets its heartbeats.
 func chTable(from, to time.Time, step time.Duration, now time.Time) (string, time.Duration) {
-	fine := step < 15*time.Minute || step%(15*time.Minute) != 0
-	switch {
-	case fine && to.Sub(from) <= chFineSpan:
+	if step < time.Minute && to.Sub(from) <= chFineSpan {
 		return "positions", 0
-	case now.Sub(from) < chRollupKeep && (step < time.Hour || step%time.Hour != 0):
-		return "positions_15m", 15 * time.Minute
 	}
-	return "positions_1h", time.Hour
+	return "positions_1m", time.Minute
 }
 
 // chTime formats t for a positions view parameter, which takes a literal rather than an expression.
@@ -244,17 +262,18 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 	var args []any
 	switch {
 	case window > 0:
-		// ponytail: a window that starts before from and whose first position is before from is left out, so a
-		// range not aligned to the window can miss positions in its first window
-		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMinMerge(first) AS f FROM " + c.db + "." + table +
-			" WHERE mmsi = ? AND slot >= ? AND slot <= ? GROUP BY intDiv(toUnixTimestamp(slot), ?)) WHERE f.1 >= ? AND f.1 <= ? ORDER BY f.1 DESC LIMIT ?"
-		// Windows group into the step only when they divide it; otherwise each window's first position comes
-		// back alone, and the caller's thinning puts it in the step bucket of its own time.
+		// FINAL keeps one row per window where parts have not merged yet. A heartbeat's window starts at
+		// midnight, so the slot bound reaches back to the day's start, and the rows are bounded by their own times.
+		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMin(" + row + ", ts) AS f FROM " + c.db + "." + table +
+			" FINAL WHERE mmsi = ? AND slot >= ? AND slot <= ? AND ts >= ? AND ts <= ? GROUP BY intDiv(toUnixTimestamp64Milli(ts), ?))" +
+			" ORDER BY f.1 DESC LIMIT ?"
+		// Minutes group into the step only when they divide it; otherwise each minute comes back alone, and the
+		// caller's thinning puts it in the step bucket of its own time.
 		group := window
 		if step%window == 0 {
 			group = max(step, window)
 		}
-		args = []any{mmsi, from.Truncate(window), to, int64(group / time.Second), from, to, limit + 1}
+		args = []any{mmsi, from.UTC().Truncate(24 * time.Hour), to, from, to, group.Milliseconds(), limit + 1}
 	case step > 0:
 		q = "SELECT f.1, f.2, f.3, f.4, f.5, f.6, f.7, f.8 FROM (SELECT argMin(" + row + ", ts) AS f FROM " + view +
 			" GROUP BY intDiv(toUnixTimestamp64Milli(ts), ?)) ORDER BY f.1 DESC LIMIT ?"
@@ -287,21 +306,25 @@ func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) 
 		"insert_deduplication_token":               token,
 		"throw_on_max_partitions_per_insert_block": 0,
 	}))
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".receptions"+
-		" (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad)")
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".receptions (mmsi, ts, tx_off, tx_disc, recv_delay, lat6, lon6,"+
+		" sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad, moving)")
 	if err != nil {
 		return refusal(err)
 	}
 	for _, pt := range points {
-		recv, tx := pt.recv, pt.tx
-		if recv.IsZero() { // a position loaded from elsewhere arrived when it was sent, as far as anyone knows
-			recv = pt.ts
+		// A position without a transmission named is its own, accepted when it was stamped; one loaded from
+		// elsewhere arrived when it was sent, as far as anyone knows.
+		txAt, disc := pt.txAt, pt.txDisc
+		if txAt.IsZero() {
+			txAt, disc = pt.ts, discOf(eventID(fmt.Sprint(pt.lat6, pt.lon6)))
 		}
-		if tx == 0 { // and without a transmission named, it is one of its own
-			tx = txOf(eventID(fmt.Sprint(pt.lat6, pt.lon6)), pt.ts)
+		var delay int64
+		if !pt.recv.IsZero() {
+			delay = pt.recv.Sub(pt.ts).Milliseconds()
 		}
-		if err := batch.Append(pt.mmsi, pt.ts, tx, recv, pt.lat6, pt.lon6, pt.sog10, pt.cog10, pt.heading, pt.navStatus, pt.source,
-			pt.station, !pt.dup, !pt.uncorroborated, pt.implausible, pt.clockBad); err != nil {
+		if err := batch.Append(pt.mmsi, pt.ts, clampInt32(txAt.Sub(pt.ts).Milliseconds()), disc, clampInt32(delay),
+			pt.lat6, pt.lon6, pt.sog10, pt.cog10, pt.heading, pt.navStatus, pt.source,
+			pt.station, !pt.dup, !pt.uncorroborated, pt.implausible, pt.clockBad, !pt.still); err != nil {
 			batch.Abort()
 			return chRefused{err}
 		}
@@ -433,4 +456,10 @@ func newDedupeToken() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// clampInt32 fits a millisecond span into Int32, about 24 days either way; a copy that far from its transmission
+// or its arrival is clock_bad and never served.
+func clampInt32(n int64) int32 {
+	return int32(max(min(n, math.MaxInt32), math.MinInt32))
 }

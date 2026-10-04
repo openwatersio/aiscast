@@ -231,6 +231,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		v = newVessel()
 		p.vessels[ev.MMSI] = v
 	}
+	hadPrev, prevLat, prevLon := v.HasPos, v.Lat, v.Lon // before this report moves it, for whether it is moving
 	stale := v.staleFor(ev.Time, hasPos, isStatic, ev.rebuilt)
 	ev.Stale = stale
 	// A position implying an impossible speed from the vessel's last position is dropped whatever the
@@ -243,7 +244,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 { // dt first: nm() is trig, and tied stamps are common
 			if d := nm(v.Lat, v.Lon, u.Lat, u.Lon); d > implausibleJumpNM && d/(dt/3600) > implausibleKnots {
 				ev.Implausible = true
-				p.noteFolded(ev, v, u, false)
+				p.noteFolded(ev, v, u, false, hadPrev, prevLat, prevLon)
 				p.vmu.Unlock()
 				return
 			}
@@ -262,7 +263,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	}
 	ev.Corroborated = !ev.LowTrust || ev.Time.Sub(v.TrustedAt) < corroborationWindow
 	if hasPos {
-		p.noteFolded(ev, v, u, stale)
+		p.noteFolded(ev, v, u, stale, hadPrev, prevLat, prevLon)
 	}
 	if u.NavStatus != 15 && !stale {
 		v.NavStatus = u.NavStatus
@@ -334,16 +335,17 @@ func (p *Pipeline) updateVessel(ev *Event) {
 // the feeds the server pulls: a volunteer station's backlog never reaches the fold, so a station has no late
 // reports to deliver, and anyone can run one, token or not, and stamp a report into any vessel's past. The
 // caller holds vmu.
-func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale bool) {
+func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bool, prevLat, prevLon float64) {
 	// The ring and the queue switch on together, so a position is remembered exactly when it is written, and a
 	// stale copy only ever matches a transmission receptions holds. A copy of one folded before ClickHouse
-	// connected, which was never written, matches nothing and is kept as the only copy, accepted, so the
-	// rollups have it; matching a transmission receptions lacks would leave it a copy of nothing.
+	// connected, which was never written, matches nothing and is kept as the only copy, accepted, so
+	// positions_1m has it; matching a transmission receptions lacks would leave it a copy of nothing.
 	if !p.chOn.Load() {
 		return
 	}
 	pt := newTrackPoint(ev.MMSI, ev.Time, u, ev.Source)
-	pt.tx, pt.recv, pt.station = txOf(ev.ID, ev.Time), ev.RecvTime, ev.Station
+	pt.txAt, pt.txDisc, pt.recv, pt.station = ev.Time, discOf(ev.ID), ev.RecvTime, ev.Station
+	pt.still = isStill(pt, hadPrev, prevLat, prevLon)
 	pt.uncorroborated = ev.LowTrust && !ev.Corroborated
 	pt.implausible = ev.Implausible
 	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge
@@ -353,8 +355,8 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale bool) {
 		v.remember(pt)
 	default:
 		if ev.rebuilt {
-			if tx, ok := v.repeats(pt); ok {
-				pt.tx, pt.dup = tx, true
+			if at, disc, ok := v.repeats(pt); ok {
+				pt.txAt, pt.txDisc, pt.dup = at, disc, true
 				p.ch.rebuiltMatched.Add(1)
 				break
 			}

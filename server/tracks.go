@@ -45,28 +45,45 @@ type trackPoint struct {
 	source    string // source kind, for attribution
 
 	// What a copy adds as a reception, written and not read back. The zero values are the table's defaults:
-	// accepted, corroborated, and a transmission of its own.
-	tx             uint64    // the transmission this is a copy of, txOf its accepted copy's id and time
+	// accepted, corroborated, moving, and a transmission of its own.
+	txAt           time.Time // the transmission this is a copy of: its accepted copy's canonical time
+	txDisc         uint8     // and discOf that copy's event id, telling apart transmissions stamped in the same millisecond
 	recv           time.Time // when this copy arrived
 	station        string
 	dup            bool // a later copy of a transmission another copy delivered first
 	uncorroborated bool // from an unauthenticated sender, for a vessel no trusted source heard lately
 	implausible    bool // the fold judged it an impossible jump from the vessel's last position
 	clockBad       bool // stamped clockBadAge or more before it arrived
+	still          bool // not moving: reported speed of half a knot or less, or, with none, within movedM of the vessel's last position
 }
 
-// txOf names a transmission by its accepted copy's event id and canonical time, the pair the normalized archive
-// joins copies on: ids repeat for identical payloads minutes apart. It is the id's first 64 bits, a hash of the
-// payload, XORed with the time in milliseconds. Reads group a vessel's copies by it across a month, so it must
-// not collide among a month's transmissions: at 32 bits a vessel reporting every 10 s would see several
-// collisions a month, each merging two reports into one. ClickHouse computes the same value from the hex id,
-// so a load from the lake names transmissions as the server does.
-func txOf(id string, t time.Time) uint64 {
+// discOf is one byte of an event id, the low byte of its first 64 bits, which with the vessel and the time its
+// accepted copy was stamped names a transmission: ids repeat for identical payloads minutes apart, so the time
+// tells those apart, and the byte tells apart two transmissions of one vessel stamped in the same millisecond.
+// On three hours of production receptions the time and the byte together merged 83 of 5 M transmissions, all
+// a vessel's reports in one millisecond. ClickHouse computes the same byte from the hex id, so a load from the
+// lake names transmissions as the server does.
+func discOf(id string) uint8 {
 	if len(id) < 16 { // not an event id, as for an event built without one; hash it into one
 		id = eventID(id)
 	}
 	h, _ := strconv.ParseUint(id[:16], 16, 64)
-	return h ^ uint64(t.UnixMilli())
+	return uint8(h)
+}
+
+// movedM is how far a vessel that reports no speed must be from its last position to count as moving, the
+// distance ais.tracks uses: a speed worked out between reports seconds apart is mostly GPS jitter.
+const movedM = 50
+
+// isStill reports whether pt is a vessel sitting still, for positions_1m. Reported speed decides when there is
+// one, since it does not jitter. Without one, about 0.3% of reports in every feed, from a transmitter whose GPS
+// gives it no speed, pt is still if it is within movedM of the vessel's last position, as 91% of those were in
+// a sample of production receptions; with no last position it counts as moving, so a voyage is never hidden.
+func isStill(pt trackPoint, hadPrev bool, prevLat, prevLon float64) bool {
+	if pt.sog10 != 1023 {
+		return pt.sog10 <= 5
+	}
+	return hadPrev && nm(prevLat, prevLon, float64(pt.lat6)/600000, float64(pt.lon6)/600000)*1852 <= movedM
 }
 
 // clockBadAge is how far before its arrival a copy's stamp may be before the copy is kept out of history: past
@@ -85,9 +102,9 @@ const (
 )
 
 type recentPos struct {
-	ms         int64 // Unix milliseconds: 24 bytes an entry where a time.Time would make it 40
+	ms         int64 // Unix milliseconds, the transmission's time too: 24 bytes an entry where a time.Time would make it 40
 	lat6, lon6 int32
-	tx         uint64
+	disc       uint8
 }
 
 // remember adds an accepted position to the vessel's recent ones, dropping those too old to be repeated.
@@ -102,12 +119,12 @@ func (v *vessel) remember(pt trackPoint) {
 	if len(keep) == recentMax {
 		keep = append(keep[:0], keep[1:]...)
 	}
-	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.tx})
+	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.txDisc})
 }
 
-// repeats is the transmission among the vessel's recent positions that pt is a copy of: the nearest in time at
-// pt's position.
-func (v *vessel) repeats(pt trackPoint) (uint64, bool) {
+// repeats is the transmission among the vessel's recent positions that pt is a copy of, its time and byte: the
+// nearest in time at pt's position.
+func (v *vessel) repeats(pt trackPoint) (time.Time, uint8, bool) {
 	ms := pt.ts.UnixMilli()
 	var best recentPos
 	bestDt := int64(-1)
@@ -117,7 +134,7 @@ func (v *vessel) repeats(pt trackPoint) (uint64, bool) {
 			best, bestDt = r, dt
 		}
 	}
-	return best.tx, bestDt >= 0
+	return time.UnixMilli(best.ms), best.disc, bestDt >= 0
 }
 
 // jumps reports whether pt implies an impossible speed from the vessel's position nearest it in time, among its
@@ -605,7 +622,7 @@ func copyPoint(ev *Event, key string, tx time.Time) (trackPoint, bool) {
 		return trackPoint{}, false
 	}
 	pt := newTrackPoint(ev.Packet.GetHeader().UserID, ev.Time, u, ev.Source)
-	pt.tx, pt.dup = txOf(eventID(key), tx), true
+	pt.txAt, pt.txDisc, pt.dup = tx, discOf(eventID(key)), true
 	pt.recv, pt.station = ev.RecvTime, ev.Station
 	pt.uncorroborated = lowTrust(ev.Source)
 	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge

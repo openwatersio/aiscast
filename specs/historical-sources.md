@@ -39,7 +39,7 @@ ClickHouse is the record of history. Every copy of every transmission is a row i
 
 ```
 live writer ────────────────────────────────────────────────┐
-source file → ClickHouse table function → history_in (Null) ┴→ receptions (local, then R2) ─┬→ positions_15m, positions_1h (accepted copies)
+source file → ClickHouse table function → history_in (Null) ┴→ receptions (local, then R2) ─┬→ positions_1m (accepted copies)
                                                 │                                           ├→ coverage, coverage_stations
                                                 └→ vessel_statics                           └→ positions (view)
 ```
@@ -50,8 +50,9 @@ source file → ClickHouse table function → history_in (Null) ┴→ reception
 CREATE TABLE receptions (
     mmsi         UInt32,
     ts           DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD),
-    tx           UInt64,
-    recv_ts      DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD),
+    tx_off       Int32 CODEC(T64, ZSTD),
+    tx_disc      UInt8 CODEC(ZSTD),
+    recv_delay   Int32 CODEC(T64, ZSTD),
     lat6         Int32 CODEC(Delta, ZSTD),
     lon6         Int32 CODEC(Delta, ZSTD),
     sog10        UInt16 CODEC(ZSTD),
@@ -63,7 +64,8 @@ CREATE TABLE receptions (
     accepted     Bool DEFAULT true,
     corroborated Bool DEFAULT true,
     implausible  Bool DEFAULT false,
-    clock_bad    Bool DEFAULT false
+    clock_bad    Bool DEFAULT false,
+    moving       Bool DEFAULT true
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(ts)
 ORDER BY (mmsi, ts)
@@ -71,13 +73,15 @@ TTL toDateTime(ts) + INTERVAL 30 DAY TO VOLUME 'cold'
 SETTINGS storage_policy = 'tiered', non_replicated_deduplication_window = 1000;
 ```
 
-- `tx` names the transmission a copy belongs to: the accepted copy's event id, a payload hash, XORed with its time in milliseconds. Reads group a vessel's copies by it across up to a month, so it must not collide among a month of one vessel's transmissions. At 32 bits, a vessel reporting every 10 seconds would see several collisions a month, each merging two reports, so it is 64 bits. A random hash does not compress. Raw copies share `tx` through the payload hash. Rebuilt copies and archive rows take it from the copy they match (see [Deduplication](#deduplication)).
-- `accepted` marks the copy that arrived first, the one the live server accepts today. The rollups read only accepted copies, so they get exactly what they get from `positions` now. A rebuilt or archive copy that matches an earlier one is not accepted. The flag is set at write time and is not updated after a purge. Every read that has to survive a purge uses the `positions` view, which recomputes the earliest copy.
+- A transmission is named by its vessel, the time its accepted copy was stamped, `ts` plus `tx_off`, and `tx_disc`, the low byte of that copy's event id, which tells apart a vessel's transmissions stamped in the same millisecond. Most copies are their transmission's accepted one, so `tx_off` is almost always 0 and costs nothing. On three hours of production receptions, the time and the byte merged 83 of 5 M transmissions, all a vessel's reports in one millisecond. A random 64-bit hash cost 8 bytes a row, 41% of the table, and did not compress. Raw copies share the name through the payload hash. Rebuilt copies and archive rows take it from the copy they match (see [Deduplication](#deduplication)).
+- `recv_delay` is when the copy arrived, in milliseconds after `ts`, where a second timestamp cost 3 bytes a row.
+- `moving` is reported speed above half a knot or, with no speed, more than 50 m from the vessel's last position. It decides how `positions_1m` keeps the copy.
+- `accepted` marks the copy that arrived first, the one the live server accepts today. `positions_1m` reads only accepted copies. A rebuilt or archive copy that matches an earlier one is not accepted. The flag is set at write time and is not updated after a purge. Every read that has to survive a purge uses the `positions` view, which recomputes the earliest copy.
 - `station` is the station for a live copy and the archive's name for an archive copy. `source` sits beside it because redundancy classes come from the source kind.
 - `corroborated` carries the live writer's corroboration rule, the one `/v1/nmea` and the AISHub feed apply, so bulk re-serving can leave out uncorroborated reports. Archive rows are corroborated by their source.
 - `implausible` and `clock_bad` mark copies that history leaves out (see [Validity](#validity)). They are stored, not dropped, so a purge or a changed rule never needs a reload.
 
-Measured on the box on 2026-10-02 over 44 days, `positions` costs 6.8 bytes per row. With `tx`, `recv_ts`, `station`, and the flags, a reception should cost 17 to 22 bytes.
+Measured on three hours of production receptions, this layout costs 11.4 bytes a row, where a 64-bit `tx` and `recv_ts` cost 19.8.
 
 The `tiered` policy has a local volume and a cold volume on R2, with a 10 to 20 GB local filesystem cache in front of R2. Merges on the cold volume are turned off, so R2 is written once per part. Partitions are monthly, because a table kept forever would collect thousands of daily partitions. Every part spans every vessel, because the sort is `(mmsi, ts)`, so a one-vessel read of a cold month touches every part in it. The number of parts per cold month is therefore what decides how fast a cold read is. Live parts merge locally for 30 days before they move. Archive rows are older than the TTL on arrival, so loads control their own moves (see [Loading](#loading)).
 
@@ -85,19 +89,19 @@ The `tiered` policy has a local volume and a cold volume on R2, with a 10 to 20 
 
 ```sql
 CREATE VIEW positions AS
-SELECT mmsi, tx, t AS ts, la AS lat6, lo AS lon6, src AS source FROM (
-    SELECT mmsi, tx, argMin(ts, recv_ts) AS t, argMin(lat6, recv_ts) AS la, argMin(lon6, recv_ts) AS lo, argMin(source, recv_ts) AS src
+SELECT mmsi, f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.8 AS source FROM (
+    SELECT mmsi, argMinIf((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), toUnixTimestamp64Milli(ts) + recv_delay, NOT clock_bad) AS f
     FROM receptions
-    WHERE mmsi = {mmsi:UInt32} AND NOT clock_bad
+    WHERE mmsi = {mmsi:UInt32}
       AND ts BETWEEN {from:DateTime64(3, 'UTC')} - INTERVAL 10 SECOND AND {to:DateTime64(3, 'UTC')} + INTERVAL 10 SECOND
-    GROUP BY mmsi, tx
-    HAVING NOT max(implausible)
-) WHERE t BETWEEN {from:DateTime64(3, 'UTC')} AND {to:DateTime64(3, 'UTC')};
+    GROUP BY mmsi, toUnixTimestamp64Milli(ts) + tx_off, tx_disc
+    HAVING NOT max(implausible) AND countIf(NOT clock_bad) > 0
+) WHERE ts BETWEEN {from:DateTime64(3, 'UTC')} AND {to:DateTime64(3, 'UTC')};
 ```
 
 The motion columns follow the same pattern. The parameters put the vessel and time filter inside the grouping, so a query reads only that vessel's range. The 10 second margin catches copies of one transmission on either side of the boundary. Measured in ClickHouse 26.8 against 104 M test receptions: a vessel-day of 17,280 copies returned 8,640 transmissions, one each, and read 32,768 rows in 4 of 4,516 granules. A materialized view cannot do this job. It sees one insert at a time, but copies of a transmission arrive in different inserts, sometimes months apart, and it does not see deletes.
 
-`positions_15m` and `positions_1h` fill from `receptions` through the same views as now, reading `WHERE accepted AND NOT implausible AND NOT clock_bad`. Each keeps the first position in its window. Reading only accepted copies matters: AISHub stamps are the main reason `despike()` exists, and if every copy reached the rollups, a mis-stamped AISHub copy could win a window and then be dropped on read, leaving the window empty. `positions_15m` keeps 13 months, and `positions_1h` keeps everything. Measured on the box, both cost about 20 bytes per row.
+`positions_1m` fills from `receptions` through a view, reading accepted copies that are neither implausible nor `clock_bad`. A moving vessel keeps its latest position in each minute. One sitting still keeps one row a day for each place it sits, a cell of about a kilometer, its latest report there: a heartbeat that says it was heard there that day. Two thirds of positions are vessels sitting still, so on 2026-08-28 it kept 10 M rows of 42 M accepted positions, and plain columns cost 12.4 bytes a row where a window kept as an aggregate state cost 25. Any step of a minute or more groups its rows by the step, so it answers every step the 15-minute and hourly rollups did, and a ferry's coarse track is its first position in each step rather than an hourly sample that lands at random along its crossings. Rollups at 15 minutes or an hour can be added later and filled from it.
 
 `history_in` is a `Null` table with every column a source can give: position, motion, and static data. One insert into it fills `receptions` and `vessel_statics` through two views, so each source file is downloaded and parsed once.
 
@@ -151,7 +155,7 @@ Nothing is thinned at load.
 
 ### Validity
 
-The `positions` view detects nothing, but it judges a transmission as a whole: one implausible copy keeps every copy of it out, since they all carry its position. Checks run in two places, as they do now: when a row is written, and when a track is drawn. The view and the rollups choose only among rows the write step has already marked.
+The `positions` view detects nothing, but it judges a transmission as a whole: one implausible copy keeps every copy of it out, since they all carry its position. Checks run in two places, as they do now: when a row is written, and when a track is drawn. The view and `positions_1m` choose only among rows the write step has already marked.
 
 | Check | Live copies | Archive rows |
 | --- | --- | --- |
@@ -165,7 +169,7 @@ The `positions` view detects nothing, but it judges a transmission as a whole: o
 
 The live rule compares each report with the last accepted one. A single SQL statement cannot walk rows that way, and comparing each row only with the one before flags a lone spike and also the good row after it. The loader therefore flags a row only when it is implausible against both its previous and its next row for the vessel, using `lagInFrame` and `leadInFrame`. A lone spike is far from both neighbors. A good row beside a spike is far from only one. Runs of two or three bad rows pass the loader, and `despike()` removes them when a track is drawn, as it does for live data now.
 
-`stale` is not a validity flag. The live stream withholds a report older than the vessel's newest so that the map never moves a vessel backward. A copy of a transmission already heard is a duplicate, handled in [Deduplication](#deduplication). A genuine report that arrives late, such as a satellite pass hours behind, is a valid position. `receptions` keeps it for history as an accepted copy, and the rollups put it in its own window, because they keep the earliest position whenever it arrives. The stream's rule is unchanged.
+`stale` is not a validity flag. The live stream withholds a report older than the vessel's newest so that the map never moves a vessel backward. A copy of a transmission already heard is a duplicate, handled in [Deduplication](#deduplication). A genuine report that arrives late, such as a satellite pass hours behind, is a valid position. `receptions` keeps it for history as an accepted copy, and `positions_1m` puts it in its own window whenever it arrives. The stream's rule is unchanged.
 
 ### Coverage
 
@@ -175,7 +179,7 @@ Per-station work reads aggregates, not `receptions`: a `coverage_stations` table
 
 ### Purging a source
 
-Purging deletes the source's rows from `receptions` and `vessel_statics` with a mutation. The `positions` view then keeps each transmission's next-earliest copy, so a transmission another source also heard is never lost. The rollups and `coverage` keep one value per window or a set per cell, chosen when rows were inserted. `accepted` is not updated by a purge. So the months the source touched are rebuilt: drop each month's partition in the rollups and `coverage`, then insert it again from `receptions`. The rollups take the earliest copy per transmission, as the `positions` view does, instead of reading `accepted`. `coverage` uses `chCoverageSelect`. Purged months on R2 are read back through the cache. Purges are rare.
+Purging deletes the source's rows from `receptions` and `vessel_statics` with a mutation. The `positions` view then keeps each transmission's next-earliest copy, so a transmission another source also heard is never lost. `positions_1m` and `coverage` keep one row per window or a set per cell, chosen when rows were inserted. `accepted` is not updated by a purge. So the months the source touched are rebuilt: drop each month's partition in `positions_1m` and `coverage`, then insert it again from `receptions`. `positions_1m` takes the earliest copy per transmission, as the `positions` view does, instead of reading `accepted`. `coverage` uses `chCoverageSelect`. Purged months on R2 are read back through the cache. Purges are rare.
 
 ### Durability
 
@@ -187,10 +191,10 @@ No R2 disk has been tested yet. Everything measured so far ran on local MergeTre
 
 ### Reads
 
-The track endpoint keeps its rule: the coarsest table that holds the range and whose window divides the step. `receptions` holds every range, so `chRawKeep` goes away.
+The track endpoint picks a table from the step:
 
-- **Steps of 15 minutes and up** read the rollups, which stay on local disk, so month and year tracks never touch R2. Measured on the box, cold-cache reads take 35 to 40 ms for a day, 25 to 29 ms for a month, and 29 to 37 ms for a year.
-- **Steps under 15 minutes, including every position**, read the `positions` view, so each transmission appears once. The span is capped at 31 days. A busy vessel's year at full rate is millions of rows, partly on R2, and seconds per request. A longer range takes a 15-minute step. Fine steps work for any 31-day window in history.
+- **Steps under a minute, including every position**, read the `positions` view, so each transmission appears once. The span is capped at 31 days, because a busy vessel's year at full rate is millions of rows, partly on R2. A longer range takes a one-minute step. Every-position reads work for any 31-day window in history.
+- **Steps of a minute and up** read `positions_1m`, grouped by the step. It stays on local disk for 13 months and moves to R2 after, so tracks of a year or less never touch R2.
 
 Credit lines come from the `source` of each position kept, as they do now. The despike anchor, the extra row past the limit, works as now, because every read returns one row per transmission.
 
@@ -222,17 +226,16 @@ Older ranges for a source load through an admin endpoint that queues that range'
 
 ## Sizing
 
-Measured on the box on 2026-10-02: about 28 M accepted positions a day, `positions` at 6.8 bytes per row (about 190 MB a day), and both rollups at about 20 bytes per row.
+Measured on the box after the switch to receptions: about 50 M copies a day live, 3% of them later copies of a transmission. Measured on three hours of production receptions: 11.4 bytes a row in `receptions` and 12.4 in `positions_1m`, which keeps about a quarter of accepted positions.
 
 | Store | One year | Notes |
 | --- | --- | --- |
-| Archive rows in `receptions`, on R2 | 150 to 170 GB | About $2.50 a month. DMA is about 20 M rows a day and MarineCadastre about 9 M, at 17 to 22 bytes each |
-| Live rows in `receptions`, on R2 | 28 M a day times copies per transmission, at 17 to 22 bytes | Measure copies per transmission from the lake first: `ais.receptions` rows over `ais.positions` rows per day. At 1.5 copies, about 230 GB a year, $3.50 a month |
-| `positions_15m`, local | 34 GB live plus 17 GB archive | Kept 13 months |
-| `positions_1h`, local | 10 GB live plus 4 GB archive, each year | Kept indefinitely |
+| Live rows in `receptions` | about 210 GB | 50 M a day at 11.4 bytes. Local for 30 days, about 17 GB, then R2 at about $3.10 a month per year kept |
+| Archive rows in `receptions`, on R2 | about 120 GB | DMA about 20 M rows a day and MarineCadastre about 10 M, at about 11 bytes |
+| `positions_1m` | about 55 GB live plus about 15 GB archive | Local for 13 months, then R2 |
 | R2 cache, local | 10 to 20 GB | Fixed |
 
-The local rollups and the cache come to about 75 GB in the first year and grow by about 14 GB a year after, against the box's 126 GB free. A 100 GB Hetzner volume costs about €5 a month if they outgrow it. Part counts per partition are not yet measured: `SELECT table, partition, count() FROM system.parts WHERE active AND database = 'aiscast' GROUP BY 1, 2 ORDER BY 1, 2`.
+The local disk holds 30 days of receptions, 13 months of `positions_1m`, and the cache: about 90 to 100 GB once a year has passed, against the box's 150 GB disk. A 100 GB Hetzner volume costs about €5 a month if it outgrows that. Part counts per partition are not yet measured: `SELECT table, partition, count() FROM system.parts WHERE active AND database = 'aiscast' GROUP BY 1, 2 ORDER BY 1, 2`.
 
 ## Order of work
 
@@ -245,9 +248,9 @@ Each step is one pull request. Each includes tests, the server README, `openapi.
    - The live writer writes every copy with `tx`, `accepted`, `station`, and the flags, and keeps the 5-minute ring for rebuilt copies.
    - Load the days since 2026-08-20 from the lake's `ais.receptions`, joined to `ais.positions` for the position fields, so ClickHouse holds the network's whole history.
    - Track reads follow [Reads](#reads), and `chRawKeep` goes.
-   - Measure one overlap day before switching the rollups: count the 15-minute windows whose winner differs between accepted-only and all copies, and whether the all-copies winner fails `despike()`. That confirms reading `accepted` is needed.
 
    This stands on its own: live history stops expiring, and the lake is no longer needed for positions.
+   - **Then a compact layout and `positions_1m`.** The first layout measured 19.2 bytes a row in production, about 1 GB a day. `receptions` names transmissions by time and one byte and stores the receive delay, at 11.4 bytes a row. `positions_1m`, a minute while moving and a daily heartbeat per place while still, replaces `positions_15m` and `positions_1h`. At start the server renames the first layout to `receptions_v1`, and `clickhouse-load.py --convert` copies it into the new one a day at a time. Drop `receptions_v1` and `positions_old` once the days compare.
 2. **The loader and MarineCadastre's last year.** `history_in`, `vessel_statics`, `history_loads`, the loader's ClickHouse user and profile, and the month moves. The source registry entries. Metrics for the latest loaded day per source, rows loaded, and load failures, and an alert when a daily source is more than a week behind. Load 2025-10-01 to 2026-06-30, then check daily for new quarters. Check rows per day against the source files, and check drop rates. Render one vessel each in Puget Sound, the Gulf of Mexico, and the Great Lakes. This is the first step anyone can see.
 3. **Vessel record import from `vessel_statics`.** Vessels known only from MarineCadastre get pages, appear in search, and appear in the sitemap.
 4. **DMA.** The SQL for both schema eras. Load 2025-10-01 to now, then daily. Change DMA's row in `docs/policy.md`.
