@@ -231,8 +231,18 @@ func TestTrackHistoryIsOpenToEveryTier(t *testing.T) {
 	t.Cleanup(func() { allowAnon = true })
 	from := old.Add(-time.Hour).UTC().Format(time.RFC3339)
 	to := old.Add(time.Hour).UTC().Format(time.RFC3339)
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to); tr.Properties.Points != 1 {
-		t.Errorf("anonymous three days back: %+v", tr.Properties)
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=0"); tr.Properties.Points != 1 || tr.Properties.Interval != 60 {
+		t.Errorf("anonymous three days back reads whole minutes: %+v", tr.Properties)
+	}
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=90s"); tr.Properties.Interval != 120 {
+		t.Errorf("a step past 48 hours rounds up to whole minutes: %+v", tr.Properties)
+	}
+	if table, _ := chTable(old.Add(-time.Hour), old.Add(time.Hour), 2*time.Minute, time.Now()); table != "positions_1m" {
+		t.Errorf("a rounded step reads positions_1m, not %s", table)
+	}
+	sail(t, p, 257000001, time.Hour)
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?interval=0"); tr.Properties.Interval != 0 || tr.Properties.Points != 1 {
+		t.Errorf("anonymous inside 48 hours keeps every position: %+v", tr.Properties)
 	}
 	var out mcpTrack
 	if msg := mcpCall(t, mcpClient(t, p), "get_vessel_track", map[string]any{"mmsi": 257000001, "from": from, "to": to}, &out); msg != "" || len(out.Positions) != 1 {

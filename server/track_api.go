@@ -33,6 +33,18 @@ func trackLimit(cl *Claims) int {
 	}
 }
 
+// trackStep is the step a track is read at. An anonymous or personal range that reaches past the last 48 hours
+// is read in whole minutes, interval rounded up, so it reads positions_1m rather than group every copy in the
+// range through the positions view, which the limit does not bound. Feeder and above keep interval. A minute of
+// slack keeps "the last 48 hours" from a client whose clock runs behind out of the rounding.
+func trackStep(cl *Claims, from time.Time, interval time.Duration, now time.Time) time.Duration {
+	const w = time.Minute
+	if cl.Feeder || (cl.Role != "anonymous" && cl.Role != "personal") || !from.Before(now.Add(-trackWindow-time.Minute)) {
+		return interval
+	}
+	return max((interval+w-1)/w*w, w)
+}
+
 // trackRequest is a track query after defaults, clamping, and validation.
 type trackRequest struct {
 	mmsi     uint32
@@ -126,7 +138,7 @@ func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time)
 			return q, http.StatusBadRequest, "interval=<seconds> or a duration such as 5m"
 		}
 	}
-	q.interval = p.answeredStep(q.from, q.to, q.interval, now)
+	q.interval = p.answeredStep(q.from, q.to, trackStep(cl, q.from, q.interval, now), now)
 	return q, 0, ""
 }
 
@@ -409,7 +421,7 @@ type mcpTrackIn struct {
 	MMSI            uint32 `json:"mmsi" jsonschema:"the vessel's MMSI; use search_vessels_by_name first when you only have a name"`
 	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. A call covers up to 366 days"`
 	To              string `json:"to,omitempty" jsonschema:"end, RFC 3339 UTC; default now"`
-	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the limit is spread over the range at a round spacing, reported as interval_s"`
+	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the limit is spread over the range at a round spacing, reported as interval_s. Anonymous and personal calls reaching past 48 hours are rounded up to whole minutes"`
 	Limit           int    `json:"limit,omitempty" jsonschema:"positions to return: default 50, maximum 200; when more match, the newest are kept"`
 }
 
@@ -471,7 +483,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 		}
 		interval = defaultInterval(span, limit)
 	}
-	interval = p.answeredStep(from, to, interval, now)
+	interval = p.answeredStep(from, to, trackStep(cl, from, interval, now), now)
 	var points []trackPoint
 	var sources []string
 	var more bool
