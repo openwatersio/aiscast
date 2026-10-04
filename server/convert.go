@@ -17,8 +17,9 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
-// convertBatch is how many rows go to ClickHouse in one insert.
-const convertBatch = 200_000
+// convertBatch is how many rows go to ClickHouse in one insert. The insert borrows its own connection from the
+// pool while the day's read holds another open, so batches go out as the read streams.
+var convertBatch = 200_000
 
 func runConvertReceptions(args []string) {
 	fset := flag.NewFlagSet("convert-receptions", flag.ExitOnError)

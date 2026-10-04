@@ -931,6 +931,10 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 	if err := batch.Send(); err != nil {
 		t.Fatal(err)
 	}
+	// Inserts go out while the day's read is still streaming, as they do for any real day: a batch of 2 here.
+	was := convertBatch
+	convertBatch = 2
+	t.Cleanup(func() { convertBatch = was })
 	n, err := conn.convertDay(ctx, day, map[uint32]*anchor{})
 	if err != nil || n != len(copies) {
 		t.Fatalf("converted %d of %d: %v", n, len(copies), err)
