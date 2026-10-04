@@ -7,10 +7,10 @@ package main
 // safe: each finished day is recorded in receptions_converted and skipped, and a day it stopped partway through
 // is deleted and done again. A converted row keeps its recv_ts, which marks it as converted until cleanup.
 //
-// aiscast clickhouse-cleanup: the steps that drop data, run by hand, never at start. It drops positions_15m and
-// positions_1h, which positions_1m replaces, and positions_old, the table before receptions. Once every day is
-// converted, it deletes the rows in the first layout and drops tx and recv_ts. After that a server built before
-// the current layout can no longer write.
+// aiscast clickhouse-cleanup: the steps that drop data, run by hand, never at start, and only once every day is
+// converted. It drops positions_15m and positions_1h, which positions_1m replaces, and positions_old, the table
+// before receptions, then deletes the rows in the first layout and drops tx and recv_ts. After that a server
+// built before the current layout can no longer write.
 
 import (
 	"cmp"
@@ -157,6 +157,17 @@ func runClickHouseCleanup() {
 
 // cleanup drops what the current layout no longer reads, saying each step as it goes.
 func (c *chConn) cleanup(ctx context.Context, say func(string)) error {
+	// Nothing goes while a day is left to convert: the rollups and positions_old are what a server rolled back
+	// to the first layout reads.
+	days, err := c.unconverted(ctx)
+	if err != nil {
+		return err
+	}
+	if len(days) > 0 {
+		say(fmt.Sprintf("%d days from %s still to convert; run aiscast convert-receptions, then this again. Nothing was dropped",
+			len(days), days[0].Format("2006-01-02")))
+		return nil
+	}
 	say("dropping positions_15m, positions_1h, and their views, which positions_1m replaces")
 	if err := c.exec(ctx, "DROP VIEW IF EXISTS {db}.positions_15m_mv", "DROP VIEW IF EXISTS {db}.positions_1h_mv",
 		"DROP TABLE IF EXISTS {db}.positions_15m", "DROP TABLE IF EXISTS {db}.positions_1h"); err != nil {
@@ -166,17 +177,8 @@ func (c *chConn) cleanup(ctx context.Context, say func(string)) error {
 	if err := c.exec(ctx, "DROP TABLE IF EXISTS {db}.positions_old"); err != nil {
 		return err
 	}
-	days, err := c.unconverted(ctx)
-	if err != nil {
-		return err
-	}
 	if legacy, err := c.legacy(ctx); err != nil || !legacy {
 		return err
-	}
-	if len(days) > 0 {
-		say(fmt.Sprintf("%d days from %s still to convert; run aiscast convert-receptions, then this again to drop the first layout",
-			len(days), days[0].Format("2006-01-02")))
-		return nil
 	}
 	// The rows go first, and at once, so the view that no longer knows tx never sees one; the columns then
 	// go in the background, and system.mutations shows when.
