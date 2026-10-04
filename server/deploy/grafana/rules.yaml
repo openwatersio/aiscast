@@ -200,12 +200,12 @@ groups:
 
       # The vessel record answers lookups past the cache's 30 minutes.
       - alert: StoreDown
-        expr: aiscast_store_up == 0 or aiscast_tracks_up == 0
+        expr: aiscast_store_up == 0
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: aiscast is running without the vessel record or the track store
-          description: Lookups past 30 minutes, search, or tracks fail. Check the store and tracks lines in journalctl -u aiscast and the files aiscast.db and tracks.db in /var/lib/aiscast.
+          summary: aiscast is running without the vessel record
+          description: Lookups past 30 minutes and search fail. Check the store lines in journalctl -u aiscast and the file aiscast.db in /var/lib/aiscast.
       - alert: StoreWritesFailing
         expr: increase(aiscast_store_flush_failures_total[10m]) > 0
         labels: {severity: warning}
@@ -226,19 +226,27 @@ groups:
         annotations:
           summary: Vessel record writes take {{ $value | humanizePercentage }} of each second
           description: The writer is near its budget. Check disk latency and the record's size on the capacity dashboard.
-      # Recent positions ride on the same writer; a stalled disk shows as failures, then as drops once the queue is full.
-      - alert: TracksWritesFailing
-        expr: increase(aiscast_tracks_write_failures_total[10m]) > 0 or increase(aiscast_tracks_points_dropped_total[10m]) > 0
+      # Tracks read from ClickHouse, and every accepted position is written there.
+      - alert: ClickHouseDown
+        expr: aiscast_clickhouse_up == 0
+        for: 5m
         labels: {severity: warning}
         annotations:
-          summary: The track store is failing writes or dropping positions
-          description: Recent tracks have gaps. Check the tracks lines in journalctl -u aiscast and free disk.
+          summary: aiscast is not writing to ClickHouse
+          description: Tracks have gaps, and track requests may fail. Check the clickhouse lines in journalctl -u aiscast and systemctl status clickhouse-server.
+      # A stalled ClickHouse shows as failures, then as drops once the queue is full.
+      - alert: ClickHouseWritesFailing
+        expr: increase(aiscast_clickhouse_write_failures_total[10m]) > 0 or increase(aiscast_clickhouse_points_dropped_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: ClickHouse is failing writes or dropping positions
+          description: Tracks have gaps. Check the clickhouse lines in journalctl -u aiscast, journalctl -u clickhouse-server, and free disk.
       - alert: LakeQueriesFailing
         expr: increase(aiscast_lake_query_failures_total[15m]) > 5
         labels: {severity: warning}
         annotations:
           summary: '{{ $value | printf "%.0f" }} lake queries failed in 15 minutes'
-          description: Tracks past 48 hours are failing. Check the lake and duckdb lines in journalctl -u aiscast, the LAKE_CATALOG_TOKEN, and the Cloudflare status page.
+          description: The record import is failing. Check the lake, duckdb, and import lines in journalctl -u aiscast, the LAKE_CATALOG_TOKEN, and the Cloudflare status page.
       - alert: ImportStale
         # The import runs daily after 03:00 UTC. The timestamp is absent until the first import succeeds, and every
         # import metric is absent on a server without the lake, which the runs counter tells apart.
@@ -248,13 +256,41 @@ groups:
         annotations:
           summary: The lake's vessels have not merged into the record for two days
           description: New history is not reaching vessel lookups or first_seen. Check the import lines in journalctl -u aiscast, the packager's last run, and the LAKE_CATALOG_TOKEN.
-      - alert: TracksWritesSlow
-        expr: rate(aiscast_tracks_write_seconds_total[15m]) > 0.5
+      - alert: ClickHouseWritesSlow
+        expr: rate(aiscast_clickhouse_write_seconds_total[15m]) > 0.5
         for: 15m
         labels: {severity: warning}
         annotations:
-          summary: Track store writes take {{ $value | humanizePercentage }} of each second
-          description: The writer is near its budget. Check disk latency and the track store's size on the capacity dashboard.
+          summary: ClickHouse writes take {{ $value | humanizePercentage }} of each second
+          description: The writer is near its budget. Check ClickHouse's CPU and disk latency.
+      # ClickHouse's own health, from its metrics endpoint: refused inserts, too many parts, and stuck mutations
+      # are how history stops being kept, and they show here before the writer's alerts fire.
+      - alert: ClickHouseRejectingInserts
+        expr: increase(ClickHouseProfileEvents_RejectedInserts[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: ClickHouse refused {{ $value | printf "%.0f" }} inserts for too many parts in 10 minutes
+          description: Merges are not keeping up, often during a bulk load. The writer retries a refused batch for 10 minutes, then drops it. Check SELECT table, partition, count() FROM system.parts WHERE active GROUP BY ALL ORDER BY 3 DESC LIMIT 10, and pause any load.
+      - alert: ClickHouseTooManyParts
+        expr: ClickHouseAsyncMetrics_MaxPartCountForPartition > 100
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: A ClickHouse partition has {{ $value | printf "%.0f" }} parts
+          description: Inserts arrive in more pieces than merges combine, and by default ClickHouse slows inserts at 1,000 parts and refuses them at 3,000. Check system.parts for the partition and system.merges for progress, and pause any load.
+      - alert: ClickHouseMutationStuck
+        expr: ClickHouseMetrics_PartMutation > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: A ClickHouse mutation has run for over an hour
+          description: An ALTER ... DELETE or UPDATE is rewriting parts, and holds merges on them while it does. Check SELECT * FROM system.mutations WHERE NOT is_done, and KILL MUTATION if it is not meant to run.
+      - alert: ClickHouseGrowingFast
+        expr: delta(ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTables[1d]) > 3e9
+        labels: {severity: warning}
+        annotations:
+          summary: ClickHouse grew {{ $value | humanize1024 }}B in a day
+          description: Live history adds about 1 GB a day, and ClickHouse shares the root disk with the archive staging and the vessel record. Expected during an archive load; otherwise check bytes per table in system.parts.
 
       - alert: DiskFreeLow
         expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.2
@@ -262,19 +298,27 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: '{{ $value | humanizePercentage }} of the root disk is free'
-          description: An archive backlog, or the journal cap slipped.
+          description: An archive backlog, ClickHouse growth, or the journal cap slipped.
       - alert: DiskFreeCritical
         expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.1
         for: 10m
         labels: {severity: critical}
         annotations:
           summary: '{{ $value | humanizePercentage }} of the root disk is free'
-          description: An archive backlog, or the journal cap slipped.
+          description: An archive backlog, ClickHouse growth, or the journal cap slipped.
+      # ClickHouse grows every day on the same disk, so the trend warns weeks before the free share does.
+      - alert: DiskFillsSoon
+        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[3d], 14 * 86400) < 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: At the last three days' rate the root disk fills within two weeks
+          description: ClickHouse is the usual cause. Check its size per table in system.parts, drop tables nothing reads, and move older history to cold storage, or add a volume.
 
       # systemd counts only the restarts it makes because a process exited on its own (Restart=always after
       # a crash, panic, or OOM kill). Deploys and manual restarts go through systemctl and never count.
       - alert: ServiceCrashed
-        expr: increase(node_systemd_service_restart_total{name=~"(aiscast|caddy|alloy)\\.service"}[10m]) > 0
+        expr: increase(node_systemd_service_restart_total{name=~"(aiscast|caddy|alloy|clickhouse-server)\\.service"}[10m]) > 0
         labels: {severity: critical}
         annotations:
           summary: '{{ $labels.name }} crashed and systemd restarted it'

@@ -146,13 +146,14 @@ type chWriter interface {
 // chReader reads one vessel's history; tests fake it.
 type chReader interface {
 	history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error)
+	first(ctx context.Context, mmsi uint32, from, to time.Time) (time.Time, bool, error)
 }
 
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
 // /metrics reports about it.
 type chStore struct {
 	w chWriter
-	r chReader // nil keeps tracks on the lake
+	r chReader
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -215,9 +216,10 @@ const chFineSpan = 31 * 24 * time.Hour
 // so a step of whole windows reads the same answer from it. A range too long for the positions view reads the
 // rollup that holds it, at one position per window, which still keeps the step's at-most-one promise; a step
 // its windows do not divide can then show a later position in a bucket, or none, since a window keeps only its
-// first. Every default step divides its window.
+// first. Every default step divides its window. A range that starts inside the 48-hour window reads the
+// positions view: a rollup window that starts before from would leave out the positions in its part of the range.
 func chTable(from, to time.Time, step time.Duration, now time.Time) (string, time.Duration) {
-	fine := step < 15*time.Minute || step%(15*time.Minute) != 0
+	fine := step < 15*time.Minute || step%(15*time.Minute) != 0 || now.Sub(from) <= trackWindow
 	switch {
 	case fine && to.Sub(from) <= chFineSpan:
 		return "positions", 0
@@ -278,6 +280,16 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 	}
 	slices.Reverse(points)
 	return points, rows.Err()
+}
+
+// first is the time of the vessel's first usable copy between from and to; ok is false when it has none there.
+// It reads receptions on their sort key, so it costs one seek, not the view's grouping.
+func (c *chConn) first(ctx context.Context, mmsi uint32, from, to time.Time) (ts time.Time, ok bool, err error) {
+	err = c.conn.QueryRow(ctx, "SELECT ts FROM "+c.db+".receptions WHERE mmsi = ? AND ts >= ? AND ts <= ? AND "+chUsable+" ORDER BY ts LIMIT 1", mmsi, from, to).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ts, false, nil
+	}
+	return ts, err == nil, err
 }
 
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {

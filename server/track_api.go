@@ -41,31 +41,21 @@ type trackRequest struct {
 	limit    int
 }
 
-// trackMaxSpan is the longest range one request may ask for when history comes from the lake, whose reads are
-// billed by the bytes they scan; a longer history pages back by moving to. ClickHouse answers trackMaxSpanCH
-// from local disk.
-const (
-	trackMaxSpan   = 7 * 24 * time.Hour
-	trackMaxSpanCH = 366 * 24 * time.Hour
-)
+// trackMaxSpan is the longest range one request may ask for; a longer history pages back by moving to.
+const trackMaxSpan = 366 * 24 * time.Hour
 
-// historySpan is the longest range a request may ask for past the track store's window, 0 when nothing holds
-// history there.
-func (p *Pipeline) historySpan() time.Duration {
+// trackReader is ClickHouse's reader, nil while CLICKHOUSE_URL is unset or it has not answered.
+func (p *Pipeline) trackReader() chReader {
 	p.vmu.RLock()
-	ch := p.ch
-	p.vmu.RUnlock()
-	switch {
-	case ch != nil && ch.r != nil:
-		return trackMaxSpanCH
-	case p.lake != nil:
-		return trackMaxSpan
+	defer p.vmu.RUnlock()
+	if p.ch == nil {
+		return nil
 	}
-	return 0
+	return p.ch.r
 }
 
-// canReachArchive reports whether a tier reads positions older than the track store's window. Those reads
-// scan the lake and cost money per request, which is why history is a feeder and commercial capability.
+// canReachArchive reports whether a tier reads positions older than the 48-hour window, which is a feeder and
+// commercial capability.
 func canReachArchive(cl *Claims) bool {
 	return cl.Feeder || (cl.Role != "anonymous" && cl.Role != "personal")
 }
@@ -73,12 +63,12 @@ func canReachArchive(cl *Claims) bool {
 const trackArchiveTierMsg = "positions older than 48 hours need a feeder or commercial token; see https://openwaters.io/ais/"
 
 // parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. With
-// history (span above 0) and archive true, a range may reach before the track store's window, at most span of
+// history (span above 0) and archive true, a range may reach before the 48-hour window, at most span of
 // it. Otherwise the range is clamped to the window, and with history a range wholly before the window is
 // refused with a 403 that names the tier which reaches it. A range after now clamps to an empty one there, so
 // the answer is an empty track that says where it looked.
 func parseTrackRange(fromS, toS string, now time.Time, archive bool, span time.Duration) (from, to time.Time, status int, msg string) {
-	lakeOn := span > 0
+	history := span > 0
 	to = now
 	if toS != "" {
 		t, err := time.Parse(time.RFC3339, toS)
@@ -99,10 +89,10 @@ func parseTrackRange(fromS, toS string, now time.Time, archive bool, span time.D
 		return from, to, http.StatusBadRequest, "from must be before to"
 	}
 	start := now.Add(-trackWindow)
-	if !lakeOn || !archive {
+	if !history || !archive {
 		// A range that only overlaps the window is clamped to it, so "the last 48 hours" computed on a client
 		// a moment ahead of the server still answers. One wholly before the window is the archive's to answer.
-		if lakeOn && to.Before(start) {
+		if history && to.Before(start) {
 			return from, to, http.StatusForbidden, trackArchiveTierMsg
 		}
 		return clampTime(from, start, now).UTC(), clampTime(to, start, now).UTC(), 0, ""
@@ -134,7 +124,7 @@ func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time)
 	vals := r.URL.Query()
 	var status int
 	var msg string
-	if q.from, q.to, status, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now, canReachArchive(cl), p.historySpan()); msg != "" {
+	if q.from, q.to, status, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now, canReachArchive(cl), trackMaxSpan); msg != "" {
 		return q, status, msg
 	}
 	cap := trackLimit(cl)
@@ -182,110 +172,49 @@ func defaultInterval(span time.Duration, limit int) time.Duration {
 	return intervalSteps[len(intervalSteps)-1]
 }
 
-// trackPoints reads a vessel's positions between from and to: the lake for the part before the track store's
-// window, the track store for the rest. interval thins both with the same buckets, positions implying an
-// impossible speed are dropped from both, and when more than limit match, the newest limit are kept. sources
-// are the source kinds that delivered the positions returned.
+// trackPoints reads a vessel's positions between from and to from ClickHouse, which thins them by interval
+// and returns the newest limit, and one more that says older positions were left out. Positions implying an
+// impossible speed are dropped, judged against that extra row too, and the limit then trims it. sources are
+// the source kinds that delivered the positions returned.
 func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.Time, interval time.Duration, limit int, now time.Time) (points []trackPoint, sources []string, more bool, err error) {
-	start := now.Add(-trackWindow)
-	hotFrom := from
-	if hotFrom.Before(start) {
-		hotFrom = start
+	r := p.trackReader()
+	if r == nil {
+		return nil, nil, false, errNoTracks
 	}
-	var hot []trackPoint
-	if !hotFrom.After(to) {
-		if hot, more, err = p.tracks.track(mmsi, hotFrom, to, interval, limit); err != nil {
-			return nil, nil, false, err
-		}
-	}
-	if more || p.historySpan() == 0 || !from.Before(start) {
-		return hot, pointSources(hot), more, nil
-	}
-	// Keep the positions before the window, one per interval bucket, and none in the bucket the track store's
-	// first position already fills.
-	lakeTo := to
-	if !lakeTo.Before(start) {
-		lakeTo = start.Add(-time.Millisecond)
-	}
-	inRange, capped, err := p.historyPoints(ctx, mmsi, from, lakeTo, interval, limit-len(hot), now)
-	if err != nil {
+	if points, err = r.history(ctx, mmsi, from, to, interval, limit, now); err != nil {
 		return nil, nil, false, err
 	}
-	bucket := func(t time.Time) int64 {
-		if ms := interval.Milliseconds(); ms > 0 {
-			return t.UnixMilli() / ms
+	capped := len(points) > limit
+	// A rollup whose windows do not divide the step returns a position per window; each goes in the step
+	// bucket of its own time.
+	if ms := interval.Milliseconds(); ms > 0 {
+		kept, last := points[:0], int64(-1)
+		for _, pt := range points {
+			if b := pt.ts.UnixMilli() / ms; b != last {
+				kept, last = append(kept, pt), b
+			}
 		}
-		return t.UnixMilli()
+		points = kept
 	}
-	firstHot := int64(-1)
-	if len(hot) > 0 && interval > 0 {
-		firstHot = bucket(hot[0].ts)
+	points = despike(points)
+	if len(points) > limit || capped {
+		points, more = points[max(len(points)-limit, 0):], true
 	}
-	var old []trackPoint
-	last := int64(-1)
-	for _, pt := range inRange {
-		if b := bucket(pt.ts); interval > 0 && (b == last || b == firstHot) {
-			continue
-		} else {
-			last = b
-		}
-		old = append(old, pt)
-	}
-	// Judged after thinning, as the track store judges its own, and before the limit, so the limit counts
-	// only positions the answer keeps.
-	old = despike(old)
-	if room := limit - len(hot); len(old) > room || capped {
-		old, more = old[max(len(old)-room, 0):], true
-	}
-	points = append(old, hot...)
 	return points, pointSources(points), more, nil
 }
+
+// errNoTracks is a track asked of a server without ClickHouse.
+var errNoTracks = errors.New("tracks are not available on this server")
 
 // answeredStep is the step an answer from from to to can keep: interval, or the window of the rollup ClickHouse
 // reads a range from when the range is too long for every position, as for interval 0 over more than
 // chFineSpan. The whole answer is thinned to it and reports it, so no part claims more positions than it holds.
 func (p *Pipeline) answeredStep(from, to time.Time, interval time.Duration, now time.Time) time.Duration {
-	p.vmu.RLock()
-	ch := p.ch
-	p.vmu.RUnlock()
-	if ch == nil || ch.r == nil || !from.Before(now.Add(-trackWindow)) {
+	if p.trackReader() == nil {
 		return interval
 	}
 	_, window := chTable(from, to, interval, now)
 	return max(interval, window)
-}
-
-// historyPoints is one vessel's positions between from and to, oldest first, from before the track store's
-// window: ClickHouse's when it is attached, else the lake's. capped says ClickHouse returned a row past limit,
-// so older positions were left out, which the caller must report whatever its own filtering drops. When ClickHouse fails, the
-// lake answers a range it allows, trackMaxSpan; a longer one fails, since the lake's reads are billed by the
-// bytes they scan.
-func (p *Pipeline) historyPoints(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) (points []trackPoint, capped bool, err error) {
-	p.vmu.RLock()
-	ch := p.ch
-	p.vmu.RUnlock()
-	if ch != nil && ch.r != nil {
-		points, err := ch.r.history(ctx, mmsi, from, to, step, limit, now)
-		if err == nil || p.lake == nil || to.Sub(from) > trackMaxSpan {
-			// The row past the limit stays, as the track store's does: it is the anchor that judges the next row
-			// for impossible speed, and the caller trims to the limit after despiking.
-			return points, len(points) > limit, err
-		}
-	}
-	days, err := p.lake.days(ctx, mmsi, from, to, now)
-	if err != nil {
-		return nil, false, err
-	}
-	// A late report sits in the partition after its own day, so the positions are ordered after gathering.
-	for _, d := range days {
-		for _, pt := range d.points {
-			if !pt.ts.Before(from) && !pt.ts.After(to) {
-				points = append(points, pt)
-			}
-		}
-	}
-	sort.SliceStable(points, func(i, j int) bool { return points[i].ts.Before(points[j].ts) })
-	return points, false, nil
 }
 
 // pointSources is the source kinds that delivered points, the ones a track credits.
@@ -319,7 +248,7 @@ func (p *Pipeline) vesselName(mmsi uint32) (name string, known bool, err error) 
 }
 
 // serveTrack: GET /v1/vessels/{mmsi}/track?from&to&interval&limit&format → the positions the network
-// heard from one vessel in the last 48 hours, as a GeoJSON Feature or, with format=gpx, a GPX track.
+// heard from one vessel over the range, as a GeoJSON Feature or, with format=gpx, a GPX track.
 func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
 	cl, err := p.requestClaims(r)
 	if err != nil {
@@ -337,8 +266,8 @@ func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, status)
 		return
 	}
-	if p.tracks == nil {
-		http.Error(w, "tracks are not available on this server", http.StatusServiceUnavailable)
+	if p.trackReader() == nil {
+		http.Error(w, errNoTracks.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	points, sources, more, err := p.trackPoints(r.Context(), q.mmsi, q.from, q.to, q.interval, q.limit, now)
@@ -538,29 +467,27 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	limit = min(limit, trackLimit(cl))
 	now := time.Now()
-	from, to, _, msg := parseTrackRange(in.From, in.To, now, canReachArchive(cl), p.historySpan())
+	from, to, _, msg := parseTrackRange(in.From, in.To, now, canReachArchive(cl), trackMaxSpan)
 	if msg != "" {
 		return nil, mcpTrack{}, errors.New(msg)
 	}
 	if in.IntervalMinutes < 0 {
 		return nil, mcpTrack{}, errors.New("interval_minutes cannot be negative")
 	}
-	if p.tracks == nil {
-		return nil, mcpTrack{}, errors.New("tracks are not available on this server")
+	r := p.trackReader()
+	if r == nil {
+		return nil, mcpTrack{}, errNoTracks
 	}
 	// An assistant asking for a day wants the whole of the vessel's day, not its last few minutes at full
-	// rate, so the limit is spread over the range: from the vessel's first position in it when the track
-	// store holds the range, and over the whole range when it reaches into the lake.
+	// rate, so the limit is spread over the range from the vessel's first position in it.
 	interval := time.Duration(in.IntervalMinutes) * time.Minute
 	var err error
 	if interval == 0 {
 		span := to.Sub(from)
-		if !from.Before(now.Add(-trackWindow)) {
-			var start time.Time
-			var ok bool
-			if start, ok, err = p.tracks.first(in.MMSI, from, to); ok {
-				span = to.Sub(start)
-			}
+		var start time.Time
+		var ok bool
+		if start, ok, err = r.first(ctx, in.MMSI, from, to); ok {
+			span = to.Sub(start)
 		}
 		interval = defaultInterval(span, limit)
 	}
@@ -578,7 +505,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	if err != nil {
 		log.Printf("tracks: %v", err)
-		return nil, mcpTrack{}, errors.New("the track store is unavailable; try again shortly")
+		return nil, mcpTrack{}, errors.New("tracks are unavailable; try again shortly")
 	}
 	if len(points) == 0 && !known {
 		return nil, mcpTrack{}, fmt.Errorf("no vessel with MMSI %d has been heard", in.MMSI)

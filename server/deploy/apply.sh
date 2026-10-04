@@ -66,6 +66,8 @@ chown -R aiscast:aiscast /var/lib/aiscast
 systemctl disable --now packager.timer packager.service 2>/dev/null || true
 rm -f /etc/systemd/system/packager.timer /etc/systemd/system/packager.service /opt/aiscast/packager.py
 rm -rf /var/lib/aiscast/packager
+# Tracks read from ClickHouse. Boxes converged before that may still carry the SQLite track store.
+rm -f /var/lib/aiscast/tracks.db /var/lib/aiscast/tracks.db-*
 
 # Seed only: secrets live on the box, never in the repo.
 if [ ! -f /etc/aiscast.env ]; then
@@ -82,7 +84,8 @@ systemctl restart systemd-journald
 systemctl enable aiscast caddy clickhouse-server fail2ban
 # ClickHouse restarts only when its own files differ from the ones it last restarted with, recorded in a
 # stamp, so a deploy does not interrupt it for nothing and one that stopped partway is caught up by the next.
-# aiscast runs without ClickHouse, so a ClickHouse that will not start warns and never fails the deploy;
+# aiscast runs without ClickHouse, answering tracks with 503, so a ClickHouse that will not start warns and
+# never fails the deploy;
 # --no-block keeps a slow start from holding it up.
 ch_sum=$(cat /etc/clickhouse-server/config.d/aiscast.xml /etc/systemd/system/clickhouse-server.service.d/10-aiscast.conf | md5sum)
 ch_stamp=/var/lib/aiscast/clickhouse-config.md5
