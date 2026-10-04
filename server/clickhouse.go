@@ -143,15 +143,19 @@ func chPositionsView(legacy bool) string {
 }
 
 // chFirstCopies is each transmission among the receptions where holds, by its time in milliseconds, sent, and
-// f, the tuple of the copy the positions view serves, with that copy's verdict on moving last.
+// f, the tuple of the copy the positions view serves, with that copy's verdict on moving last. A transmission
+// in the first layout has no time of its own stored, so its time is the served copy's, the one main's view
+// filtered on, rather than its earliest stamp, which an AISHub copy stamped early would set.
 func chFirstCopies(legacy bool, where string) string {
 	group, arrival := "toUnixTimestamp64Milli(ts) + tx_off AS tx_ms, tx_disc", "toUnixTimestamp64Milli(ts) + recv_delay"
+	sent := "min(toUnixTimestamp64Milli(ts) + tx_off)"
 	if legacy {
 		group = "tx, if(tx = 0, toUnixTimestamp64Milli(ts) + tx_off, 0) AS tx_ms, if(tx = 0, tx_disc, 0)"
 		arrival = "if(tx = 0, toUnixTimestamp64Milli(ts) + recv_delay, toUnixTimestamp64Milli(recv_ts))"
+		sent = "if(tx = 0, " + sent + ", toUnixTimestamp64Milli(f.1))"
 		where += " AND (tx = 0 OR toDate(ts) NOT IN (SELECT day FROM {db}.receptions_converted))"
 	}
-	return `SELECT mmsi, min(toUnixTimestamp64Milli(ts) + tx_off) AS sent,
+	return `SELECT mmsi, ` + sent + ` AS sent,
 		       argMinIf((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source), moving), ` + arrival + `, NOT clock_bad) AS f
 		FROM {db}.receptions
 		WHERE ` + where + `
