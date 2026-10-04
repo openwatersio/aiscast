@@ -194,7 +194,7 @@ No R2 disk has been tested yet. Everything measured so far ran on local MergeTre
 The track endpoint picks a table from the step:
 
 - **Steps under a minute, including every position**, read the `positions` view, so each transmission appears once. The span is capped at 31 days, because a busy vessel's year at full rate is millions of rows, partly on R2. A longer range takes a one-minute step. Every-position reads work for any 31-day window in history.
-- **Steps of a minute and up** read `positions_1m`, grouped by the step. It stays on local disk for 13 months and moves to R2 after, so tracks of a year or less never touch R2.
+- **Steps of a minute and up** read `positions_1m`, grouped by the step. With the R2 cold tier, it stays on local disk for 13 months and moves to R2 after, so tracks of a year or less never touch R2. Until that tier exists, all of it stays local.
 
 Credit lines come from the `source` of each position kept, as they do now. The despike anchor, the extra row past the limit, works as now, because every read returns one row per transmission.
 
@@ -235,7 +235,7 @@ Measured on the box after the switch to receptions: about 50 M copies a day live
 | `positions_1m` | about 55 GB live plus about 15 GB archive | Local for 13 months, then R2 |
 | R2 cache, local | 10 to 20 GB | Fixed |
 
-The local disk holds 30 days of receptions, 13 months of `positions_1m`, and the cache: about 90 to 100 GB once a year has passed, against the box's 150 GB disk. A 100 GB Hetzner volume costs about €5 a month if it outgrows that. Part counts per partition are not yet measured: `SELECT table, partition, count() FROM system.parts WHERE active AND database = 'aiscast' GROUP BY 1, 2 ORDER BY 1, 2`.
+Nothing expires and nothing moves until the R2 cold tier exists: both tables stay on local disk and grow by about 0.7 GB a day at today's traffic, which the box's 150 GB disk holds for a few months. With the tier, the local disk holds 30 days of receptions, 13 months of `positions_1m`, and the cache: about 90 to 100 GB once a year has passed. A 100 GB Hetzner volume costs about €5 a month if it outgrows that. Part counts per partition are not yet measured: `SELECT table, partition, count() FROM system.parts WHERE active AND database = 'aiscast' GROUP BY 1, 2 ORDER BY 1, 2`.
 
 ## Order of work
 

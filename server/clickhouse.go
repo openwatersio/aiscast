@@ -96,6 +96,7 @@ var chSchema = []string{
 // in plain columns; a window reduced to an aggregate state cost twice that. Any step of a minute or more reads
 // from it, grouped by the step, so coarser summaries are never needed to answer one. Places are cells of a
 // hundredth of a degree, about a kilometer, so a vessel moored at two harbors in a day has a heartbeat at each.
+// Nothing in it expires, as in receptions.
 const chCell = `toUInt32((intDiv(lat6, 6000) + 9000) * 36000 + (intDiv(lon6, 6000) + 18000))`
 
 // chUsable is the condition every history read puts on receptions: copies the fold judged an impossible jump,
