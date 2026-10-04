@@ -133,7 +133,10 @@ func (c *chConn) convertDay(ctx context.Context, day time.Time, anchors map[uint
 
 // convertVessel converts one vessel's rows, in time order, and returns those in [day, end). A transmission's
 // accepted copy is its earliest-arriving accepted one; a transmission with no accepted copy in reach takes its
-// earliest copy's time. The anchor advances on the rows that enter positions_1m, as the live writer's does.
+// earliest copy's time. The anchor advances on the rows that enter positions_1m, as the live writer's does: not
+// on a stale one, which arrived after an accepted report stamped more than a second later, staleFor's test.
+// ponytail: staleFor also counts statics and a rebuilt source's ties, which receptions_v1 does not hold; a row
+// those alone made stale moves the anchor here, by under a second of track.
 func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor) []trackPoint {
 	type first struct {
 		ts, recv time.Time
@@ -172,13 +175,23 @@ func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor)
 		used[ms] = append(used[ms], d)
 		disc[tx] = d
 	}
+	stale := make([]bool, len(rows))
+	earliest, k := time.Time{}, len(rows) // earliest: the first arrival among rows stamped after rows[i].ts + 1 s
+	for i := len(rows) - 1; i >= 0; i-- {
+		for k > 0 && rows[k-1].ts.After(rows[i].ts.Add(time.Second)) {
+			if k--; rows[k].accepted && !rows[k].implausible && (earliest.IsZero() || rows[k].recv.Before(earliest)) {
+				earliest = rows[k].recv
+			}
+		}
+		stale[i] = !earliest.IsZero() && earliest.Before(rows[i].recv)
+	}
 	a := anchors[rows[0].mmsi]
 	if a == nil {
 		a = &anchor{}
 		anchors[rows[0].mmsi] = a
 	}
 	var out []trackPoint
-	for _, r := range rows {
+	for i, r := range rows {
 		if r.ts.Before(day) || !r.ts.Before(end) {
 			continue
 		}
@@ -186,7 +199,7 @@ func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor)
 		pt := trackPoint{mmsi: r.mmsi, ts: r.ts, lat6: r.lat6, lon6: r.lon6, sog10: r.sog10, cog10: r.cog10, heading: r.heading,
 			navStatus: r.navstat, source: r.source, txAt: txAt, txDisc: disc[r.tx], recv: r.recv,
 			station: r.station, dup: !r.accepted, uncorroborated: !r.corroborated, implausible: r.implausible, clockBad: r.clockBad}
-		pt.still = a.still(pt, nil, r.accepted && !r.implausible && !r.clockBad)
+		pt.still = a.still(pt, nil, r.accepted && !stale[i] && !r.implausible && !r.clockBad)
 		out = append(out, pt)
 	}
 	return out

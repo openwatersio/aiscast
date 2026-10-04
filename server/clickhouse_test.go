@@ -914,6 +914,12 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 		{257000002, 0, 0, time.Second, idc, 0, 1023, "aishub", true, false},
 		{257000002, 3 * time.Minute, 3 * time.Minute, 3*time.Minute + time.Second, eventID("d"), 10, 1023, "aishub", true, false},
 		{257000002, 6 * time.Minute, 6 * time.Minute, 6*time.Minute + time.Second, eventID("e"), 500, 1023, "aishub", true, true},
+		// Drifting under half a knot. The report at 60 m arrives after the one at 30 m stamped later, so it is stale
+		// and leaves the anchor at 0 m, and the report at 100 m is moving from there.
+		{257000004, 0, 0, time.Second, eventID("f"), 0, 0, "kystverket", true, false},
+		{257000004, 2 * time.Minute, 2 * time.Minute, 5 * time.Minute, eventID("g"), 60, 0, "aishub", true, false},
+		{257000004, 4 * time.Minute, 4 * time.Minute, 4*time.Minute + time.Second, eventID("h"), 30, 0, "kystverket", true, false},
+		{257000004, 6 * time.Minute, 6 * time.Minute, 6*time.Minute + time.Second, eventID("i"), 100, 0, "kystverket", true, false},
 	}
 	batch, err := conn.conn.PrepareBatch(ctx, "INSERT INTO "+db+".receptions_v1")
 	if err != nil {
@@ -963,7 +969,7 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	wantMoving := []bool{true, true, true, true, false, true}
+	wantMoving := []bool{true, true, true, true, false, true, true, true, false, true}
 	i := 0
 	for rows.Next() {
 		var mmsi uint32
@@ -1063,5 +1069,23 @@ func TestAnImplausibleTransmissionKeepsItsByte(t *testing.T) {
 	q := queued(p, mmsi)
 	if len(q) != 3 || !q[1].implausible || q[2].implausible || q[1].txDisc == q[2].txDisc {
 		t.Fatalf("the implausible report and the valid one in its millisecond take two bytes: %+v", q)
+	}
+}
+
+// A flood of impossible positions for a vessel never pushes its plausible recent ones out of the ring.
+func TestImplausibleReportsNeverEvictPlausibleOnes(t *testing.T) {
+	v := &vessel{}
+	t0 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for i := range recentMax + 40 {
+		v.remember(trackPoint{ts: t0.Add(time.Duration(i) * time.Second), lat6: int32(i), implausible: i >= recentMax-1})
+	}
+	good := 0
+	for _, r := range v.recent {
+		if !r.bad {
+			good++
+		}
+	}
+	if len(v.recent) != recentMax || good != recentMax-1 || v.recent[recentMax-1].ms != t0.Add(time.Duration(recentMax+39)*time.Second).UnixMilli() {
+		t.Fatalf("the plausible ones stay and the newest implausible one replaces the last: %d of %d %+v", good, len(v.recent), v.recent)
 	}
 }

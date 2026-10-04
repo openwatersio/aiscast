@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -125,6 +126,8 @@ type recentPos struct {
 }
 
 // remember adds a transmission of the vessel's own to its recent ones, dropping those too old to be repeated.
+// When they are full an implausible one only ever replaces another, so a station sending a vessel impossible
+// positions, which anyone can run, cannot push out the ones its copies are matched to.
 func (v *vessel) remember(pt trackPoint) {
 	ms := pt.ts.UnixMilli()
 	keep := v.recent[:0]
@@ -134,7 +137,12 @@ func (v *vessel) remember(pt trackPoint) {
 		}
 	}
 	if len(keep) == recentMax {
-		keep = append(keep[:0], keep[1:]...)
+		drop := slices.IndexFunc(keep, func(r recentPos) bool { return r.bad })
+		if drop < 0 && pt.implausible {
+			v.recent = keep
+			return
+		}
+		keep = slices.Delete(keep, max(drop, 0), max(drop, 0)+1)
 	}
 	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.txDisc, pt.implausible})
 }
