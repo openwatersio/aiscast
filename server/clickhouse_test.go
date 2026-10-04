@@ -1206,17 +1206,25 @@ func TestAnImplausibleTransmissionKeepsItsByte(t *testing.T) {
 func TestImplausibleReportsNeverEvictPlausibleOnes(t *testing.T) {
 	v := &vessel{}
 	t0 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	for i := range recentMax + 40 {
-		v.remember(trackPoint{ts: t0.Add(time.Duration(i) * time.Second), lat6: int32(i), implausible: i >= recentMax-1})
+	for i := range recentMax + 40 { // the ring full of plausible reports, then a flood of impossible ones
+		v.remember(trackPoint{ts: t0.Add(time.Duration(i) * time.Second), lat6: int32(i), txDisc: 7, implausible: i >= recentMax})
 	}
-	good := 0
+	good, bad := 0, 0
 	for _, r := range v.recent {
-		if !r.bad {
+		if r.bad {
+			bad++
+		} else {
 			good++
 		}
 	}
-	if len(v.recent) != recentMax || good != recentMax-1 || v.recent[recentMax-1].ms != t0.Add(time.Duration(recentMax+39)*time.Second).UnixMilli() {
-		t.Fatalf("the plausible ones stay and the newest implausible one replaces the last: %d of %d %+v", good, len(v.recent), v.recent)
+	newest := t0.Add(time.Duration(recentMax+39) * time.Second)
+	if good != recentMax || bad != recentBad || v.recent[len(v.recent)-1].ms != newest.UnixMilli() {
+		t.Fatalf("every plausible one stays beside the newest implausible ones: %d and %d, %+v", good, bad, v.recent)
+	}
+	// The newest implausible report's byte stays taken, so a valid report in its millisecond is not hidden with it.
+	pt := trackPoint{ts: newest, txAt: newest, txDisc: 7}
+	if v.freeDisc(&pt); pt.txDisc == 7 {
+		t.Error("a valid report took an implausible one's byte")
 	}
 }
 

@@ -100,6 +100,7 @@ const clockBadAge = 24 * time.Hour
 const (
 	recentKeep = 5 * time.Minute
 	recentMax  = 32 // positions a vessel keeps, enough for one reporting every 10 s
+	recentBad  = 4  // implausible ones it keeps beside them, so their bytes stay taken
 	// recentNearA is how far, in wire units of latitude or longitude (1/600,000 of a degree), a copy may sit
 	// from its transmission: 4, about 0.75 m. A source that rounds to 5 decimal places, as MarineCadastre does,
 	// is off by up to 3, and converting its float back can add one.
@@ -115,23 +116,26 @@ type recentPos struct {
 }
 
 // remember adds a transmission of the vessel's own to its recent ones, dropping those too old to be repeated.
-// When they are full an implausible one only ever replaces another, so a station sending a vessel impossible
-// positions, which anyone can run, cannot push out the ones its copies are matched to.
+// Implausible ones have recentBad places of their own beside the recentMax plausible ones, the oldest giving way
+// to the newest, so a station sending a vessel impossible positions, which anyone can run, can neither push out
+// the ones its copies are matched to nor leave its byte free for a valid report in its millisecond.
+// ponytail: more than recentBad implausible reports in one millisecond free the oldest's byte; a flood that
+// dense is already flagged at every copy.
 func (v *vessel) remember(pt trackPoint) {
 	ms := pt.ts.UnixMilli()
 	keep := v.recent[:0]
+	same := 0
 	for _, r := range v.recent {
 		if ms-r.ms < recentKeep.Milliseconds() {
 			keep = append(keep, r)
+			if r.bad == pt.implausible {
+				same++
+			}
 		}
 	}
-	if len(keep) == recentMax {
-		drop := slices.IndexFunc(keep, func(r recentPos) bool { return r.bad })
-		if drop < 0 && pt.implausible {
-			v.recent = keep
-			return
-		}
-		keep = slices.Delete(keep, max(drop, 0), max(drop, 0)+1)
+	if pt.implausible && same >= recentBad || same >= recentMax {
+		oldest := slices.IndexFunc(keep, func(r recentPos) bool { return r.bad == pt.implausible })
+		keep = slices.Delete(keep, oldest, oldest+1)
 	}
 	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.txDisc, pt.implausible, pt.still})
 }
