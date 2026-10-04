@@ -65,21 +65,47 @@ func runConvertReceptions(args []string) {
 	}
 }
 
-// convertDays converts days in order, carrying each vessel's anchor from one day to the next. A day the run did
-// not just convert the day before of, the first of a run or one a rollback left to do again, starts from the
-// anchors positions_1m holds, so it judges moving as the day after a converted one would.
+// convertState is what converting one day hands the next: each vessel's anchor, and the verdict on moving of
+// each transmission accepted in the day's last convertLead, which its copies stamped after midnight carry.
+type convertState struct {
+	anchors map[uint32]*anchor
+	still   map[convertTx]bool
+}
+
+// convertTx names a transmission across days: its vessel, time, and byte.
+type convertTx struct {
+	mmsi uint32
+	ms   int64
+	disc uint8
+}
+
+// convertLead is how far either side of a day the converter reads, past the 5 minutes a copy sits from its
+// transmission.
+const convertLead = 10 * time.Minute
+
+func newConvertState() *convertState {
+	return &convertState{anchors: map[uint32]*anchor{}, still: map[convertTx]bool{}}
+}
+
+// convertDays converts days in order, carrying each vessel's anchor and the day's last verdicts from one day to
+// the next. A day the run did not just convert the day before of, the first of a run or one a rollback left to
+// do again, starts from what the converted day before holds: the anchors in positions_1m and the verdicts of
+// its accepted rows. It then judges moving as the day after a converted one would.
 func (c *chConn) convertDays(ctx context.Context, days []time.Time, done func(time.Time, int, time.Duration)) error {
-	anchors := map[uint32]*anchor{}
+	st := newConvertState()
 	var prev time.Time
 	for _, d := range days {
 		start := time.Now()
 		if !d.Equal(prev.AddDate(0, 0, 1)) {
 			var err error
-			if anchors, err = c.anchorsBefore(ctx, d); err != nil {
+			if st.anchors, err = c.anchorsBefore(ctx, d); err != nil {
 				return fmt.Errorf("%s: anchors: %w", d.Format("2006-01-02"), err)
 			}
+			if st.still, err = c.stillBefore(ctx, d); err != nil {
+				return fmt.Errorf("%s: verdicts: %w", d.Format("2006-01-02"), err)
+			}
 		}
-		n, err := c.convertDay(ctx, d, anchors)
+		n, err := c.convertDay(ctx, d, st)
 		if err != nil {
 			return fmt.Errorf("%s: %w", d.Format("2006-01-02"), err)
 		}
@@ -87,6 +113,27 @@ func (c *chConn) convertDays(ctx context.Context, days []time.Time, done func(ti
 		prev = d
 	}
 	return nil
+}
+
+// stillBefore is the verdict on moving of each transmission accepted in the convertLead before day, from the
+// rows already in the current layout.
+func (c *chConn) stillBefore(ctx context.Context, day time.Time) (map[convertTx]bool, error) {
+	rows, err := c.conn.Query(ctx, "SELECT mmsi, toUnixTimestamp64Milli(ts) + tx_off, tx_disc, moving FROM "+c.db+".receptions"+
+		" WHERE tx = 0 AND accepted AND ts >= ? AND ts < ?", day.Add(-convertLead), day)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	still := map[convertTx]bool{}
+	for rows.Next() {
+		var k convertTx
+		var moving bool
+		if err := rows.Scan(&k.mmsi, &k.ms, &k.disc, &moving); err != nil {
+			return nil, err
+		}
+		still[k] = !moving
+	}
+	return still, rows.Err()
 }
 
 // anchorsBefore is each vessel's anchor at the start of day: where it was last moving, its latest moving row in
@@ -206,8 +253,9 @@ type v1Row struct {
 // convertDay converts one UTC day and reports the rows written. A v1 tx was the event id's first 64 bits XORed
 // with the accepted copy's time in milliseconds, so that time recovers the id's byte exactly, and a transmission
 // whose copies straddle midnight has one name. Its copies sit within 5 minutes of it, so the day is read with
-// 10 minutes either side; only its own rows are written. anchors carries each vessel's anchor from day to day.
-func (c *chConn) convertDay(ctx context.Context, day time.Time, anchors map[uint32]*anchor) (int, error) {
+// convertLead either side; only its own rows are written. st carries the anchors and the last verdicts from the
+// day before, and takes this day's.
+func (c *chConn) convertDay(ctx context.Context, day time.Time, st *convertState) (int, error) {
 	end := day.Add(24 * time.Hour)
 	partial := " FROM " + c.db + ".receptions WHERE ts >= ? AND ts < ? AND tx = 0 AND recv_ts != 0"
 	var left, old uint64
@@ -225,7 +273,7 @@ func (c *chConn) convertDay(ctx context.Context, day time.Time, anchors map[uint
 	}))
 	rows, err := c.conn.Query(rctx, "SELECT mmsi, ts, recv_ts, tx, lat6, lon6, sog10, cog10, heading, navstat, toString(source), toString(station),"+
 		" accepted, corroborated, implausible, clock_bad FROM "+c.db+".receptions WHERE tx != 0 AND ts >= ? AND ts < ? ORDER BY mmsi, ts, recv_ts, tx",
-		day.Add(-10*time.Minute), end.Add(10*time.Minute))
+		day.Add(-convertLead), end.Add(convertLead))
 	if err != nil {
 		return 0, err
 	}
@@ -249,11 +297,12 @@ func (c *chConn) convertDay(ctx context.Context, day time.Time, anchors map[uint
 		return nil
 	}
 	var vessel []v1Row
+	next := map[convertTx]bool{}
 	emit := func() error {
 		if len(vessel) == 0 {
 			return nil
 		}
-		batch = append(batch, convertVessel(vessel, day, end, anchors)...)
+		batch = append(batch, convertVessel(vessel, day, end, st, next)...)
 		vessel = vessel[:0]
 		if len(batch) >= convertBatch {
 			return flush()
@@ -282,6 +331,7 @@ func (c *chConn) convertDay(ctx context.Context, day time.Time, anchors map[uint
 	if err := flush(); err != nil {
 		return written, err
 	}
+	st.still = next
 	return written, c.conn.Exec(ctx, "INSERT INTO "+c.db+".receptions_converted VALUES (?, ?)", day, old)
 }
 
@@ -291,7 +341,7 @@ func (c *chConn) convertDay(ctx context.Context, day time.Time, anchors map[uint
 // on a stale one, which arrived after an accepted report stamped more than a second later, staleFor's test.
 // ponytail: staleFor also counts statics and a rebuilt source's ties, which the first layout does not hold; a row
 // those alone made stale moves the anchor here, by under a second of track.
-func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor) []trackPoint {
+func convertVessel(rows []v1Row, day, end time.Time, st *convertState, next map[convertTx]bool) []trackPoint {
 	type first struct {
 		ts, recv time.Time
 		accepted bool
@@ -339,10 +389,10 @@ func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor)
 		}
 		stale[i] = !earliest.IsZero() && earliest.Before(rows[i].recv)
 	}
-	a := anchors[rows[0].mmsi]
+	a := st.anchors[rows[0].mmsi]
 	if a == nil {
 		a = &anchor{}
-		anchors[rows[0].mmsi] = a
+		st.anchors[rows[0].mmsi] = a
 	}
 	var out []trackPoint
 	var txs []uint64
@@ -358,13 +408,21 @@ func convertVessel(rows []v1Row, day, end time.Time, anchors map[uint32]*anchor)
 		pt.still = a.still(pt, nil, r.accepted && !stale[i] && !r.implausible && !r.clockBad)
 		if r.accepted {
 			still[r.tx] = pt.still
+			if !r.ts.Before(end.Add(-convertLead)) {
+				next[convertTx{r.mmsi, txAt.UnixMilli(), pt.txDisc}] = pt.still
+			}
 		}
 		out, txs = append(out, pt), append(txs, r.tx)
 	}
-	// A copy carries its transmission's verdict on moving, as the live writer's do; one whose accepted copy fell
-	// on the day before keeps the anchor's verdict on it.
+	// A copy carries its transmission's verdict on moving, as the live writer's do, its accepted copy's from this
+	// day or from the end of the day before. One whose accepted copy is in neither keeps the anchor's verdict.
 	for j := range out {
-		if s, ok := still[txs[j]]; ok && out[j].dup {
+		if !out[j].dup {
+			continue
+		}
+		if s, ok := still[txs[j]]; ok {
+			out[j].still = s
+		} else if s, ok := st.still[convertTx{out[j].mmsi, out[j].txAt.UnixMilli(), out[j].txDisc}]; ok {
 			out[j].still = s
 		}
 	}

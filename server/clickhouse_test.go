@@ -15,6 +15,7 @@ import (
 
 	"github.com/BertoldVdb/go-ais"
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 // fakeCH records every batch and token it is handed, and fails the first `fail` of them: with a refusal when
@@ -1043,7 +1044,7 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 	if err != nil || len(days) != 1 || !days[0].Equal(day) {
 		t.Fatalf("the day to convert: %v %v", days, err)
 	}
-	n, err := conn.convertDay(ctx, day, map[uint32]*anchor{})
+	n, err := conn.convertDay(ctx, day, newConvertState())
 	if err != nil || n != len(copies)+2 {
 		t.Fatalf("converted %d of %d: %v", n, len(copies), err)
 	}
@@ -1054,7 +1055,7 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 	if err := conn.conn.Exec(ctx, "TRUNCATE TABLE "+db+".receptions_converted"); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := conn.convertDay(ctx, day, map[uint32]*anchor{}); err != nil || n != len(copies)+2 {
+	if n, err := conn.convertDay(ctx, day, newConvertState()); err != nil || n != len(copies)+2 {
 		t.Fatalf("converted again %d: %v", n, err)
 	}
 	// A server rolled back to the first layout writes into the converted day: the day is to do again, and
@@ -1072,7 +1073,7 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 	if legacy, _ := conn.legacy(ctx); !legacy {
 		t.Fatal("cleanup dropped a row written since its day was converted")
 	}
-	if n, err := conn.convertDay(ctx, day, map[uint32]*anchor{}); err != nil || n != len(copies)+3 {
+	if n, err := conn.convertDay(ctx, day, newConvertState()); err != nil || n != len(copies)+3 {
 		t.Fatalf("converted again with the new row %d: %v", n, err)
 	}
 	var converted uint64
@@ -1342,33 +1343,8 @@ func TestClickHouseRebuildsPositions1mAfterAPurge(t *testing.T) {
 // A day converted in a run of its own, as one a rollback leaves to do again, starts from where each vessel was
 // last moving in positions_1m, so it judges moving as the day after a converted one would.
 func TestConvertSeedsAnchorsForADayOnItsOwn(t *testing.T) {
-	url := os.Getenv("CLICKHOUSE_TEST_URL")
-	if url == "" {
-		t.Skip("CLICKHOUSE_TEST_URL is not set")
-	}
+	raw, conn, db := firstLayout(t)
 	ctx := context.Background()
-	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
-	opts, err := clickhouse.ParseDSN(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := clickhouse.Open(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
-	for _, stmt := range []string{"CREATE DATABASE " + db, "CREATE TABLE " + db + ".receptions (mmsi UInt32, ts DateTime64(3, 'UTC'), tx UInt64, recv_ts DateTime64(3, 'UTC')," +
-		" lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String), station LowCardinality(String)," +
-		" accepted Bool DEFAULT true, corroborated Bool DEFAULT true, implausible Bool DEFAULT false, clock_bad Bool DEFAULT false) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (mmsi, ts)"} {
-		if err := raw.Exec(ctx, stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
 	day1 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	day2 := day1.AddDate(0, 0, 1)
 	lat := func(m float64) int32 { return int32(math.Round((59.9 + m/111320) * 600000)) }
@@ -1394,5 +1370,92 @@ func TestConvertSeedsAnchorsForADayOnItsOwn(t *testing.T) {
 	var moving bool
 	if err := conn.conn.QueryRow(ctx, "SELECT moving FROM "+db+".receptions WHERE tx = 0 AND ts >= ?", day2).Scan(&moving); err != nil || moving {
 		t.Errorf("the next day's report 30 m from where the vessel was last moving is still: moving %v, %v", moving, err)
+	}
+}
+
+// firstLayout is a test database whose receptions are in the first layout, as main created it, migrated by the
+// server: the raw connection, the server's, and the database.
+func firstLayout(t *testing.T) (driver.Conn, *chConn, string) {
+	t.Helper()
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	opts, err := clickhouse.ParseDSN(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { raw.Close() })
+	for _, stmt := range []string{"CREATE DATABASE " + db, "CREATE TABLE " + db + ".receptions (mmsi UInt32, ts DateTime64(3, 'UTC'), tx UInt64, recv_ts DateTime64(3, 'UTC')," +
+		" lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String), station LowCardinality(String)," +
+		" accepted Bool DEFAULT true, corroborated Bool DEFAULT true, implausible Bool DEFAULT false, clock_bad Bool DEFAULT false) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (mmsi, ts)" +
+		" SETTINGS non_replicated_deduplication_window = 1000"} {
+		if err := raw.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	return raw, conn, db
+}
+
+// A copy stamped after midnight of a transmission accepted just before it carries that transmission's verdict on
+// moving, whether the two days convert in one run or the second in a run of its own.
+func TestConvertCarriesAVerdictAcrossMidnight(t *testing.T) {
+	raw, conn, db := firstLayout(t)
+	ctx := context.Background()
+	day1 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	day2 := day1.AddDate(0, 0, 1)
+	lat := func(m float64) int32 { return int32(math.Round((59.9 + m/111320) * 600000)) }
+	for _, r := range []struct {
+		ts, recv time.Time
+		tx       uint64
+		latM     float64
+		sog10    uint16
+		source   string
+		accepted bool
+	}{
+		{day2.Add(-10 * time.Minute), day2.Add(-10 * time.Minute), 1, 0, 100, "kystverket", true},
+		{day2.Add(-10 * time.Second), day2.Add(-9 * time.Second), 2, 10, 0, "kystverket", true}, // still, 10 m on
+		{day2.Add(10 * time.Second), day2.Add(11 * time.Second), 3, 200, 100, "kystverket", true},
+		{day2.Add(30 * time.Second), day2.Add(time.Minute), 2, 10, 0, "aishub", false}, // AISHub's copy of the still one
+	} {
+		if err := raw.Exec(ctx, "INSERT INTO "+db+".receptions (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted)"+
+			" VALUES (257000010, ?, ?, ?, ?, 6420000, ?, 3600, 511, 15, ?, ?, ?)", r.ts, r.tx, r.recv, lat(r.latM), r.sog10, r.source, r.source, r.accepted); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copyMoving := func() bool {
+		t.Helper()
+		var moving bool
+		if err := conn.conn.QueryRow(ctx, "SELECT moving FROM "+db+".receptions WHERE tx = 0 AND source = 'aishub'").Scan(&moving); err != nil {
+			t.Fatal(err)
+		}
+		return moving
+	}
+	if err := conn.convertDays(ctx, []time.Time{day1, day2}, func(time.Time, int, time.Duration) {}); err != nil {
+		t.Fatal(err)
+	}
+	if copyMoving() {
+		t.Error("in one run, the copy is still with its transmission")
+	}
+	if err := conn.conn.Exec(clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"mutations_sync": 2})),
+		"ALTER TABLE "+db+".receptions_converted DELETE WHERE day = ?", day2); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.convertDays(ctx, []time.Time{day2}, func(time.Time, int, time.Duration) {}); err != nil {
+		t.Fatal(err)
+	}
+	if copyMoving() {
+		t.Error("in a run of its own, the copy is still with its transmission")
 	}
 }
