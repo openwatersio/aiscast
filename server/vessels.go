@@ -370,13 +370,11 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 		pt.implausible = volunteer(ev.Source) || v.jumps(pt)
 		ev.unserved = pt.implausible // its dedupe copies inherit it; the stream's own flags stay as they were
 	}
-	// A transmission of its own takes a byte free in its millisecond, and one positions may serve joins the
-	// recent ones its copies find it among.
+	// A transmission of its own takes a byte free in its millisecond and joins the recent ones its copies find it
+	// among, an implausible one too, so a later report cannot take its byte and be hidden with it.
 	if !pt.dup {
 		v.freeDisc(&pt)
-		if !pt.implausible {
-			v.remember(pt)
-		}
+		v.remember(pt)
 	}
 	p.noteReception(pt)
 }

@@ -1040,3 +1040,28 @@ func TestATransmissionsByteIsFreeInItsMillisecond(t *testing.T) {
 		t.Fatalf("two transmissions with two bytes, and the copy with the second's: %+v", q)
 	}
 }
+
+// An implausible report keeps its byte too, so a valid report in its millisecond is not hidden with it.
+func TestAnImplausibleTransmissionKeepsItsByte(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	a, b := "jump", ""
+	for i := 0; b == ""; i++ {
+		if c := fmt.Sprint("valid", i); discOf(eventID(c+"A")) == discOf(eventID(a+"A")) {
+			b = c
+		}
+	}
+	report := func(payload string, at time.Time, lat float64) {
+		p.emit(&Event{Payload: []byte(payload), Channel: 'A', Time: at, RecvTime: at,
+			Source: "kystverket", Station: "kystverket", Packet: posReport(mmsi, lat, 10.7)})
+	}
+	report("before", t0.Add(-time.Minute), 59.900)
+	report(a, t0, 10.0) // 2,900 nm in a minute
+	report(b, t0, 59.901)
+	q := queued(p, mmsi)
+	if len(q) != 3 || !q[1].implausible || q[2].implausible || q[1].txDisc == q[2].txDisc {
+		t.Fatalf("the implausible report and the valid one in its millisecond take two bytes: %+v", q)
+	}
+}

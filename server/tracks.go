@@ -121,9 +121,10 @@ type recentPos struct {
 	ms         int64 // Unix milliseconds, the transmission's time too: 24 bytes an entry where a time.Time would make it 40
 	lat6, lon6 int32
 	disc       uint8
+	bad        bool // implausible: never repeated or tested against, but its byte stays taken
 }
 
-// remember adds an accepted position to the vessel's recent ones, dropping those too old to be repeated.
+// remember adds a transmission of the vessel's own to its recent ones, dropping those too old to be repeated.
 func (v *vessel) remember(pt trackPoint) {
 	ms := pt.ts.UnixMilli()
 	keep := v.recent[:0]
@@ -135,7 +136,7 @@ func (v *vessel) remember(pt trackPoint) {
 	if len(keep) == recentMax {
 		keep = append(keep[:0], keep[1:]...)
 	}
-	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.txDisc})
+	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.txDisc, pt.implausible})
 }
 
 // repeats is the transmission among the vessel's recent positions that pt is a copy of, its time and byte: the
@@ -146,7 +147,7 @@ func (v *vessel) repeats(pt trackPoint) (time.Time, uint8, bool) {
 	bestDt := int64(-1)
 	for _, r := range v.recent {
 		dt := max(ms-r.ms, r.ms-ms)
-		if dt < recentKeep.Milliseconds() && absInt(r.lat6-pt.lat6) <= recentNearA && absInt(r.lon6-pt.lon6) <= recentNearA && (bestDt < 0 || dt < bestDt) {
+		if !r.bad && dt < recentKeep.Milliseconds() && absInt(r.lat6-pt.lat6) <= recentNearA && absInt(r.lon6-pt.lon6) <= recentNearA && (bestDt < 0 || dt < bestDt) {
 			best, bestDt = r, dt
 		}
 	}
@@ -162,7 +163,7 @@ func (v *vessel) jumps(pt trackPoint) bool {
 		lat, lon, at, found = v.Lat, v.Lon, v.PosAt.UnixMilli(), true
 	}
 	for _, r := range v.recent {
-		if !found || max(ms-r.ms, r.ms-ms) < max(ms-at, at-ms) {
+		if !r.bad && (!found || max(ms-r.ms, r.ms-ms) < max(ms-at, at-ms)) {
 			lat, lon, at, found = float64(r.lat6)/600000, float64(r.lon6)/600000, r.ms, true
 		}
 	}
@@ -177,8 +178,10 @@ func (v *vessel) jumps(pt trackPoint) bool {
 // freeDisc gives pt a byte no recent transmission of the vessel stamped in the same millisecond holds, so the
 // view never takes two reports for one transmission. Two distinct reports of a vessel share a stamp mostly where a
 // source stamps whole seconds; one byte of their ids then matched in 83 of 5 M transmissions in a production
-// sample, each merge losing a position. Bumping the byte costs nothing a row, where a wider one would cost every
-// row a byte and still collide.
+// sample, each merge losing a position, or hiding it if the other was implausible. Bumping the byte costs nothing
+// a row, where a wider one would cost every row a byte and still collide.
+// ponytail: the ring sees only the last five minutes, or 32 reports. A report later than that, 122 of 25.6 M
+// accepted in 12 hours on 2026-10-04, can still take a forgotten one's byte, one or two losses a year at that rate.
 func (v *vessel) freeDisc(pt *trackPoint) {
 	ms := pt.txAt.UnixMilli()
 	for range 256 {
