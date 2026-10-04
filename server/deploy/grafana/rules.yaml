@@ -263,6 +263,34 @@ groups:
         annotations:
           summary: ClickHouse writes take {{ $value | humanizePercentage }} of each second
           description: The writer is near its budget. Check ClickHouse's CPU and disk latency.
+      # ClickHouse's own health, from its metrics endpoint: refused inserts, too many parts, and stuck mutations
+      # are how history stops being kept, and they show here before the writer's alerts fire.
+      - alert: ClickHouseRejectingInserts
+        expr: increase(ClickHouseProfileEvents_RejectedInserts[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: ClickHouse refused {{ $value | printf "%.0f" }} inserts for too many parts in 10 minutes
+          description: Merges are not keeping up, often during a bulk load. The writer retries a refused batch for 10 minutes, then drops it. Check SELECT table, partition, count() FROM system.parts WHERE active GROUP BY ALL ORDER BY 3 DESC LIMIT 10, and pause any load.
+      - alert: ClickHouseTooManyParts
+        expr: ClickHouseAsyncMetrics_MaxPartCountForPartition > 100
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: A ClickHouse partition has {{ $value | printf "%.0f" }} parts
+          description: Inserts arrive in more pieces than merges combine, and by default ClickHouse slows inserts at 1,000 parts and refuses them at 3,000. Check system.parts for the partition and system.merges for progress, and pause any load.
+      - alert: ClickHouseMutationStuck
+        expr: ClickHouseMetrics_PartMutation > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: A ClickHouse mutation has run for over an hour
+          description: An ALTER ... DELETE or UPDATE is rewriting parts, and holds merges on them while it does. Check SELECT * FROM system.mutations WHERE NOT is_done, and KILL MUTATION if it is not meant to run.
+      - alert: ClickHouseGrowingFast
+        expr: delta(ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTables[1d]) > 3e9
+        labels: {severity: warning}
+        annotations:
+          summary: ClickHouse grew {{ $value | humanize1024 }}B in a day
+          description: Live history adds about 1 GB a day, and ClickHouse shares the root disk with the archive staging and the vessel record. Expected during an archive load; otherwise check bytes per table in system.parts.
 
       - alert: DiskFreeLow
         expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.2
@@ -270,19 +298,27 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: '{{ $value | humanizePercentage }} of the root disk is free'
-          description: An archive backlog, or the journal cap slipped.
+          description: An archive backlog, ClickHouse growth, or the journal cap slipped.
       - alert: DiskFreeCritical
         expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.1
         for: 10m
         labels: {severity: critical}
         annotations:
           summary: '{{ $value | humanizePercentage }} of the root disk is free'
-          description: An archive backlog, or the journal cap slipped.
+          description: An archive backlog, ClickHouse growth, or the journal cap slipped.
+      # ClickHouse grows every day on the same disk, so the trend warns weeks before the free share does.
+      - alert: DiskFillsSoon
+        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[3d], 14 * 86400) < 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: At the last three days' rate the root disk fills within two weeks
+          description: ClickHouse is the usual cause. Check its size per table in system.parts, drop tables nothing reads, and move older history to cold storage, or add a volume.
 
       # systemd counts only the restarts it makes because a process exited on its own (Restart=always after
       # a crash, panic, or OOM kill). Deploys and manual restarts go through systemctl and never count.
       - alert: ServiceCrashed
-        expr: increase(node_systemd_service_restart_total{name=~"(aiscast|caddy|alloy)\\.service"}[10m]) > 0
+        expr: increase(node_systemd_service_restart_total{name=~"(aiscast|caddy|alloy|clickhouse-server)\\.service"}[10m]) > 0
         labels: {severity: critical}
         annotations:
           summary: '{{ $labels.name }} crashed and systemd restarted it'
