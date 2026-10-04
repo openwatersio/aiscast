@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -142,8 +140,7 @@ func (p *Pipeline) writeCopy(ev *Event, key string, tx time.Time) {
 	if p.norm.dir == "" {
 		return
 	}
-	sum := sha256.Sum256([]byte(key))
-	p.normWrite(ev.RecvTime, normLine("copy", ev.RecvTime, nil, normCopy{ID: hex.EncodeToString(sum[:16]), Time: ev.Time.UTC().Format(time.RFC3339Nano), Tx: tx.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))
+	p.normWrite(ev.RecvTime, normLine("copy", ev.RecvTime, nil, normCopy{ID: eventID(key), Time: ev.Time.UTC().Format(time.RFC3339Nano), Tx: tx.UTC().Format(time.RFC3339Nano), Source: ev.Source, Station: ev.Station, License: licenseOf(ev.Source)}))
 }
 
 // writeMetHyd archives one BarentsWatch weather broadcast verbatim: decoded type-8 sea state, wind,

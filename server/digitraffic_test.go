@@ -67,3 +67,9 @@ func TestFastAircraftAndImpossibleCourseStillBecomeEvents(t *testing.T) {
 		t.Fatalf("impossible course not marked n/a with the position kept: %+v", pos)
 	}
 }
+
+func TestDigitrafficClientIDIsUnique(t *testing.T) {
+	if a, b := digitrafficClientID(), digitrafficClientID(); a == b {
+		t.Fatalf("two connections share the client ID %q", a)
+	}
+}

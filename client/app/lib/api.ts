@@ -74,7 +74,7 @@ export interface VesselProps {
   particulars?: VesselParticulars;
   /** The source of each particulars field, by the field's name; values are keys of `sources`. */
   provenance?: Record<string, string>;
-  /** Each contributing source's credit, license, and its own page for this vessel. */
+  /** Each contributing source's credit, license, and its page for this vessel, or its public search. */
   sources?: Record<string, SourceRef>;
 }
 
@@ -126,6 +126,7 @@ export interface SourceRef {
 export interface VesselFeature {
   type: "Feature";
   id: number;
+  attribution?: Record<string, string>;
   /** Null for a vessel the network has heard but never had a position from. */
   geometry: { type: "Point"; coordinates: [number, number] } | null;
   properties: VesselProps;

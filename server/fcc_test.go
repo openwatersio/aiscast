@@ -109,7 +109,7 @@ func TestFCCSyncAndServe(t *testing.T) {
 	if _, err := p.store.db.Exec(`UPDATE vessels SET callsign = '   ' WHERE mmsi = 366000009`); err != nil {
 		t.Fatal(err)
 	}
-	due, err := p.store.uscgDue(now.Add(time.Hour))
+	due, err := p.store.uscgDue(t.Context(), now.Add(time.Hour))
 	ids := map[int]bool{}
 	for _, v := range due {
 		ids[v.ID] = true

@@ -28,7 +28,7 @@ const storeSchema = `
 CREATE TABLE IF NOT EXISTS vessels (
 	mmsi        INTEGER PRIMARY KEY,
 	name        TEXT    NOT NULL DEFAULT '',
-	search      TEXT    NOT NULL DEFAULT '',   -- name trimmed and upper-cased, for prefix search
+	search      TEXT    NOT NULL DEFAULT '',   -- the name through searchKey, for prefix search
 	kind        TEXT    NOT NULL DEFAULT 'vessel',
 	class       TEXT    NOT NULL DEFAULT '',   -- A or B, from the position report types
 	ship_type   INTEGER NOT NULL DEFAULT 0,
@@ -124,6 +124,28 @@ CREATE TABLE IF NOT EXISTS fiskeridir (
 	owner         TEXT    NOT NULL DEFAULT ''  -- the owning company; people are dropped at sync
 );
 CREATE INDEX IF NOT EXISTS fiskeridir_callsign ON fiskeridir (callsign);
+-- answers from ISED's Canadian MMSI registry, asked on demand for heard CA-flag vessels; an empty name
+-- is a vessel asked about that had no record (ised.go)
+CREATE TABLE IF NOT EXISTS ised (
+	mmsi       INTEGER PRIMARY KEY,
+	name       TEXT    NOT NULL DEFAULT '',
+	callsign   TEXT    NOT NULL DEFAULT '',
+	checked_at INTEGER NOT NULL DEFAULT 0 -- unix ms of the last ask
+);
+-- Canadian vessels with an IMO from Transport Canada's Register of Large Vessels, replaced weekly (tc.go)
+CREATE TABLE IF NOT EXISTS tc (
+	imo           INTEGER PRIMARY KEY,
+	official      TEXT    NOT NULL DEFAULT '',
+	name          TEXT    NOT NULL DEFAULT '',
+	service       TEXT    NOT NULL DEFAULT '', -- the register's vessel descriptor
+	year_built    INTEGER NOT NULL DEFAULT 0,
+	gross_tonnage INTEGER NOT NULL DEFAULT 0,
+	net_tonnage   INTEGER NOT NULL DEFAULT 0,
+	length        REAL    NOT NULL DEFAULT 0,  -- metres
+	beam          REAL    NOT NULL DEFAULT 0,
+	depth         REAL    NOT NULL DEFAULT 0,
+	home_port     TEXT    NOT NULL DEFAULT ''
+);
 -- active FCC ship station licenses with an MMSI, replaced weekly from the ULS bulk files (fcc.go)
 CREATE TABLE IF NOT EXISTS fcc (
 	mmsi     INTEGER PRIMARY KEY,
@@ -203,15 +225,16 @@ type record struct {
 }
 
 type store struct {
-	db   *sql.DB
-	path string
-	idx  *recordIndex // the record's positions in memory, refreshed after every write (recindex.go)
+	db     *sql.DB
+	path   string
+	mirror *recordMirror // every row in memory, refreshed after every write (mirror.go)
 
 	sitemap sitemapMemo
 
 	// read by /metrics
 	flushes, flushFailures, rowsWritten atomic.Int64
 	flushNanos                          atomic.Int64
+	mirrorFailures                      atomic.Int64 // refreshes of the mirror that failed
 }
 
 func openStore(path string) (*store, error) {
@@ -255,8 +278,66 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
+	// A file from before searchKey carries punctuation in its search column, so names like RUBY'S
+	// STAR cannot be found without it; one boot rewrites the column, a few seconds, marked in meta.
+	var reindexed string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'search_key'`).Scan(&reindexed); err != nil {
+		rows, err := db.Query(`SELECT mmsi, name FROM vessels WHERE name != ''`)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		type kv struct {
+			mmsi uint32
+			key  string
+		}
+		var todo []kv
+		for rows.Next() {
+			var m uint32
+			var name string
+			if err := rows.Scan(&m, &name); err != nil {
+				rows.Close()
+				db.Close()
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			todo = append(todo, kv{m, searchKey(name)})
+		}
+		rows.Close()
+		// An iteration error would truncate the list silently, and the flag below would then mark a
+		// half-reindexed file as done for good.
+		if err := rows.Err(); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		st, err := tx.Prepare(`UPDATE vessels SET search = ? WHERE mmsi = ? AND search != ?`)
+		if err == nil {
+			for _, x := range todo {
+				if _, err = st.Exec(x.key, x.mmsi, x.key); err != nil {
+					break
+				}
+			}
+			st.Close()
+		}
+		if err == nil {
+			_, err = tx.Exec(`INSERT INTO meta (key, value) VALUES ('search_key', '1')`)
+		}
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			tx.Rollback()
+		}
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	s := &store{db: db, path: path}
-	if s.idx, err = loadRecordIndex(s); err != nil {
+	if s.mirror, err = loadMirror(s); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -320,7 +401,7 @@ func (s *store) upsert(rows []record) error {
 			cell = int64(cellOf(v.Lat, v.Lon))
 		}
 		seen := unixMs(v.Seen)
-		if _, err := st.Exec(r.mmsi, v.Name, strings.ToUpper(strings.TrimSpace(v.Name)), v.Kind, v.Class, v.ShipType,
+		if _, err := st.Exec(r.mmsi, v.Name, searchKey(v.Name), v.Kind, v.Class, v.ShipType,
 			flagOf(r.mmsi), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
 			v.Dim.A, v.Dim.B, v.Dim.C, v.Dim.D,
 			v.HasPos, v.Lat, v.Lon, cell, v.Cog, v.Sog, v.Heading, v.NavStatus, unixMs(v.PosAt),
@@ -331,19 +412,19 @@ func (s *store) upsert(rows []record) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.refreshIndex(len(rows), func(i int) uint32 { return rows[i].mmsi })
+	s.refreshMirror(len(rows), func(i int) uint32 { return rows[i].mmsi })
 	return nil
 }
 
-// refreshIndex files again the n rows just written. A failure leaves those vessels a write behind in the
-// index, until their next write, and never fails the write itself.
-func (s *store) refreshIndex(n int, mmsi func(int) uint32) {
+// refreshMirror never fails the write: the mirror retries with the next one.
+func (s *store) refreshMirror(n int, mmsi func(int) uint32) {
 	mmsis := make([]uint32, n)
 	for i := range mmsis {
 		mmsis[i] = mmsi(i)
 	}
-	if err := s.idx.refresh(s, mmsis); err != nil {
-		log.Printf("record index: %v", err)
+	if err := s.mirror.refresh(s, mmsis); err != nil {
+		s.mirrorFailures.Add(1)
+		log.Printf("record mirror: %v", err)
 	}
 }
 
@@ -442,14 +523,21 @@ func (q recordQuery) where() (clause string, args []any, none, byCell bool) {
 		if lo, hi, ok := mmsiRange(q.prefix); ok {
 			where = append(where, "mmsi BETWEEN ? AND ?")
 			args = append(args, lo, hi)
+		} else if key := searchKey(q.prefix); key == "" {
+			// Punctuation alone normalizes to nothing, and an empty pattern would match every vessel.
+			where = append(where, "0")
 		} else {
 			where = append(where, "search GLOB ?")
-			args = append(args, globPrefix(strings.ToUpper(q.prefix)))
+			args = append(args, globPrefix(key))
 		}
 	}
 	if q.contains != "" {
-		where = append(where, "instr(search, ?) > 0")
-		args = append(args, strings.ToUpper(q.contains))
+		if key := searchKey(q.contains); key == "" {
+			where = append(where, "0")
+		} else {
+			where = append(where, "instr(search, ?) > 0")
+			args = append(args, key)
+		}
 	}
 	if q.flag != "" {
 		where = append(where, "flag = ?")
@@ -491,6 +579,9 @@ func (q recordQuery) bounded() (clause string, args []any, none, byCell bool, er
 
 // count is the number of rows q matches, ignoring its limit.
 func (s *store) count(q recordQuery) (int, error) {
+	if s.mirror.answers(q) {
+		return s.mirror.count(q)
+	}
 	clause, args, none, _, err := q.bounded()
 	if err != nil || none {
 		return 0, err
@@ -500,9 +591,16 @@ func (s *store) count(q recordQuery) (int, error) {
 	return n, err
 }
 
-// counts counts every vessel in the record, and those heard and first heard within each window. Each
-// window is a range on its own index.
+// counts counts every vessel in the record, and those heard and first heard within each window.
 func (s *store) counts(now time.Time) (*recordCounts, error) {
+	if s.mirror != nil {
+		return s.mirror.counts(now), nil
+	}
+	return s.countsSQL(now)
+}
+
+// countsSQL is counts from SQLite: each window is a range on its own index.
+func (s *store) countsSQL(now time.Time) (*recordCounts, error) {
 	c := &recordCounts{Heard: map[string]int{}, New: map[string]int{}}
 	if err := s.db.QueryRow("SELECT count(*) FROM vessels").Scan(&c.Total); err != nil {
 		return nil, err
@@ -523,6 +621,9 @@ func (s *store) counts(now time.Time) (*recordCounts, error) {
 
 // countFirstSeen is the number of vessels first heard at or after since.
 func (s *store) countFirstSeen(since time.Time) (int, error) {
+	if s.mirror != nil {
+		return s.mirror.countFirstSeen(since), nil
+	}
 	var n int
 	err := s.db.QueryRow("SELECT count(*) FROM vessels WHERE first_seen >= ?", unixMs(since)).Scan(&n)
 	return n, err
@@ -559,6 +660,9 @@ type storedPos struct {
 // positions is where each vessel q matches was last placed, ignoring its limit: the few columns a ranking
 // by distance needs, read for every match so none is cut before it is ranked.
 func (s *store) positions(q recordQuery) ([]storedPos, error) {
+	if s.mirror.answers(q) {
+		return s.mirror.positions(q)
+	}
 	clause, args, none, _, err := q.bounded()
 	if err != nil || none {
 		return nil, err
@@ -581,11 +685,24 @@ func (s *store) positions(q recordQuery) ([]storedPos, error) {
 	return out, rows.Err()
 }
 
+// find is the rows q matches, most recently heard first: from the mirror, or from SQLite for a text search.
 func (s *store) find(q recordQuery) ([]record, error) {
+	if s.mirror.answers(q) {
+		return s.mirror.find(q)
+	}
+	return s.findSQL(q)
+}
+
+func (s *store) findSQL(q recordQuery) ([]record, error) {
 	sqlText, args, none, err := q.sql()
 	if err != nil || none {
 		return nil, err
 	}
+	return s.scan(sqlText, args...)
+}
+
+// scan reads the records a statement selecting recordCols answers.
+func (s *store) scan(sqlText string, args ...any) ([]record, error) {
 	rows, err := s.db.Query(sqlText, args...)
 	if err != nil {
 		return nil, err
@@ -616,6 +733,19 @@ func (s *store) get(mmsi uint32) (record, bool, error) {
 		return record{}, false, err
 	}
 	return rs[0], true, nil
+}
+
+// searchKey is a name as the search column stores and queries it: upper-cased, punctuation dropped,
+// spaces collapsed. AIS carries apostrophes and periods and people type them or not, so RUBY'S STAR
+// is found by RUBYS STAR and by its own spelling alike.
+func searchKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(s) {
+		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // globPrefix is a GLOB pattern matching strings that start with p. GLOB rather than LIKE because it is

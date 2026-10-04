@@ -440,14 +440,15 @@ func TestLookupPrefersTheNewerState(t *testing.T) {
 	}
 }
 
+// A failing record is an error, never an empty answer; only text search reads SQLite.
 func TestMCPRecordFailureIsAnError(t *testing.T) {
 	p := storePipeline(t)
 	heardAgo(p, 257000001, "NORDIC STAR", 59.9, 10.7, 10*time.Second)
 	p.store.db.Close()
 	cs := mcpClient(t, p)
 	var out mcpVessels
-	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{999999999}}, &out); !strings.Contains(msg, "unavailable") {
-		t.Errorf("get_vessels called a vessel unknown when the record failed: %q %+v", msg, out)
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{999999999}}, &out); msg != "" || len(out.Unknown) != 1 {
+		t.Errorf("get_vessels with the mirror: %q %+v", msg, out)
 	}
 	if msg := mcpCall(t, cs, "search_vessels_by_name", map[string]any{"name": "nordic"}, &out); !strings.Contains(msg, "unavailable") {
 		t.Errorf("search: %q", msg)
@@ -852,5 +853,40 @@ func TestManyBoxesStayUnderTheParameterLimit(t *testing.T) {
 		if w := get(t, p, many+"&q=ab"); w.Code != 400 {
 			t.Errorf("search with %d boxes: %d %s", n, w.Code, w.Body)
 		}
+	}
+}
+
+// Punctuation never decides whether a search finds a boat: AIS carries apostrophes and periods, and
+// people type them or not.
+func TestSearchIgnoresPunctuation(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now()
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(316061185, 49.3, -123.1))
+	p.ingestPacket("kystverket", "kystverket", now, now, staticCallSign(316061185, "RUBY'S STAR", ""))
+	mustFlush(t, p)
+	for _, q := range []string{"RUBYS STAR", "RUBY'S STAR", "rubys", "PACIFIC", "!!"} {
+		body := get(t, p, "/v1/vessels?q="+url.QueryEscape(q)).Body.String()
+		found := strings.Contains(body, "316061185")
+		if want := q != "PACIFIC" && q != "!!"; found != want {
+			t.Errorf("q=%q found=%v want %v", q, found, want)
+		}
+	}
+
+	// A file from before searchKey finds her after the one-boot reindex.
+	for _, stmt := range []string{`UPDATE vessels SET search = upper(trim(name))`, `DELETE FROM meta WHERE key = 'search_key'`} {
+		if _, err := p.store.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := p.store.path
+	p.store.close()
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	var key string
+	if err := st.db.QueryRow(`SELECT search FROM vessels WHERE mmsi = 316061185`).Scan(&key); err != nil || key != "RUBYS STAR" {
+		t.Errorf("reindexed search = %q, %v", key, err)
 	}
 }

@@ -59,6 +59,7 @@ type vessel struct {
 	// for a vessel restored from it, and a reconstruction is synthesized instead.
 	lastPos    *Event
 	lastStatic *Event
+	recent     []recentPos // accepted positions of the last few minutes, for matching rebuilt copies (tracks.go)
 
 	cell    cellKey                // index cell of the position, valid while indexed (index.go)
 	indexed bool                   // filed in the spatial index; true exactly when HasPos
@@ -242,6 +243,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		if dt := ev.Time.Sub(v.PosAt).Seconds(); dt >= 1 { // dt first: nm() is trig, and tied stamps are common
 			if d := nm(v.Lat, v.Lon, u.Lat, u.Lon); d > implausibleJumpNM && d/(dt/3600) > implausibleKnots {
 				ev.Implausible = true
+				p.noteFolded(ev, v, u, false)
 				p.vmu.Unlock()
 				return
 			}
@@ -259,6 +261,9 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		}
 	}
 	ev.Corroborated = !ev.LowTrust || ev.Time.Sub(v.TrustedAt) < corroborationWindow
+	if hasPos {
+		p.noteFolded(ev, v, u, stale)
+	}
 	if u.NavStatus != 15 && !stale {
 		v.NavStatus = u.NavStatus
 	}
@@ -319,6 +324,46 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		p.dirty[ev.MMSI] = struct{}{}
 	}
 	p.vmu.Unlock()
+}
+
+// noteFolded queues a position the fold judged, whatever it decided: an accepted position joins the vessel's
+// recent ones, and a stale rebuilt copy at one of them is a copy of that transmission. A stale report that
+// matches none is a real report that arrived late, which history keeps though the stream withholds it, but
+// only as far as a live report would be believed. The fold never tests a stale report for an impossible jump,
+// so it is tested here against the vessel's position nearest it in time. Late reports are believed only from
+// the feeds the server pulls: a volunteer station's backlog never reaches the fold, so a station has no late
+// reports to deliver, and anyone can run one, token or not, and stamp a report into any vessel's past. The
+// caller holds vmu.
+func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale bool) {
+	// The ring and the queue switch on together, so a position is remembered exactly when it is written, and a
+	// stale copy only ever matches a transmission receptions holds. A copy of one folded before ClickHouse
+	// connected, which was never written, matches nothing and is kept as the only copy, accepted, so the
+	// rollups have it; matching a transmission receptions lacks would leave it a copy of nothing.
+	if !p.chOn.Load() {
+		return
+	}
+	pt := newTrackPoint(ev.MMSI, ev.Time, u, ev.Source)
+	pt.tx, pt.recv, pt.station = txOf(ev.ID, ev.Time), ev.RecvTime, ev.Station
+	pt.uncorroborated = ev.LowTrust && !ev.Corroborated
+	pt.implausible = ev.Implausible
+	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge
+	switch {
+	case ev.Implausible:
+	case !stale:
+		v.remember(pt)
+	default:
+		if ev.rebuilt {
+			if tx, ok := v.repeats(pt); ok {
+				pt.tx, pt.dup = tx, true
+				p.ch.rebuiltMatched.Add(1)
+				break
+			}
+			p.ch.rebuiltLate.Add(1)
+		}
+		pt.implausible = volunteer(ev.Source) || v.jumps(pt)
+		ev.unserved = pt.implausible // its dedupe copies inherit it; the stream's own flags stay as they were
+	}
+	p.noteReception(pt)
 }
 
 // markTrusted records that a trusted source heard the vessel's position at t (used when its copy was deduplicated).
@@ -772,9 +817,18 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	if fc != nil {
 		key.official = fc.Official
 	}
-	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources =
-		mergeParticulars(p.wikidataOf(cur.IMO)[cur.IMO], p.uscgOf(key)[mmsi],
-			p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc)
+	e := enrichment{wd: p.wikidataOf(cur.IMO)[cur.IMO], cg: p.uscgOf(key)[mmsi],
+		fd: p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc: fc}
+	// The Canadian register speaks for CA-flag vessels; an IMO another flag carries may have left it,
+	// and the names must agree, as the other registries require, so a mistyped or copied IMO in AIS
+	// static data never serves another registered ship's facts.
+	if flagOf(mmsi) == "CA" {
+		if tcv := p.tcOf(cur.IMO)[cur.IMO]; tcv != nil && namesAgree(cur.Name, tcv.Name) {
+			e.tc = tcv
+		}
+		e.is = p.isedOf(mmsi)[mmsi]
+	}
+	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources = mergeParticulars(e)
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
 	// allocation.
@@ -860,40 +914,23 @@ func parseVesselFilter(vals url.Values, movingAge time.Duration) (*vesselFilter,
 // stationary: the vessel's last report says it was not going anywhere. Aids to navigation and base stations
 // never move; a vessel counts when it was under a knot or reported itself moored, at anchor, or aground.
 // A vessel with neither speed nor status known counts as moving.
-func stationary(v *vessel) bool { return v.facts().stationary() }
-
-func (x vesselFacts) stationary() bool {
-	return x.kind == "aton" || x.kind == "base" || x.sog < 1 || x.navStatus == 1 || x.navStatus == 5 || x.navStatus == 6
+func stationary(v *vessel) bool {
+	return v.Kind == "aton" || v.Kind == "base" || v.Sog < 1 || v.NavStatus == 1 || v.NavStatus == 5 || v.NavStatus == 6
 }
 
-// vesselFacts are the fields the filters read, so they run over the record index's entries as they do over
-// cached vessels.
-type vesselFacts struct {
-	kind, class         string
-	shipType, navStatus uint8
-	sog                 float64
-	seen                time.Time
-}
-
-func (v *vessel) facts() vesselFacts {
-	return vesselFacts{kind: v.Kind, class: v.Class, shipType: v.ShipType, navStatus: v.NavStatus, sog: v.Sog, seen: v.Seen}
-}
-
-func (f *vesselFilter) match(v *vessel, now time.Time) bool { return f.matchFacts(v.facts(), now) }
-
-func (f *vesselFilter) matchFacts(x vesselFacts, now time.Time) bool {
+func (f *vesselFilter) match(v *vessel, now time.Time) bool {
 	switch {
-	case f.kinds != nil && !f.kinds[x.kind],
-		f.class != "" && x.class != f.class,
-		f.hasMinSog && !(x.sog < 102.3 && x.sog >= f.minSog),
-		f.movingAge > 0 && now.Sub(x.seen) > f.movingAge && !x.stationary():
+	case f.kinds != nil && !f.kinds[v.Kind],
+		f.class != "" && v.Class != f.class,
+		f.hasMinSog && !(v.Sog < 102.3 && v.Sog >= f.minSog),
+		f.movingAge > 0 && now.Sub(v.Seen) > f.movingAge && !stationary(v):
 		return false
 	}
 	if f.types == nil {
 		return true
 	}
 	for _, t := range f.types {
-		if x.shipType >= t[0] && x.shipType <= t[1] {
+		if v.ShipType >= t[0] && v.ShipType <= t[1] {
 			return true
 		}
 	}

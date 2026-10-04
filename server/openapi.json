@@ -145,7 +145,7 @@
                           "properties": {
                             "particulars": { "$ref": "#/components/schemas/Particulars" },
                             "provenance": { "type": "object", "additionalProperties": { "type": "string" }, "description": "The source of each `particulars` field, by the field's name; values are keys of `sources`." },
-                            "sources": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/SourceRef" }, "description": "Each contributing enrichment source's credit, license, and its own page for this vessel." }
+                            "sources": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/SourceRef" }, "description": "Each contributing enrichment source's credit, license, and where its record is: the source's page for this vessel, or its public search when it keeps no per-vessel pages." }
                           }
                         }
                       }
@@ -170,13 +170,13 @@
         "operationId": "getVesselTrack",
         "tags": ["Vessels and stations"],
         "summary": "Where a vessel has been",
-        "description": "The positions the network heard from one vessel, as a GeoJSON Feature or a GPX 1.1 track. Anonymous and personal requests reach the last 48 hours; feeder and commercial tokens reach packaged history before that, up to 7 days per request, and for the other tiers a range that overlaps the last 48 hours is clamped to them, while one wholly before them is a `403`. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. When more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
+        "description": "The positions the network heard from one vessel, as a GeoJSON Feature or a GPX 1.1 track. Anonymous and personal requests reach the last 48 hours; feeder and commercial tokens reach history before that, up to 366 days per request, and for the other tiers a range that overlaps the last 48 hours is clamped to them, while one wholly before them is a `403`. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. When more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
         "security": [{}, { "token": [] }],
         "parameters": [
           { "name": "mmsi", "in": "path", "required": true, "description": "The vessel's MMSI.", "schema": { "type": "integer" }, "example": 368168720 },
-          { "name": "from", "in": "query", "required": false, "description": "Start, RFC 3339. Defaults to 24 hours before `to`. At most 7 days before `to`.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "from", "in": "query", "required": false, "description": "Start, RFC 3339. Defaults to 24 hours before `to`. At most 366 days before `to`.", "schema": { "type": "string", "format": "date-time" } },
           { "name": "to", "in": "query", "required": false, "description": "End, RFC 3339. Defaults to now.", "schema": { "type": "string", "format": "date-time" } },
-          { "name": "interval", "in": "query", "required": false, "description": "At most one position per interval, the first in each: whole seconds or a duration such as `5m`, or `0` for every position heard. Defaults to the round step, from 5 seconds to a day, that spreads `limit` positions over the whole range, so a dense range is thinned rather than cut to its newest positions. The answer reports the interval used.", "schema": { "type": "string" }, "example": "5m" },
+          { "name": "interval", "in": "query", "required": false, "description": "At most one position per interval, the first in each: whole seconds or a duration such as `5m`, or `0` for every position heard. A range longer than 31 days keeps one position per 15 minutes at most, or one per hour if it starts more than 13 months ago, and the answer reports that interval. Defaults to the round step, from 5 seconds to a day, that spreads `limit` positions over the whole range, so a dense range is thinned rather than cut to its newest positions. The answer reports the interval used.", "schema": { "type": "string" }, "example": "5m" },
           { "name": "limit", "in": "query", "required": false, "description": "Most positions to return. Defaults to 1,000 and is capped by tier: 200 anonymous, 1,000 with a personal token, 5,000 for feeder and above.", "schema": { "type": "integer", "minimum": 1 } },
           { "name": "format", "in": "query", "required": false, "description": "`geojson`, the default, or `gpx`.", "schema": { "type": "string", "enum": ["geojson", "gpx"] } }
         ],
@@ -731,11 +731,12 @@
       },
       "Particulars": {
         "type": "object",
-        "description": "Particulars as registered, merged from the enrichment sources into one vocabulary. Present on `/v1/vessels/{mmsi}` when a source knows the vessel: Wikidata by the IMO from its static data, when the IMO has a valid check digit and an item; the US Coast Guard's PSIX for a US-flag vessel whose call sign and name both match a vessel it lists; the Norwegian Directorate of Fisheries' fishing vessel register (NLOD 2.0), matched the same way for a Norwegian vessel; and the FCC's ship station licenses, keyed by the MMSI itself for a US vessel. Merging is per field: a flag state outranks Wikidata for registered facts, an empty value never wins, and `provenance` beside this object names each field's source. Registered dimensions can differ from the ones AIS reports. Every field is present only when a source has it.",
+        "description": "Particulars as registered, merged from the enrichment sources into one vocabulary. Present on `/v1/vessels/{mmsi}` when a source knows the vessel: Wikidata by the IMO from its static data, when the IMO has a valid check digit and an item; the US Coast Guard's PSIX for a US-flag vessel whose call sign and name both match a vessel it lists; the Norwegian Directorate of Fisheries' fishing vessel register (NLOD 2.0), matched the same way for a Norwegian vessel; the FCC's ship station licenses, keyed by the MMSI itself for a US vessel; Transport Canada's vessel register (Open Government Licence - Canada), by IMO for a CA-flag vessel; and ISED's Canadian MMSI registry, asked on demand for heard CA-flag vessels. Merging is per field: a flag state outranks Wikidata for registered facts, an empty value never wins, and `provenance` beside this object names each field's source. Registered dimensions can differ from the ones AIS reports. Every field is present only when a source has it.",
         "properties": {
           "registered_name": { "type": "string", "description": "Name as documented with the flag state, which can differ from the AIS name." },
           "identification": { "type": "string", "description": "The flag state's number for the vessel: the official number of a documented vessel, else its state registration." },
           "service": { "type": "string", "description": "Flag-state service type, such as `Towing Vessel`, `Passenger (Inspected)`, `Commercial Fishing Vessel`, or `Recreational`." },
+          "callsign": { "type": "string", "description": "Call sign as registered. The `callsign` in the vessel's properties is the one AIS reports." },
           "status": { "type": "string", "description": "Flag-state status, such as `Active` or `Laid Up`." },
           "ship_type": { "type": "string", "description": "Kind of ship, such as `bulk carrier`, `container ship`, `oil tanker`, or `ferry`." },
           "builder": { "type": "string", "description": "Shipyard or builder." },
@@ -761,12 +762,12 @@
       },
       "SourceRef": {
         "type": "object",
-        "description": "One enrichment source's credit: how to name it and where its record of this vessel is. `sources` maps each contributing source's key, such as `wikidata`, `uscg`, `fiskeridir`, or `fcc`, to one of these, and `provenance` maps each `particulars` field to a key of `sources`.",
+        "description": "One enrichment source's credit: how to name it and where its record of this vessel is. `sources` maps each contributing source's key, such as `wikidata`, `uscg`, `fiskeridir`, `fcc`, `tc`, or `ised`, to one of these, and `provenance` maps each `particulars` field to a key of `sources`.",
         "required": ["credit", "license"],
         "properties": {
           "credit": { "type": "string", "description": "Display credit for the source.", "example": "Wikidata" },
           "license": { "type": "string", "description": "The source's license. `CC0-1.0` and `public domain (U.S. government work)` require no credit line.", "example": "CC0-1.0" },
-          "url": { "type": "string", "format": "uri", "description": "The source's own page for this vessel." }
+          "url": { "type": "string", "format": "uri", "description": "The source's page for this vessel, or its public search when the source keeps no per-vessel pages." }
         }
       },
       "Station": {

@@ -9,7 +9,10 @@ const count = (n: number | undefined) => (n ? n.toLocaleString("en-US") : undefi
 /** Wikidata labels its classes in lower case, "cruise ship"; a value reads as "Cruise ship". */
 const capitalized = (s: string | undefined) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : undefined);
 
-const nameKey = (s: string | undefined) => (s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+/** Case-insensitive exact comparison: punctuation and accents count. AIS can carry an apostrophe but
+ * crews often leave it out, and its six-bit charset has no accents at all. */
+const sameName = (a: string | undefined, b: string | undefined) =>
+  (a ?? "").trim().toUpperCase() === (b ?? "").trim().toUpperCase();
 
 /**
  * Tonnage as the flag state measured it. Convention tonnage is the international measure most
@@ -22,16 +25,17 @@ function tonnage(n: number | undefined, measure: VesselParticulars["tonnage_meas
 }
 
 /**
- * The merged particulars, one list. The documented name is shown only when it differs from the one
- * AIS reports, which is often abbreviated: GOV THOMAS H KEAN is documented as GOVERNOR THOMAS H.
- * KEAN. `tonnage_measure` describes the flag state's figures, so it annotates a tonnage only when
+ * The merged particulars, one list. The documented name is shown unless it matches the AIS name
+ * exactly, case aside: punctuation and accents the AIS name lacks are information, so RUBYS STAR
+ * documented as RUBY'S STAR is worth a row, and GOV THOMAS H KEAN as GOVERNOR THOMAS H. KEAN more so.
+ * `tonnage_measure` describes the flag state's figures, so it annotates a tonnage only when
  * `provenance` says the flag state supplied it.
  */
 export function particularsFacts(m: VesselParticulars, aisName?: string, provenance?: Record<string, string>): Fact[] {
   const official = m.identification && /^\d+$/.test(m.identification);
   const measure = (field: string) => (!provenance || provenance[field] === "uscg" ? m.tonnage_measure : undefined);
   return [
-    ["Documented as", nameKey(m.registered_name) === nameKey(aisName) ? undefined : m.registered_name],
+    ["Documented as", sameName(m.registered_name, aisName) ? undefined : m.registered_name],
     [official ? "Official number" : "Registration", m.identification],
     ["Type", capitalized(m.ship_type)],
     ["Service", m.service],
