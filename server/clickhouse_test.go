@@ -275,6 +275,7 @@ func TestClickHouseTableForAStep(t *testing.T) {
 		span   time.Duration // the range's length; zero reaches to now
 	}{
 		{3 * 24 * time.Hour, 0, "positions", 0, 0},
+		{24 * time.Hour, time.Hour, "positions", 0, 0}, // inside the 48-hour window
 		{3 * 24 * time.Hour, 10 * time.Minute, "positions_1m", time.Minute, 0},
 		{3 * 24 * time.Hour, 15 * time.Minute, "positions_1m", time.Minute, 0},
 		{40 * 24 * time.Hour, 0, "positions_1m", time.Minute, 0},                    // longer than the positions view reads
@@ -307,31 +308,40 @@ func (f *fakeHistory) history(context.Context, uint32, time.Time, time.Time, tim
 	return f.points, f.err
 }
 
+func (f *fakeHistory) first(context.Context, uint32, time.Time, time.Time) (time.Time, bool, error) {
+	if len(f.points) == 0 {
+		return time.Time{}, false, f.err
+	}
+	return f.points[0].ts, f.err == nil, f.err
+}
+
 func TestTrackReadsHistoryFromClickHouse(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-3 * 24 * time.Hour).Truncate(time.Hour)
 	ch := &fakeHistory{points: []trackPoint{{mmsi: 257000001, ts: old, lat6: int32(59.5 * 600000), lon6: int32(10.7 * 600000),
 		sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"}}}
-	p := lakePipeline(t, &fakeLake{positions: []map[string]any{lakePosition(old.Add(time.Hour), 59.6)}})
+	p, _ := trackPipeline(t)
 	p.attachClickHouse(&chStore{w: &fakeCH{}, r: ch})
-	sail(t, p, 257000001, time.Hour)
 	from := now.Add(-4 * 24 * time.Hour).UTC().Format(time.RFC3339)
 
 	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from)
-	if first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0]); tr.Properties.Points != 2 || !first.Equal(old) || tr.Attribution["aishub"] == "" {
-		t.Errorf("history comes from ClickHouse, not the lake: %+v %v", tr.Properties, tr.Attribution)
+	if first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0]); tr.Properties.Points != 1 || !first.Equal(old) || tr.Attribution["aishub"] == "" {
+		t.Errorf("history comes from ClickHouse: %+v %v", tr.Properties, tr.Attribution)
+	}
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+now.Add(-300*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 200 {
+		t.Errorf("a track reaches most of a year: %d %s", w.Code, w.Body)
 	}
 	ch.err = errors.New("clickhouse is down")
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from); tr.Properties.Points != 2 || tr.Attribution["digitraffic"] == "" {
-		t.Errorf("the lake answers while ClickHouse fails: %+v %v", tr.Properties, tr.Attribution)
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+from); w.Code != 500 {
+		t.Errorf("ClickHouse down: %d", w.Code)
 	}
-	// Past the lake's own reach, a failing ClickHouse fails the request rather than scan months of the lake.
-	if w := get(t, p, "/v1/vessels/257000001/track?from="+now.Add(-20*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 500 {
-		t.Errorf("20 days with ClickHouse down: %d", w.Code)
+	p.attachClickHouse(nil)
+	if w := get(t, p, "/v1/vessels/257000001/track"); w.Code != 503 {
+		t.Errorf("without ClickHouse: %d", w.Code)
 	}
-	ch.err = nil
-	if w := get(t, p, "/v1/vessels/257000001/track?from="+now.Add(-300*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 200 {
-		t.Errorf("with ClickHouse a track reaches most of a year: %d %s", w.Code, w.Body)
+	var out mcpTrack
+	if msg := mcpCall(t, mcpClient(t, p), "get_vessel_track", map[string]any{"mmsi": 257000001}, &out); !strings.Contains(msg, "not available") {
+		t.Errorf("MCP without ClickHouse: %q", msg)
 	}
 }
 
@@ -370,6 +380,12 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 	// The thinning happens in ClickHouse: ten-minute buckets bring 12 rows back, not 120.
 	if got, err := conn.history(context.Background(), 257000001, start, start.Add(2*time.Hour), 10*time.Minute, 1000, time.Now()); err != nil || len(got) != 12 {
 		t.Errorf("thinned in the query: %d rows, %v", len(got), err)
+	}
+	if got, ok, err := conn.first(context.Background(), 257000001, start.Add(-time.Hour), start.Add(time.Hour)); !ok || err != nil || !got.Equal(start) {
+		t.Errorf("first position: %v %v %v", got, ok, err)
+	}
+	if _, ok, err := conn.first(context.Background(), 257000009, start, start.Add(time.Hour)); ok || err != nil {
+		t.Errorf("first position of a vessel with none: %v %v", ok, err)
 	}
 	from := start.Add(-time.Hour).UTC().Format(time.RFC3339)
 	to := start.Add(3 * time.Hour).UTC().Format(time.RFC3339)
@@ -420,7 +436,7 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 		t.Errorf("interval=0 40 days back: interval %d, %d points; want 0 and 3", tr.Properties.Interval, tr.Properties.Points)
 	}
 
-	// A step under a millisecond keeps every position, as the track store does.
+	// A step under a millisecond keeps every position, as ClickHouse stores them.
 	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=500us"); tr.Properties.Points != 120 || tr.Properties.Interval != 0 {
 		t.Errorf("a sub-millisecond step: %d points", tr.Properties.Points)
 	}
@@ -435,7 +451,7 @@ func TestTrackKeepsTheExtraHistoryRowAsTheSpikeAnchor(t *testing.T) {
 		return trackPoint{mmsi: 257000001, ts: t0.Add(at), lat6: int32(lat * 600000), lon6: int32(10.7 * 600000),
 			sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"}
 	}
-	p := lakePipeline(t, &fakeLake{})
+	p, _ := trackPipeline(t)
 	p.attachClickHouse(&chStore{w: &fakeCH{}, r: &fakeHistory{points: []trackPoint{pt(0, 59.0), pt(time.Minute, 61.0), pt(2*time.Minute, 59.001)}}})
 	from := t0.Add(-time.Hour).UTC().Format(time.RFC3339)
 	to := t0.Add(time.Hour).UTC().Format(time.RFC3339)

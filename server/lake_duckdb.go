@@ -1,9 +1,8 @@
 package main
 
 // The lake's engine: DuckDB in process, its iceberg extension attached to the R2 Data Catalog. DuckDB reads only
-// the Parquet row groups a query needs, with range requests, and caches file metadata and data between queries,
-// so a repeated read of a vessel's days costs a fraction of a second. A query that names the lake refers to it as
-// lake.ais.<table>.
+// the Parquet row groups a query needs, with range requests, and caches file metadata and data between queries.
+// A query that names the lake refers to it as lake.ais.<table>.
 //
 // This is the one part of the server that needs cgo.
 
@@ -102,10 +101,6 @@ func (d *duckLake) attach(ctx context.Context) (*sql.DB, error) {
 			return nil, fmt.Errorf("duckdb %s: %w", s, err)
 		}
 	}
-	// The first query of a table reads every manifest, several seconds for a lake of a few months, and later
-	// queries reuse them. A query that matches nothing pays that here instead of in a request. A lake without
-	// the table yet has nothing to load.
-	db.ExecContext(ctx, `SELECT 1 FROM lake.ais.positions WHERE day = DATE '1970-01-01' LIMIT 0`)
 	return db, nil
 }
 

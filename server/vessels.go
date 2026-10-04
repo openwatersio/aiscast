@@ -257,7 +257,6 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		p.indexLocked(ev.MMSI, v)
 		v.Cog, v.Sog, v.Heading = u.Cog, u.Sog, u.Heading // sentinels from a position report are real "unknown"s
 		v.lastPos = ev
-		p.notePosition(ev.MMSI, ev.Time, u, ev.Source)
 		if !ev.LowTrust {
 			v.TrustedAt = ev.Time
 		}

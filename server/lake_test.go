@@ -12,11 +12,10 @@ import (
 
 // fakeLake answers the lake's queries from fixed rows, the way R2 SQL encodes them.
 type fakeLake struct {
-	positions []map[string]any // day, ts, lat6, lon6, sog10, cog10, heading, navstat, source
-	vessels   []map[string]any // ais.vessels rows, in MMSI order
-	cap       int              // rows per response, like an engine with a row limit; 0 = none
-	empty     bool             // the catalog has no tables yet
-	queries   atomic.Int64
+	vessels []map[string]any // ais.vessels rows, in MMSI order
+	cap     int              // rows per response, like an engine with a row limit; 0 = none
+	empty   bool             // the catalog has no tables yet
+	queries atomic.Int64
 }
 
 func (f *fakeLake) query(_ context.Context, q string, each func(map[string]json.RawMessage) error) error {
@@ -24,15 +23,12 @@ func (f *fakeLake) query(_ context.Context, q string, each func(map[string]json.
 	if f.empty {
 		return errLakeEmpty
 	}
-	rows := f.positions
-	if strings.Contains(q, "ais.vessels") {
-		var after, limit int
-		fmt.Sscanf(q[strings.Index(q, "WHERE mmsi > "):], "WHERE mmsi > %d ORDER BY mmsi LIMIT %d", &after, &limit)
-		rows = nil
-		for _, r := range f.vessels {
-			if r["mmsi"].(int) > after && len(rows) < limit && (f.cap == 0 || len(rows) < f.cap) {
-				rows = append(rows, r)
-			}
+	var after, limit int
+	fmt.Sscanf(q[strings.Index(q, "WHERE mmsi > "):], "WHERE mmsi > %d ORDER BY mmsi LIMIT %d", &after, &limit)
+	var rows []map[string]any
+	for _, r := range f.vessels {
+		if r["mmsi"].(int) > after && len(rows) < limit && (f.cap == 0 || len(rows) < f.cap) {
+			rows = append(rows, r)
 		}
 	}
 	for _, r := range rows {
@@ -47,142 +43,10 @@ func (f *fakeLake) query(_ context.Context, q string, each func(map[string]json.
 	return nil
 }
 
-// lakePosition is a lake row for mmsi 257000001 at t, in the lake's encodings.
-func lakePosition(t time.Time, lat float64) map[string]any {
-	return map[string]any{"day": t.UTC().Format("2006-01-02"), "ts": t.UTC().Format("2006-01-02T15:04:05.000000"),
-		"lat6": int(lat * 600000), "lon6": int(10.7 * 600000), "sog10": 112, "cog10": 1234, "heading": 124, "navstat": -1, "source": "digitraffic"}
-}
-
 func lakePipeline(t *testing.T, f *fakeLake) *Pipeline {
 	p, _ := trackPipeline(t)
-	p.lake = &lake{client: f, cache: p.tracks}
+	p.lake = &lake{client: f}
 	return p
-}
-
-func TestTrackStitchesTheLake(t *testing.T) {
-	now := time.Now()
-	old := now.Add(-3 * 24 * time.Hour).Truncate(time.Hour)
-	unsourced := lakePosition(old.Add(20*time.Minute), 59.02)
-	unsourced["source"] = nil // packaged before positions carried their source
-	f := &fakeLake{positions: []map[string]any{lakePosition(old, 59.0), lakePosition(old.Add(10*time.Minute), 59.01), unsourced}}
-	p := lakePipeline(t, f)
-	sail(t, p, 257000001, 2*time.Hour, time.Hour)
-
-	from := now.Add(-4 * 24 * time.Hour).UTC().Format(time.RFC3339)
-	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from)
-	if tr.Properties.Points != 5 || tr.Attribution["digitraffic"] == "" || tr.Attribution["kystverket"] == "" {
-		t.Fatalf("lake and track store together: %+v %v", tr.Properties, tr.Attribution)
-	}
-	if first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0]); !first.Equal(old) {
-		t.Errorf("oldest first, from the lake: %v", tr.Properties.Times)
-	}
-	if tr.Properties.Sog[0] == nil || *tr.Properties.Sog[0] != 11.2 {
-		t.Errorf("lake encodings decode: %v", tr.Properties.Sog[0])
-	}
-
-	// Every vessel-day is read once.
-	n := f.queries.Load()
-	getTrack(t, p, "/v1/vessels/257000001/track?from="+from)
-	if f.queries.Load() != n {
-		t.Errorf("a cached day was read again: %d queries, then %d", n, f.queries.Load())
-	}
-
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&interval=15m"); tr.Properties.Points != 4 {
-		t.Errorf("thinned across both: %d", tr.Properties.Points)
-	}
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&limit=3&interval=0"); tr.Properties.Points != 3 || !tr.Properties.Truncated {
-		t.Errorf("the newest positions win the limit: %+v", tr.Properties)
-	} else if first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0]); !first.Equal(old.Add(20 * time.Minute)) {
-		t.Errorf("limit kept the wrong lake positions: %v", tr.Properties.Times)
-	} else if tr.Attribution["digitraffic"] != "" || tr.Attribution["kystverket"] == "" {
-		t.Errorf("credits only the sources of the positions returned, from the cache: %v", tr.Attribution)
-	}
-}
-
-func TestTrackArchiveIsATier(t *testing.T) {
-	p := lakePipeline(t, &fakeLake{})
-	sail(t, p, 257000001, time.Hour)
-	allowAnon = false
-	t.Cleanup(func() { allowAnon = true })
-	from := time.Now().Add(-3 * 24 * time.Hour).UTC().Format(time.RFC3339)
-	old := time.Now().Add(-2*24*time.Hour - time.Hour).UTC().Format(time.RFC3339)
-	if w := get(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+old); w.Code != 403 || !strings.Contains(w.Body.String(), "feeder") {
-		t.Errorf("anonymous past the window: %d %s", w.Code, w.Body)
-	}
-	if w := get(t, p, "/v1/vessels/257000001/track"); w.Code != 200 {
-		t.Errorf("anonymous inside the window: %d", w.Code)
-	}
-	// A range that overlaps the window is clamped to it, as a client asking for 48 hours a moment early does.
-	early := time.Now().Add(-trackWindow - time.Second).UTC().Format(time.RFC3339)
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+early); tr.Properties.Points == 0 {
-		t.Errorf("anonymous overlapping the window: %+v", tr.Properties)
-	}
-	var out mcpTrack
-	if msg := mcpCall(t, mcpClient(t, p), "get_vessel_track", map[string]any{"mmsi": 257000001, "from": from, "to": old}, &out); !strings.Contains(msg, "feeder") {
-		t.Errorf("MCP past the window: %q", msg)
-	}
-	allowAnon = true
-	long := time.Now().Add(-9 * 24 * time.Hour).UTC().Format(time.RFC3339)
-	if w := get(t, p, "/v1/vessels/257000001/track?from="+long); w.Code != 400 {
-		t.Errorf("more than 7 days: %d", w.Code)
-	}
-}
-
-func TestLakeEmptyAndStaleDays(t *testing.T) {
-	f := &fakeLake{empty: true}
-	p := lakePipeline(t, f)
-	sail(t, p, 257000001, time.Hour)
-	from := time.Now().Add(-3 * 24 * time.Hour).UTC().Format(time.RFC3339)
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from); tr.Properties.Points != 1 {
-		t.Errorf("an empty lake is no history, not an error: %+v", tr.Properties)
-	}
-
-	// A day inside the repackaging week, and an empty day of any age, is read again once its cache entry is
-	// older than lakeRecentTTL; an old day with positions never is.
-	f.empty = false
-	now := time.Now()
-	recent, ancient, bare := now.Add(-3*24*time.Hour), now.Add(-20*24*time.Hour), now.Add(-40*24*time.Hour)
-	for _, d := range []time.Time{recent, ancient} { // positions in each day and in the partition after it
-		f.positions = append(f.positions, lakePosition(d, 59), lakePosition(d.Add(24*time.Hour), 59))
-	}
-	ctx := context.Background()
-	for _, d := range []time.Time{recent, ancient, bare} {
-		p.lake.days(ctx, 257000001, d, d, now)
-	}
-	n := f.queries.Load()
-	p.lake.days(ctx, 257000001, ancient, ancient, now.Add(30*24*time.Hour))
-	if f.queries.Load() != n {
-		t.Error("an old day with positions was read again")
-	}
-	for name, d := range map[string]time.Time{"recent": recent, "empty": bare} {
-		n := f.queries.Load()
-		p.lake.days(ctx, 257000001, d, d, now.Add(lakeRecentTTL+time.Minute))
-		if f.queries.Load() == n {
-			t.Errorf("a %s day was not read again after its TTL", name)
-		}
-	}
-}
-
-// The lake partitions by the day a position arrived. A satellite relay arrives hours late, so a position sent
-// before midnight can sit in the next day's partition, and a null speed is not a speed of zero.
-func TestLakeLateReportsAndNulls(t *testing.T) {
-	now := time.Now()
-	day := now.Add(-5 * 24 * time.Hour).UTC().Truncate(24 * time.Hour)
-	late := lakePosition(day.Add(23*time.Hour), 59.3)
-	late["day"] = day.Add(24 * time.Hour).Format("2006-01-02") // received after midnight
-	early := lakePosition(day.Add(22*time.Hour), 59.2)
-	early["sog10"] = nil
-	f := &fakeLake{positions: []map[string]any{lakePosition(day.Add(time.Hour), 59.1), late, early}}
-	p := lakePipeline(t, f)
-	sail(t, p, 257000001, time.Hour)
-	q := fmt.Sprintf("/v1/vessels/257000001/track?from=%s&to=%s", day.Format(time.RFC3339), day.Add(24*time.Hour-time.Second).Format(time.RFC3339))
-	tr := getTrack(t, p, q)
-	if tr.Properties.Points != 3 || tr.Properties.Times[2] != day.Add(23*time.Hour).Format(time.RFC3339) {
-		t.Fatalf("the late report is in the track, in order: %v", tr.Properties.Times)
-	}
-	if tr.Properties.Sog[1] != nil {
-		t.Errorf("a null speed reads as %v", *tr.Properties.Sog[1])
-	}
 }
 
 func TestImportReadsPastAShortPage(t *testing.T) {
@@ -203,17 +67,6 @@ func TestLakeEncodings(t *testing.T) {
 		if err != nil || got.Format(time.RFC3339Nano) != want {
 			t.Errorf("ts %s: %v %v", raw, got, err)
 		}
-	}
-	for raw, want := range map[string]string{`"2026-09-01"`: "2026-09-01", `20697`: "2026-09-01"} {
-		if got, err := lakeDate(json.RawMessage(raw)); err != nil || got != want {
-			t.Errorf("day %s: %q %v", raw, got, err)
-		}
-	}
-	pts := []trackPoint{{mmsi: 1, ts: time.UnixMilli(1788264000500).UTC(), lat6: -35000000, lon6: 108000000, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "digitraffic"},
-		{mmsi: 1, ts: time.UnixMilli(1788264001500).UTC(), navStatus: 15},
-		{mmsi: 1, ts: time.UnixMilli(1788264002500).UTC(), navStatus: 15, source: "aishub"}}
-	if b, sources := encodeLakePoints(pts); fmt.Sprint(decodeLakePoints(1, b, sources)) != fmt.Sprint(pts) {
-		t.Errorf("round trip: %+v", decodeLakePoints(1, b, sources))
 	}
 }
 
@@ -318,47 +171,5 @@ func TestImportSchedule(t *testing.T) {
 		if got := p.importIfDue(c.at); got != c.want {
 			t.Errorf("at %v: ran %v, want %v", c.at, got, c.want)
 		}
-	}
-}
-
-func TestLakeCacheTrimsByBytes(t *testing.T) {
-	p, _ := trackPipeline(t)
-	now := time.Now()
-	points := make([]trackPoint, 10) // 230 bytes
-	for i, day := range []string{"2026-01-01", "2026-01-02", "2026-01-03"} {
-		if err := p.tracks.lakeStore(257000001, day, lakeDay{points: points}, now.Add(time.Duration(i)*time.Minute)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := p.tracks.lakeTrim(500); err != nil {
-		t.Fatal(err)
-	}
-	var kept []string
-	rows, err := p.tracks.db.Query(`SELECT day FROM lake_days ORDER BY day`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var d string
-		rows.Scan(&d)
-		kept = append(kept, d)
-	}
-	if strings.Join(kept, ",") != "2026-01-02,2026-01-03" {
-		t.Errorf("the least recently fetched day goes first: %v", kept)
-	}
-}
-
-// Lake positions are despiked like the track store's: a fix displaced a nautical mile in a minute from a
-// vessel making 11 knots is left out.
-func TestLakePositionsAreDespiked(t *testing.T) {
-	now := time.Now()
-	t0 := now.Add(-4 * 24 * time.Hour).Truncate(time.Hour)
-	f := &fakeLake{positions: []map[string]any{lakePosition(t0, 59.0), lakePosition(t0.Add(time.Minute), 59.00311),
-		lakePosition(t0.Add(2*time.Minute), 59.02), lakePosition(t0.Add(3*time.Minute), 59.00933)}}
-	p := lakePipeline(t, f)
-	points, _, _, err := p.trackPoints(context.Background(), 257000001, t0.Add(-time.Hour), t0.Add(time.Hour), 0, 100, now)
-	if err != nil || len(points) != 3 || points[2].lat6 != int32(59.00933*600000) {
-		t.Errorf("the displaced fix should be dropped: %v %+v", err, points)
 	}
 }
