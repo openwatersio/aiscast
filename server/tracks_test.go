@@ -14,7 +14,7 @@ import (
 // memCH is ClickHouse in memory: it keeps every copy it is sent, and reads history the way chConn reads the
 // positions view: one copy per transmission, the first to arrive with a believable clock, leaving out any
 // transmission a copy of which is implausible; then the first position in each step bucket and the newest
-// limit+1 of those. A copy with no tx is a transmission of its own, as the writer stores it.
+// limit+1 of those. A copy that names no transmission is a transmission of its own, as the writer stores it.
 type memCH struct {
 	mu     sync.Mutex
 	points []trackPoint
@@ -31,21 +31,26 @@ func (m *memCH) insert(_ context.Context, _ string, points []trackPoint) error {
 func (m *memCH) view(mmsi uint32, from, to time.Time) []trackPoint {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	served, bad := map[uint64]trackPoint{}, map[uint64]bool{}
+	type tx struct {
+		ms   int64
+		disc uint8
+	}
+	served, bad := map[tx]trackPoint{}, map[tx]bool{}
 	var own []trackPoint
 	for _, pt := range m.points {
 		if pt.mmsi != mmsi || pt.ts.Before(from) || pt.ts.After(to) {
 			continue
 		}
-		if pt.tx == 0 {
+		if pt.txAt.IsZero() {
 			if !pt.implausible && !pt.clockBad {
 				own = append(own, pt)
 			}
 			continue
 		}
-		bad[pt.tx] = bad[pt.tx] || pt.implausible
-		if first, ok := served[pt.tx]; !pt.clockBad && (!ok || pt.recv.Before(first.recv)) {
-			served[pt.tx] = pt
+		k := tx{pt.txAt.UnixMilli(), pt.txDisc}
+		bad[k] = bad[k] || pt.implausible
+		if first, ok := served[k]; !pt.clockBad && (!ok || pt.recv.Before(first.recv)) {
+			served[k] = pt
 		}
 	}
 	for tx, pt := range served {

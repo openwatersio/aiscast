@@ -512,6 +512,7 @@ func (p *Pipeline) settleFold(key string, ev *Event) {
 	}
 	for _, pt := range waiting {
 		pt.implausible = bad
+		p.fromTransmission(&pt)
 		p.noteReception(pt)
 	}
 }
