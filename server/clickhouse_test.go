@@ -1313,3 +1313,61 @@ func TestClickHouseRebuildsPositions1mAfterAPurge(t *testing.T) {
 		t.Errorf("before:\n%s\nafter:\n%s", before, after)
 	}
 }
+
+// A day converted in a run of its own, as one a rollback leaves to do again, starts from where each vessel was
+// last moving in positions_1m, so it judges moving as the day after a converted one would.
+func TestConvertSeedsAnchorsForADayOnItsOwn(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	opts, err := clickhouse.ParseDSN(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	for _, stmt := range []string{"CREATE DATABASE " + db, "CREATE TABLE " + db + ".receptions (mmsi UInt32, ts DateTime64(3, 'UTC'), tx UInt64, recv_ts DateTime64(3, 'UTC')," +
+		" lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String), station LowCardinality(String)," +
+		" accepted Bool DEFAULT true, corroborated Bool DEFAULT true, implausible Bool DEFAULT false, clock_bad Bool DEFAULT false) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (mmsi, ts)"} {
+		if err := raw.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	day1 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	day2 := day1.AddDate(0, 0, 1)
+	lat := func(m float64) int32 { return int32(math.Round((59.9 + m/111320) * 600000)) }
+	for i, r := range []struct {
+		ts    time.Time
+		latM  float64
+		sog10 uint16
+	}{
+		{day1.Add(12 * time.Hour), 0, 100},
+		{day1.Add(12*time.Hour + time.Minute), 100, 100}, // where it was last moving
+		{day2.Add(8 * time.Hour), 130, 0},                // 30 m on the next day: still
+	} {
+		if err := raw.Exec(ctx, "INSERT INTO "+db+".receptions (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station)"+
+			" VALUES (257000009, ?, ?, ?, ?, 6420000, ?, 3600, 511, 15, 'kystverket', 'kystverket')", r.ts, uint64(i+1), r.ts, lat(r.latM), r.sog10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []time.Time{day1, day2} { // two runs
+		if err := conn.convertDays(ctx, []time.Time{d}, func(time.Time, int, time.Duration) {}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var moving bool
+	if err := conn.conn.QueryRow(ctx, "SELECT moving FROM "+db+".receptions WHERE tx = 0 AND ts >= ?", day2).Scan(&moving); err != nil || moving {
+		t.Errorf("the next day's report 30 m from where the vessel was last moving is still: moving %v, %v", moving, err)
+	}
+}
