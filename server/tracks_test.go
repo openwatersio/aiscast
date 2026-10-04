@@ -141,9 +141,12 @@ func getTrack(t *testing.T, p *Pipeline, target string) testTrack {
 }
 
 func TestTrackEndpoint(t *testing.T) {
-	p, _ := trackPipeline(t)
+	p, ch := trackPipeline(t)
 	p.ingestPacket("kystverket", "kystverket", time.Now(), time.Now(), shipStatic(257000001, "NORDIC STAR"))
 	sail(t, p, 257000001, 30*time.Hour, 3*time.Hour, 2*time.Hour, 90*time.Minute, time.Hour, 10*time.Minute)
+	if n := len(ch.points); n != 6 {
+		t.Errorf("each accepted position reaches ClickHouse once: %d receptions for 6 positions", n)
+	}
 	base := "/v1/vessels/257000001/track"
 
 	tr := getTrack(t, p, base)

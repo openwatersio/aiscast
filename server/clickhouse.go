@@ -216,8 +216,8 @@ const chFineSpan = 31 * 24 * time.Hour
 // so a step of whole windows reads the same answer from it. A range too long for the positions view reads the
 // rollup that holds it, at one position per window, which still keeps the step's at-most-one promise; a step
 // its windows do not divide can then show a later position in a bucket, or none, since a window keeps only its
-// first. Every default step divides its window. A range that starts inside the 48-hour window reads every
-// position: a rollup window that starts before from would leave out the positions in its part of the range.
+// first. Every default step divides its window. A range that starts inside the 48-hour window reads the
+// positions view: a rollup window that starts before from would leave out the positions in its part of the range.
 func chTable(from, to time.Time, step time.Duration, now time.Time) (string, time.Duration) {
 	fine := step < 15*time.Minute || step%(15*time.Minute) != 0 || now.Sub(from) <= trackWindow
 	switch {
