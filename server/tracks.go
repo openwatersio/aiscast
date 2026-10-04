@@ -54,15 +54,14 @@ type trackPoint struct {
 	uncorroborated bool // from an unauthenticated sender, for a vessel no trusted source heard lately
 	implausible    bool // the fold judged it an impossible jump from the vessel's last position
 	clockBad       bool // stamped clockBadAge or more before it arrived
-	still          bool // not moving: reported speed of half a knot or less, or, with none, within movedM of the vessel's last position
+	still          bool // not moving: reporting half a knot or less, and within movedM of where the vessel was last moving
 }
 
 // discOf is one byte of an event id, the low byte of its first 64 bits, which with the vessel and the time its
 // accepted copy was stamped names a transmission: ids repeat for identical payloads minutes apart, so the time
 // tells those apart, and the byte tells apart two transmissions of one vessel stamped in the same millisecond.
 // On three hours of production receptions the time and the byte together merged 83 of 5 M transmissions, all
-// a vessel's reports in one millisecond. ClickHouse computes the same byte from the hex id, so a load from the
-// lake names transmissions as the server does.
+// a vessel's reports in one millisecond.
 func discOf(id string) uint8 {
 	if len(id) < 16 { // not an event id, as for an event built without one; hash it into one
 		id = eventID(id)
@@ -71,19 +70,36 @@ func discOf(id string) uint8 {
 	return uint8(h)
 }
 
-// movedM is how far a vessel that reports no speed must be from its last position to count as moving, the
-// distance ais.tracks uses: a speed worked out between reports seconds apart is mostly GPS jitter.
+// movedM is how far a vessel must be from the last place it was moving to count as moving again, the distance
+// ais.tracks uses: under it, a moored vessel's GPS jitter and a swing at anchor are noise.
 const movedM = 50
 
-// isStill reports whether pt is a vessel sitting still, for positions_1m. Reported speed decides when there is
-// one, since it does not jitter. Without one, about 0.3% of reports in every feed, from a transmitter whose GPS
-// gives it no speed, pt is still if it is within movedM of the vessel's last position, as 91% of those were in
-// a sample of production receptions; with no last position it counts as moving, so a voyage is never hidden.
-func isStill(pt trackPoint, hadPrev bool, prevLat, prevLon float64) bool {
-	if pt.sog10 != 1023 {
-		return pt.sog10 <= 5
+// anchor is where a vessel was last moving, which decides whether its next report is moving. Measuring from it
+// rather than from the report before catches a vessel drifting slower than half a knot: each report is a few
+// meters on, but they add up past movedM. In three hours of production positions, 260 vessels reported half a
+// knot or less throughout yet ended more than 300 m from where they started; speed alone gave them 1.7 rows
+// each in positions_1m, and an anchor at 50 m gives them about 10, for about 2% more rows overall.
+type anchor struct {
+	lat6, lon6 int32
+	set        bool
+}
+
+// still reports whether pt is a vessel sitting still, for positions_1m: not reporting more than half a knot,
+// and within movedM of the anchor. Reported speed counts when there is one, since a vessel underway says so
+// before it has gone 50 m; about 0.3% of reports carry none, from a transmitter whose GPS gives it no speed,
+// and distance alone decides those. An anchor not yet set starts at seed, the vessel's last known position, such
+// as the one the vessel cache restores at start; with neither, pt is moving, so a voyage is never hidden. A
+// moving pt becomes the anchor when advance is set, which it is only for a report that enters positions_1m.
+func (a *anchor) still(pt trackPoint, seed *[2]int32, advance bool) bool {
+	if !a.set && seed != nil {
+		a.lat6, a.lon6, a.set = seed[0], seed[1], true
 	}
-	return hadPrev && nm(prevLat, prevLon, float64(pt.lat6)/600000, float64(pt.lon6)/600000)*1852 <= movedM
+	moving := !a.set || pt.sog10 != 1023 && pt.sog10 > 5 ||
+		nm(float64(a.lat6)/600000, float64(a.lon6)/600000, float64(pt.lat6)/600000, float64(pt.lon6)/600000)*1852 > movedM
+	if moving && advance {
+		a.lat6, a.lon6, a.set = pt.lat6, pt.lon6, true
+	}
+	return !moving
 }
 
 // clockBadAge is how far before its arrival a copy's stamp may be before the copy is kept out of history: past

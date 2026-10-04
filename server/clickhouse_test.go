@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -699,7 +701,7 @@ func TestClickHouseMigratesEachEarlierLayout(t *testing.T) {
 }
 
 // chDiscOf is discOf in ClickHouse, for a hex event id: the low byte of the id's first 64 bits, read
-// big-endian as ParseUint reads them. clickhouse-load.py uses the same expression.
+// big-endian as ParseUint reads them, for a loader that names transmissions in ClickHouse.
 func chDiscOf(id string) string {
 	return "toUInt8(reinterpretAsUInt64(reverse(unhex(substring(" + id + ", 1, 16)))) % 256)"
 }
@@ -773,26 +775,44 @@ func TestClickHouseCopiesOfAnUnservedReportAreFlagged(t *testing.T) {
 	}
 }
 
-func TestIsStill(t *testing.T) {
-	at := func(lat, lon float64, sog10 uint16) trackPoint {
-		return trackPoint{lat6: int32(lat * 600000), lon6: int32(lon * 600000), sog10: sog10}
+func TestAnchorDecidesMoving(t *testing.T) {
+	at := func(dLatM float64, sog10 uint16) trackPoint { // a report dLatM meters north of 59.9 N
+		return trackPoint{lat6: int32(math.Round((59.9 + dLatM/111320) * 600000)), lon6: int32(10.7 * 600000), sog10: sog10}
 	}
-	for _, c := range []struct {
-		name    string
-		pt      trackPoint
-		hadPrev bool
-		still   bool
-	}{
-		{"reported moving", at(59.9, 10.7, 60), true, false},
-		{"reported still", at(59.9, 10.7, 3), true, true},
-		{"reported half a knot", at(59.9, 10.7, 5), true, true},
-		{"no speed, 30 m from its last position", at(59.90027, 10.7, 1023), true, true},
-		{"no speed, 200 m from its last position", at(59.9018, 10.7, 1023), true, false},
-		{"no speed and no last position", at(59.9, 10.7, 1023), false, false},
-	} {
-		if got := isStill(c.pt, c.hadPrev, 59.9, 10.7); got != c.still {
-			t.Errorf("%s: still %v, want %v", c.name, got, c.still)
+	seed := &[2]int32{int32(59.9 * 600000), int32(10.7 * 600000)}
+
+	var a anchor
+	if a.still(at(0, 3), nil, true) {
+		t.Error("with no anchor and no seed, a report is moving")
+	}
+	a = anchor{}
+	if !a.still(at(10, 3), seed, true) || !a.set {
+		t.Error("an unset anchor starts at the seed, the vessel's restored position")
+	}
+	if a.still(at(20, 60), nil, true) {
+		t.Error("reported speed over half a knot is moving, however near")
+	}
+	// Drifting at 0.3 kn, a report every 10 s, 1.5 m apart: still until the drift adds up past movedM.
+	a = anchor{lat6: seed[0], lon6: seed[1], set: true}
+	moved := 0
+	for i := 1; i <= 60; i++ {
+		if !a.still(at(float64(i)*1.5, 3), nil, true) {
+			moved++
 		}
+	}
+	if moved != 1 {
+		t.Errorf("90 m of drift past a 50 m anchor moves once, then re-anchors: moved %d times", moved)
+	}
+	// No speed: distance alone decides.
+	a = anchor{lat6: seed[0], lon6: seed[1], set: true}
+	if !a.still(at(30, 1023), nil, true) || a.still(at(200, 1023), nil, true) {
+		t.Error("without speed, within 50 m is still and beyond it moving")
+	}
+	// A report that does not enter positions_1m never moves the anchor.
+	a = anchor{lat6: seed[0], lon6: seed[1], set: true}
+	a.still(at(500, 1023), nil, false)
+	if !a.still(at(10, 1023), nil, true) {
+		t.Error("an unadvanced report left the anchor where it was")
 	}
 }
 
@@ -855,5 +875,93 @@ func TestClickHousePositions1mKeepsMinutesAndHeartbeats(t *testing.T) {
 		if err != nil || len(got) != c.want {
 			t.Errorf("%d at %v: %d points, want %d: %v", c.mmsi, c.step, len(got), c.want, err)
 		}
+	}
+}
+
+func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	if err := conn.conn.Exec(ctx, "CREATE TABLE "+db+".receptions_v1 (mmsi UInt32, ts DateTime64(3, 'UTC'), tx UInt64, recv_ts DateTime64(3, 'UTC'),"+
+		" lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String), station LowCardinality(String),"+
+		" accepted Bool, corroborated Bool, implausible Bool, clock_bad Bool) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (mmsi, ts)"); err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	noon := day.Add(12 * time.Hour)
+	type copyOf struct {
+		mmsi          uint32
+		ts, at, recv  time.Duration // after noon: the copy's stamp, its transmission's, and its arrival
+		id            string
+		latM          float64 // meters north of 59.9 N
+		sog10         uint16
+		source        string
+		accepted, bad bool
+	}
+	ida, idb, idc := eventID("a"), eventID("b"), eventID("c")
+	copies := []copyOf{
+		{257000001, 0, 0, time.Second, ida, 0, 100, "kystverket", true, false},
+		{257000001, 2 * time.Second, 0, time.Minute, ida, 0, 100, "aishub", false, false}, // a rebuilt copy, stamped 2 s off
+		{257000001, time.Minute, time.Minute, time.Minute + time.Second, idb, 500, 100, "kystverket", true, false},
+		{257000002, 0, 0, time.Second, idc, 0, 1023, "aishub", true, false},
+		{257000002, 3 * time.Minute, 3 * time.Minute, 3*time.Minute + time.Second, eventID("d"), 10, 1023, "aishub", true, false},
+		{257000002, 6 * time.Minute, 6 * time.Minute, 6*time.Minute + time.Second, eventID("e"), 500, 1023, "aishub", true, true},
+	}
+	batch, err := conn.conn.PrepareBatch(ctx, "INSERT INTO "+db+".receptions_v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range copies {
+		h, _ := strconv.ParseUint(c.id[:16], 16, 64)
+		tx := h ^ uint64(noon.Add(c.at).UnixMilli())
+		lat6 := int32(math.Round((59.9 + c.latM/111320) * 600000))
+		if err := batch.Append(c.mmsi, noon.Add(c.ts), tx, noon.Add(c.recv), lat6, int32(10.7*600000), c.sog10, uint16(3600), uint16(511), uint8(15),
+			c.source, c.source, c.accepted, true, c.bad, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		t.Fatal(err)
+	}
+	n, err := conn.convertDay(ctx, day, map[uint32]*anchor{})
+	if err != nil || n != len(copies) {
+		t.Fatalf("converted %d of %d: %v", n, len(copies), err)
+	}
+	rows, err := conn.conn.Query(ctx, "SELECT mmsi, ts, tx_off, tx_disc, recv_delay, accepted, implausible, moving FROM "+db+".receptions ORDER BY mmsi, ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	wantMoving := []bool{true, true, true, true, false, true}
+	i := 0
+	for rows.Next() {
+		var mmsi uint32
+		var ts time.Time
+		var off, delay int32
+		var disc uint8
+		var accepted, implausible, moving bool
+		if err := rows.Scan(&mmsi, &ts, &off, &disc, &delay, &accepted, &implausible, &moving); err != nil {
+			t.Fatal(err)
+		}
+		c := copies[i]
+		if want := int32((c.at - c.ts).Milliseconds()); off != want || disc != discOf(c.id) {
+			t.Errorf("row %d: tx_off %d disc %d, want %d %d: the transmission the live writer would name", i, off, disc, want, discOf(c.id))
+		}
+		if delay != int32((c.recv-c.ts).Milliseconds()) || accepted != c.accepted || implausible != c.bad || moving != wantMoving[i] {
+			t.Errorf("row %d: delay %d accepted %v implausible %v moving %v", i, delay, accepted, implausible, moving)
+		}
+		i++
+	}
+	var served uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = '2026-09-01 00:00:00', to = '2026-09-02 00:00:00')").Scan(&served); err != nil || served != 2 {
+		t.Errorf("the view serves each transmission once: %d %v", served, err)
 	}
 }

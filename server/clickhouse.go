@@ -124,7 +124,7 @@ const chPositionsView = `CREATE OR REPLACE VIEW {db}.positions AS
 
 // chMigrate moves a database to the current layout, in steps, each run once. A positions table from before
 // receptions becomes positions_old. Receptions in the first layout, with a 64-bit tx and recv_ts, become
-// receptions_v1, which clickhouse-load.py --convert copies into the current one. positions_15m and
+// receptions_v1, which aiscast convert-receptions copies into the current one. positions_15m and
 // positions_1h, which positions_1m replaces, go with their views at either step: positions_1m fills from
 // receptions as they are loaded or converted. Run before chSchema.
 func chMigrate(ctx context.Context, conn driver.Conn, db string) error {

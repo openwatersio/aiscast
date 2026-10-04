@@ -32,6 +32,9 @@ func main() {
 		case "normdiff":
 			runNormDiff(os.Args[2:])
 			return
+		case "convert-receptions":
+			runConvertReceptions(os.Args[2:])
+			return
 		case "sweep":
 			runSweep()
 			return

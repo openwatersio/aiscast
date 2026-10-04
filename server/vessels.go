@@ -60,6 +60,7 @@ type vessel struct {
 	lastPos    *Event
 	lastStatic *Event
 	recent     []recentPos // accepted positions of the last few minutes, for matching rebuilt copies (tracks.go)
+	moved      anchor      // where it was last moving, for whether a report is moving (tracks.go)
 
 	cell    cellKey                // index cell of the position, valid while indexed (index.go)
 	indexed bool                   // filed in the spatial index; true exactly when HasPos
@@ -345,7 +346,11 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 	}
 	pt := newTrackPoint(ev.MMSI, ev.Time, u, ev.Source)
 	pt.txAt, pt.txDisc, pt.recv, pt.station = ev.Time, discOf(ev.ID), ev.RecvTime, ev.Station
-	pt.still = isStill(pt, hadPrev, prevLat, prevLon)
+	var seed *[2]int32
+	if hadPrev {
+		seed = &[2]int32{int32(math.Round(prevLat * 600000)), int32(math.Round(prevLon * 600000))}
+	}
+	pt.still = v.moved.still(pt, seed, !stale && !ev.Implausible)
 	pt.uncorroborated = ev.LowTrust && !ev.Corroborated
 	pt.implausible = ev.Implausible
 	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge
