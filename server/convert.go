@@ -54,18 +54,62 @@ func runConvertReceptions(args []string) {
 	if err != nil {
 		log.Fatalf("convert-receptions: %v", err)
 	}
+	days = slices.DeleteFunc(days, func(d time.Time) bool {
+		ds := d.Format("2006-01-02")
+		return *fromS != "" && ds < *fromS || *toS != "" && ds > *toS
+	})
+	if err := c.convertDays(ctx, days, func(d time.Time, n int, took time.Duration) {
+		fmt.Printf("%s %d rows in %s\n", d.Format("2006-01-02"), n, took.Round(time.Second))
+	}); err != nil {
+		log.Fatalf("convert-receptions: %v", err)
+	}
+}
+
+// convertDays converts days in order, carrying each vessel's anchor from one day to the next. A day the run did
+// not just convert the day before of, the first of a run or one a rollback left to do again, starts from the
+// anchors positions_1m holds, so it judges moving as the day after a converted one would.
+func (c *chConn) convertDays(ctx context.Context, days []time.Time, done func(time.Time, int, time.Duration)) error {
 	anchors := map[uint32]*anchor{}
+	var prev time.Time
 	for _, d := range days {
-		if ds := d.Format("2006-01-02"); *fromS != "" && ds < *fromS || *toS != "" && ds > *toS {
-			continue
-		}
 		start := time.Now()
+		if !d.Equal(prev.AddDate(0, 0, 1)) {
+			var err error
+			if anchors, err = c.anchorsBefore(ctx, d); err != nil {
+				return fmt.Errorf("%s: anchors: %w", d.Format("2006-01-02"), err)
+			}
+		}
 		n, err := c.convertDay(ctx, d, anchors)
 		if err != nil {
-			log.Fatalf("convert-receptions: %s: %v", d.Format("2006-01-02"), err)
+			return fmt.Errorf("%s: %w", d.Format("2006-01-02"), err)
 		}
-		fmt.Printf("%s %d rows in %s\n", d.Format("2006-01-02"), n, time.Since(start).Round(time.Second))
+		done(d, n, time.Since(start))
+		prev = d
 	}
+	return nil
+}
+
+// anchorsBefore is each vessel's anchor at the start of day: where it was last moving, its latest moving row in
+// positions_1m. It looks back a month; a vessel still for longer starts without one, and its first report that
+// day counts as moving, a row a minute more.
+func (c *chConn) anchorsBefore(ctx context.Context, day time.Time) (map[uint32]*anchor, error) {
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"max_memory_usage": 1_500_000_000, "max_threads": 2}))
+	rows, err := c.conn.Query(ctx, "SELECT mmsi, a.1, a.2 FROM (SELECT mmsi, argMax((lat6, lon6), ts) AS a FROM "+c.db+".positions_1m"+
+		" WHERE cell = 0 AND slot >= ? AND slot < ? GROUP BY mmsi)", day.AddDate(0, 0, -31), day)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	anchors := map[uint32]*anchor{}
+	for rows.Next() {
+		var mmsi uint32
+		a := &anchor{set: true}
+		if err := rows.Scan(&mmsi, &a.lat6, &a.lon6); err != nil {
+			return nil, err
+		}
+		anchors[mmsi] = a
+	}
+	return anchors, rows.Err()
 }
 
 // unconverted is every day with rows in the first layout that receptions_converted does not record as
