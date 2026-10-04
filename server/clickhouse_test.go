@@ -692,6 +692,10 @@ func TestClickHouseMigratesInPlace(t *testing.T) {
 	if err := raw.Exec(ctx, mainInsert); err != nil {
 		t.Fatal("main's writer, after a rollback:", err)
 	}
+	// Cleanup run before every day is converted drops nothing, the rollup main reads included.
+	if err := conn.cleanup(ctx, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
 	tables, err := chColumn[string](ctx, raw, "SELECT name FROM system.tables WHERE database = ? ORDER BY name", db)
 	if err != nil {
 		t.Fatal(err)
