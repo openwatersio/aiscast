@@ -144,6 +144,27 @@ Every copy of every position report the pipeline receives is written to ClickHou
 
 `positions_1m` fills from each accepted copy as it is written. A vessel is moving when it reports more than half a knot, or when it is more than 50 m from its anchor, where it was last moving; a moving report becomes the anchor. Measuring from the anchor rather than the report before catches a vessel drifting slower than half a knot, whose reports are each a few meters on, and decides the 0.3% of reports that carry no speed. Under 50 m, a moored vessel's GPS jitter and a swing at anchor are noise. The anchor starts at the vessel's last known position, which the vessel cache restores at start. A moving vessel keeps its latest position in each minute; one sitting still keeps one row a day for each place it sits, a cell of about a kilometer, its latest report there, a heartbeat that says it was heard there that day. Two thirds of positions are vessels sitting still, so on 2026-08-28 it kept 10 M rows of 42 M accepted positions, at about 12 bytes a row. Any step of a minute or more groups its rows by the step, so a ferry's track at 15 minutes is its first position in each 15, not a sample that lands at random along its crossings.
 
+`positions_1m` takes each transmission's accepted copy as it is written, and a purge does not move `accepted` to the copy left. So purging a source from `receptions` (`ALTER TABLE aiscast.receptions DELETE WHERE source = '...'`) is followed by rebuilding each month it touched: `ALTER TABLE aiscast.positions_1m DROP PARTITION 202609`, then this insert once for each day of the month, which takes each transmission's earliest copy as the `positions` view does, a day at a time to keep the grouping in memory:
+
+```sh
+clickhouse-client --param_day=2026-09-01 --query "
+INSERT INTO aiscast.positions_1m
+SELECT mmsi, if(f.9, toStartOfMinute(f.1), toDateTime(toStartOfDay(f.1), 'UTC')) AS slot,
+       if(f.9, 0, toUInt32((intDiv(f.2, 6000) + 9000) * 36000 + (intDiv(f.3, 6000) + 18000))) AS cell,
+       f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
+FROM (
+  SELECT mmsi, argMinIf((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source), moving),
+                        toUnixTimestamp64Milli(ts) + recv_delay, NOT clock_bad) AS f
+  FROM aiscast.receptions
+  WHERE ts >= {day:Date} - INTERVAL 10 SECOND AND ts < {day:Date} + INTERVAL 1 DAY + INTERVAL 10 SECOND
+  GROUP BY mmsi, toUnixTimestamp64Milli(ts) + tx_off, tx_disc
+  HAVING NOT max(implausible) AND countIf(NOT clock_bad) > 0
+)
+WHERE toDate(f.1) = {day:Date}"
+```
+
+Rows the live writer adds to the month meanwhile are kept: `positions_1m` keeps the latest row per window, so the two agree.
+
 ## Access log
 
 Every HTTP request is one JSON line in the access log, written when the response finishes, so a stream is logged once, when it closes. A stream still open when the server stops is not logged. Lines go into hourly gzip files under `ACCESS_DIR` and upload to `access/v1/YYYY/MM/DD/HH.gz` in `ACCESS_BUCKET`, through the same rotation and disk sweep as the archive. It is a private bucket of its own and never the archive's, because the raw archive is meant to become publicly mirrorable and R2 makes a whole bucket public at once. Its keys have the shape of raw hours, so `aiscast replay` and the packager's replay job skip `access/` by name if a copy ever lands beside the raw archive.
