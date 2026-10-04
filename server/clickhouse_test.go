@@ -965,3 +965,26 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 		t.Errorf("the view serves each transmission once: %d %v", served, err)
 	}
 }
+
+// A report that arrives a day or more after its stamp is kept out of positions_1m, so it must not move the
+// anchor either: later reports are judged against where the vessel was last moving in positions_1m.
+func TestALateReportDoesNotMoveTheAnchor(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
+	v := newVessel()
+	v.moved = anchor{lat6: int32(59.9 * 600000), lon6: int32(10.7 * 600000), set: true}
+	was := v.moved
+	// Two kilometers away, newer than anything the vessel sent, but arriving 25 hours after its stamp.
+	u := newVessel()
+	u.Lat, u.Lon, u.Sog = 59.918, 10.7, 0
+	ev := &Event{MMSI: mmsi, Time: t0, RecvTime: t0.Add(25 * time.Hour), ID: eventID("late"), Source: "aishub", Station: "aishub"}
+	p.vmu.Lock()
+	p.noteFolded(ev, v, u, false, true, 59.9, 10.7)
+	p.vmu.Unlock()
+	q := queued(p, mmsi)
+	if len(q) != 1 || !q[0].clockBad || v.moved != was {
+		t.Fatalf("the late report is clock_bad and leaves the anchor where it was: %+v, anchor %+v", q, v.moved)
+	}
+}

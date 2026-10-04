@@ -350,10 +350,12 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 	if hadPrev {
 		seed = &[2]int32{int32(math.Round(prevLat * 600000)), int32(math.Round(prevLon * 600000))}
 	}
-	pt.still = v.moved.still(pt, seed, !stale && !ev.Implausible)
+	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge
+	// Only a report that enters positions_1m moves the anchor, or later reports would be judged against a place
+	// positions_1m never holds.
+	pt.still = v.moved.still(pt, seed, !stale && !ev.Implausible && !pt.clockBad)
 	pt.uncorroborated = ev.LowTrust && !ev.Corroborated
 	pt.implausible = ev.Implausible
-	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge
 	switch {
 	case ev.Implausible:
 	case !stale:
