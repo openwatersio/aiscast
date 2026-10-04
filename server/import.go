@@ -113,7 +113,7 @@ func (s *store) importRows(rows []historyRow) error {
 			cell = int64(cellOf(r.lat, r.lon))
 		}
 		name := strings.TrimSpace(r.name)
-		if _, err := st.Exec(r.mmsi, name, strings.ToUpper(name), r.class, r.shipType, flagOf(r.mmsi), r.draught, strings.TrimSpace(r.callsign),
+		if _, err := st.Exec(r.mmsi, name, searchKey(name), r.class, r.shipType, flagOf(r.mmsi), r.draught, strings.TrimSpace(r.callsign),
 			r.hasPos, r.lat, r.lon, cell, unixMs(r.last), unixMs(seen), unixMs(first), r.source); err != nil {
 			return err
 		}

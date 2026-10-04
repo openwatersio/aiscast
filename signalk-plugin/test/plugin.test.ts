@@ -115,7 +115,15 @@ describe("identity", () => {
 
     server.keysSigned = true; // the server is upgraded
     await start();
-    await until(() => server.keyRequests.length === 3);
+    // The fake server counts a request before it answers, so wait for the plugin to save the confirmed token.
+    await until(async () => {
+      const saved = await readFile(join(app.dataDir, "token.json"), "utf8").catch(() => "{}");
+      try {
+        return JSON.parse(saved).signed === true;
+      } catch {
+        return false; // caught mid-write
+      }
+    });
     await plugin.stop!();
     await start(); // confirmed: the cached token stands
     await sleep(100);

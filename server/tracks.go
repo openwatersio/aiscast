@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,28 +46,61 @@ type trackPoint struct {
 	source    string // source kind, for attribution
 
 	// What a copy adds as a reception, written and not read back. The zero values are the table's defaults:
-	// accepted, corroborated, and a transmission of its own.
-	tx             uint64    // the transmission this is a copy of, txOf its accepted copy's id and time
+	// accepted, corroborated, moving, and a transmission of its own.
+	txAt           time.Time // the transmission this is a copy of: its accepted copy's canonical time
+	txDisc         uint8     // and discOf that copy's event id, telling apart transmissions stamped in the same millisecond
 	recv           time.Time // when this copy arrived
 	station        string
 	dup            bool // a later copy of a transmission another copy delivered first
 	uncorroborated bool // from an unauthenticated sender, for a vessel no trusted source heard lately
 	implausible    bool // the fold judged it an impossible jump from the vessel's last position
 	clockBad       bool // stamped clockBadAge or more before it arrived
+	still          bool // not moving: reporting half a knot or less, and within movedM of where the vessel was last moving
 }
 
-// txOf names a transmission by its accepted copy's event id and canonical time, the pair the normalized archive
-// joins copies on: ids repeat for identical payloads minutes apart. It is the id's first 64 bits, a hash of the
-// payload, XORed with the time in milliseconds. Reads group a vessel's copies by it across a month, so it must
-// not collide among a month's transmissions: at 32 bits a vessel reporting every 10 s would see several
-// collisions a month, each merging two reports into one. ClickHouse computes the same value from the hex id,
-// so a load from the lake names transmissions as the server does.
-func txOf(id string, t time.Time) uint64 {
+// discOf is one byte of an event id, the low byte of its first 64 bits, which with the vessel and the time its
+// accepted copy was stamped names a transmission: ids repeat for identical payloads minutes apart, so the time
+// tells those apart, and the byte tells apart two transmissions of one vessel stamped in the same millisecond.
+// On three hours of production receptions the time and the byte together merged 83 of 5 M transmissions, all
+// a vessel's reports in one millisecond.
+func discOf(id string) uint8 {
 	if len(id) < 16 { // not an event id, as for an event built without one; hash it into one
 		id = eventID(id)
 	}
 	h, _ := strconv.ParseUint(id[:16], 16, 64)
-	return h ^ uint64(t.UnixMilli())
+	return uint8(h)
+}
+
+// movedM is how far a vessel must be from the last place it was moving to count as moving again, the distance
+// ais.tracks uses: under it, a moored vessel's GPS jitter and a swing at anchor are noise.
+const movedM = 50
+
+// anchor is where a vessel was last moving, which decides whether its next report is moving. Measuring from it
+// rather than from the report before catches a vessel drifting slower than half a knot: each report is a few
+// meters on, but they add up past movedM. In three hours of production positions, 260 vessels reported half a
+// knot or less throughout yet ended more than 300 m from where they started; speed alone gave them 1.7 rows
+// each in positions_1m, and an anchor at 50 m gives them about 10, for about 2% more rows overall.
+type anchor struct {
+	lat6, lon6 int32
+	set        bool
+}
+
+// still reports whether pt is a vessel sitting still, for positions_1m: not reporting more than half a knot,
+// and within movedM of the anchor. Reported speed counts when there is one, since a vessel underway says so
+// before it has gone 50 m; about 0.3% of reports carry none, from a transmitter whose GPS gives it no speed,
+// and distance alone decides those. An anchor not yet set starts at seed, the vessel's last known position, such
+// as the one the vessel cache restores at start; with neither, pt is moving, so a voyage is never hidden. A
+// moving pt becomes the anchor when advance is set, which it is only for a report that enters positions_1m.
+func (a *anchor) still(pt trackPoint, seed *[2]int32, advance bool) bool {
+	if !a.set && seed != nil {
+		a.lat6, a.lon6, a.set = seed[0], seed[1], true
+	}
+	moving := !a.set || pt.sog10 != 1023 && pt.sog10 > 5 ||
+		nm(float64(a.lat6)/600000, float64(a.lon6)/600000, float64(pt.lat6)/600000, float64(pt.lon6)/600000)*1852 > movedM
+	if moving && advance {
+		a.lat6, a.lon6, a.set = pt.lat6, pt.lon6, true
+	}
+	return !moving
 }
 
 // clockBadAge is how far before its arrival a copy's stamp may be before the copy is kept out of history: past
@@ -79,18 +113,25 @@ const clockBadAge = 24 * time.Hour
 // copy at one of their positions is a copy of that transmission. A vessel underway moves between reports, so its
 // position names one; a moored one repeats its position, and any of those transmissions is the same point.
 const (
-	recentKeep  = 5 * time.Minute
-	recentMax   = 32 // positions a vessel keeps, enough for one reporting every 10 s
-	recentNearA = 3  // wire units of latitude or longitude, about 5 m, for a source that rounds its coordinates
+	recentKeep = 5 * time.Minute
+	recentMax  = 32 // positions a vessel keeps, enough for one reporting every 10 s
+	// recentNearA is how far, in wire units of latitude or longitude (1/600,000 of a degree), a copy may sit
+	// from its transmission: 4, about 0.75 m. A source that rounds to 5 decimal places, as MarineCadastre does,
+	// is off by up to 3, and converting its float back can add one.
+	recentNearA = 4
 )
 
 type recentPos struct {
-	ms         int64 // Unix milliseconds: 24 bytes an entry where a time.Time would make it 40
+	ms         int64 // Unix milliseconds, the transmission's time too: 24 bytes an entry where a time.Time would make it 40
 	lat6, lon6 int32
-	tx         uint64
+	disc       uint8
+	bad        bool // implausible: never repeated or tested against, but its byte stays taken
+	still      bool // the transmission's verdict on moving, which its copies carry
 }
 
-// remember adds an accepted position to the vessel's recent ones, dropping those too old to be repeated.
+// remember adds a transmission of the vessel's own to its recent ones, dropping those too old to be repeated.
+// When they are full an implausible one only ever replaces another, so a station sending a vessel impossible
+// positions, which anyone can run, cannot push out the ones its copies are matched to.
 func (v *vessel) remember(pt trackPoint) {
 	ms := pt.ts.UnixMilli()
 	keep := v.recent[:0]
@@ -100,24 +141,29 @@ func (v *vessel) remember(pt trackPoint) {
 		}
 	}
 	if len(keep) == recentMax {
-		keep = append(keep[:0], keep[1:]...)
+		drop := slices.IndexFunc(keep, func(r recentPos) bool { return r.bad })
+		if drop < 0 && pt.implausible {
+			v.recent = keep
+			return
+		}
+		keep = slices.Delete(keep, max(drop, 0), max(drop, 0)+1)
 	}
-	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.tx})
+	v.recent = append(keep, recentPos{ms, pt.lat6, pt.lon6, pt.txDisc, pt.implausible, pt.still})
 }
 
 // repeats is the transmission among the vessel's recent positions that pt is a copy of: the nearest in time at
 // pt's position.
-func (v *vessel) repeats(pt trackPoint) (uint64, bool) {
+func (v *vessel) repeats(pt trackPoint) (recentPos, bool) {
 	ms := pt.ts.UnixMilli()
 	var best recentPos
 	bestDt := int64(-1)
 	for _, r := range v.recent {
 		dt := max(ms-r.ms, r.ms-ms)
-		if dt < recentKeep.Milliseconds() && absInt(r.lat6-pt.lat6) <= recentNearA && absInt(r.lon6-pt.lon6) <= recentNearA && (bestDt < 0 || dt < bestDt) {
+		if !r.bad && dt < recentKeep.Milliseconds() && absInt(r.lat6-pt.lat6) <= recentNearA && absInt(r.lon6-pt.lon6) <= recentNearA && (bestDt < 0 || dt < bestDt) {
 			best, bestDt = r, dt
 		}
 	}
-	return best.tx, bestDt >= 0
+	return best, bestDt >= 0
 }
 
 // jumps reports whether pt implies an impossible speed from the vessel's position nearest it in time, among its
@@ -129,7 +175,7 @@ func (v *vessel) jumps(pt trackPoint) bool {
 		lat, lon, at, found = v.Lat, v.Lon, v.PosAt.UnixMilli(), true
 	}
 	for _, r := range v.recent {
-		if !found || max(ms-r.ms, r.ms-ms) < max(ms-at, at-ms) {
+		if !r.bad && (!found || max(ms-r.ms, r.ms-ms) < max(ms-at, at-ms)) {
 			lat, lon, at, found = float64(r.lat6)/600000, float64(r.lon6)/600000, r.ms, true
 		}
 	}
@@ -139,6 +185,59 @@ func (v *vessel) jumps(pt trackPoint) bool {
 	dt := float64(max(ms-at, at-ms)) / 1000
 	d := nm(lat, lon, float64(pt.lat6)/600000, float64(pt.lon6)/600000)
 	return dt >= 1 && d > implausibleJumpNM && d/(dt/3600) > implausibleKnots
+}
+
+// freeDisc gives pt a byte no recent transmission of the vessel stamped in the same millisecond holds, so the
+// view never takes two reports for one transmission. Two distinct reports of a vessel share a stamp mostly where a
+// source stamps whole seconds; one byte of their ids then matched in 83 of 5 M transmissions in a production
+// sample, each merge losing a position, or hiding it if the other was implausible. Bumping the byte costs nothing
+// a row, where a wider one would cost every row a byte and still collide.
+// ponytail: the ring sees only the last five minutes, or 32 reports. A report later than that, 122 of 25.6 M
+// accepted in 12 hours on 2026-10-04, can still take a forgotten one's byte, one or two losses a year at that rate.
+func (v *vessel) freeDisc(pt *trackPoint) {
+	ms := pt.txAt.UnixMilli()
+	for range 256 {
+		taken := false
+		for _, r := range v.recent {
+			if r.ms == ms && r.disc == pt.txDisc {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			return
+		}
+		pt.txDisc++
+	}
+}
+
+// sent is the vessel's recent transmission stamped at ms at the position: a dedupe copy carries its
+// transmission's payload, so the same position.
+func (v *vessel) sent(ms int64, lat6, lon6 int32) (recentPos, bool) {
+	for _, r := range v.recent {
+		if r.ms == ms && r.lat6 == lat6 && r.lon6 == lon6 {
+			return r, true
+		}
+	}
+	return recentPos{}, false
+}
+
+// fromTransmission gives a dedupe copy its transmission's byte, which freeDisc may have moved, and its verdict
+// on moving, so a rebuild of positions_1m from the copy after a purge keeps the track's shape. A transmission
+// the vessel no longer keeps leaves the id's byte, and the vessel's anchor judges the copy without moving. The
+// caller holds no lock.
+func (p *Pipeline) fromTransmission(pt *trackPoint) {
+	p.vmu.RLock()
+	defer p.vmu.RUnlock()
+	v := p.vessels[pt.mmsi]
+	if v == nil {
+		return
+	}
+	if r, ok := v.sent(pt.txAt.UnixMilli(), pt.lat6, pt.lon6); ok {
+		pt.txDisc, pt.still = r.disc, r.still
+		return
+	}
+	pt.still = v.moved.still(*pt, nil, false) // neither seeds nor moves the anchor, so a read lock holds
 }
 
 func absInt(n int32) int32 {
@@ -594,6 +693,7 @@ func (p *Pipeline) noteReception(pt trackPoint) {
 func (p *Pipeline) noteCopy(ev *Event, key string, tx time.Time, implausible bool) {
 	if pt, ok := copyPoint(ev, key, tx); ok {
 		pt.implausible = implausible
+		p.fromTransmission(&pt)
 		p.noteReception(pt)
 	}
 }
@@ -605,7 +705,7 @@ func copyPoint(ev *Event, key string, tx time.Time) (trackPoint, bool) {
 		return trackPoint{}, false
 	}
 	pt := newTrackPoint(ev.Packet.GetHeader().UserID, ev.Time, u, ev.Source)
-	pt.tx, pt.dup = txOf(eventID(key), tx), true
+	pt.txAt, pt.txDisc, pt.dup = tx, discOf(eventID(key)), true
 	pt.recv, pt.station = ev.RecvTime, ev.Station
 	pt.uncorroborated = lowTrust(ev.Source)
 	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge

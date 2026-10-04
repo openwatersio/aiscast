@@ -2,9 +2,11 @@ package main
 
 // Historical archives: government AIS archives loaded into receptions as late copies, each from a feed the
 // network does not run. A source lists its files, one UTC day each, and gives the SELECT that reads a file as
-// historyColumns; ClickHouse downloads and parses the file itself. Each file is staged, cleaned, matched to
-// the copies the network already holds, and inserted, and its statics fold into vessel_statics. history_loads
-// records every file, so a file loads once and a changed one loads again. See specs/historical-sources.md.
+// historyColumns; ClickHouse downloads and parses the file itself into a staging table. The loader then reads
+// the staged day a vessel at a time, beside the transmissions the network already holds, and writes through the
+// live writer's own insert, so an archive row is named, judged moving or still, and stamped with its arrival as
+// a live copy would be. Its statics fold into vessel_statics. history_loads records every file, so a file loads
+// once and a changed one loads again. See specs/historical-sources.md.
 
 import (
 	"context"
@@ -27,9 +29,6 @@ type historySource struct {
 	list func(ctx context.Context) ([]historyFile, error)
 	// read is a SELECT of one file's rows as historyColumns, in the archive's own order.
 	read func(f historyFile) string
-	// near is how far, in wire units of latitude or longitude, a row may sit from a stored copy of the same
-	// transmission: an archive that rounds its coordinates cannot match the wire value exactly.
-	near int32
 }
 
 // historyFile is one day of an archive.
@@ -46,12 +45,11 @@ type historyFile struct {
 const historyColumns = `mmsi UInt32, ts DateTime64(3, 'UTC'), lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16,
 	navstat UInt8, name String, callsign String, imo UInt32, ship_type UInt8, length UInt16, beam UInt16, draught10 UInt16, destination String`
 
-// historySchema is created with the rest of the schema. vessel_statics keeps, per vessel and source, the
+// chVesselStatics and chHistoryLoads are migration steps. vessel_statics keeps, per vessel and source, the
 // earliest and latest report, the latest position, and the latest non-empty value of each static field;
 // rows fold together whatever order the files load in, and a file loaded twice changes nothing.
 // history_loads has one row per file, the latest kept.
-var historySchema = []string{
-	`CREATE TABLE IF NOT EXISTS {db}.vessel_statics (
+const chVesselStatics = `CREATE TABLE IF NOT EXISTS {db}.vessel_statics (
 		mmsi        UInt32,
 		source      LowCardinality(String),
 		first_ts    SimpleAggregateFunction(min, DateTime64(3, 'UTC')),
@@ -66,8 +64,9 @@ var historySchema = []string{
 		draught10   AggregateFunction(argMax, UInt16, DateTime64(3, 'UTC')),
 		destination AggregateFunction(argMax, String, DateTime64(3, 'UTC'))
 	) ENGINE = AggregatingMergeTree
-	ORDER BY (mmsi, source)`,
-	`CREATE TABLE IF NOT EXISTS {db}.history_loads (
+	ORDER BY (mmsi, source)`
+
+const chHistoryLoads = `CREATE TABLE IF NOT EXISTS {db}.history_loads (
 		source      LowCardinality(String),
 		file        String,
 		day         Date,
@@ -82,12 +81,12 @@ var historySchema = []string{
 		implausible UInt64,
 		loaded      DateTime64(3, 'UTC')
 	) ENGINE = ReplacingMergeTree(loaded)
-	ORDER BY (source, file)`,
-}
+	ORDER BY (source, file)`
 
 // historySettings bound every load query, so a load never takes the memory or the cores the live writer
 // needs: ClickHouse refusing the writer for 10 minutes drops live positions. A slow archive host streams a
-// file for minutes.
+// file for minutes. The loader user's settings profile on the box says the same, so a query that forgets
+// them is bounded too.
 var historySettings = clickhouse.Settings{
 	"max_memory_usage":                   1_500_000_000,
 	"max_threads":                        2,
@@ -98,8 +97,8 @@ var historySettings = clickhouse.Settings{
 	"max_execution_time":                 3600,
 }
 
-// historyPasses is how many groups of vessels a day's receptions are judged and inserted in.
-const historyPasses = 8
+// historyBatch is how many receptions go to ClickHouse in one insert.
+var historyBatch = 200_000
 
 // historyCheckEvery is how often the loader lists each source for files it has not loaded.
 const historyCheckEvery = 6 * time.Hour
@@ -131,19 +130,27 @@ func (h *historyStats) noteDay(source string, day time.Time) {
 	}
 }
 
-// runHistory loads each source's new files once ClickHouse is attached, and again every historyCheckEvery.
-func (p *Pipeline) runHistory(sources []historySource) {
+// runHistory loads each source's new files once ClickHouse is attached and its schema current, and again every
+// historyCheckEvery, over its own connection to url, as the loader user.
+func (p *Pipeline) runHistory(url string, sources []historySource) {
+	var c *chConn
 	for {
-		if c := p.chConn(); c != nil {
-			for _, s := range sources {
-				if err := c.loadHistory(context.Background(), s, p.history); err != nil {
-					log.Printf("history: %s: %v", s.name, err)
-				}
+		if c == nil && p.chConn() != nil {
+			var err error
+			if c, err = dialClickHouse(url); err != nil {
+				log.Printf("history: %v", err)
 			}
-			time.Sleep(historyCheckEvery)
+		}
+		if c == nil {
+			time.Sleep(time.Minute)
 			continue
 		}
-		time.Sleep(time.Minute)
+		for _, s := range sources {
+			if err := c.loadHistory(context.Background(), s, p.history); err != nil {
+				log.Printf("history: %s: %v", s.name, err)
+			}
+		}
+		time.Sleep(historyCheckEvery)
 	}
 }
 
@@ -161,6 +168,14 @@ func (p *Pipeline) chConn() *chConn {
 // loadHistory loads every file of s from s.from on that history_loads has not recorded complete with its
 // current etag, newest first, so the most recent history arrives first.
 func (c *chConn) loadHistory(ctx context.Context, s historySource, stats *historyStats) error {
+	// Rows in the first layout name their transmissions by a hash the loader cannot match, so archives wait
+	// until aiscast convert-receptions and clickhouse-cleanup have rewritten them.
+	if legacy, err := c.legacy(ctx); err != nil || legacy {
+		if legacy {
+			log.Printf("history: %s waits until receptions are converted and cleaned up", s.name)
+		}
+		return err
+	}
 	files, err := s.list(ctx)
 	if err != nil {
 		return err
@@ -225,7 +240,7 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(historySettings))
 	db := c.db
 	day := f.day.UTC().Format("2006-01-02")
-	stage, match := db+".history_stage_"+s.name, db+".history_match_"+s.name
+	stage := db + ".history_stage_" + s.name
 	exec := func(q string, args ...any) error { return c.conn.Exec(ctx, q, args...) }
 	drop := func(table string) { c.conn.Exec(context.Background(), "DROP TABLE IF EXISTS "+table) } // after a timeout too
 	record := func(complete bool, read, unplaced, repeated, kept, matched, implausible uint64) error {
@@ -233,7 +248,6 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 			s.name, f.name, f.day, uint64(f.size), f.etag, complete, read, unplaced, repeated, kept, matched, implausible)
 	}
 	defer drop(stage)
-	defer drop(match)
 
 	// A row is known when its vessel and time are believable, and placed when its position is too. A ship's
 	// MMSI begins with a maritime identification digit of 2 to 7; the rest are aids to navigation, base
@@ -262,63 +276,9 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 		}
 	}
 
-	// A row matches a copy another source delivered of the same transmission: the same vessel and position
-	// within 5 seconds, nearest in time. It takes that transmission, and its implausible flag, since views that
-	// see one insert at a time filter copy by copy. Rows are joined to the copies in their 5-second bucket and
-	// the ones either side, then filtered, because a window and a tolerance cannot be equality keys.
-	if err := exec("DROP TABLE IF EXISTS " + match); err != nil {
+	n, err := c.loadHistoryDay(ctx, s, f, stage)
+	if err != nil {
 		return 0, err
-	}
-	if err := exec(fmt.Sprintf(`CREATE TABLE %[1]s ENGINE = Memory AS
-		SELECT s.mmsi AS mmsi, s.ts AS ts, s.lat6 AS lat6, s.lon6 AS lon6,
-		       argMin(l.tx, abs(toUnixTimestamp64Milli(l.ts) - toUnixTimestamp64Milli(s.ts))) AS tx, max(l.implausible) AS implausible
-		FROM (SELECT mmsi, ts, lat6, lon6, toInt64(intDiv(toUnixTimestamp(ts), 5)) AS b FROM %[2]s WHERE placed) AS s
-		INNER JOIN (
-			SELECT mmsi, ts, lat6, lon6, tx, implausible, arrayJoin([b - 1, b, b + 1]) AS b
-			FROM (SELECT mmsi, ts, lat6, lon6, tx, implausible, toInt64(intDiv(toUnixTimestamp(ts), 5)) AS b
-			      FROM %[3]s.receptions
-			      WHERE ts >= toDateTime64('%[4]s', 3, 'UTC') - INTERVAL 10 SECOND
-			        AND ts < toDateTime64('%[4]s', 3, 'UTC') + INTERVAL 1 DAY + INTERVAL 10 SECOND
-			        AND source != '%[5]s' AND mmsi IN (SELECT mmsi FROM %[2]s WHERE placed))
-		) AS l ON s.mmsi = l.mmsi AND s.b = l.b
-		WHERE abs(toUnixTimestamp64Milli(l.ts) - toUnixTimestamp64Milli(s.ts)) <= 5000
-		  AND abs(l.lat6 - s.lat6) <= %[6]d AND abs(l.lon6 - s.lon6) <= %[6]d
-		GROUP BY s.mmsi, s.ts, s.lat6, s.lon6`, match, stage, db, day, s.name, s.near)); err != nil {
-		return 0, fmt.Errorf("match: %w", err)
-	}
-
-	// The fold tests each report against the vessel's last; a single statement cannot walk rows that way, and
-	// testing each against the one before flags a lone spike and the good row after it. So a row is implausible
-	// when it jumps from both neighbors, the fold's test either side: more than 10 NM and more than 120 kn.
-	// Runs of bad rows pass here, and despike removes them when a track is drawn. A row matched to a flagged
-	// transmission is flagged with it. An unmatched row is its own transmission, accepted.
-	jump := func(lat, lon, t string) string {
-		return fmt.Sprintf(`(%[3]s > toDateTime64('2000-01-01', 3, 'UTC') AND abs(toUnixTimestamp64Milli(ts) - toUnixTimestamp64Milli(%[3]s)) >= 1000
-			AND greatCircleDistance(lon6 / 600000, lat6 / 600000, %[2]s / 600000, %[1]s / 600000) / 1852 > %[4]g
-			AND greatCircleDistance(lon6 / 600000, lat6 / 600000, %[2]s / 600000, %[1]s / 600000) / 1852
-			    / (abs(toUnixTimestamp64Milli(ts) - toUnixTimestamp64Milli(%[3]s)) / 3600000) > %[5]g)`, lat, lon, t, implausibleJumpNM, implausibleKnots)
-	}
-	// A vessel's rows are judged only against each other, so the day goes in passes of whole vessels, each
-	// sorting a fraction of it: one pass would sort a day's 10 M rows at once, past the load's memory.
-	for pass := range historyPasses {
-		if err := exec(`INSERT INTO `+db+`.receptions
-			(mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad)
-			SELECT r.mmsi, r.ts, if(m.tx != 0, m.tx, cityHash64(?, r.mmsi, r.ts, r.lat6, r.lon6)), now64(3), r.lat6, r.lon6,
-			       r.sog10, r.cog10, r.heading, r.navstat, ?, ?, m.tx = 0, true, (r.spike OR m.implausible), false
-			FROM (
-				SELECT mmsi, ts, lat6, lon6, sog10, cog10, heading, navstat,
-				       `+jump("plat", "plon", "pts")+` AND `+jump("nlat", "nlon", "nts")+` AS spike
-				FROM (
-					SELECT *, lagInFrame(lat6) OVER w AS plat, lagInFrame(lon6) OVER w AS plon, lagInFrame(ts) OVER w AS pts,
-					       leadInFrame(lat6) OVER w AS nlat, leadInFrame(lon6) OVER w AS nlon, leadInFrame(ts) OVER w AS nts
-					FROM (SELECT * FROM `+stage+` WHERE placed AND mmsi % ? = ? ORDER BY mmsi, ts LIMIT 1 BY mmsi, ts, lat6, lon6)
-					WINDOW w AS (PARTITION BY mmsi ORDER BY ts ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)
-				)
-			) AS r
-			LEFT JOIN `+match+` AS m ON r.mmsi = m.mmsi AND r.ts = m.ts AND r.lat6 = m.lat6 AND r.lon6 = m.lon6`,
-			s.name, s.name, s.name, historyPasses, pass); err != nil {
-			return 0, fmt.Errorf("insert receptions: %w", err)
-		}
 	}
 	if err := exec(`INSERT INTO `+db+`.vessel_statics
 		SELECT mmsi, ?, min(ts), max(ts), argMaxStateIf((lat6, lon6), ts, placed),
@@ -329,13 +289,173 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 		return 0, fmt.Errorf("insert statics: %w", err)
 	}
 
-	var kept, matched, implausible uint64
-	if err := c.conn.QueryRow(ctx, "SELECT count(), countIf(NOT accepted), countIf(implausible) FROM "+db+".receptions"+
-		" WHERE source = ? AND ts >= toDateTime64(?, 3, 'UTC') AND ts < toDateTime64(?, 3, 'UTC') + INTERVAL 1 DAY", s.name, day, day).
-		Scan(&kept, &matched, &implausible); err != nil {
+	// A day loaded before left rows in positions_1m that its delete did not reach.
+	if again {
+		if err := c.rebuildPositions1m(ctx, f.day); err != nil {
+			return 0, fmt.Errorf("rebuild positions_1m: %w", err)
+		}
+	}
+	if err := record(true, read, read-placed, placed-distinct, n.kept, n.matched, n.implausible); err != nil {
 		return 0, err
 	}
-	return int(kept), record(true, read, read-placed, placed-distinct, kept, matched, implausible)
+	return int(n.kept), nil
+}
+
+// historyCounts is what a day's load wrote.
+type historyCounts struct{ kept, matched, implausible uint64 }
+
+// archiveRow is a staged archive row, or one of the day's live transmissions beside it.
+type archiveRow struct {
+	live                  bool
+	mmsi                  uint32
+	ts                    time.Time // a live transmission's own time
+	lat6, lon6            int32
+	sog10, cog10, heading uint16
+	navstat               uint8
+	disc                  uint8 // a live transmission's
+	still, bad            bool  // a live transmission's verdicts
+}
+
+// loadHistoryDay writes a staged day's rows to receptions, a vessel at a time. Each vessel's rows come in time
+// order beside the accepted copies of the transmissions other sources delivered for it within 5 minutes of the
+// day, the reach of the live writer's own match for a rebuilt copy.
+func (c *chConn) loadHistoryDay(ctx context.Context, s historySource, f historyFile, stage string) (historyCounts, error) {
+	var n historyCounts
+	day := f.day.UTC()
+	rows, err := c.conn.Query(ctx, `SELECT * FROM (
+		SELECT false AS live, mmsi, ts AS at, lat6, lon6, sog10, cog10, heading, navstat, toUInt8(0) AS disc, false AS still, false AS bad
+		FROM (SELECT * FROM `+stage+` WHERE placed ORDER BY mmsi, ts LIMIT 1 BY mmsi, ts, lat6, lon6)
+		UNION ALL
+		SELECT true, mmsi, fromUnixTimestamp64Milli(toUnixTimestamp64Milli(ts) + tx_off, 'UTC'), lat6, lon6, toUInt16(0), toUInt16(0), toUInt16(0), toUInt8(0),
+		       tx_disc, NOT moving, implausible
+		FROM `+c.db+`.receptions
+		WHERE accepted AND source != ? AND ts >= ? AND ts < ? AND mmsi IN (SELECT mmsi FROM `+stage+` WHERE placed)
+	) ORDER BY mmsi, at`, s.name, day.Add(-recentKeep), day.Add(24*time.Hour+recentKeep))
+	if err != nil {
+		return n, err
+	}
+	defer rows.Close()
+	run := fmt.Sprintf("history-%s-%s-%d-", s.name, day.Format("2006-01-02"), time.Now().UnixNano())
+	loaded := time.Now()
+	var batch []trackPoint
+	batches := 0
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		batches++
+		if err := c.insert(ctx, run+fmt.Sprint(batches), batch); err != nil {
+			return err
+		}
+		batch = batch[:0]
+		return nil
+	}
+	var vessel []archiveRow
+	emit := func() error {
+		pts, m := historyVessel(s.name, vessel, loaded)
+		n.kept += uint64(len(pts))
+		n.matched += m.matched
+		n.implausible += m.implausible
+		batch = append(batch, pts...)
+		vessel = vessel[:0]
+		if len(batch) >= historyBatch {
+			return flush()
+		}
+		return nil
+	}
+	for rows.Next() {
+		var r archiveRow
+		if err := rows.Scan(&r.live, &r.mmsi, &r.ts, &r.lat6, &r.lon6, &r.sog10, &r.cog10, &r.heading, &r.navstat, &r.disc, &r.still, &r.bad); err != nil {
+			return n, err
+		}
+		if len(vessel) > 0 && vessel[0].mmsi != r.mmsi {
+			if err := emit(); err != nil {
+				return n, err
+			}
+		}
+		vessel = append(vessel, r)
+	}
+	if err := rows.Err(); err != nil {
+		return n, err
+	}
+	if len(vessel) > 0 {
+		if err := emit(); err != nil {
+			return n, err
+		}
+	}
+	return n, flush()
+}
+
+// historyVessel turns one vessel's staged rows, in time order among its live transmissions, into receptions.
+// A row at a live transmission's position, within recentNearA, the nearest in time within recentKeep, is a copy
+// of it, as a rebuilt copy is live: AISHub's stamps run tens of seconds off. It takes the transmission's name,
+// its verdict on moving, and its implausible flag. Any other row is its own transmission, accepted, with a byte
+// free in its millisecond and the anchor's verdict on moving; it is implausible when it jumps from both of its
+// neighbors, the fold's test either side, since the fold's walk from the last accepted report flags the good
+// row after a spike too. Runs of bad rows pass, and despike removes them when a track is drawn. A row arrives
+// when it loaded, so it never arrives before the live copies of its transmission and the view keeps serving
+// those. The anchor starts afresh each day, since days load newest first.
+func historyVessel(source string, rows []archiveRow, loaded time.Time) ([]trackPoint, historyCounts) {
+	var live, own []archiveRow
+	for _, r := range rows {
+		if r.live {
+			live = append(live, r)
+		} else {
+			own = append(own, r)
+		}
+	}
+	used := map[int64][]uint8{}
+	for _, l := range live {
+		ms := l.ts.UnixMilli()
+		used[ms] = append(used[ms], l.disc)
+	}
+	var n historyCounts
+	var a anchor
+	out := make([]trackPoint, 0, len(own))
+	lo := 0
+	for i, r := range own {
+		pt := trackPoint{mmsi: r.mmsi, ts: r.ts, lat6: r.lat6, lon6: r.lon6, sog10: r.sog10, cog10: r.cog10, heading: r.heading,
+			navStatus: r.navstat, source: source, station: source, recv: loaded}
+		for lo < len(live) && r.ts.Sub(live[lo].ts) >= recentKeep {
+			lo++
+		}
+		match, best := -1, recentKeep
+		for j := lo; j < len(live) && live[j].ts.Sub(r.ts) < recentKeep; j++ {
+			if dt := absDur(live[j].ts.Sub(r.ts)); dt < best && absInt(live[j].lat6-r.lat6) <= recentNearA && absInt(live[j].lon6-r.lon6) <= recentNearA {
+				match, best = j, dt
+			}
+		}
+		if match >= 0 {
+			l := live[match]
+			pt.txAt, pt.txDisc, pt.still, pt.implausible, pt.dup = l.ts, l.disc, l.still, l.bad, true
+			n.matched++
+		} else {
+			pt.txAt = r.ts
+			pt.txDisc = discOf(eventID(fmt.Sprint(source, r.mmsi, r.ts.UnixMilli(), r.lat6, r.lon6)))
+			ms := r.ts.UnixMilli()
+			for range 256 {
+				if !slices.Contains(used[ms], pt.txDisc) {
+					break
+				}
+				pt.txDisc++
+			}
+			used[ms] = append(used[ms], pt.txDisc)
+			pt.implausible = i > 0 && i < len(own)-1 && historyJumps(own[i-1], r) && historyJumps(r, own[i+1])
+			pt.still = a.still(pt, nil, !pt.implausible)
+		}
+		if pt.implausible {
+			n.implausible++
+		}
+		out = append(out, pt)
+	}
+	return out, n
+}
+
+// historyJumps is the fold's test between two rows: more than implausibleJumpNM at more than implausibleKnots.
+func historyJumps(x, y archiveRow) bool {
+	dt := absDur(y.ts.Sub(x.ts)).Seconds()
+	d := nm(float64(x.lat6)/600000, float64(x.lon6)/600000, float64(y.lat6)/600000, float64(y.lon6)/600000)
+	return dt >= 1 && d > implausibleJumpNM && d/(dt/3600) > implausibleKnots
 }
 
 // sqlString quotes s as a ClickHouse string literal.

@@ -32,6 +32,15 @@ func main() {
 		case "normdiff":
 			runNormDiff(os.Args[2:])
 			return
+		case "convert-receptions":
+			runConvertReceptions(os.Args[2:])
+			return
+		case "clickhouse-cleanup":
+			runClickHouseCleanup()
+			return
+		case "rebuild-positions-1m":
+			runRebuildPositions1m(os.Args[2:])
+			return
 		case "sweep":
 			runSweep()
 			return
@@ -184,7 +193,7 @@ func main() {
 		}
 		if len(sources) > 0 {
 			p.history = newHistoryStats(sources)
-			go p.runHistory(sources)
+			go p.runHistory(env("CLICKHOUSE_LOADER_URL", url), sources)
 		}
 	}
 	go p.logStats()

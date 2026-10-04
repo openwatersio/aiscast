@@ -721,8 +721,11 @@ func (p *Pipeline) mcpSearchByName(ctx context.Context, _ *mcp.CallToolRequest, 
 		return an < bn || (an == bn && a.MMSI < b.MMSI)
 	}
 	if p.store == nil {
+		// The same normalization the record's search column gets, so a replay answers as the record
+		// would; a punctuation-only query matches nothing there too.
+		key := searchKey(q)
 		rows := p.mcpCollect(now, func(m uint32, v *vessel) bool {
-			if !strings.Contains(strings.ToUpper(v.Name), q) || (flag != "" && flagOf(m) != flag) {
+			if key == "" || !strings.Contains(searchKey(v.Name), key) || (flag != "" && flagOf(m) != flag) {
 				return false
 			}
 			return box == nil || (v.HasPos && box.contains(v.Lat, v.Lon))

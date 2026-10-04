@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,10 +72,11 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
 
-	// A live copy the network already holds, of the vessel's 12:00:30 report: AISHub's stamp two seconds later.
+	// A live copy the network already holds, of the vessel's 12:00:30 report: AISHub's stamp 28 seconds later.
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
-	live := trackPoint{mmsi: 367567110, ts: day.Add(12*time.Hour + 32*time.Second), lat6: int32(42.36017 * 600000), lon6: int32(-71.02771 * 600000),
-		sog10: 9, cog10: 3450, heading: 511, navStatus: 0, source: "aishub", station: "aishub", tx: 77, recv: day.Add(12*time.Hour + 40*time.Second)}
+	liveAt := day.Add(12*time.Hour + 58*time.Second)
+	live := trackPoint{mmsi: 367567110, ts: liveAt, txAt: liveAt, txDisc: 77, lat6: int32(math.Round(42.36017 * 600000)), lon6: int32(math.Round(-71.02771 * 600000)),
+		sog10: 9, cog10: 3450, heading: 511, navStatus: 0, source: "aishub", station: "aishub", recv: liveAt.Add(7 * time.Second)}
 	if err := conn.insert(ctx, "live", []trackPoint{live}); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +91,9 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 		"367567111,2026-06-30 12:00:00,0,0,,,,ZERO,,,,,,,,,B",        // a GPS default, no fix
 		"367567112,2026-07-01 00:00:05,-71.0,42.3,,,,LATE,,,,,,,,,B", // the next day's
 		`367567113,2026-06-30 13:00:00,-70.5,42.1,5.0,90.0,91,"SMITH, JOHN",,WXY123,37,8,12,4,1.5,,B`,
+		"367567114,2026-06-30 14:00:00,-70.9,42.2,0.0,0.0,,MOORED,,,,5,,,,,A", // moored: moving until it has an anchor, then still
+		"367567114,2026-06-30 14:03:00,-70.9,42.2,0.0,0.0,,MOORED,,,,5,,,,,A",
+		"367567114,2026-06-30 14:06:00,-70.9,42.2,0.0,0.0,,MOORED,,,,5,,,,,A",
 	)
 	files := map[string]string{"csv2/csv2026/ais-2026-06-30.csv.zst": file}
 	s := fixtureSource(files)
@@ -101,13 +106,14 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	}
 
 	type row struct {
-		ts                    time.Time
-		accepted, implausible bool
-		tx                    uint64
+		ts                            time.Time
+		accepted, implausible, moving bool
+		off, delay                    int32
+		disc                          uint8
 	}
 	rows := func() []row {
 		t.Helper()
-		r, err := conn.conn.Query(ctx, "SELECT ts, accepted, implausible, tx FROM "+db+".receptions WHERE source = 'marinecadastre' ORDER BY mmsi, ts")
+		r, err := conn.conn.Query(ctx, "SELECT ts, accepted, implausible, moving, tx_off, recv_delay, tx_disc FROM "+db+".receptions WHERE source = 'marinecadastre' ORDER BY mmsi, ts")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -115,7 +121,7 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 		var out []row
 		for r.Next() {
 			var x row
-			if err := r.Scan(&x.ts, &x.accepted, &x.implausible, &x.tx); err != nil {
+			if err := r.Scan(&x.ts, &x.accepted, &x.implausible, &x.moving, &x.off, &x.delay, &x.disc); err != nil {
 				t.Fatal(err)
 			}
 			out = append(out, x)
@@ -123,14 +129,20 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 		return out
 	}
 	got := rows()
-	if len(got) != 5 {
-		t.Fatalf("five receptions, the repeat, the aid, the default, and the next day's left out: %+v", got)
+	if len(got) != 8 {
+		t.Fatalf("eight receptions, the repeat, the aid, the default, and the next day's left out: %+v", got)
 	}
-	if !got[0].accepted || got[0].implausible {
+	if !got[0].accepted || got[0].implausible || got[0].off != 0 {
 		t.Errorf("an unmatched row is its own transmission: %+v", got[0])
 	}
-	if got[1].accepted || got[1].tx != 77 {
-		t.Errorf("the row the network already heard names that transmission: %+v", got[1])
+	if got[1].accepted || got[1].off != 28000 || got[1].disc != 77 {
+		t.Errorf("the row the network already heard names that transmission, 28 seconds on: %+v", got[1])
+	}
+	if got[0].delay != math.MaxInt32 {
+		t.Errorf("an archive row arrives when it loaded, clamped: %d", got[0].delay)
+	}
+	if !got[5].moving || got[6].moving || got[7].moving {
+		t.Errorf("a moored vessel is still once it has an anchor: %+v", got[5:])
 	}
 	if !got[2].implausible || got[3].implausible {
 		t.Errorf("the spike is flagged, and only the spike: %+v %+v", got[2], got[3])
@@ -142,11 +154,11 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 		Scan(&complete, &read, &unplaced, &repeated, &kept, &matched, &implausible); err != nil {
 		t.Fatal(err)
 	}
-	if !complete || read != 9 || unplaced != 3 || repeated != 1 || kept != 5 || matched != 1 || implausible != 1 {
+	if !complete || read != 12 || unplaced != 3 || repeated != 1 || kept != 8 || matched != 1 || implausible != 1 {
 		t.Errorf("history_loads: complete %v read %d unplaced %d repeated %d kept %d matched %d implausible %d",
 			complete, read, unplaced, repeated, kept, matched, implausible)
 	}
-	if stats.loaded["marinecadastre"].Load() != 1 || stats.rows["marinecadastre"].Load() != 5 || !stats.latest["marinecadastre"].Equal(day) {
+	if stats.loaded["marinecadastre"].Load() != 1 || stats.rows["marinecadastre"].Load() != 8 || !stats.latest["marinecadastre"].Equal(day) {
 		t.Errorf("stats: %d files %d rows latest %v", stats.loaded["marinecadastre"].Load(), stats.rows["marinecadastre"].Load(), stats.latest["marinecadastre"])
 	}
 
@@ -172,6 +184,13 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 		t.Errorf("served: %+v", points)
 	}
 
+	minutes := func() uint64 {
+		var n uint64
+		conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions_1m FINAL").Scan(&n)
+		return n
+	}
+	before := minutes()
+
 	// Loading the same file again with nothing changed loads nothing; a changed file replaces its day.
 	if err := conn.loadHistory(ctx, s, stats); err != nil || stats.loaded["marinecadastre"].Load() != 1 {
 		t.Errorf("an unchanged file is not loaded again: %d loads, %v", stats.loaded["marinecadastre"].Load(), err)
@@ -182,7 +201,10 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	if err := conn.loadHistory(ctx, s, stats); err != nil {
 		t.Fatal(err)
 	}
-	if again := rows(); len(again) != 5 {
+	if again := rows(); len(again) != 8 {
 		t.Errorf("a changed file replaces its day rather than adding to it: %d rows", len(again))
+	}
+	if after := minutes(); after != before {
+		t.Errorf("positions_1m is rebuilt with the day: %d rows, %d before", after, before)
 	}
 }

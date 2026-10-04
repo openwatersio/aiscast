@@ -3,7 +3,7 @@ package main
 // MarineCadastre: the U.S. Coast Guard's Nationwide AIS, published by NOAA and BOEM as one zstd CSV a day on
 // Azure blob storage, about two months behind, a quarter at a time. Public domain. The csv2 release has one
 // schema for 2015 on; each vessel has at most one position a minute, its stamps keep their seconds, and
-// coordinates have five decimal places, so a row may sit up to three wire units from the copy it repeats.
+// coordinates have five decimal places, so a row may sit up to recentNearA wire units from the copy it repeats.
 // Alaska ends on 2021-03-28, at the request of the Marine Exchange of Alaska.
 
 import (
@@ -29,7 +29,7 @@ const mcColumns = `mmsi String, base_date_time String, longitude Nullable(Float6
 
 // marineCadastre is the source, loading from from on. MARINECADASTRE turns it on.
 func marineCadastre(from time.Time) historySource {
-	return historySource{name: "marinecadastre", from: from, near: 3, read: mcRead,
+	return historySource{name: "marinecadastre", from: from, read: mcRead,
 		list: func(ctx context.Context) ([]historyFile, error) { return mcList(ctx, from) }}
 }
 
