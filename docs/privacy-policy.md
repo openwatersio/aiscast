@@ -4,13 +4,13 @@ Open Water Software, LLC ("we") runs Open Waters AIS: the map at openwaters.io/a
 
 ## Summary
 
-We publish what vessels broadcast over AIS. The track of a small boat can point to its owner, so an owner can ask us to stop publishing their vessel, and we will. We have no accounts and ask for no email address or payment details. We log API requests to keep the service running and to stop abuse. We do not sell personal data, and the map runs no analytics, advertising, or tracking scripts.
+We publish what vessels broadcast over AIS. The track of a small boat can point to its owner, so an owner can ask us to stop publishing their vessel, and we will. We have no accounts and ask for no email address or payment details. We log API requests to keep the service running and to stop abuse. We do not sell personal data. The map counts page views with Plausible, which sets no cookies, and runs no advertising or cross-site tracking.
 
 ## Vessel data
 
 AIS is an open radio broadcast. Vessels send their identity (MMSI), name, call sign, position, course, speed, destination, and dimensions, unencrypted, so that other vessels can see them. We receive these broadcasts from government open-data feeds, other AIS exchanges, and volunteer stations. We add public registry details, such as build year, tonnage, owner, operator, and home port, from Wikidata, the US Coast Guard, the FCC, and Norway's Directorate of Fisheries. We take no owner names from the FCC, and none from the Norwegian register unless the owner is a company.
 
-We publish this data as a live stream, current positions, vessel tracks, and an archive, under open licenses. We keep each vessel's last known position and details, and every reception in our archive, indefinitely. Our server also keeps every position from the past two to three days, to answer track queries quickly. Pages for named vessels heard in the past 30 days are listed for search engines.
+We publish this data as a live stream, current positions, vessel tracks, and an archive, under open licenses. We keep every reception indefinitely, with the source and station that delivered it, in our database and our archive. We also keep each vessel's last known position and details. Anyone can see a vessel's track for the past 48 hours. Contributing stations and commercial users can see further back. Pages for named vessels heard in the past 30 days are listed for search engines.
 
 Most AIS traffic is commercial shipping, and that is not personal data. A small craft linked to a person is different. A vessel registry can connect the MMSI to an owner, and the track can then show where that person is or lives.
 
@@ -20,9 +20,9 @@ We publish this data on the basis of legitimate interest. The vessel's own equip
 
 If your vessel is a small craft linked to you, you can ask us to stop publishing it. Email hello@openwaters.io with the MMSI and anything that shows your connection to the vessel. A photo, an insurance or mooring document, or a club listing is enough. You do not have to be the registered owner. A vessel registered to a company counts if you are its only user.
 
-The opt-out is free, and a person handles each request. Within 30 days we stop publishing the vessel in the live stream, on the map, in track and history queries, and on its vessel page, and we remove the page from the list we give search engines. We delete it from the archive we control and confirm this to you in writing. We keep the MMSI on a list so that we do not publish the vessel again. We delete the proof you sent once we have handled the request.
+The opt-out is free, and a person handles each request. Within 30 days we stop publishing the vessel in the live stream, on the map, in track and history queries, and on its vessel page, and we remove the page from the list we give search engines. We leave it out of any copy of our data that we publish after that, and confirm this to you in writing. We keep the MMSI on a list so that we do not publish the vessel again. We delete the proof you sent once we have handled the request.
 
-There are limits. Copies of the archive that others took under an open license are beyond our control. Anyone with a receiver can still hear your transponder. Search engines may keep their own copies of a vessel page for a while. Other tracking sites are separate, and you must ask each of them.
+There are limits. Our stored records keep every vessel together in large files, so we do not promise to erase your vessel from them. We keep it out of everything we serve and publish instead. A station that sends your own vessel's position stays on the stations list under your vessel's name, and the opt-out does not remove it. Copies of the archive that others took under an open license are beyond our control. Anyone with a receiver can still hear your transponder. Search engines may keep their own copies of a vessel page for a while. Other tracking sites are separate, and you must ask each of them.
 
 The opt-out does not cover vessels that must carry AIS by law, such as commercial ships.
 
@@ -32,7 +32,7 @@ A volunteer station is identified by a public key that its software generates, o
 
 A station can have a public name. It comes from the name the operator types on the token page, or else the vessel name the Signal K plugin sends, or else the name of the station's own vessel. We store these names and show them on the stations list, with the station's own vessel if it has one. To change or clear a name, use the token page again or write to us.
 
-If your station sends your own vessel's position (`!AIVDO`), or the Signal K plugin builds one for you, we publish it like any other vessel, and we identify your station by that vessel. The Signal K plugin is off until you turn it on. Once it is on, sharing your own position is on by default, and you can turn it off. The data you send can reveal where your station is. The [contributor agreement](https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md) explains this.
+If your station sends your own vessel's position (`!AIVDO`), or the Signal K plugin builds one for you, we publish it like any other vessel, and we identify your station by that vessel. We store every reception your station sends under your station's identity, which names your vessel, so the traffic it heard shows where your boat has been. The vessel opt-out does not remove what your station shared. The Signal K plugin is off until you turn it on. Once it is on, sharing your own position is on by default, and you can turn it off. The data you send can reveal where your station is. The [contributor agreement](https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md) explains this.
 
 When a station sends data to our API, our request logs link its key to its network address, as described below.
 
@@ -46,12 +46,12 @@ If you choose to bind a token to your address, that address is written into the 
 
 ## The map
 
-The map at openwaters.io/ais/vessels, with its vessel, station, and network pages, needs no account. It does not use analytics.
+The map at openwaters.io/ais/vessels, with its vessel, station, and network pages, needs no account. It counts page views with [Plausible](https://plausible.io/data-policy), as the rest of openwaters.io does. Plausible sets no cookies and does not keep your IP address. It records the page, the site that sent you, your rough location by country, region, and city, and your browser, operating system, and type of device.
 
 - **Cookies and storage.** If you pick a theme, the map sets a cookie, `aiscast-theme`, that remembers your choice for a year. The map keeps your last search in your browser until you close the tab. The token page keeps your key pair, token, and station name in your browser's local storage. Nothing else is stored, and you can delete all of it by clearing site data.
 - **Starting location.** Cloudflare estimates your approximate location from your IP address. The map uses that estimate to open near you. We do not store it. The map then keeps its current view in the page's address, so a link you share shows the area you were looking at.
 - **Your location.** If you choose "Near me" or the locate button, your browser asks for your permission and then shares your location with the map. The locate button keeps it in your browser. A search sorted by distance sends your location, or the center of the map, to our API. The map also sends the area on your screen. Our API log keeps these only to about 10 km. The web server log drops them, but it keeps the exact map tiles you load.
-- **Other services.** The map loads its base map from [OpenFreeMap](https://openfreemap.org/), and vessel photos straight from [Wikimedia Commons](https://commons.wikimedia.org/). Those services receive your IP address and the site you came from. Their own privacy policies apply. The map's server looks up which photos exist, so Wikimedia does not see those lookups come from you.
+- **Other services.** The map loads its base map from [OpenFreeMap](https://openfreemap.org/), its page counter from Plausible, and vessel photos straight from [Wikimedia Commons](https://commons.wikimedia.org/). Those services receive your IP address and the site you came from. Their own privacy policies apply. The map's server looks up which photos exist, so Wikimedia does not see those lookups come from you.
 - **Error reports.** When the map hits an error, about half of page loads send a report to our own server. It holds the kind of error, its message and stack trace, the section of the app, and your browser's user agent. We remove the query part of web addresses, tokens, email addresses, and precise coordinates before we store it. The report itself holds no IP address and nothing that links one report to another. Reports are kept in Cloudflare Workers Logs. Cloudflare's own record of the request, described below, includes your address, as it does for any request to the map.
 
 The other pages on openwaters.io, including the Open Waters AIS home page, are covered by the [Open Waters privacy page](https://openwaters.io/privacy/).
@@ -78,14 +78,15 @@ We send counts and timings to Grafana Cloud to watch the service's health. They 
 - **Cloudflare** serves the map and openwaters.io, so it sees those requests. Cloudflare Workers Logs keep a record of each request to the map, with your address, the page, and your browser's headers, for up to seven days. They can include Cloudflare's estimate of your location. We use them to find and fix errors. Our archives and the API log are stored in Cloudflare R2. The API log is in its own private bucket.
 - **Hetzner** hosts the API server in Helsinki, Finland. The API does not pass through Cloudflare.
 - **Grafana Cloud** stores our monitoring data.
+- **Plausible** counts page views on the map.
 
 These providers process data for us under their own terms. We do not sell personal data or share it for advertising.
 
 ## Your rights
 
-You can ask us what we hold about you, and ask us to correct it or delete it. We have no accounts, so we may ask you for something that lets us find your data, such as your token, your MMSI, or your IP address and the times you used the service.
+You can ask us what we hold about you, and ask us to correct it, or to delete it where we can. Our stored history keeps every vessel together, so we cannot erase one vessel from it. We have no accounts, so we may ask you for something that lets us find your data, such as your token, your MMSI, or your IP address and the times you used the service.
 
-If the GDPR applies to you, the vessel opt-out is your right to object, and the deletion that follows is your right to erasure. You can complain to your data protection authority.
+If the GDPR applies to you, the vessel opt-out is how you use your right to object. You can complain to your data protection authority.
 
 ## Changes
 
