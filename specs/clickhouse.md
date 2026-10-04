@@ -132,7 +132,7 @@ Read times include the busiest vessel of a day, about 1,440 rows a day in a roll
 
 ## After a go
 
-1. **Tracks.** The track endpoint reads ClickHouse. The server stops reading the lake for tracks, and `tracks.db`, both the 48-hour track store and the lake cache, goes with it. `positions` answers every range. The web client's 30-day and 12-month ranges ship with this step.
+1. **Tracks.** The track endpoint reads ClickHouse. The server stops reading the lake for tracks, and `tracks.db`, which holds the 48-hour track store and the lake cache, goes with it. `positions` answers every range. The web client's 30-day and 12-month ranges ship with this step.
 2. **Station series.** A view counts events, first copies, and distinct vessels per station per hour from receptions, replacing the in-memory 7-day rings for history.
 3. **Coverage cells.** A view per H3 cell per day of sources heard and distinct vessels, using ClickHouse's H3 functions, feeds the coverage tiles.
 4. **Area playback.** A projection of `positions` ordered by cell and time answers `/v1/history`.

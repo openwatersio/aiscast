@@ -33,7 +33,7 @@ Manual deploy: `server/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0
 
 ## Replacing the server
 
-`/var/lib/aiscast` is disposable: the archive is in R2 and everything else rebuilds from live traffic. `aiscast.db`, the vessel record, rebuilds too, but only from the vessels heard after the move, so the rest lose their last known position unless it is copied. Copying it also brings the live map across, which otherwise refills over a few minutes. So a replacement is:
+`/var/lib/aiscast` is disposable: the archive is in R2 and everything else rebuilds from live traffic. `aiscast.db`, the vessel record, rebuilds too, but only from the vessels heard after the move, so the rest lose their last known position unless it is copied. Copying it also brings the live map across, which otherwise refills over a few minutes. ClickHouse's `/var/lib/clickhouse` does not rebuild: it holds every track, and [clickhouse-load.py](clickhouse-load.py) can reload only the days the lake has packaged, so it is copied too. So a replacement is:
 
 1. Create the server with the Hetzner API (`HCLOUD_TOKEN` from the repo's `.env`; no `hcloud` CLI needed), reusing the existing firewall and ssh keys — include the CI deploy public key in `ssh_keys`:
 
@@ -47,7 +47,7 @@ Manual deploy: `server/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0
 
 2. Update the `DEPLOY_HOST` and `DEPLOY_KNOWN_HOSTS` secrets for the new IP.
 3. Deploy: rerun the CI deploy job, or `server/deploy/deploy.sh root@<ip>`.
-4. Copy the vessel record: `systemctl stop aiscast` on the old box, then copy `/var/lib/aiscast/aiscast.db` to the new one, owned by `aiscast`. Run the `aiscast sweep` command from [Continuous deployment](#continuous-deployment) on the old box, so the hours it closed reach the bucket.
+4. Copy the vessel record and the history: `systemctl stop aiscast clickhouse-server` on both boxes, then copy `/var/lib/aiscast/aiscast.db` to the new one, owned by `aiscast`, and `/var/lib/clickhouse` with `rsync -a`, owned by `clickhouse`. Start `clickhouse-server` on the new box before aiscast, which otherwise answers tracks with 503 until it connects. Run the `aiscast sweep` command from [Continuous deployment](#continuous-deployment) on the old box, so the hours it closed reach the bucket.
 5. Fill `/etc/aiscast.env` and `/etc/alloy.env`: copy them from the old box, or refill the seeded templates from `aiscast.env.example` and `alloy.env.example`, then `systemctl restart aiscast` and `systemctl enable --now alloy`.
 6. Move the `ais.openwaters.io` and `udp.ais.openwaters.io` records to the new IP. Stream clients follow the name, so keep its TTL low. UDP feeders resolve once, so they keep sending to the old box until they restart; a floating IP would let them follow at once. Retire the old box once traffic drains.
 
