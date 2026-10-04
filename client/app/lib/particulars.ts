@@ -9,7 +9,8 @@ const count = (n: number | undefined) => (n ? n.toLocaleString("en-US") : undefi
 /** Wikidata labels its classes in lower case, "cruise ship"; a value reads as "Cruise ship". */
 const capitalized = (s: string | undefined) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : undefined);
 
-/** Case-insensitive exact comparison: punctuation and accents count, since AIS cannot carry them. */
+/** Case-insensitive exact comparison: punctuation and accents count. AIS can carry an apostrophe but
+ * crews often leave it out, and its six-bit charset has no accents at all. */
 const sameName = (a: string | undefined, b: string | undefined) =>
   (a ?? "").trim().toUpperCase() === (b ?? "").trim().toUpperCase();
 
@@ -25,8 +26,8 @@ function tonnage(n: number | undefined, measure: VesselParticulars["tonnage_meas
 
 /**
  * The merged particulars, one list. The documented name is shown unless it matches the AIS name
- * exactly, case aside: AIS cannot carry an apostrophe or an accent, so RUBYS STAR documented as
- * RUBY'S STAR is worth a row, and GOV THOMAS H KEAN documented as GOVERNOR THOMAS H. KEAN more so.
+ * exactly, case aside: punctuation and accents the AIS name lacks are information, so RUBYS STAR
+ * documented as RUBY'S STAR is worth a row, and GOV THOMAS H KEAN as GOVERNOR THOMAS H. KEAN more so.
  * `tonnage_measure` describes the flag state's figures, so it annotates a tonnage only when
  * `provenance` says the flag state supplied it.
  */
