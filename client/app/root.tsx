@@ -50,6 +50,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="apple-mobile-web-app-title" content="Open Waters AIS" />
         <Meta />
         <Links />
+        {/* The website's site, so /ais/ counts with the rest of openwaters.io. */}
+        <script defer data-domain="openwaters.io" src="https://plausible.io/js/script.js" />
       </head>
       <body className="h-full">
         {children}

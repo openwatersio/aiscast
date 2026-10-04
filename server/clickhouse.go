@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -196,13 +197,14 @@ type chWriter interface {
 // chReader reads one vessel's history; tests fake it.
 type chReader interface {
 	history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error)
+	first(ctx context.Context, mmsi uint32, from, to time.Time) (time.Time, bool, error)
 }
 
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
 // /metrics reports about it.
 type chStore struct {
 	w chWriter
-	r chReader // nil keeps tracks on the lake
+	r chReader
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -338,9 +340,10 @@ const chFineSpan = 31 * 24 * time.Hour
 // chTable is the table that answers a step, and its window: every position, through the positions view, for a
 // step under a minute over a range positions can group, and otherwise positions_1m, a window a minute wide. A
 // step of whole minutes reads positions_1m's minutes grouped by the step, so a vessel underway gets the same
-// answer from it as from every position, to within the minute; a still vessel gets its heartbeats.
+// answer from it as from every position, to within the minute; a still vessel gets its heartbeats. A range that
+// starts inside the 48-hour window reads the positions view at any step, so recent tracks thin every position.
 func chTable(from, to time.Time, step time.Duration, now time.Time) (string, time.Duration) {
-	if step < time.Minute && to.Sub(from) <= chFineSpan {
+	if (step < time.Minute || now.Sub(from) <= trackWindow) && to.Sub(from) <= chFineSpan {
 		return "positions", 0
 	}
 	return "positions_1m", time.Minute
@@ -398,6 +401,16 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 	}
 	slices.Reverse(points)
 	return points, rows.Err()
+}
+
+// first is the time of the vessel's first usable copy between from and to; ok is false when it has none there.
+// It reads receptions on their sort key, so it costs one seek, not the view's grouping.
+func (c *chConn) first(ctx context.Context, mmsi uint32, from, to time.Time) (ts time.Time, ok bool, err error) {
+	err = c.conn.QueryRow(ctx, "SELECT ts FROM "+c.db+".receptions WHERE mmsi = ? AND ts >= ? AND ts <= ? AND "+chUsable+" ORDER BY ts LIMIT 1", mmsi, from, to).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ts, false, nil
+	}
+	return ts, err == nil, err
 }
 
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
