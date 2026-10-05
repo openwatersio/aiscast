@@ -26,6 +26,7 @@
             <profile>loader</profile>
             <quota>default</quota>
             <grants>
+                <!-- The database CLICKHOUSE_URL names; a deployment with another changes it here. -->
                 <query>GRANT SELECT, INSERT, CREATE TABLE, DROP TABLE, ALTER DELETE ON aiscast.*</query>
                 <query>GRANT READ ON URL, READ ON S3</query>
             </grants>

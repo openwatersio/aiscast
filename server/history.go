@@ -9,6 +9,7 @@ package main
 // once and a changed one loads again. See specs/historical-sources.md.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -142,6 +143,27 @@ func (h *historyStats) noteDay(source string, day time.Time) {
 	if day.After(h.latest[source]) {
 		h.latest[source] = day
 	}
+}
+
+// historyLoaderURL is the connection archives load over: loader, which names the loader user, whose profile keeps
+// a load from starving the live writer, and never the writer's own. It must name the writer's database, which
+// the loader user is granted in users.d/loader.xml.
+func historyLoaderURL(writer, loader string) (string, error) {
+	if loader == "" {
+		return "", fmt.Errorf("CLICKHOUSE_LOADER_URL is not set")
+	}
+	w, err := clickhouse.ParseDSN(writer)
+	if err != nil {
+		return "", err
+	}
+	l, err := clickhouse.ParseDSN(loader)
+	if err != nil {
+		return "", fmt.Errorf("CLICKHOUSE_LOADER_URL: %w", err)
+	}
+	if cmp.Or(l.Auth.Database, chDatabase) != cmp.Or(w.Auth.Database, chDatabase) {
+		return "", fmt.Errorf("CLICKHOUSE_LOADER_URL names database %q, not the writer's %q", cmp.Or(l.Auth.Database, chDatabase), cmp.Or(w.Auth.Database, chDatabase))
+	}
+	return loader, nil
 }
 
 // runHistory loads each source's new files once ClickHouse is attached and its schema current, and again every

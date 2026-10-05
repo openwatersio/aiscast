@@ -303,3 +303,21 @@ func TestHistoryListingThatStallsGivesUp(t *testing.T) {
 		}
 	}
 }
+
+// Archives load only over a loader URL that names the writer's database, the one the loader user is granted.
+func TestHistoryLoaderURLNamesTheWritersDatabase(t *testing.T) {
+	for _, c := range []struct {
+		writer, loader string
+		ok             bool
+	}{
+		{"clickhouse://127.0.0.1:9000", "clickhouse://loader@127.0.0.1:9000/aiscast", true}, // aiscast either way
+		{"clickhouse://127.0.0.1:9000/custom", "clickhouse://loader@127.0.0.1:9000/custom", true},
+		{"clickhouse://127.0.0.1:9000/custom", "clickhouse://loader@127.0.0.1:9000/aiscast", false},
+		{"clickhouse://127.0.0.1:9000", "clickhouse://loader@127.0.0.1:9000/other", false},
+		{"clickhouse://127.0.0.1:9000", "", false},
+	} {
+		if _, err := historyLoaderURL(c.writer, c.loader); (err == nil) != c.ok {
+			t.Errorf("%s with %q: %v", c.writer, c.loader, err)
+		}
+	}
+}
