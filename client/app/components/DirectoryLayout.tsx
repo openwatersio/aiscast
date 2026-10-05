@@ -23,7 +23,6 @@ export function DirectoryLayout({ children }: { children: ReactNode }) {
             aria-label="AIS"
             className="ml-auto flex items-center gap-4 text-subhead"
           >
-            <a href="/ais/explore/youtube">YouTube directory</a>
             <a href="/ais/vessels">Open AIS viewer</a>
             <IconButton
               icon={theme === "dark" ? Sun : Moon}
