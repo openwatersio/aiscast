@@ -321,3 +321,21 @@ func TestHistoryLoaderURLNamesTheWritersDatabase(t *testing.T) {
 		}
 	}
 }
+
+// An archive row at the position of a live transmission judged implausible is not a copy of it, as a late live
+// copy would not be: it is a report of its own, judged against its own neighbors.
+func TestHistoryRowIsNotACopyOfAnImplausibleTransmission(t *testing.T) {
+	t0 := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	row := func(live bool, at time.Duration, lat int32, bad bool) archiveRow {
+		return archiveRow{live: live, mmsi: 367567110, ts: t0.Add(at), lat6: lat, lon6: 1, disc: 5, bad: bad}
+	}
+	pts, n := historyVessel("marinecadastre", []archiveRow{
+		row(false, 0, 1000, false),
+		row(true, 30*time.Second, 1100, true), // live, implausible
+		row(false, time.Minute, 1100, false),  // the archive's report at that position
+		row(false, 2*time.Minute, 1200, false),
+	}, t0.Add(48*time.Hour))
+	if len(pts) != 3 || n.matched != 0 || pts[1].dup || pts[1].implausible {
+		t.Fatalf("the row is a plausible report of its own: matched %d, %+v", n.matched, pts)
+	}
+}

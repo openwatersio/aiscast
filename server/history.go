@@ -433,8 +433,9 @@ func (c *chConn) loadHistoryDay(ctx context.Context, s historySource, f historyF
 
 // historyVessel turns one vessel's staged rows, in time order among its live transmissions, into receptions.
 // A row at a live transmission's position, within recentNearA, the nearest in time within recentKeep, is a copy
-// of it, as a rebuilt copy is live: AISHub's stamps run tens of seconds off. It takes the transmission's name,
-// its verdict on moving, and its implausible flag. Any other row is its own transmission, accepted, with a byte
+// of it, as a rebuilt copy is live: AISHub's stamps run tens of seconds off. It takes the transmission's name and
+// its verdict on moving. An implausible transmission is never matched, as live: a row at its position is judged
+// as a report of its own, so a bad live copy cannot hide a real archive report, and the byte stays taken. Any other row is its own transmission, accepted, with a byte
 // free in its millisecond and the anchor's verdict on moving; it is implausible when it jumps from both of its
 // neighbors, the fold's test either side, since the fold's walk from the last accepted report flags the good
 // row after a spike too. Runs of bad rows pass, and despike removes them when a track is drawn. A row arrives
@@ -466,7 +467,7 @@ func historyVessel(source string, rows []archiveRow, loaded time.Time) ([]trackP
 		}
 		match, best := -1, recentKeep
 		for j := lo; j < len(live) && live[j].ts.Sub(r.ts) < recentKeep; j++ {
-			if dt := absDur(live[j].ts.Sub(r.ts)); dt < best && absInt(live[j].lat6-r.lat6) <= recentNearA && absInt(live[j].lon6-r.lon6) <= recentNearA {
+			if dt := absDur(live[j].ts.Sub(r.ts)); !live[j].bad && dt < best && absInt(live[j].lat6-r.lat6) <= recentNearA && absInt(live[j].lon6-r.lon6) <= recentNearA {
 				match, best = j, dt
 			}
 		}
