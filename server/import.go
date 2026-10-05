@@ -169,9 +169,7 @@ func (p *Pipeline) importVessels(ctx context.Context) (int, error) {
 // reading at its last one.
 var chImportSettings = clickhouse.Settings{"max_threads": 2, "max_memory_usage": 1_500_000_000, "optimize_aggregation_in_order": 1}
 
-// vesselHistory reads up to limit vessels after the MMSI after, in MMSI order: each one's first and last position
-// from positions_1m, and an archive's particulars and earliest row from vessel_statics. A vessel only
-// vessel_statics knows, with no position anywhere, comes in the page its MMSI falls in.
+// vesselHistoryFromClickHouse reads the import's pages from the attached ClickHouse.
 func (p *Pipeline) vesselHistoryFromClickHouse(ctx context.Context, after uint32, limit int) ([]historyRow, error) {
 	c := p.chConn()
 	if c == nil {
@@ -180,6 +178,11 @@ func (p *Pipeline) vesselHistoryFromClickHouse(ctx context.Context, after uint32
 	return c.vesselHistory(ctx, after, limit)
 }
 
+// vesselHistory reads up to limit vessels after the MMSI after, in MMSI order: each one's first and last position
+// from positions_1m, and an archive's particulars and earliest row from vessel_statics. A vessel only
+// vessel_statics knows, with no position anywhere, comes in the page its MMSI falls in.
+// ponytail: positions_1m keeps a slot's latest report, so a first position can read up to a minute late, or 30
+// minutes for a still vessel; the record keeps the exact first_seen it saw live. Read receptions if that matters.
 func (c *chConn) vesselHistory(ctx context.Context, after uint32, limit int) ([]historyRow, error) {
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(chImportSettings))
 	rows, err := c.conn.Query(ctx, `SELECT mmsi, min(ts), max(ts), argMax(lat6, ts), argMax(lon6, ts), argMax(source, ts)
