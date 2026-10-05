@@ -15,7 +15,7 @@ import {
   viewBoxes,
 } from "./ais";
 import { publicApiBase, type CoverageTiles } from "./api";
-import { coverageColor, coverageOpacity, coverageSummary } from "./coverage";
+import { coverageColor, coverageOpacity, coverageSummary, type CoverageMeasure } from "./coverage";
 import { PRIVACY } from "./links";
 import { reportError } from "./report";
 import type { BBox, Stream } from "./stream";
@@ -114,10 +114,10 @@ export interface MapController {
   /** Rings one result's mark brighter, as its row is pointed at. */
   highlightResult(mmsi: number | undefined): void;
   /**
-   * Draws where the network hears vessels from these tiles, in place of the vessels, until
-   * called with nothing.
+   * Draws where the network hears vessels from these tiles, colored by the measure, in place of
+   * the vessels, until called with nothing.
    */
-  setCoverage(tiles: CoverageTiles | undefined): void;
+  setCoverage(tiles: CoverageTiles | undefined, measure?: CoverageMeasure): void;
 }
 
 export interface MapView {
@@ -838,6 +838,7 @@ export function createMap(
   // The coverage map, while its route is open. The vessels are hidden, since they would cover
   // the cells they were counted in.
   let coverage: CoverageTiles | undefined;
+  let measure: CoverageMeasure = "vessels";
   const VESSEL_LAYERS = [
     "vessel-halo",
     "vessel-still",
@@ -868,8 +869,9 @@ export function createMap(
           type: "fill",
           source: "coverage",
           "source-layer": "coverage",
+          filter: ["has", measure],
           paint: {
-            "fill-color": coverageColor(theme) as maplibregl.DataDrivenPropertyValueSpecification<string>,
+            "fill-color": coverageColor(theme, measure) as maplibregl.DataDrivenPropertyValueSpecification<string>,
             // A cell heard on fewer days of the window fades toward the water.
             "fill-opacity": coverageOpacity(coverage.window.days) as maplibregl.DataDrivenPropertyValueSpecification<number>,
           },
@@ -879,8 +881,12 @@ export function createMap(
     }
     if (map.getLayer("coverage")) {
       map.setLayoutProperty("coverage", "visibility", coverage ? "visible" : "none");
-      // The layer outlives the page, and the window can have grown since it was added.
+      // The layer outlives the page, and the window can have grown since it was added, or another
+      // page colors it by another measure. A tile cached from a server that did not count the
+      // measure lacks it, and its cells are left out until a fresh tile arrives.
       if (coverage) {
+        map.setFilter("coverage", ["has", measure]);
+        map.setPaintProperty("coverage", "fill-color", coverageColor(theme, measure) as maplibregl.DataDrivenPropertyValueSpecification<string>);
         map.setPaintProperty(
           "coverage",
           "fill-opacity",
@@ -897,12 +903,15 @@ export function createMap(
   function showCoverage(e: maplibregl.MapLayerMouseEvent) {
     const p = e.features?.[0]?.properties;
     if (!p || !coverage) return;
-    const [count, heard] = coverageSummary(Number(p.vessels), Number(p.days), coverage.window.days);
+    const cell = { vessels: Number(p.vessels), days: Number(p.days), stations: Number(p.stations) };
+    const [headline, ...rest] = coverageSummary(measure, cell, coverage.window.days);
     const el = document.createElement("div");
-    el.appendChild(document.createElement("strong")).textContent = count;
-    const meta = el.appendChild(document.createElement("div"));
-    meta.className = "meta";
-    meta.textContent = heard;
+    el.appendChild(document.createElement("strong")).textContent = headline!;
+    for (const line of rest) {
+      const meta = el.appendChild(document.createElement("div"));
+      meta.className = "meta";
+      meta.textContent = line;
+    }
     hover.setLngLat(e.lngLat).setDOMContent(el).addTo(map);
   }
   map.on("mousemove", "coverage", showCoverage);
@@ -1229,9 +1238,10 @@ export function createMap(
     onSelect(fn) {
       selectHandlers.push(fn);
     },
-    setCoverage(tiles) {
+    setCoverage(tiles, by = "vessels") {
       const leaving = coverage && !tiles;
       coverage = tiles;
+      measure = by;
       applyCoverage();
       if (leaving) {
         // A tapped cell's card has no mouseleave to close it, and the vessel tiles did not

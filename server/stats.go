@@ -191,7 +191,7 @@ var recordWindows = []struct {
 }{{"last_24h", 24 * time.Hour}, {"last_7d", 7 * 24 * time.Hour}, {"last_30d", 30 * 24 * time.Hour}}
 
 // recordCounts are the vessel record's counts: every vessel it holds, and per window those heard (by seen)
-// and first heard (by first_seen). The record reaches back through the lake import, so these cover every
+// and first heard (by first_seen). The record reaches back through the import from ClickHouse, so these cover every
 // vessel any archive holds.
 type recordCounts struct {
 	Total      int
