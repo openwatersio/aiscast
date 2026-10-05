@@ -1,6 +1,148 @@
 import { test, expect } from "./fixtures";
 import { API } from "./data";
 
+test("tech yachts separate sailing and motor boats and retain identity and ownership history on mobile", async ({
+  page,
+}, testInfo) => {
+  await page.route(`${API}/v1/vessels/*`, (route) =>
+    route.fulfill({
+      status: 503,
+      json: {},
+      headers: { "access-control-allow-origin": "*" },
+    }),
+  );
+  await page.route("**/ais/vessels/media/*", (route) =>
+    route.fulfill({
+      json: {
+        photos: route.request().url().endsWith("/9857298")
+          ? [
+              {
+                thumb: "https://images.example.test/koru.svg",
+                width: 800,
+                height: 450,
+                page: "https://commons.wikimedia.org/wiki/File:Koru.jpg",
+                artist: "Yacht photographer",
+                license: "CC BY-SA 4.0",
+                licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/",
+              },
+            ]
+          : [],
+        links: {},
+      },
+    }),
+  );
+  await page.route("https://images.example.test/*", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"><rect width="800" height="450" fill="#c5dbe5"/><path d="M150 300h500l-70 60H220zM400 80v220M390 90L220 280h170M410 110v170h140z" fill="#fff" stroke="#335566" stroke-width="5"/></svg>',
+    }),
+  );
+  await page.goto("/ais/explore");
+  await expect(
+    page.getByRole("navigation", { name: "AIS", exact: true }),
+  ).not.toContainText("YouTube");
+  await page.getByRole("link", { name: /Tech billionaires/ }).click();
+  await expect(page).toHaveURL(/\/ais\/explore\/tech-yachts$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "Tech billionaires & their yachts",
+  );
+  await expect(page.locator("#sailing article")).toHaveCount(4);
+  await expect(page.locator("#motor article")).toHaveCount(14);
+  await expect(page.locator("#map, .sheet")).toHaveCount(0);
+  const koru = page.locator("#koru");
+  await expect(koru.getByRole("img", { name: "Koru, photo 1" })).toBeVisible();
+  await expect(
+    koru.getByRole("link", { name: "Yacht photographer" }),
+  ).toHaveAttribute("href", "https://commons.wikimedia.org/wiki/File:Koru.jpg");
+  await expect(koru.getByRole("link", { name: "CC BY-SA 4.0" })).toBeVisible();
+  expect(
+    await koru.evaluate((card) => {
+      const elements = [
+        card.querySelector("h3"),
+        card.querySelector("img"),
+        [...card.querySelectorAll("p")].find(
+          (p) => p.textContent === "Jeff Bezos",
+        ),
+        card.querySelector('a[aria-label="Open Koru in the AIS viewer"]'),
+      ];
+      return elements.every(
+        (element, i) =>
+          element &&
+          (i === 0 ||
+            !!(
+              elements[i - 1]!.compareDocumentPosition(element) &
+              Node.DOCUMENT_POSITION_FOLLOWING
+            )),
+      );
+    }),
+  ).toBe(true);
+  await expect(page.locator("#athena img")).toHaveCount(0);
+  await expect(page.locator("article .aspect-video")).toHaveCount(18);
+  await expect(
+    page
+      .locator("#athena")
+      .getByRole("link", { name: "Share your photo of this vessel" }),
+  ).toHaveAttribute(
+    "href",
+    "https://commons.wikimedia.org/wiki/Special:UploadWizard?categories=IMO%201007237",
+  );
+  for (const id of ["koru", "athena", "ran-vii"]) {
+    const frame = await page.locator(`#${id} .aspect-video`).boundingBox();
+    expect(frame).not.toBeNull();
+    expect(frame!.width / frame!.height).toBeCloseTo(16 / 9, 1);
+  }
+
+  await koru
+    .getByRole("link", { name: "Open Koru in the AIS viewer", exact: true })
+    .scrollIntoViewIfNeeded();
+  await expect(page.locator("#koru")).toContainText("AIS reports unavailable");
+  await expect(
+    page
+      .locator("#koru")
+      .getByRole("link", { name: "Open Koru in the AIS viewer", exact: true }),
+  ).toHaveAttribute("href", "/ais/vessels/319225400");
+  await expect(
+    page.locator("#dragonfly").getByRole("link", {
+      name: "Open Dragonfly in the AIS viewer",
+      exact: true,
+    }),
+  ).toHaveAttribute("href", "/ais/vessels/319296900");
+  await expect(
+    page.locator("#whisper").getByRole("link", {
+      name: "Open Whisper in the AIS viewer",
+      exact: true,
+    }),
+  ).toHaveAttribute("href", "/ais/vessels/538072792");
+  for (const id of ["skat", "rising-sun", "senses", "octopus", "tatoosh"]) {
+    await expect(page.locator(`#${id}`)).toContainText("Former owner");
+  }
+  await expect(page.locator("#venus")).toContainText("Commissioned by");
+  await expect(page.locator("#ran-vii")).toContainText(
+    "AIS identity not yet confirmed",
+  );
+  await expect(page.locator("#ran-vii")).toContainText(
+    "electric auxiliary propulsion",
+  );
+  await expect(page.locator("#eos")).toContainText("93 m / 305 ft");
+  await expect(
+    page.getByRole("link", { name: "Ownership history", exact: true }),
+  ).toHaveCount(18);
+  await page.screenshot({
+    path: testInfo.outputPath("tech-yachts-desktop.png"),
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("link", { name: "Motor · 14", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { level: 2, name: "Motor", exact: true }),
+  ).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath("tech-yachts-phone.png") });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});
+
 test("the sailors directory has channel links and map previews without the live viewer shell", async ({
   page,
 }) => {
@@ -153,12 +295,10 @@ test("the YouTube directory links sailors and cruisers, with usable cruiser card
       .getByRole("link", { name: "Open Undra in the AIS viewer", exact: true }),
   ).toHaveAttribute("href", "/ais/vessels/368478440");
   await expect(
-    page
-      .locator("#the-71-percent")
-      .getByRole("link", {
-        name: "Open Ruth Pearl II in the AIS viewer",
-        exact: true,
-      }),
+    page.locator("#the-71-percent").getByRole("link", {
+      name: "Open Ruth Pearl II in the AIS viewer",
+      exact: true,
+    }),
   ).toHaveAttribute("href", "/ais/vessels/503190280");
   await expect(
     page.getByRole("link", { name: "Browse all sailors", exact: true }),

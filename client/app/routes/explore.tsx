@@ -1,6 +1,7 @@
 import { DirectoryLayout } from "../components/DirectoryLayout";
 import { pageMeta } from "../lib/meta";
 import { YOUTUBE_PATH } from "../lib/explore";
+import { TECH_YACHTS_PATH } from "../lib/tech-yachts";
 
 export const handle = { directory: true };
 export const meta = () =>
@@ -18,15 +19,33 @@ export default function Explore() {
       <p className="mt-3 text-body text-fg-secondary">
         Browse a collection, then open a vessel in the AIS viewer.
       </p>
-      <a
-        href={`/ais${YOUTUBE_PATH}`}
-        className="mt-8 block max-w-xl rounded-xl border border-line p-6 hover:bg-accent-bg"
-      >
-        <h2 className="text-title">YouTube channels</h2>
-        <p className="mt-2 text-body text-fg-secondary">
-          Sailors and cruisers, their crews, and their boats past and present.
-        </p>
-      </a>
+      <div className="mt-8 grid gap-6 md:grid-cols-2">
+        {[
+          {
+            path: YOUTUBE_PATH,
+            title: "YouTube channels",
+            description:
+              "Sailors and cruisers, their crews, and their boats past and present.",
+          },
+          {
+            path: TECH_YACHTS_PATH,
+            title: "Tech billionaires & their yachts",
+            description:
+              "Sailing and motor yachts connected to technology founders and leaders, past and present.",
+          },
+        ].map((collection) => (
+          <a
+            key={collection.path}
+            href={`/ais${collection.path}`}
+            className="block rounded-xl border border-line p-6 hover:bg-accent-bg"
+          >
+            <h2 className="text-title">{collection.title}</h2>
+            <p className="mt-2 text-body text-fg-secondary">
+              {collection.description}
+            </p>
+          </a>
+        ))}
+      </div>
     </DirectoryLayout>
   );
 }
