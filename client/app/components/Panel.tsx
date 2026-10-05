@@ -86,7 +86,7 @@ export function Panel({
             hasBar && !hero && "pt-11",
             // Once the bar shows the title, what is under it fades out so the title reads on the glass.
             hasBar && "bar-fade",
-            hasBar && !largeTitleVisible && "[--bar-fade:0]",
+            hasBar && !largeTitleVisible && "bar-fade-hidden",
           )}
         >
           {children}

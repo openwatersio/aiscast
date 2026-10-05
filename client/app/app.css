@@ -206,6 +206,15 @@
   mask-image: linear-gradient(to bottom, rgb(0 0 0 / var(--bar-fade)) 2.75rem, #000 4.5rem);
   transition: --bar-fade 300ms;
 }
+@utility bar-fade-hidden {
+  --bar-fade: 0;
+}
+
+/* As tall as Base UI measures the room left on screen for a popup, so a long menu on a short
+   phone scrolls. */
+@utility max-h-available {
+  max-height: var(--available-height);
+}
 
 /* The header (components/Header.tsx) is a bar across the top edge, glass like the panel, so
    the map shows through it. Everything else placed over the map starts one --gap under
