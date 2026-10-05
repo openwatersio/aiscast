@@ -6,15 +6,10 @@ set -eu
 month=$(date -u +%Y-%m)
 day=$(date -u +%Y-%m-%dT%H%M)
 q() { clickhouse-client --query "$1"; }
-# backup_log exists once the server has logged a backup, so a fresh box starts with a full one.
-full=0
-if [ "$(q "EXISTS TABLE system.backup_log")" = 1 ]; then
-	full=$(q "SELECT count() FROM system.backup_log WHERE status = 'BACKUP_CREATED' AND name = 'Disk(\\'backups\\', \\'full-$month\\')'")
-fi
-if [ "$full" = 0 ]; then
+# An incremental backup needs the month's full one, which lives in the bucket rather than in this box's logs, so
+# a replacement box restored from it carries on. Without it, as on the first night of a month, the full one is made.
+if ! q "BACKUP DATABASE aiscast TO Disk('backups', 'incr-$day') SETTINGS base_backup = Disk('backups', 'full-$month')"; then
 	q "BACKUP DATABASE aiscast TO Disk('backups', 'full-$month')"
-else
-	q "BACKUP DATABASE aiscast TO Disk('backups', 'incr-$day') SETTINGS base_backup = Disk('backups', 'full-$month')"
 fi
 # Alloy's textfile collector ships this, and ClickHouseBackupStale alerts on its age.
 dir=/var/lib/alloy/textfile

@@ -81,6 +81,11 @@ fi
 # installed the file stays, since parts on R2 need it to be read.
 if grep -q '^CLICKHOUSE_R2_SECRET_ACCESS_KEY=.' /etc/clickhouse-server/r2.env; then
 	install -m 644 clickhouse-r2.xml /etc/clickhouse-server/config.d/r2.xml
+	# Start the backup's clock when backups are first on, so ClickHouseBackupStale fires if none ever succeeds.
+	if [ ! -f /var/lib/alloy/textfile/clickhouse-backup.prom ]; then
+		mkdir -p /var/lib/alloy/textfile
+		printf '# TYPE aiscast_clickhouse_backup_last_success_timestamp_seconds gauge\naiscast_clickhouse_backup_last_success_timestamp_seconds %s\n' "$(date +%s)" >/var/lib/alloy/textfile/clickhouse-backup.prom
+	fi
 	install -d -o clickhouse -g clickhouse /var/lib/clickhouse/disks # the server creates its disks' directories here as clickhouse
 	systemctl enable clickhouse-backup.timer
 elif [ -f /etc/clickhouse-server/config.d/r2.xml ]; then
