@@ -237,6 +237,9 @@ func TestTrackHistoryIsOpenToEveryTier(t *testing.T) {
 	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=90s"); tr.Properties.Interval != 120 {
 		t.Errorf("a step past 48 hours rounds up to whole minutes: %+v", tr.Properties)
 	}
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=2562047h"); tr.Properties.Interval != int64(trackMaxSpan/time.Second) {
+		t.Errorf("an enormous step stays enormous rather than wrap to a minute: %+v", tr.Properties)
+	}
 	if table, _ := chTable(old.Add(-time.Hour), old.Add(time.Hour), 2*time.Minute, time.Now()); table != "positions_1m" {
 		t.Errorf("a rounded step reads positions_1m, not %s", table)
 	}

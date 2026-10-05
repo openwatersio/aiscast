@@ -20,8 +20,8 @@ const (
 	trackDefaultLimit = 1000
 )
 
-// trackLimit is the most positions one track request returns for a tier. The window is the same for every
-// tier; the cap bounds the work a request can ask for.
+// trackLimit is the most positions one track request returns for a tier. Every tier reaches the same history;
+// the cap bounds the answer, and trackStep the step anonymous and personal requests read it at.
 func trackLimit(cl *Claims) int {
 	switch {
 	case cl.Role == "anonymous":
@@ -42,6 +42,7 @@ func trackStep(cl *Claims, from time.Time, interval time.Duration, now time.Time
 	if cl.Feeder || (cl.Role != "anonymous" && cl.Role != "personal") || !from.Before(now.Add(-trackWindow-time.Minute)) {
 		return interval
 	}
+	interval = min(interval, trackMaxSpan) // a step longer than any range keeps one position, and cannot overflow below
 	return max((interval+w-1)/w*w, w)
 }
 
