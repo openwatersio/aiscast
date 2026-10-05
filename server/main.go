@@ -183,9 +183,13 @@ func main() {
 		if os.Getenv("MARINECADASTRE") != "" {
 			sources = append(sources, marineCadastre(mcFrom()))
 		}
-		if len(sources) > 0 {
+		// Archives load only as the loader user, whose profile keeps a load from starving the live writer; never
+		// as the writer's own.
+		if loader := os.Getenv("CLICKHOUSE_LOADER_URL"); len(sources) > 0 && loader == "" {
+			log.Printf("history: CLICKHOUSE_LOADER_URL is not set; archives do not load")
+		} else if len(sources) > 0 {
 			p.history = newHistoryStats(sources)
-			go p.runHistory(env("CLICKHOUSE_LOADER_URL", url), sources)
+			go p.runHistory(loader, sources)
 		}
 	}
 	go p.logStats()
