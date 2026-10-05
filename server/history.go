@@ -95,6 +95,7 @@ var historySettings = clickhouse.Settings{
 	"max_bytes_before_external_group_by": 500_000_000,
 	"http_receive_timeout":               600,
 	"max_execution_time":                 3600,
+	"lightweight_deletes_sync":           2, // a reload's delete is done before its rows go in again
 }
 
 // historyBatch is how many receptions go to ClickHouse in one insert.

@@ -176,7 +176,7 @@ func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	if err != nil {
 		return err
 	}
-	if err := c.conn.Exec(ctx, "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ?", day, end); err != nil {
+	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ?", day, end); err != nil {
 		return err
 	}
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
@@ -310,6 +310,13 @@ func (c *chConn) migrate(ctx context.Context) error {
 		}
 	}
 	return c.exec(ctx, chPositionsView(legacy))
+}
+
+// chDeleteSync makes a lightweight DELETE wait until its rows are gone before it returns, so what follows it, a
+// reload's insert or a rebuild, never sees them. It is ClickHouse's default, set here so a server profile that
+// changes it cannot break a reload.
+func chDeleteSync(ctx context.Context) context.Context {
+	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"lightweight_deletes_sync": 2}))
 }
 
 // chColumn reads a query's single column.

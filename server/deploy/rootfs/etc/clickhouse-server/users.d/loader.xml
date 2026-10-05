@@ -10,6 +10,8 @@
             <max_bytes_before_external_group_by>500000000</max_bytes_before_external_group_by>
             <http_receive_timeout>600</http_receive_timeout>
             <max_execution_time>3600</max_execution_time>
+            <!-- A reload deletes its day before it loads it again, so the delete has to be done when it returns. -->
+            <lightweight_deletes_sync>2</lightweight_deletes_sync>
             <!-- Higher is later: the writer's queries go first when both wait. -->
             <priority>10</priority>
         </loader>

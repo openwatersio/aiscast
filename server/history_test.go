@@ -208,3 +208,48 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 		t.Errorf("positions_1m is rebuilt with the day: %d rows, %d before", after, before)
 	}
 }
+
+// Every lightweight delete a reload or rebuild runs waits for its rows to go, even where the session would let it
+// return first, so the rows that follow never meet the ones it deletes.
+func TestDeletesWaitForTheirRows(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db+"?lightweight_deletes_sync=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	s := fixtureSource(map[string]string{"f": mcFixture("367567110,2026-06-30 12:00:00,-71.02800,42.35990,0.9,345.0,,CETACEA,,,,,,,,,A")})
+	var session uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT toUInt64(getSetting('lightweight_deletes_sync'))").Scan(&session); err != nil || session != 0 {
+		t.Fatalf("the session lets a delete return first: %d %v", session, err)
+	}
+	etag := "1"
+	s.list = func(context.Context) ([]historyFile, error) {
+		return []historyFile{{name: "f", day: day, size: 1, etag: etag}}, nil
+	}
+	stats := newHistoryStats([]historySource{s})
+	for _, e := range []string{"1", "2"} { // a load, then a reload that deletes the day and rebuilds positions_1m
+		etag = e
+		if err := conn.loadHistory(ctx, s, stats); err != nil || stats.failed["marinecadastre"].Load() != 0 {
+			t.Fatalf("load %s: %v", e, err)
+		}
+	}
+	if err := conn.conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
+		t.Fatal(err)
+	}
+	// The log keeps only settings that differ from the server's default, 2: a delete that returned first shows 0.
+	var deletes, waited uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count(), countIf(Settings['lightweight_deletes_sync'] != '0') FROM system.query_log"+
+		" WHERE type = 'QueryFinish' AND startsWith(query, 'DELETE FROM') AND position(query, ?) > 0", db).Scan(&deletes, &waited); err != nil {
+		t.Fatal(err)
+	}
+	if deletes < 2 || waited != deletes {
+		t.Errorf("%d of %d deletes waited for their rows", waited, deletes)
+	}
+}
