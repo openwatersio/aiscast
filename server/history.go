@@ -184,10 +184,16 @@ func (p *Pipeline) runHistory(url string, sources []historySource) {
 			time.Sleep(time.Minute)
 			continue
 		}
+		loaded := int64(0)
 		for _, s := range sources {
+			before := p.history.loaded[s.name].Load()
 			if err := c.loadHistory(context.Background(), s, p.history); err != nil {
 				log.Printf("history: %s: %v", s.name, err)
 			}
+			loaded += p.history.loaded[s.name].Load() - before
+		}
+		if loaded > 0 {
+			p.importSoon()
 		}
 		time.Sleep(historyCheckEvery)
 	}

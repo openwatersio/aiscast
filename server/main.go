@@ -2,7 +2,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -72,9 +71,8 @@ func main() {
 			if err := p.names.attach(st); err != nil {
 				log.Printf("stations: %v; station names will not survive a restart", err)
 			}
-			if c := duckLakeFromEnv(); c != nil {
-				p.lake = &lake{client: c}
-				go c.open(context.Background()) // attach the lake before the first import needs it
+			if os.Getenv("CLICKHOUSE_URL") != "" {
+				p.vesselHistory = p.vesselHistoryFromClickHouse
 				go p.runImport()
 			}
 			go p.runStore()
