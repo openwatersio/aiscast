@@ -99,6 +99,10 @@ var chMigrations = []string{
 	7: chCoverageTable,
 	8: `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.coverage_mv TO {db}.coverage AS ` + chCoverageSelect("{db}.receptions", chUsable),
 	9: `CREATE TABLE IF NOT EXISTS {db}.coverage_backfilled (day Date) ENGINE = ReplacingMergeTree ORDER BY day`,
+	// the stations that heard each cell; the backfill bins every day again to fill them in
+	10: `ALTER TABLE {db}.coverage ADD COLUMN IF NOT EXISTS stations AggregateFunction(uniqExact, String)`,
+	11: `ALTER TABLE {db}.coverage_mv MODIFY QUERY ` + chCoverageSelect("{db}.receptions", chUsable),
+	12: `TRUNCATE TABLE {db}.coverage_backfilled`,
 }
 
 // positions_1m is each vessel's track at one position a minute while it moves, and one every 30 minutes for each

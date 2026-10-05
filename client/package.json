@@ -16,7 +16,7 @@
     "@base-ui/react": "^1.8.0",
     "clsx": "^2.1.1",
     "isbot": "^5.2.2",
-    "lucide-react": "^1.48.0",
+    "lucide-react": "^1.49.0",
     "maplibre-gl": "^6.11.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
@@ -24,7 +24,7 @@
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.62.0",
+    "@cloudflare/vite-plugin": "^1.62.4",
     "@maplibre/maplibre-gl-style-spec": "^26.4.4",
     "@playwright/test": "^1.63.0",
     "@react-router/dev": "^8.4.0",
@@ -34,8 +34,8 @@
     "@types/react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.1",
-    "vitest": "^5.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3",
     "wrangler": "^4.143.0"
   }
 }
