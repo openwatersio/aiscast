@@ -400,3 +400,79 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	}
 	check("after the rest is backfilled")
 }
+
+// A database at step 9 has coverage without stations and a view that does not fill them. Steps 10 to 12 add the
+// column, point the view at it, and clear the backfill's record, so the backfill bins the old days again with
+// their stations and new receptions arrive with theirs.
+func TestCoverageStationsMigrateInPlace(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	dsn := strings.TrimRight(url, "/") + "/" + db
+	conn, err := openClickHouse(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+
+	step9Select := strings.Replace(chCoverageSelect("{db}.receptions", chUsable), ", uniqExactState(station) AS stations", "", 1)
+	step9Table := strings.Replace(chCoverageTable, ",\n\tstations AggregateFunction(uniqExact, String)", "", 1)
+	if step9Select == chCoverageSelect("{db}.receptions", chUsable) || step9Table == chCoverageTable {
+		t.Fatal("the step-9 coverage definitions no longer differ from the current ones by stations")
+	}
+	if err := conn.exec(ctx,
+		"DROP VIEW {db}.coverage_mv",
+		"DROP TABLE {db}.coverage",
+		step9Table,
+		"CREATE MATERIALIZED VIEW {db}.coverage_mv TO {db}.coverage AS "+step9Select,
+		"ALTER TABLE {db}.schema_migrations DELETE WHERE version > 9 SETTINGS mutations_sync = 2",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	at := func(mmsi uint32, station string, ts time.Time) trackPoint {
+		return trackPoint{mmsi: mmsi, ts: ts, lat6: int32(59.9 * 600000), lon6: int32(10.7 * 600000), sog10: 1023, cog10: 3600,
+			heading: 511, navStatus: 15, source: "x", station: station}
+	}
+	if err := conn.insert(ctx, "old", []trackPoint{at(1, "aishub", day.Add(time.Hour)), at(2, "station:a", day.Add(2*time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	// as a step-9 server's backfill leaves it, with the day binned without stations
+	if err := conn.exec(ctx, "INSERT INTO {db}.coverage_backfilled VALUES ('"+day.Format("2006-01-02")+"')"); err != nil {
+		t.Fatal(err)
+	}
+	oslo := func() covRow {
+		t.Helper()
+		var got covRow
+		if err := conn.coverageCells(ctx, day, day, func(r covRow) error {
+			if r.cell == osloRes6 {
+				got = r
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	conn.conn.Close()
+	if conn, err = openClickHouse(ctx, dsn); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.coverageBackfill(ctx, day); err != nil {
+		t.Fatal(err)
+	}
+	if r := oslo(); r.vessels != 2 || r.stations != 2 {
+		t.Errorf("after steps 10 to 12 and the backfill Oslo is %+v, want 2 vessels from 2 stations", r)
+	}
+	if err := conn.insert(ctx, "new", []trackPoint{at(3, "udp:b", day.Add(3*time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	if r := oslo(); r.vessels != 3 || r.stations != 3 {
+		t.Errorf("after a reception from a third station Oslo is %+v, want 3 vessels from 3 stations", r)
+	}
+}
