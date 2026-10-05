@@ -179,6 +179,18 @@ func main() {
 	}
 	if url := os.Getenv("CLICKHOUSE_URL"); url != "" {
 		go p.runClickHouse(url)
+		var sources []historySource
+		if os.Getenv("MARINECADASTRE") != "" {
+			sources = append(sources, marineCadastre(mcFrom()))
+		}
+		if len(sources) > 0 {
+			if loader, err := historyLoaderURL(url, os.Getenv("CLICKHOUSE_LOADER_URL")); err != nil {
+				log.Printf("history: %v; archives do not load", err)
+			} else {
+				p.history = newHistoryStats(sources)
+				go p.runHistory(loader, sources)
+			}
+		}
 	}
 	go p.logStats()
 	go p.runStationNames()

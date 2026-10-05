@@ -230,7 +230,7 @@ func (c *chConn) cleanup(ctx context.Context, say func(string)) error {
 	// The rows go first, and at once, so the view that no longer knows tx never sees one; the columns then
 	// go in the background, and system.mutations shows when.
 	say("deleting rows in the first layout, then dropping tx and recv_ts in the background")
-	if err := c.exec(clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"max_execution_time": 0})),
+	if err := c.exec(clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"max_execution_time": 0, "lightweight_deletes_sync": 2})),
 		"DELETE FROM {db}.receptions WHERE tx != 0"); err != nil {
 		return err
 	}
@@ -264,7 +264,7 @@ func (c *chConn) convertDay(ctx context.Context, day time.Time, st *convertState
 		return 0, err
 	}
 	if left > 0 { // a run that stopped partway through the day, or a day with rows written since it was done
-		if err := c.conn.Exec(ctx, "DELETE"+partial, day, end); err != nil {
+		if err := c.conn.Exec(chDeleteSync(ctx), "DELETE"+partial, day, end); err != nil {
 			return 0, err
 		}
 	}

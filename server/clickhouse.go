@@ -93,6 +93,8 @@ var chMigrations = []string{
 	SELECT mmsi, toDateTime(if(moving, toStartOfMinute(ts), toStartOfInterval(ts, INTERVAL 30 MINUTE)), 'UTC') AS slot,
 	       if(moving, 0, ` + chCell + `) AS cell, ts, lat6, lon6, sog10, cog10, heading, navstat, source
 	FROM {db}.receptions WHERE accepted AND ` + chUsable,
+	5: chVesselStatics,
+	6: chHistoryLoads,
 }
 
 // positions_1m is each vessel's track at one position a minute while it moves, and one every 30 minutes for each
@@ -174,7 +176,7 @@ func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	if err != nil {
 		return err
 	}
-	if err := c.conn.Exec(ctx, "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ?", day, end); err != nil {
+	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ?", day, end); err != nil {
 		return err
 	}
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
@@ -228,9 +230,22 @@ type chConn struct {
 }
 
 // openClickHouse connects to url, a clickhouse:// DSN, and creates the schema in the database it names, or
-// in chDatabase. The connection itself opens on the server's default database, since the named one may not
-// exist yet.
+// in chDatabase.
 func openClickHouse(ctx context.Context, url string, with ...func(*clickhouse.Options)) (*chConn, error) {
+	c, err := dialClickHouse(url, with...)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.migrate(ctx); err != nil {
+		c.conn.Close()
+		return nil, fmt.Errorf("clickhouse migration: %w", err)
+	}
+	return c, nil
+}
+
+// dialClickHouse connects to url without touching the schema. The connection itself opens on the server's
+// default database, since the named one may not exist yet.
+func dialClickHouse(url string, with ...func(*clickhouse.Options)) (*chConn, error) {
 	opts, err := clickhouse.ParseDSN(url)
 	if err != nil {
 		return nil, err
@@ -247,12 +262,7 @@ func openClickHouse(ctx context.Context, url string, with ...func(*clickhouse.Op
 	if err != nil {
 		return nil, err
 	}
-	c := &chConn{conn: conn, db: db}
-	if err := c.migrate(ctx); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("clickhouse migration: %w", err)
-	}
-	return c, nil
+	return &chConn{conn: conn, db: db}, nil
 }
 
 // exec runs statements in order, with {db} the database.
@@ -300,6 +310,13 @@ func (c *chConn) migrate(ctx context.Context) error {
 		}
 	}
 	return c.exec(ctx, chPositionsView(legacy))
+}
+
+// chDeleteSync makes a lightweight DELETE wait until its rows are gone before it returns, so what follows it, a
+// reload's insert or a rebuild, never sees them. It is ClickHouse's default, set here so a server profile that
+// changes it cannot break a reload.
+func chDeleteSync(ctx context.Context) context.Context {
+	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"lightweight_deletes_sync": 2}))
 }
 
 // chColumn reads a query's single column.
