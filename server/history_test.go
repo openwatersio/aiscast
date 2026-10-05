@@ -253,3 +253,41 @@ func TestDeletesWaitForTheirRows(t *testing.T) {
 		t.Errorf("%d of %d deletes waited for their rows", waited, deletes)
 	}
 }
+
+// A listing that stalls gives up, so the next check runs.
+func TestHistoryListingThatStallsGivesUp(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select { // the container never answers
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	was, wasTimeout := mcContainer, historyListTimeout
+	mcContainer, historyListTimeout = srv.URL, 200*time.Millisecond
+	defer func() { mcContainer, historyListTimeout = was, wasTimeout }()
+	s := marineCadastre(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	done := make(chan error, 1)
+	go func() { done <- conn.loadHistory(ctx, s, newHistoryStats([]historySource{s})) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a stalled listing reported no error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a stalled listing held the loader")
+	}
+}

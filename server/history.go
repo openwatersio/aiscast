@@ -104,6 +104,9 @@ var historyBatch = 200_000
 // historyCheckEvery is how often the loader lists each source for files it has not loaded.
 const historyCheckEvery = 6 * time.Hour
 
+// historyListTimeout bounds listing a source's files, so a host that stalls costs one check, not every one after.
+var historyListTimeout = 5 * time.Minute
+
 // historyStats is read by /metrics, per source.
 type historyStats struct {
 	mu      sync.Mutex
@@ -177,7 +180,9 @@ func (c *chConn) loadHistory(ctx context.Context, s historySource, stats *histor
 		}
 		return err
 	}
-	files, err := s.list(ctx)
+	lctx, cancel := context.WithTimeout(ctx, historyListTimeout)
+	files, err := s.list(lctx)
+	cancel()
 	if err != nil {
 		return err
 	}
