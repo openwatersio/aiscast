@@ -383,6 +383,11 @@ PARTITION BY toYYYYMM(day)
 ORDER BY (res, day, cell)
 TTL day + INTERVAL ` + chCoverageKeep + ` DELETE`
 
+// chCoverageStation is the station a reception counts toward in coverage: a volunteer's own station, or the
+// whole feed for a government feed or aggregator, whose receivers and paths (barentswatch/terra,
+// kystverket/2573010) are one source. A volunteer's source is its kind, as client/app/lib/ais.ts lists them.
+const chCoverageStation = `if(source IN ('station', 'udp', 'mmsi', 'v1', 'http'), station, source)`
+
 // chCoverageSelect bins positions from a table into coverage rows, those within chCoverageKeep and matching
 // and, when it is not empty: each position's cell at the finest resolution, and the cells that contain it at
 // the coarser ones, so every resolution nests exactly. The argument order is set here because ClickHouse
@@ -399,10 +404,10 @@ func chCoverageSelect(table, and string) string {
 	}
 	finest := coverageBands[len(coverageBands)-1].res
 	return fmt.Sprintf(`SELECT toDate(ts) AS day, res, h3ToParent(geoToH3(lat6 / 600000, lon6 / 600000, %d), res) AS cell,
-		uniqExactState(mmsi) AS vessels, uniqExactState(station) AS stations
+		uniqExactState(mmsi) AS vessels, uniqExactState(%s) AS stations
 	FROM %s ARRAY JOIN [%s] AS res %s
 	GROUP BY day, res, cell
-	SETTINGS geotoh3_argument_order = 'lat_lon'`, finest, table, strings.Join(res, ", "), where)
+	SETTINGS geotoh3_argument_order = 'lat_lon'`, finest, chCoverageStation, table, strings.Join(res, ", "), where)
 }
 
 // coverageBackfill bins each day from today back to since, no further than chCoverageKeep, that the backfill

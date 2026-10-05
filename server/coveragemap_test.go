@@ -312,15 +312,19 @@ func TestCoverageFromClickHouse(t *testing.T) {
 			heading: 511, navStatus: 15, source: "kystverket", station: "kystverket"}
 	}
 	// Two vessels on the first day, one of them twice, and one of them again on the second. The second vessel's
-	// transmission also arrives as a later copy from another station, which adds a station but no vessel. A copy
+	// transmission also arrives as a later copy from another station, which adds a station but no vessel, and
+	// from another receiver of the same feed, which adds neither. A copy
 	// the fold judged implausible, far from the others, from a third station, adds no cell and no station.
 	first := at(2, day1.Add(3*time.Hour))
 	first.txAt, first.txDisc = first.ts, 7
 	again := first
-	again.station, again.recv, again.dup = "station:other", first.ts.Add(2*time.Second), true
+	again.source, again.station, again.recv, again.dup = "station", "station:other", first.ts.Add(2*time.Second), true
+	// and from another of the first feed's receivers, which is the same source
+	path := first
+	path.station, path.recv, path.dup = "kystverket/2573010", first.ts.Add(time.Second), true
 	wild := at(5, day1.Add(4*time.Hour))
 	wild.lat6, wild.lon6, wild.implausible, wild.station = int32(10*600000), int32(10*600000), true, "station:wild"
-	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, wild, at(1, day2.Add(time.Hour))}
+	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, path, wild, at(1, day2.Add(time.Hour))}
 	if err := conn.insert(ctx, "coverage", batch); err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +422,7 @@ func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
 
-	step9Select := strings.Replace(chCoverageSelect("{db}.receptions", chUsable), ", uniqExactState(station) AS stations", "", 1)
+	step9Select := strings.Replace(chCoverageSelect("{db}.receptions", chUsable), ", uniqExactState("+chCoverageStation+") AS stations", "", 1)
 	step9Table := strings.Replace(chCoverageTable, ",\n\tstations AggregateFunction(uniqExact, String)", "", 1)
 	if step9Select == chCoverageSelect("{db}.receptions", chUsable) || step9Table == chCoverageTable {
 		t.Fatal("the step-9 coverage definitions no longer differ from the current ones by stations")
@@ -434,11 +438,11 @@ func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	}
 
 	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
-	at := func(mmsi uint32, station string, ts time.Time) trackPoint {
+	at := func(mmsi uint32, source, station string, ts time.Time) trackPoint {
 		return trackPoint{mmsi: mmsi, ts: ts, lat6: int32(59.9 * 600000), lon6: int32(10.7 * 600000), sog10: 1023, cog10: 3600,
-			heading: 511, navStatus: 15, source: "x", station: station}
+			heading: 511, navStatus: 15, source: source, station: station}
 	}
-	if err := conn.insert(ctx, "old", []trackPoint{at(1, "aishub", day.Add(time.Hour)), at(2, "station:a", day.Add(2*time.Hour))}); err != nil {
+	if err := conn.insert(ctx, "old", []trackPoint{at(1, "aishub", "aishub", day.Add(time.Hour)), at(2, "station", "station:a", day.Add(2*time.Hour))}); err != nil {
 		t.Fatal(err)
 	}
 	// as a step-9 server's backfill leaves it, with the day binned without stations
@@ -469,7 +473,7 @@ func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	if r := oslo(); r.vessels != 2 || r.stations != 2 {
 		t.Errorf("after steps 10 to 12 and the backfill Oslo is %+v, want 2 vessels from 2 stations", r)
 	}
-	if err := conn.insert(ctx, "new", []trackPoint{at(3, "udp:b", day.Add(3*time.Hour))}); err != nil {
+	if err := conn.insert(ctx, "new", []trackPoint{at(3, "udp", "udp:b", day.Add(3*time.Hour))}); err != nil {
 		t.Fatal(err)
 	}
 	if r := oslo(); r.vessels != 3 || r.stations != 3 {
