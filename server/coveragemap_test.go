@@ -48,7 +48,10 @@ type fakeCoverageSource struct {
 	first, last time.Time // the window last asked for
 }
 
-func (f *fakeCoverageSource) coverageBackfill(context.Context) error { f.backfills++; return nil }
+func (f *fakeCoverageSource) coverageBackfill(context.Context, time.Time) error {
+	f.backfills++
+	return nil
+}
 
 func (f *fakeCoverageSource) coverageDays(_ context.Context, first, last time.Time) ([]string, error) {
 	f.first, f.last = first, last
@@ -363,7 +366,7 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		t.Fatalf("days %v: %v", days, err)
 	}
 
-	if err := conn.coverageBackfill(ctx); err != nil {
+	if err := conn.coverageBackfill(ctx, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	check("after a backfill over the same days")
@@ -372,10 +375,26 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	if err := conn.conn.Exec(ctx, "TRUNCATE TABLE "+db+".coverage"); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.coverageBackfill(ctx); err != nil {
+	if err := conn.coverageBackfill(ctx, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := cells(); len(got) != 0 {
 		t.Errorf("a backfilled day was binned again: %d cells", len(got))
 	}
+
+	// With the record cleared too, a backfill since the second day bins only it, as the map's window is binned
+	// before the rest, and a backfill of everything then adds the first.
+	if err := conn.conn.Exec(ctx, "TRUNCATE TABLE "+db+".coverage_backfilled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.coverageBackfill(ctx, day2); err != nil {
+		t.Fatal(err)
+	}
+	if days, err := conn.coverageDays(ctx, day1, day2); err != nil || len(days) != 1 || days[0] != day2.Format("2006-01-02") {
+		t.Errorf("a backfill since %s binned %v, %v", day2.Format("2006-01-02"), days, err)
+	}
+	if err := conn.coverageBackfill(ctx, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	check("after the rest is backfilled")
 }

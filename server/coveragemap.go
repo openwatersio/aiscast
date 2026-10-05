@@ -90,16 +90,19 @@ type covRow struct {
 
 // coverageSource is where coverage comes from: ClickHouse (chConn), or a fake in tests.
 type coverageSource interface {
-	// coverageBackfill fills coverage from the positions written before its view existed.
-	coverageBackfill(ctx context.Context) error
+	// coverageBackfill fills coverage from the receptions written before its view existed, for each day from
+	// today back to since.
+	coverageBackfill(ctx context.Context, since time.Time) error
 	// coverageDays lists the days from first to last that hold coverage, as YYYY-MM-DD.
 	coverageDays(ctx context.Context, first, last time.Time) ([]string, error)
 	// coverageCells hands each cell heard from first to last to each.
 	coverageCells(ctx context.Context, first, last time.Time, each func(covRow) error) error
 }
 
-// runCoverage waits for ClickHouse, backfills coverage from the positions it held before, then loads the map
-// and reloads it every coverageReload, or sooner after a failure.
+// runCoverage waits for ClickHouse, backfills the map's window from the receptions it held before, then loads
+// the map and reloads it every coverageReload, or sooner after a failure. The rest of what coverage keeps is
+// backfilled after the first load, so a database with months of receptions, archives among them, shows the map
+// within minutes rather than once every month is binned.
 func (p *Pipeline) runCoverage() {
 	ctx := context.Background()
 	var src coverageSource
@@ -114,14 +117,19 @@ func (p *Pipeline) runCoverage() {
 		}
 		time.Sleep(5 * time.Second) // ClickHouse connects in its own goroutine, usually within moments of start
 	}
-	for {
-		err := src.coverageBackfill(ctx)
-		if err == nil {
-			break
+	backfill := func(since time.Time) {
+		for {
+			err := src.coverageBackfill(ctx, since)
+			if err == nil {
+				return
+			}
+			log.Printf("coverage: backfill: %v", err)
+			time.Sleep(coverageRetry)
 		}
-		log.Printf("coverage: backfill: %v", err)
-		time.Sleep(coverageRetry)
 	}
+	now := time.Now().UTC()
+	backfill(now.AddDate(0, 0, -coverageDays-1))
+	go backfill(now.AddDate(0, -chCoverageMonths, 0))
 	for {
 		wait := coverageReload
 		if err := p.coverage.load(ctx, src, time.Now()); err != nil {
@@ -393,12 +401,12 @@ func chCoverageSelect(table, and string) string {
 	SETTINGS geotoh3_argument_order = 'lat_lon'`, finest, table, strings.Join(res, ", "), where)
 }
 
-// coverageBackfill bins each day within chCoverageKeep that the backfill has not yet covered: receptions loaded
-// before the view existed, which never passed through it. It runs newest first so the window fills first, one
+// coverageBackfill bins each day from today back to since, no further than chCoverageKeep, that the backfill
+// has not yet covered: receptions loaded before the view existed, which never passed through it. It runs newest first so the window fills first, one
 // day per query so the largest day stays within ClickHouse's memory, and records each day as it finishes, an
 // empty one too. Days are counted back from today rather than read from partitions, so it never depends on how
 // receptions is partitioned. A day the view and the backfill both cover counts each vessel once.
-func (c *chConn) coverageBackfill(ctx context.Context) error {
+func (c *chConn) coverageBackfill(ctx context.Context, since time.Time) error {
 	done := map[string]bool{}
 	rows, err := c.conn.Query(ctx, "SELECT toString(day) FROM "+c.db+".coverage_backfilled FINAL")
 	if err != nil {
@@ -415,6 +423,9 @@ func (c *chConn) coverageBackfill(ctx context.Context) error {
 	rows.Close()
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	oldest := today.AddDate(0, -chCoverageMonths, 0)
+	if since = since.UTC().Truncate(24 * time.Hour); since.After(oldest) {
+		oldest = since
+	}
 	q := "INSERT INTO " + c.db + ".coverage " + chCoverageSelect(c.db+".receptions", chUsable+" AND ts >= ? AND ts < ?")
 	n := 0
 	for day := today; !day.Before(oldest); day = day.AddDate(0, 0, -1) {
