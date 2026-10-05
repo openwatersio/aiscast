@@ -1,7 +1,13 @@
 import { DirectoryLayout } from "../components/DirectoryLayout";
+import { PhotoCarousel } from "../components/ui/PhotoCarousel";
+import { useMedia } from "../lib/useMedia";
 import { VesselMapPreview } from "../components/VesselMapPreview";
 import { pageMeta } from "../lib/meta";
-import { TECH_YACHTS_PATH, techYachts } from "../lib/tech-yachts";
+import {
+  TECH_YACHTS_PATH,
+  techYachts,
+  type TechYacht,
+} from "../lib/tech-yachts";
 
 export const handle = { directory: true };
 export const meta = () =>
@@ -53,57 +59,60 @@ export default function TechYachts() {
           </h2>
           <div className="mt-5 grid gap-x-8 gap-y-10 md:grid-cols-2">
             {section.boats.map((boat) => (
-              <article
-                key={boat.id}
-                id={boat.id}
-                className="min-w-0 border-t border-line pt-5"
-              >
-                <div className="mb-4">
-                  <h3 className="text-title">{boat.name}</h3>
-                  <p className="mt-1 text-subhead text-fg-secondary">
-                    {boat.model}
-                  </p>
-                </div>
-                <VesselMapPreview boat={boat} />
-                <p className="mt-4 text-headline font-semibold">
-                  {boat.person}
-                </p>
-                <p className="mt-1 text-subhead text-fg-secondary">
-                  {boat.connection} · {boat.chapter}
-                </p>
-                <p className="mt-3 text-body text-fg-secondary">
-                  {boat.description}
-                </p>
-                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-footnote">
-                  <a
-                    href={boat.source}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Yacht details
-                  </a>
-                  <a
-                    href={boat.ownershipSource}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Ownership history
-                  </a>
-                  {boat.mmsi && (
-                    <a
-                      href={boat.identitySource}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      MMSI {boat.mmsi}
-                    </a>
-                  )}
-                </div>
-              </article>
+              <YachtCard key={boat.id} boat={boat} />
             ))}
           </div>
         </section>
       ))}
     </DirectoryLayout>
+  );
+}
+
+function YachtCard({ boat }: { boat: TechYacht }) {
+  const media = useMedia(boat.imo ? String(boat.imo) : undefined);
+  return (
+    <article id={boat.id} className="min-w-0 border-t border-line pt-5">
+      <h3 className="text-title">{boat.name}</h3>
+      <p className="mt-1 text-subhead text-fg-secondary">{boat.model}</p>
+      <p className="mt-3 text-body text-fg-secondary">{boat.description}</p>
+      <a
+        className="mt-3 inline-block text-footnote"
+        href={boat.source}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Yacht details
+      </a>
+      {!!media?.photos.length && (
+        <div className="relative mt-4 aspect-video overflow-hidden rounded-lg bg-surface-tile">
+          <PhotoCarousel photos={media.photos} alt={boat.name} />
+        </div>
+      )}
+      <p className="mt-4 text-headline font-semibold">{boat.person}</p>
+      <p className="mt-1 text-subhead text-fg-secondary">
+        {boat.connection} · {boat.chapter}
+      </p>
+      <a
+        className="mt-2 inline-block text-footnote"
+        href={boat.ownershipSource}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Ownership history
+      </a>
+      <div className="mt-4">
+        <VesselMapPreview boat={boat} />
+      </div>
+      {boat.mmsi && (
+        <a
+          className="mt-3 inline-block text-footnote"
+          href={boat.identitySource}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          MMSI {boat.mmsi}
+        </a>
+      )}
+    </article>
   );
 }

@@ -11,6 +11,32 @@ test("tech yachts separate sailing and motor boats and retain identity and owner
       headers: { "access-control-allow-origin": "*" },
     }),
   );
+  await page.route("**/ais/vessels/media/*", (route) =>
+    route.fulfill({
+      json: {
+        photos: route.request().url().endsWith("/9857298")
+          ? [
+              {
+                thumb: "https://images.example.test/koru.svg",
+                width: 800,
+                height: 450,
+                page: "https://commons.wikimedia.org/wiki/File:Koru.jpg",
+                artist: "Yacht photographer",
+                license: "CC BY-SA 4.0",
+                licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/",
+              },
+            ]
+          : [],
+        links: {},
+      },
+    }),
+  );
+  await page.route("https://images.example.test/*", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"><rect width="800" height="450" fill="#c5dbe5"/><path d="M150 300h500l-70 60H220zM400 80v220M390 90L220 280h170M410 110v170h140z" fill="#fff" stroke="#335566" stroke-width="5"/></svg>',
+    }),
+  );
   await page.goto("/ais/explore");
   await expect(
     page.getByRole("navigation", { name: "AIS", exact: true }),
@@ -23,6 +49,34 @@ test("tech yachts separate sailing and motor boats and retain identity and owner
   await expect(page.locator("#sailing article")).toHaveCount(4);
   await expect(page.locator("#motor article")).toHaveCount(14);
   await expect(page.locator("#map, .sheet")).toHaveCount(0);
+  const koru = page.locator("#koru");
+  await expect(koru.getByRole("img", { name: "Koru, photo 1" })).toBeVisible();
+  await expect(
+    koru.getByRole("link", { name: "Yacht photographer" }),
+  ).toHaveAttribute("href", "https://commons.wikimedia.org/wiki/File:Koru.jpg");
+  await expect(koru.getByRole("link", { name: "CC BY-SA 4.0" })).toBeVisible();
+  expect(
+    await koru.evaluate((card) => {
+      const elements = [
+        card.querySelector("h3"),
+        card.querySelector("img"),
+        [...card.querySelectorAll("p")].find(
+          (p) => p.textContent === "Jeff Bezos",
+        ),
+        card.querySelector('a[aria-label="Open Koru in the AIS viewer"]'),
+      ];
+      return elements.every(
+        (element, i) =>
+          element &&
+          (i === 0 ||
+            !!(
+              elements[i - 1]!.compareDocumentPosition(element) &
+              Node.DOCUMENT_POSITION_FOLLOWING
+            )),
+      );
+    }),
+  ).toBe(true);
+  await expect(page.locator("#athena img")).toHaveCount(0);
   await expect(page.locator("#koru")).toContainText("AIS reports unavailable");
   await expect(
     page
@@ -30,20 +84,16 @@ test("tech yachts separate sailing and motor boats and retain identity and owner
       .getByRole("link", { name: "Open Koru in the AIS viewer", exact: true }),
   ).toHaveAttribute("href", "/ais/vessels/319225400");
   await expect(
-    page
-      .locator("#dragonfly")
-      .getByRole("link", {
-        name: "Open Dragonfly in the AIS viewer",
-        exact: true,
-      }),
+    page.locator("#dragonfly").getByRole("link", {
+      name: "Open Dragonfly in the AIS viewer",
+      exact: true,
+    }),
   ).toHaveAttribute("href", "/ais/vessels/319296900");
   await expect(
-    page
-      .locator("#whisper")
-      .getByRole("link", {
-        name: "Open Whisper in the AIS viewer",
-        exact: true,
-      }),
+    page.locator("#whisper").getByRole("link", {
+      name: "Open Whisper in the AIS viewer",
+      exact: true,
+    }),
   ).toHaveAttribute("href", "/ais/vessels/538072792");
   for (const id of ["skat", "rising-sun", "senses", "octopus", "tatoosh"]) {
     await expect(page.locator(`#${id}`)).toContainText("Former owner");

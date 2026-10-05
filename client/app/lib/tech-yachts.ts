@@ -4,6 +4,7 @@ export const TECH_YACHTS_PATH = "/explore/tech-yachts";
 
 export interface TechYacht extends BoatVersion {
   id: string;
+  imo?: number;
   person: string;
   connection: string;
   description: string;
@@ -26,6 +27,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
           "Delivered in 2023. Oceanco lists her length as 125 metres; many published accounts quote 127 metres.",
         source: "https://www.oceancoyacht.com/fleet/koru/",
         ownershipSource: "https://en.wikipedia.org/wiki/Koru_(yacht)",
+        imo: 9857298,
         mmsi: 319225400,
         identitySource: "https://www.vesselfinder.com/vessels/details/9857298",
       },
@@ -41,6 +43,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         source: "https://www.royalhuisman.com/en/yachts/athena/",
         ownershipSource:
           "https://www.royalhuisman.com/en/athena-inside-the-royal-huisman-flagship-yacht/",
+        imo: 1007237,
         mmsi: 319012000,
         identitySource: "https://www.hafen-hamburg.de/de/schiffe/athena/",
       },
@@ -54,7 +57,9 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         description:
           "Delivered in 2006. Lürssen's rare sailing build remains one of the largest private sailing yachts.",
         source: "https://www.lurssen.com/en/new-build/yachts/eos/",
-        ownershipSource: "https://www.yachtbuyer.com/en-gb/fleet/eos-304-lurssen",
+        ownershipSource:
+          "https://www.yachtbuyer.com/en-gb/fleet/eos-304-lurssen",
+        imo: 9377456,
         mmsi: 319087000,
         identitySource:
           "https://www.aisfriends.com/vessels/EOS/9377456/319087000/95672",
@@ -90,6 +95,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         source: "https://feadship.nl/fleet/launchpad",
         ownershipSource:
           "https://www.yachtbuyer.com/en-gb/fleet/launchpad-387-feadship",
+        imo: 9857511,
         mmsi: 538072122,
         identitySource:
           "https://www.vesselfinder.com/nl/vessels/details/9857511",
@@ -105,6 +111,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
           "The 2024 Lürssen build, formerly Project Alibaba, uses diesel-electric propulsion. This is a different hull from Brin's earlier 73-metre Dragonfly.",
         source: "https://www.lurssen.com/en/new-build/yachts/dragonfly/",
         ownershipSource: "https://www.superyachtfan.com/yacht/dragonfly/",
+        imo: 9907196,
         mmsi: 319296900,
         identitySource: "https://www.vesselfinder.com/vessels/details/9907196",
       },
@@ -119,6 +126,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
           "Delivered in 2021 for Michael Lee-Chin, then sold to Patrick Dovigi. Public reports associate her with Bukhman following a later sale.",
         source: "https://www.lurssen.com/en/new-build/yachts/ahpo/",
         ownershipSource: "https://en.wikipedia.org/wiki/Ahpo",
+        imo: 9855276,
         mmsi: 538071653,
         identitySource: "https://www.vesselfinder.com/vessels/details/9855276",
       },
@@ -134,6 +142,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         source: "https://www.lurssen.com/en/new-build/yachts/rising-sun/",
         ownershipSource:
           "https://boattest.com/article/20-rising-sun-top-largest-yachts-world",
+        imo: 8982307,
         mmsi: 319011000,
         identitySource: "https://www.vesselfinder.com/vessels/details/8982307",
       },
@@ -148,6 +157,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
           "Delivered in 2023, with angular styling by Espen Øino and a pool floor that lifts to become a dance floor.",
         source: "https://www.lurssen.com/en/new-build/yachts/norn/",
         ownershipSource: "https://en.wikipedia.org/wiki/Charles_Simonyi",
+        imo: 9869758,
         mmsi: 319261700,
         identitySource:
           "https://www.marineradar.com/vessel/mmsi-319261700/norn",
@@ -163,6 +173,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
           "Delivered in 2002 with a distinctive grey, angular exterior. Simonyi sold her in 2021 before Norn arrived.",
         source: "https://www.lurssen.com/en/new-build/yachts/skat/",
         ownershipSource: "https://en.wikipedia.org/wiki/Charles_Simonyi",
+        imo: 1007287,
         mmsi: 319741000,
         identitySource: "https://www.vesselfinder.com/vessels/details/1007287",
       },
@@ -177,6 +188,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
           "Built in 1999. Page bought her in 2011 and later sold her; her AIS position follows the vessel through changes of ownership.",
         source: "https://iyc.com/charter/senses/",
         ownershipSource: "https://www.superyachtfan.com/yacht/senses/owner/",
+        imo: 1006673,
         mmsi: 319833000,
         identitySource: "https://www.vesselfinder.com/vessels/details/1006673",
       },
@@ -192,6 +204,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         source: "https://www.vesselfinder.com/vessels/details/1012000",
         ownershipSource:
           "https://luxurylaunches.com/transport/whisper-superyacht-sale-08172026.php",
+        imo: 1012000,
         mmsi: 538072792,
         identitySource: "https://www.vesselfinder.com/vessels/details/1012000",
       },
@@ -207,6 +220,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         source: "https://feadship.nl/fleet/bliss",
         ownershipSource:
           "https://www.seapixonline.com/nsphoto.php?cat=&catn=&hit=1224&mid=0&pid=13167&tot=11711&typ=&wds=",
+        imo: 9835707,
         mmsi: 538071599,
         identitySource:
           "https://www.shipxplorer.com/data/vessels/bliss-IMO-9835707-MMSI-538071599",
@@ -223,6 +237,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         source: "https://www.oceancoyacht.com/fleet/leviathan/",
         ownershipSource:
           "https://swzmaritime.nl/news/2025/11/24/oceanco-delivers-111-metre-yacht-to-owner-newell/",
+        imo: 9921491,
         mmsi: 319324100,
         identitySource: "https://www.vesselfinder.com/vessels/details/9921491",
       },
@@ -237,6 +252,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
           "Delivered in 2008 as Madsummer, before taking the names TV and Rocinante.",
         source: "https://www.lurssen.com/en/new-build/yachts/rocinante/",
         ownershipSource: "https://www.superyachtfan.com/es/yacht/rocinante/",
+        imo: 1009699,
         mmsi: 319840000,
         identitySource: "https://www.vesselfinder.com/vessels/details/1009699",
       },
@@ -252,6 +268,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         source: "https://www.lurssen.com/en/new-build/yachts/octopus/",
         ownershipSource:
           "https://www.geekwire.com/2022/tatoosh-a-superyacht-owned-by-paul-allen-is-sold-after-being-listed-for-90m/",
+        imo: 1007213,
         mmsi: 319866000,
         identitySource: "https://www.vesselfinder.com/vessels/details/1007213",
       },
@@ -267,6 +284,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
         source: "https://en.wikipedia.org/wiki/Tatoosh_(yacht)",
         ownershipSource:
           "https://www.geekwire.com/2022/tatoosh-a-superyacht-owned-by-paul-allen-is-sold-after-being-listed-for-90m/",
+        imo: 1006336,
         mmsi: 319801000,
         identitySource: "https://www.vesselfinder.com/vessels/details/1006336",
       },
@@ -281,6 +299,7 @@ export const techYachts: { id: string; title: string; boats: TechYacht[] }[] = [
           "Launched in 2012 after Jobs' death, with Philippe Starck's glass-rich, minimalist design. Owned by Laurene Powell Jobs.",
         source: "https://feadship.nl/fleet/venus",
         ownershipSource: "https://en.wikipedia.org/wiki/Venus_(yacht)",
+        imo: 1011836,
         mmsi: 319327000,
         identitySource: "https://www.vesselfinder.com/vessels/details/1011836",
       },
