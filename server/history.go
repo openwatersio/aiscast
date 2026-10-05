@@ -113,15 +113,25 @@ type historyStats struct {
 	latest  map[string]time.Time // the newest day loaded
 	loaded  map[string]*atomic.Int64
 	failed  map[string]*atomic.Int64
+	checks  map[string]*atomic.Int64 // checks that failed before any file: the listing, history_loads, the connection
 	rows    map[string]*atomic.Int64
 	sources []string
 }
 
+// checkFailed counts err against source's checks when it is one, and returns it.
+func (h *historyStats) checkFailed(source string, err error) error {
+	if err != nil {
+		h.checks[source].Add(1)
+	}
+	return err
+}
+
 func newHistoryStats(sources []historySource) *historyStats {
-	h := &historyStats{latest: map[string]time.Time{}, loaded: map[string]*atomic.Int64{}, failed: map[string]*atomic.Int64{}, rows: map[string]*atomic.Int64{}}
+	h := &historyStats{latest: map[string]time.Time{}, loaded: map[string]*atomic.Int64{}, failed: map[string]*atomic.Int64{},
+		checks: map[string]*atomic.Int64{}, rows: map[string]*atomic.Int64{}}
 	for _, s := range sources {
 		h.sources = append(h.sources, s.name)
-		h.loaded[s.name], h.failed[s.name], h.rows[s.name] = new(atomic.Int64), new(atomic.Int64), new(atomic.Int64)
+		h.loaded[s.name], h.failed[s.name], h.checks[s.name], h.rows[s.name] = new(atomic.Int64), new(atomic.Int64), new(atomic.Int64), new(atomic.Int64)
 	}
 	return h
 }
@@ -143,6 +153,9 @@ func (p *Pipeline) runHistory(url string, sources []historySource) {
 			var err error
 			if c, err = dialClickHouse(url); err != nil {
 				log.Printf("history: %v", err)
+				for _, s := range sources {
+					p.history.checkFailed(s.name, err)
+				}
 			}
 		}
 		if c == nil {
@@ -178,17 +191,17 @@ func (c *chConn) loadHistory(ctx context.Context, s historySource, stats *histor
 		if legacy {
 			log.Printf("history: %s waits until receptions are converted and cleaned up", s.name)
 		}
-		return err
+		return stats.checkFailed(s.name, err)
 	}
 	lctx, cancel := context.WithTimeout(ctx, historyListTimeout)
 	files, err := s.list(lctx)
 	cancel()
 	if err != nil {
-		return err
+		return stats.checkFailed(s.name, err)
 	}
 	done, err := c.historyLoaded(ctx, s.name)
 	if err != nil {
-		return err
+		return stats.checkFailed(s.name, err)
 	}
 	slices.SortFunc(files, func(a, b historyFile) int { return b.day.Compare(a.day) })
 	for _, f := range files {

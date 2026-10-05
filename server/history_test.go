@@ -280,8 +280,9 @@ func TestHistoryListingThatStallsGivesUp(t *testing.T) {
 	mcContainer, historyListTimeout = srv.URL, 200*time.Millisecond
 	defer func() { mcContainer, historyListTimeout = was, wasTimeout }()
 	s := marineCadastre(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	stats := newHistoryStats([]historySource{s})
 	done := make(chan error, 1)
-	go func() { done <- conn.loadHistory(ctx, s, newHistoryStats([]historySource{s})) }()
+	go func() { done <- conn.loadHistory(ctx, s, stats) }()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -289,5 +290,16 @@ func TestHistoryListingThatStallsGivesUp(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("a stalled listing held the loader")
+	}
+	// The failed check is counted, and an archive that has never loaded a day reads as stale, not absent, so the
+	// alert sees both.
+	p := testPipeline(t)
+	p.history = stats
+	rec := httptest.NewRecorder()
+	p.serveMetrics(rec, httptest.NewRequest("GET", "/metrics", nil))
+	for _, want := range []string{`aiscast_history_check_failures_total{source="marinecadastre"} 1`, `aiscast_history_latest_day_timestamp_seconds{source="marinecadastre"} 0`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("/metrics lacks %s", want)
+		}
 	}
 }

@@ -267,17 +267,23 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	if h := p.history; h != nil {
 		h.mu.Lock()
-		metricHead(w, "aiscast_history_latest_day_timestamp_seconds", "gauge", "the newest day of each historical archive loaded into ClickHouse")
+		metricHead(w, "aiscast_history_latest_day_timestamp_seconds", "gauge", "the newest day of each historical archive loaded into ClickHouse, 0 until one has")
 		for _, s := range h.sources {
+			var at int64 // 0 until a day loads, so an archive that never loads reads as stale rather than absent
 			if t := h.latest[s]; !t.IsZero() {
-				fmt.Fprintf(w, "aiscast_history_latest_day_timestamp_seconds{source=%q} %d\n", s, t.Unix())
+				at = t.Unix()
 			}
+			fmt.Fprintf(w, "aiscast_history_latest_day_timestamp_seconds{source=%q} %d\n", s, at)
 		}
 		h.mu.Unlock()
 		metricHead(w, "aiscast_history_files_total", "counter", "historical archive files loaded, or failed and left for the next check")
 		for _, s := range h.sources {
 			fmt.Fprintf(w, "aiscast_history_files_total{source=%q,result=\"loaded\"} %d\n", s, h.loaded[s].Load())
 			fmt.Fprintf(w, "aiscast_history_files_total{source=%q,result=\"failed\"} %d\n", s, h.failed[s].Load())
+		}
+		metricHead(w, "aiscast_history_check_failures_total", "counter", "historical archive checks that failed before any file: the listing, history_loads, or the connection")
+		for _, s := range h.sources {
+			fmt.Fprintf(w, "aiscast_history_check_failures_total{source=%q} %d\n", s, h.checks[s].Load())
 		}
 		metricHead(w, "aiscast_history_rows_total", "counter", "receptions loaded from historical archives")
 		for _, s := range h.sources {
