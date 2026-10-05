@@ -79,7 +79,7 @@ if [ ! -f /etc/clickhouse-server/r2.env ]; then
 fi
 # The cold volume and backups need the R2 keys: without them the disk would stop ClickHouse starting. Once
 # installed the file stays, since parts on R2 need it to be read.
-if grep -q '^CLICKHOUSE_R2_SECRET_ACCESS_KEY=.' /etc/clickhouse-server/r2.env; then
+if [ "$(grep -cE '^CLICKHOUSE_R2_(COLD_URL|BACKUP_URL|ACCESS_KEY_ID|SECRET_ACCESS_KEY)=[^<]+$' /etc/clickhouse-server/r2.env)" = 4 ]; then
 	install -m 644 clickhouse-r2.xml /etc/clickhouse-server/config.d/r2.xml
 	# Start the backup's clock when backups are first on, so ClickHouseBackupStale fires if none ever succeeds.
 	if [ ! -f /var/lib/alloy/textfile/clickhouse-backup.prom ]; then
@@ -89,7 +89,7 @@ if grep -q '^CLICKHOUSE_R2_SECRET_ACCESS_KEY=.' /etc/clickhouse-server/r2.env; t
 	install -d -o clickhouse -g clickhouse /var/lib/clickhouse/disks # the server creates its disks' directories here as clickhouse
 	systemctl enable clickhouse-backup.timer
 elif [ -f /etc/clickhouse-server/config.d/r2.xml ]; then
-	echo '/etc/clickhouse-server/r2.env has no R2 keys, but r2.xml needs them: ClickHouse will not start' >&2
+	echo '/etc/clickhouse-server/r2.env lacks an R2 URL or key, but r2.xml needs all four: ClickHouse will not start' >&2
 fi
 if [ ! -f /etc/alloy.env ]; then
 	install -m 600 alloy.env.example /etc/alloy.env

@@ -56,7 +56,7 @@ Manual deploy: `server/deploy/deploy.sh root@2.29.0.215`. Logs: `ssh root@2.29.0
 The backup bucket alone rebuilds the database, cold parts included. On a box that has been deployed, with the R2 keys in `/etc/clickhouse-server/r2.env` and ClickHouse running, but before aiscast has written:
 
 1. `systemctl stop aiscast`, so the live writer writes nothing meanwhile. If it has already created an empty database, `clickhouse-client -q "DROP DATABASE aiscast SYNC"`.
-2. List the backups: `clickhouse-client -q "SELECT name, status, end_time FROM system.backup_log"` on the old box, or the top-level prefixes of the `ais-clickhouse-backup` bucket. Take the newest `incr-` backup of the current month, or its `full-` backup if there is none yet.
+2. List the backups: `clickhouse-client -q "SELECT name, end_time FROM system.backup_log WHERE status = 'BACKUP_CREATED' ORDER BY end_time"` on the old box, or the top-level prefixes of the `ais-clickhouse-backup` bucket. Take the newest `incr-` backup of the current month, or its `full-` backup if there is none yet.
 3. `clickhouse-client -q "RESTORE DATABASE aiscast FROM Disk('backups', '<name>')"`. A restored part lands on local disk, and parts past 30 days move back to R2 in the background, so the disk needs room for the cold data until they do. To restore one month at a time instead, oldest first: `RESTORE TABLE aiscast.receptions PARTITIONS '<YYYYMM>' FROM Disk('backups', '<name>') SETTINGS allow_non_empty_tables = true` for each month, after restoring the other tables whole.
 4. `systemctl start aiscast`. ClickHouse lacks what arrived between the backup and the restore; the raw archive keeps it.
 
