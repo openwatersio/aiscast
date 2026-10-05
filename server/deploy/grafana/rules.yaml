@@ -347,6 +347,85 @@ groups:
           summary: The systemd restart counter for aiscast is missing
           description: Without this counter, ServiceCrashed cannot fire and crashes go unreported. Check that Alloy is running and that its systemd collector can reach D-Bus, with systemctl status alloy and journalctl -u alloy on the box.
 
+      # Vessel enrichment. The weekly syncs retry hourly after a failure, so a stale last-success or a
+      # day of failures means every retry is failing; the FCC sync once failed for hours on a read-only
+      # /tmp, which is the class of failure these exist to surface. The last-success metric appears
+      # after a source's first success, so a fresh record file is covered by the failures rules.
+      - alert: EnrichmentSyncStaleWikidata
+        expr: time() - aiscast_wikidata_last_success_timestamp_seconds > 8 * 86400
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: The Wikidata sync has not succeeded in 8 days
+          description: Every hourly retry for a day or more has failed. journalctl -u aiscast | grep 'wikidata:' on the box for the error.
+      - alert: EnrichmentSyncFailingWikidata
+        expr: increase(aiscast_wikidata_sync_failures_total[26h]) >= 20
+        labels: {severity: warning}
+        annotations:
+          summary: The Wikidata sync failed {{ $value | printf "%.0f" }} times in a day
+          description: Nearly every hourly retry is failing, including on a record file where it has never succeeded. journalctl -u aiscast | grep 'wikidata:' on the box for the error.
+      - alert: EnrichmentSyncStalePSIX
+        expr: time() - aiscast_uscg_last_success_timestamp_seconds > 8 * 86400
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: The PSIX sync has not succeeded in 8 days
+          description: Every hourly retry for a day or more has failed. journalctl -u aiscast | grep 'uscg:' on the box for the error.
+      - alert: EnrichmentSyncFailingPSIX
+        expr: increase(aiscast_uscg_sync_failures_total[26h]) >= 20
+        labels: {severity: warning}
+        annotations:
+          summary: The PSIX sync failed {{ $value | printf "%.0f" }} times in a day
+          description: Nearly every hourly retry is failing, including on a record file where it has never succeeded. journalctl -u aiscast | grep 'uscg:' on the box for the error.
+      - alert: EnrichmentSyncStaleFiskeridirektoratet
+        expr: time() - aiscast_fiskeridir_last_success_timestamp_seconds > 8 * 86400
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: The Fiskeridirektoratet sync has not succeeded in 8 days
+          description: Every hourly retry for a day or more has failed. journalctl -u aiscast | grep 'fiskeridir:' on the box for the error.
+      - alert: EnrichmentSyncFailingFiskeridirektoratet
+        expr: increase(aiscast_fiskeridir_sync_failures_total[26h]) >= 20
+        labels: {severity: warning}
+        annotations:
+          summary: The Fiskeridirektoratet sync failed {{ $value | printf "%.0f" }} times in a day
+          description: Nearly every hourly retry is failing, including on a record file where it has never succeeded. journalctl -u aiscast | grep 'fiskeridir:' on the box for the error.
+      - alert: EnrichmentSyncStaleFCC
+        expr: time() - aiscast_fcc_last_success_timestamp_seconds > 8 * 86400
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: The FCC sync has not succeeded in 8 days
+          description: Every hourly retry for a day or more has failed. journalctl -u aiscast | grep 'fcc:' on the box for the error.
+      - alert: EnrichmentSyncFailingFCC
+        expr: increase(aiscast_fcc_sync_failures_total[26h]) >= 20
+        labels: {severity: warning}
+        annotations:
+          summary: The FCC sync failed {{ $value | printf "%.0f" }} times in a day
+          description: Nearly every hourly retry is failing, including on a record file where it has never succeeded. journalctl -u aiscast | grep 'fcc:' on the box for the error.
+      - alert: EnrichmentSyncStaleTransportCanada
+        expr: time() - aiscast_tc_last_success_timestamp_seconds > 8 * 86400
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: The Transport Canada sync has not succeeded in 8 days
+          description: Every hourly retry for a day or more has failed. journalctl -u aiscast | grep 'tc:' on the box for the error.
+      - alert: EnrichmentSyncFailingTransportCanada
+        expr: increase(aiscast_tc_sync_failures_total[26h]) >= 20
+        labels: {severity: warning}
+        annotations:
+          summary: The Transport Canada sync failed {{ $value | printf "%.0f" }} times in a day
+          description: Nearly every hourly retry is failing, including on a record file where it has never succeeded. journalctl -u aiscast | grep 'tc:' on the box for the error.
+
+      # The ISED rounds ask per vessel, so a chronically unmatchable vessel fails a few asks a day
+      # without harm; the alert is the registry failing while nothing gets through at all.
+      - alert: ISEDRoundsStalled
+        expr: increase(aiscast_ised_checked_total[2d]) == 0 and increase(aiscast_ised_check_failures_total[2d]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: ISED rounds are failing and no vessel has been checked in two days
+          description: The registry endpoint is refusing every ask. journalctl -u aiscast | grep 'ised:' on the box for the error, and mind the pending bulk-access request before raising the rate.
+
       # Every rule above reads nothing when the samples stop, so their silence needs its own alert.
       - alert: MetricsMissing
         expr: absent(up{job="aiscast"} == 1)
