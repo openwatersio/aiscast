@@ -318,19 +318,20 @@ type archiveRow struct {
 
 // loadHistoryDay writes a staged day's rows to receptions, a vessel at a time. Each vessel's rows come in time
 // order beside the accepted copies of the transmissions other sources delivered for it within 5 minutes of the
-// day, the reach of the live writer's own match for a rebuilt copy.
+// day, the reach of the live writer's own match for a rebuilt copy. Only the columns a reception keeps go through
+// the sort, and exact repeats, adjacent in its order, are dropped here, so a day sorts within the load's memory.
 func (c *chConn) loadHistoryDay(ctx context.Context, s historySource, f historyFile, stage string) (historyCounts, error) {
 	var n historyCounts
 	day := f.day.UTC()
 	rows, err := c.conn.Query(ctx, `SELECT * FROM (
 		SELECT false AS live, mmsi, ts AS at, lat6, lon6, sog10, cog10, heading, navstat, toUInt8(0) AS disc, false AS still, false AS bad
-		FROM (SELECT * FROM `+stage+` WHERE placed ORDER BY mmsi, ts LIMIT 1 BY mmsi, ts, lat6, lon6)
+		FROM `+stage+` WHERE placed
 		UNION ALL
 		SELECT true, mmsi, fromUnixTimestamp64Milli(toUnixTimestamp64Milli(ts) + tx_off, 'UTC'), lat6, lon6, toUInt16(0), toUInt16(0), toUInt16(0), toUInt8(0),
 		       tx_disc, NOT moving, implausible
 		FROM `+c.db+`.receptions
 		WHERE accepted AND source != ? AND ts >= ? AND ts < ? AND mmsi IN (SELECT mmsi FROM `+stage+` WHERE placed)
-	) ORDER BY mmsi, at`, s.name, day.Add(-recentKeep), day.Add(24*time.Hour+recentKeep))
+	) ORDER BY mmsi, at, live, lat6, lon6`, s.name, day.Add(-recentKeep), day.Add(24*time.Hour+recentKeep))
 	if err != nil {
 		return n, err
 	}
@@ -372,6 +373,9 @@ func (c *chConn) loadHistoryDay(ctx context.Context, s historySource, f historyF
 			if err := emit(); err != nil {
 				return n, err
 			}
+		}
+		if l := len(vessel); !r.live && l > 0 && !vessel[l-1].live && vessel[l-1].ts.Equal(r.ts) && vessel[l-1].lat6 == r.lat6 && vessel[l-1].lon6 == r.lon6 {
+			continue // the same row twice in the file
 		}
 		vessel = append(vessel, r)
 	}
