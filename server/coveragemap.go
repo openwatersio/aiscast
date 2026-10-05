@@ -383,10 +383,11 @@ PARTITION BY toYYYYMM(day)
 ORDER BY (res, day, cell)
 TTL day + INTERVAL ` + chCoverageKeep + ` DELETE`
 
-// chCoverageStation is the station a reception counts toward in coverage: a volunteer's own station, or the
-// whole feed for a government feed or aggregator, whose receivers and paths (barentswatch/terra,
-// kystverket/2573010) are one source. A volunteer's source is its kind, as client/app/lib/ais.ts lists them.
-const chCoverageStation = `if(source IN ('station', 'udp', 'mmsi', 'v1', 'http'), station, source)`
+// chCoverageStation is the station a reception counts toward in coverage: a volunteer's own station, whatever
+// stream it tags (station:mmsi:368168720/n2k), or the whole feed for a government feed or aggregator, whose
+// receivers and paths (barentswatch/terra, kystverket/2573010) are one source. A volunteer's source is its kind,
+// as client/app/lib/ais.ts lists them.
+const chCoverageStation = `if(source IN ('station', 'udp', 'mmsi', 'v1', 'http'), splitByChar('/', station)[1], source)`
 
 // chCoverageSelect bins positions from a table into coverage rows, those within chCoverageKeep and matching
 // and, when it is not empty: each position's cell at the finest resolution, and the cells that contain it at

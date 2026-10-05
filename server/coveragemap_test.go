@@ -313,18 +313,21 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	}
 	// Two vessels on the first day, one of them twice, and one of them again on the second. The second vessel's
 	// transmission also arrives as a later copy from another station, which adds a station but no vessel, and
-	// from another receiver of the same feed, which adds neither. A copy
+	// from another receiver of the same feed and another stream of that station, which add neither. A copy
 	// the fold judged implausible, far from the others, from a third station, adds no cell and no station.
 	first := at(2, day1.Add(3*time.Hour))
 	first.txAt, first.txDisc = first.ts, 7
 	again := first
 	again.source, again.station, again.recv, again.dup = "station", "station:other", first.ts.Add(2*time.Second), true
-	// and from another of the first feed's receivers, which is the same source
+	// and from another of the first feed's receivers, which is the same source, and from another stream of
+	// the other station, which is the same station
 	path := first
 	path.station, path.recv, path.dup = "kystverket/2573010", first.ts.Add(time.Second), true
+	stream := again
+	stream.station, stream.recv = "station:other/n2k", first.ts.Add(3*time.Second)
 	wild := at(5, day1.Add(4*time.Hour))
 	wild.lat6, wild.lon6, wild.implausible, wild.station = int32(10*600000), int32(10*600000), true, "station:wild"
-	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, path, wild, at(1, day2.Add(time.Hour))}
+	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, path, stream, wild, at(1, day2.Add(time.Hour))}
 	if err := conn.insert(ctx, "coverage", batch); err != nil {
 		t.Fatal(err)
 	}
