@@ -247,21 +247,15 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"true\"} %d\n", c.rebuiltMatched.Load())
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"false\"} %d\n", c.rebuiltLate.Load())
 	}
-	if l := p.lake; l != nil {
-		metricHead(w, "aiscast_lake_queries_total", "counter", "lake queries for the record import")
-		fmt.Fprintf(w, "aiscast_lake_queries_total %d\n", l.queries.Load())
-		metricHead(w, "aiscast_lake_query_failures_total", "counter", "lake queries that failed")
-		fmt.Fprintf(w, "aiscast_lake_query_failures_total %d\n", l.failures.Load())
-		metricHead(w, "aiscast_lake_query_seconds_total", "counter", "time spent in lake queries")
-		fmt.Fprintf(w, "aiscast_lake_query_seconds_total %.3f\n", float64(l.queryNanos.Load())/1e9)
-		metricHead(w, "aiscast_import_runs_total", "counter", "daily merges of the lake's vessels into the record")
+	if p.vesselHistory != nil {
+		metricHead(w, "aiscast_import_runs_total", "counter", "daily merges of ClickHouse's vessel history into the record")
 		fmt.Fprintf(w, "aiscast_import_runs_total %d\n", p.imports.runs.Load())
-		metricHead(w, "aiscast_import_failures_total", "counter", "merges of the lake's vessels that failed; the next check retries")
+		metricHead(w, "aiscast_import_failures_total", "counter", "merges of ClickHouse's vessel history that failed; the next check retries")
 		fmt.Fprintf(w, "aiscast_import_failures_total %d\n", p.imports.failures.Load())
-		metricHead(w, "aiscast_import_rows_total", "counter", "vessels merged into the record from the lake")
+		metricHead(w, "aiscast_import_rows_total", "counter", "vessels merged into the record from ClickHouse")
 		fmt.Fprintf(w, "aiscast_import_rows_total %d\n", p.imports.rows.Load())
 		if t := p.imports.lastSuccess.Load(); t > 0 {
-			metricHead(w, "aiscast_import_last_success_timestamp_seconds", "gauge", "when the lake's vessels last merged into the record")
+			metricHead(w, "aiscast_import_last_success_timestamp_seconds", "gauge", "when ClickHouse's vessel history last merged into the record")
 			fmt.Fprintf(w, "aiscast_import_last_success_timestamp_seconds %d\n", t)
 		}
 	}

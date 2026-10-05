@@ -26,7 +26,7 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
       - run: npx --yes @redocly/cli@2.56.1 lint openapi.json
-      # cgo on: the lake reader links DuckDB. The runner is linux/amd64 like the box, so the build is native.
+      # The runner is linux/amd64 like the box, so the build is native.
       - run: go build -trimpath -o aiscast-linux .
       - uses: actions/upload-artifact@v7
         with:
