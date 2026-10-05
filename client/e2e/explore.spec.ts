@@ -77,6 +77,24 @@ test("tech yachts separate sailing and motor boats and retain identity and owner
     }),
   ).toBe(true);
   await expect(page.locator("#athena img")).toHaveCount(0);
+  await expect(page.locator("article .aspect-video")).toHaveCount(18);
+  await expect(
+    page
+      .locator("#athena")
+      .getByRole("link", { name: "Share your photo of this vessel" }),
+  ).toHaveAttribute(
+    "href",
+    "https://commons.wikimedia.org/wiki/Special:UploadWizard?categories=IMO%201007237",
+  );
+  for (const id of ["koru", "athena", "ran-vii"]) {
+    const frame = await page.locator(`#${id} .aspect-video`).boundingBox();
+    expect(frame).not.toBeNull();
+    expect(frame!.width / frame!.height).toBeCloseTo(16 / 9, 1);
+  }
+
+  await koru
+    .getByRole("link", { name: "Open Koru in the AIS viewer", exact: true })
+    .scrollIntoViewIfNeeded();
   await expect(page.locator("#koru")).toContainText("AIS reports unavailable");
   await expect(
     page

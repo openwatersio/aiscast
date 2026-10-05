@@ -14,15 +14,16 @@ export function VesselPhotos({
   mmsi,
   imo,
   name,
+  className = "relative -mx-4 mb-3 aspect-video bg-surface-tile",
 }: {
   media?: VesselMedia;
   mmsi?: number;
   imo?: number;
   name: string;
+  className?: string;
 }) {
   return (
-    // Bleeds past the panel's padding to its edges.
-    <div className="relative -mx-4 mb-3 aspect-video bg-surface-tile">
+    <div className={className}>
       {media?.photos.length ? (
         <PhotoCarousel key={mmsi} photos={media.photos} alt={name} />
       ) : media && mmsi != null ? (

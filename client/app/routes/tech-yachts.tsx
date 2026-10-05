@@ -1,5 +1,5 @@
 import { DirectoryLayout } from "../components/DirectoryLayout";
-import { PhotoCarousel } from "../components/ui/PhotoCarousel";
+import { VesselPhotos } from "../components/VesselPhotos";
 import { useMedia } from "../lib/useMedia";
 import { VesselMapPreview } from "../components/VesselMapPreview";
 import { pageMeta } from "../lib/meta";
@@ -83,11 +83,13 @@ function YachtCard({ boat }: { boat: TechYacht }) {
       >
         Yacht details
       </a>
-      {!!media?.photos.length && (
-        <div className="relative mt-4 aspect-video overflow-hidden rounded-lg bg-surface-tile">
-          <PhotoCarousel photos={media.photos} alt={boat.name} />
-        </div>
-      )}
+      <VesselPhotos
+        media={media}
+        mmsi={boat.mmsi}
+        imo={boat.imo}
+        name={boat.name}
+        className="relative mt-4 aspect-video overflow-hidden rounded-lg bg-surface-tile"
+      />
       <p className="mt-4 text-headline font-semibold">{boat.person}</p>
       <p className="mt-1 text-subhead text-fg-secondary">
         {boat.connection} · {boat.chapter}
