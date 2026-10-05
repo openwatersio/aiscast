@@ -5,12 +5,18 @@
 // The systemd collector counts, per unit, the restarts systemd made because the process exited on its own
 // (Restart=always after a crash, panic, or OOM kill). systemctl restart, which deploys use, never moves it,
 // so it is the signal that tells a crash from a deploy.
+// The textfile collector reads what jobs write under /var/lib/alloy/textfile, such as the ClickHouse backup's
+// last success.
 prometheus.exporter.unix "host" {
-	enable_collectors = ["systemd"]
+	enable_collectors = ["systemd", "textfile"]
+
+	textfile {
+		directory = "/var/lib/alloy/textfile"
+	}
 
 	systemd {
 		enable_restarts = true
-		unit_include    = "(aiscast|caddy|alloy|clickhouse-server)\\.service"
+		unit_include    = "(aiscast|caddy|alloy|clickhouse-server|clickhouse-backup)\\.service"
 	}
 }
 

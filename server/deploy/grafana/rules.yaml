@@ -257,6 +257,14 @@ groups:
         annotations:
           summary: '{{ $labels.source }} history is behind or failing to load'
           description: MarineCadastre publishes a quarter about two months after it closes, so its newest day loaded should never be five months old, and neither files nor the checks every six hours, which list the archive, should keep failing. The newest day reads 0 until one loads. Check the history lines in journalctl -u aiscast and history_loads in ClickHouse.
+      - alert: ClickHouseBackupStale
+        # The backup's timestamp exists only on a box with the R2 keys, once a backup has succeeded there.
+        expr: time() - aiscast_clickhouse_backup_last_success_timestamp_seconds > 2 * 86400
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: ClickHouse has not backed up to R2 for two days
+          description: The nightly backup at 04:00 UTC is the only copy of history off the box. Check journalctl -u clickhouse-backup, system.backup_log, and the keys in /etc/clickhouse-server/r2.env.
       - alert: ClickHouseWritesSlow
         expr: rate(aiscast_clickhouse_write_seconds_total[15m]) > 0.5
         for: 15m
