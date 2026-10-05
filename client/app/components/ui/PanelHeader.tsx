@@ -35,8 +35,8 @@ export function stackStateFor(current: { state: unknown }, currentIsVessel: bool
 /**
  * The bar at the top of a stack entry: the way back, the entry's title, and whatever acts on
  * the entry. It floats over the top of the page, which scrolls under it. The title shows only
- * while the page's own large title is out of sight, scrolled away or below a lowered sheet, as
- * a navigation bar's does in iOS, and what scrolls under the bar fades out with it.
+ * once the page's own large title has scrolled away, as a navigation bar's does in iOS, and
+ * what scrolls under the bar fades out with it.
  */
 export function PanelHeader({
   back,
