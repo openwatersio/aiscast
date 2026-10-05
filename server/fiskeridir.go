@@ -56,6 +56,7 @@ type fdirVessel struct {
 
 // fdirStats is read by /metrics.
 type fdirStats struct {
+	enabled                 atomic.Bool // set when the sync's env flag is on; gates the last-success metric
 	runs, failures, vessels atomic.Int64
 	lastSuccess             atomic.Int64 // unix seconds
 }
@@ -303,6 +304,7 @@ func (p *Pipeline) runFiskeridir(endpoint string) {
 // syncFiskeridirIfDue replaces the stored register when the last sync is a week old or there has never
 // been one, and reports whether it did.
 func (p *Pipeline) syncFiskeridirIfDue(now time.Time, endpoint string) bool {
+	p.fiskeridir.enabled.Store(true) // a sync that runs is enabled, whoever called it
 	last, err := p.store.meta("fiskeridir_sync")
 	if err != nil {
 		log.Printf("fiskeridir: %v", err)

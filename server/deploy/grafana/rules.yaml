@@ -351,6 +351,7 @@ groups:
       # day of failures means every retry is failing; the FCC sync once failed for hours on a read-only
       # /tmp, which is the class of failure these exist to surface. The last-success metric appears
       # after a source's first success, so a fresh record file is covered by the failures rules.
+      # A source turned off by its env flag stops exporting last-success, so these stay quiet for it.
       - alert: EnrichmentSyncStaleWikidata
         expr: time() - aiscast_wikidata_last_success_timestamp_seconds > 8 * 86400
         for: 1h
