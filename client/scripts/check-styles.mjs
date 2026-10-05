@@ -1,6 +1,7 @@
 // Components style themselves with the design tokens as Tailwind utilities (bg-surface,
 // text-fg-muted) and never name a CSS variable, so a theme or token change is made in app.css
-// alone. This fails on any var(--…) in a component, in a class name or a style alike.
+// alone. This fails on any variable a component names, in a class name or a style alike:
+// var(--x), Tailwind's (--x) shorthand for it, or an arbitrary property such as [--x:0].
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,7 +14,7 @@ const walk = (dir) => {
       readFileSync(path, "utf8")
         .split("\n")
         .forEach((line, i) => {
-          if (line.includes("var(--")) found.push(`${path}:${i + 1}: ${line.trim()}`);
+          if (/[([]--[\w-]/.test(line)) found.push(`${path}:${i + 1}: ${line.trim()}`);
         });
     }
   }
