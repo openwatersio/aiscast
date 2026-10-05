@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up the aiscast ClickHouse database to R2
+Requires=clickhouse-server.service
+After=clickhouse-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aiscast/clickhouse-backup.sh
+# A full backup takes hours; one that hangs fails here, so the next night's runs, and ClickHouseBackupStale catches
+# it if it keeps happening.
+TimeoutStartSec=20h
+Nice=10
+IOSchedulingClass=idle
