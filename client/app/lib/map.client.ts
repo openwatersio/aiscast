@@ -867,6 +867,7 @@ export function createMap(
           type: "fill",
           source: "coverage",
           "source-layer": "coverage",
+          filter: ["has", measure],
           paint: {
             "fill-color": coverageColor(theme, measure) as maplibregl.DataDrivenPropertyValueSpecification<string>,
             // A cell heard on fewer days of the window fades toward the water.
@@ -879,8 +880,10 @@ export function createMap(
     if (map.getLayer("coverage")) {
       map.setLayoutProperty("coverage", "visibility", coverage ? "visible" : "none");
       // The layer outlives the page, and the window can have grown since it was added, or another
-      // page colors it by another measure.
+      // page colors it by another measure. A tile cached from a server that did not count the
+      // measure lacks it, and its cells are left out until a fresh tile arrives.
       if (coverage) {
+        map.setFilter("coverage", ["has", measure]);
         map.setPaintProperty("coverage", "fill-color", coverageColor(theme, measure) as maplibregl.DataDrivenPropertyValueSpecification<string>);
         map.setPaintProperty(
           "coverage",
