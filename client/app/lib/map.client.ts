@@ -14,7 +14,8 @@ import {
   splitTrack,
   viewBoxes,
 } from "./ais";
-import { publicApiBase } from "./api";
+import { publicApiBase, type CoverageTiles } from "./api";
+import { coverageColor, coverageOpacity, coverageSummary } from "./coverage";
 import { PRIVACY } from "./links";
 import { reportError } from "./report";
 import type { BBox, Stream } from "./stream";
@@ -112,6 +113,11 @@ export interface MapController {
   setResults(results: SearchResult[]): void;
   /** Rings one result's mark brighter, as its row is pointed at. */
   highlightResult(mmsi: number | undefined): void;
+  /**
+   * Draws where the network hears vessels from these tiles, in place of the vessels, until
+   * called with nothing.
+   */
+  setCoverage(tiles: CoverageTiles | undefined): void;
 }
 
 export interface MapView {
@@ -829,6 +835,80 @@ export function createMap(
     };
   }
 
+  // The coverage map, while its route is open. The vessels are hidden, since they would cover
+  // the cells they were counted in.
+  let coverage: CoverageTiles | undefined;
+  const VESSEL_LAYERS = [
+    "vessel-halo",
+    "vessel-still",
+    "vessel-moving",
+    "vessel-label",
+    "tile-still",
+    "tile-moving",
+    "tile-label",
+    "result-ring",
+    "result-dot",
+  ];
+
+  function applyCoverage() {
+    if (!ready) return;
+    if (coverage && !map.getSource("coverage")) {
+      map.addSource("coverage", {
+        type: "vector",
+        tiles: coverage.tiles,
+        minzoom: coverage.minzoom ?? 0,
+        maxzoom: coverage.maxzoom ?? 10,
+        attribution: coverage.attribution,
+      });
+      // Under the basemap's labels, so place names stay readable over the cells.
+      const labels = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+      map.addLayer(
+        {
+          id: "coverage",
+          type: "fill",
+          source: "coverage",
+          "source-layer": "coverage",
+          paint: {
+            "fill-color": coverageColor(theme) as maplibregl.DataDrivenPropertyValueSpecification<string>,
+            // A cell heard on fewer days of the window fades toward the water.
+            "fill-opacity": coverageOpacity(coverage.window.days) as maplibregl.DataDrivenPropertyValueSpecification<number>,
+          },
+        } as maplibregl.LayerSpecification,
+        labels,
+      );
+    }
+    if (map.getLayer("coverage")) {
+      map.setLayoutProperty("coverage", "visibility", coverage ? "visible" : "none");
+      // The layer outlives the page, and the window can have grown since it was added.
+      if (coverage) {
+        map.setPaintProperty(
+          "coverage",
+          "fill-opacity",
+          coverageOpacity(coverage.window.days) as maplibregl.DataDrivenPropertyValueSpecification<number>,
+        );
+      }
+    }
+    for (const id of VESSEL_LAYERS) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", coverage ? "none" : "visible");
+    }
+  }
+
+  // On hover, or on a tap, since a phone has no pointer to hover with.
+  function showCoverage(e: maplibregl.MapLayerMouseEvent) {
+    const p = e.features?.[0]?.properties;
+    if (!p || !coverage) return;
+    const [count, heard] = coverageSummary(Number(p.vessels), Number(p.days), coverage.window.days);
+    const el = document.createElement("div");
+    el.appendChild(document.createElement("strong")).textContent = count;
+    const meta = el.appendChild(document.createElement("div"));
+    meta.className = "meta";
+    meta.textContent = heard;
+    hover.setLngLat(e.lngLat).setDOMContent(el).addTo(map);
+  }
+  map.on("mousemove", "coverage", showCoverage);
+  map.on("click", "coverage", showCoverage);
+  map.on("mouseleave", "coverage", () => hover.remove());
+
   // Sources, layers, and images belong to the style, so swapping the basemap for a theme
   // removes them. This puts them back, on the first style and on every swap.
   map.on("style.load", () => {
@@ -934,6 +1014,7 @@ export function createMap(
     if (tileJSON) addTileLayers();
 
     ready = true;
+    applyCoverage();
     updateView();
     render();
     applyInsets();
@@ -987,11 +1068,13 @@ export function createMap(
     // vessel's halo draws over everything.
     for (const layer of vesselLayers("tile", "tiles", "vessels", tileFadeExpr)) map.addLayer(layer, "vessel-halo");
     hasTiles = true;
+    applyCoverage();
   }
 
   function refreshTiles() {
-    // A hidden tab would fetch tiles nobody sees. The next visible tick catches up.
-    if (!hasTiles || document.hidden || Date.now() - lastRefresh < TILE_FRESH_MS) return;
+    // A hidden tab, or the coverage map in place of the vessels, would fetch tiles nobody
+    // sees. The next visible tick catches up.
+    if (!hasTiles || coverage || document.hidden || Date.now() - lastRefresh < TILE_FRESH_MS) return;
     lastRefresh = Date.now();
     map.refreshTiles("tiles");
   }
@@ -1145,6 +1228,17 @@ export function createMap(
     },
     onSelect(fn) {
       selectHandlers.push(fn);
+    },
+    setCoverage(tiles) {
+      const leaving = coverage && !tiles;
+      coverage = tiles;
+      applyCoverage();
+      if (leaving) {
+        // A tapped cell's card has no mouseleave to close it, and the vessel tiles did not
+        // reload while hidden.
+        hover.remove();
+        refreshTiles();
+      }
     },
     followCamera: setCameraFollow,
     onCameraFollow(fn) {

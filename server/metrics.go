@@ -225,24 +225,6 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		metricHead(w, "aiscast_store_mirror_failures_total", "counter", "mirror refreshes that failed after a write; their vessels are read back again with the next write")
 		fmt.Fprintf(w, "aiscast_store_mirror_failures_total %d\n", st.mirrorFailures.Load())
 	}
-	tracksUp := 0
-	if p.tracks != nil {
-		tracksUp = 1
-	}
-	metricHead(w, "aiscast_tracks_up", "gauge", "1 when the recent track store is attached; 0 means track requests are failing")
-	fmt.Fprintf(w, "aiscast_tracks_up %d\n", tracksUp)
-	if t := p.tracks; t != nil {
-		metricHead(w, "aiscast_tracks_points_written_total", "counter", "positions written to the recent track store")
-		fmt.Fprintf(w, "aiscast_tracks_points_written_total %d\n", t.pointsWritten.Load())
-		metricHead(w, "aiscast_tracks_write_failures_total", "counter", "track store writes that failed; the positions are retried on the next flush")
-		fmt.Fprintf(w, "aiscast_tracks_write_failures_total %d\n", t.writeFailures.Load())
-		metricHead(w, "aiscast_tracks_write_seconds_total", "counter", "time spent writing to the track store")
-		fmt.Fprintf(w, "aiscast_tracks_write_seconds_total %.3f\n", float64(t.writeNanos.Load())/1e9)
-		metricHead(w, "aiscast_tracks_points_dropped_total", "counter", "positions dropped because the track writer fell behind by more than its queue holds")
-		fmt.Fprintf(w, "aiscast_tracks_points_dropped_total %d\n", t.dropped.Load())
-		metricHead(w, "aiscast_tracks_bytes", "gauge", "size of the track database and its write-ahead log")
-		fmt.Fprintf(w, "aiscast_tracks_bytes %d\n", t.bytes())
-	}
 	p.vmu.RLock()
 	c := p.ch
 	p.vmu.RUnlock()
@@ -266,16 +248,12 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"false\"} %d\n", c.rebuiltLate.Load())
 	}
 	if l := p.lake; l != nil {
-		metricHead(w, "aiscast_lake_queries_total", "counter", "lake queries for track history and the record import")
+		metricHead(w, "aiscast_lake_queries_total", "counter", "lake queries for the record import")
 		fmt.Fprintf(w, "aiscast_lake_queries_total %d\n", l.queries.Load())
 		metricHead(w, "aiscast_lake_query_failures_total", "counter", "lake queries that failed")
 		fmt.Fprintf(w, "aiscast_lake_query_failures_total %d\n", l.failures.Load())
 		metricHead(w, "aiscast_lake_query_seconds_total", "counter", "time spent in lake queries")
 		fmt.Fprintf(w, "aiscast_lake_query_seconds_total %.3f\n", float64(l.queryNanos.Load())/1e9)
-		metricHead(w, "aiscast_lake_cache_hits_total", "counter", "vessel-days answered from the lake cache")
-		fmt.Fprintf(w, "aiscast_lake_cache_hits_total %d\n", l.hits.Load())
-		metricHead(w, "aiscast_lake_cache_misses_total", "counter", "vessel-days read from the lake")
-		fmt.Fprintf(w, "aiscast_lake_cache_misses_total %d\n", l.misses.Load())
 		metricHead(w, "aiscast_import_runs_total", "counter", "daily merges of the lake's vessels into the record")
 		fmt.Fprintf(w, "aiscast_import_runs_total %d\n", p.imports.runs.Load())
 		metricHead(w, "aiscast_import_failures_total", "counter", "merges of the lake's vessels that failed; the next check retries")
@@ -285,6 +263,31 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		if t := p.imports.lastSuccess.Load(); t > 0 {
 			metricHead(w, "aiscast_import_last_success_timestamp_seconds", "gauge", "when the lake's vessels last merged into the record")
 			fmt.Fprintf(w, "aiscast_import_last_success_timestamp_seconds %d\n", t)
+		}
+	}
+	if h := p.history; h != nil {
+		h.mu.Lock()
+		metricHead(w, "aiscast_history_latest_day_timestamp_seconds", "gauge", "the newest day of each historical archive loaded into ClickHouse, 0 until one has")
+		for _, s := range h.sources {
+			var at int64 // 0 until a day loads, so an archive that never loads reads as stale rather than absent
+			if t := h.latest[s]; !t.IsZero() {
+				at = t.Unix()
+			}
+			fmt.Fprintf(w, "aiscast_history_latest_day_timestamp_seconds{source=%q} %d\n", s, at)
+		}
+		h.mu.Unlock()
+		metricHead(w, "aiscast_history_files_total", "counter", "historical archive files loaded, or failed and left for the next check")
+		for _, s := range h.sources {
+			fmt.Fprintf(w, "aiscast_history_files_total{source=%q,result=\"loaded\"} %d\n", s, h.loaded[s].Load())
+			fmt.Fprintf(w, "aiscast_history_files_total{source=%q,result=\"failed\"} %d\n", s, h.failed[s].Load())
+		}
+		metricHead(w, "aiscast_history_check_failures_total", "counter", "historical archive checks that failed before any file: the listing, history_loads, or the connection")
+		for _, s := range h.sources {
+			fmt.Fprintf(w, "aiscast_history_check_failures_total{source=%q} %d\n", s, h.checks[s].Load())
+		}
+		metricHead(w, "aiscast_history_rows_total", "counter", "receptions loaded from historical archives")
+		for _, s := range h.sources {
+			fmt.Fprintf(w, "aiscast_history_rows_total{source=%q} %d\n", s, h.rows[s].Load())
 		}
 	}
 	if p.store != nil {

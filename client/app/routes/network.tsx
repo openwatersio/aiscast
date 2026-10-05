@@ -1,29 +1,36 @@
 import { Antenna, CodeXml } from "lucide-react";
+import { useEffect } from "react";
 import { PageTitle, Panel } from "../components/Panel";
 import { Facts } from "../components/ui/Facts";
 import { Prompt } from "../components/ui/Prompt";
 import { Section, Tile } from "../components/ui/Section";
 import { StatGrid } from "../components/ui/StatGrid";
 import { formatAge, isVolunteer } from "../lib/ais";
-import { browserAuth, getStats, publicApiBase } from "../lib/api";
+import { browserAuth, getCoverage, getStats, publicApiBase, type ApiAuth } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS } from "../lib/links";
+import { useLive } from "../lib/live";
 import { pageMeta } from "../lib/meta";
 import type { Route } from "./+types/network";
 
-export async function loader({ context }: Route.LoaderArgs) {
-  return { stats: await getStats(context.get(serverEnv)) };
+async function load(auth: ApiAuth) {
+  const [stats, coverage] = await Promise.all([getStats(auth), getCoverage(auth)]);
+  return { stats, coverage };
 }
 
-export async function clientLoader() {
-  return { stats: await getStats(browserAuth()) };
+export function loader({ context }: Route.LoaderArgs) {
+  return load(context.get(serverEnv));
+}
+
+export function clientLoader() {
+  return load(browserAuth());
 }
 
 export const meta = () =>
   pageMeta({
     title: "Network status | Open Waters AIS",
     description:
-      "What the Open Waters AIS network is receiving right now: sources, message rates, delivery delay, vessels tracked, and stations feeding.",
+      "What the Open Waters AIS network is receiving right now and where it hears vessels: a coverage map, sources, message rates, delivery delay, vessels tracked, and stations feeding.",
     path: "/network",
   });
 
@@ -34,7 +41,16 @@ const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFra
 const KINDS: Record<string, string> = { vessel: "Vessels", aton: "Aids to navigation", base: "Base stations", sar: "Search and rescue aircraft" };
 
 export default function Network({ loaderData }: Route.ComponentProps) {
-  const { stats } = loaderData;
+  const { stats, coverage } = loaderData;
+  const live = useLive();
+
+  // The map shows where the network hears vessels in place of the vessels while this page is open.
+  useEffect(() => {
+    if (!live || !coverage) return;
+    live.ctl.setCoverage(coverage);
+    return () => live.ctl.setCoverage(undefined);
+  }, [live, coverage]);
+
   const sources = Object.entries(stats?.sources ?? {}).sort((a, b) => b[1].events.last_24h - a[1].events.last_24h);
   const volunteers = Object.entries(stats?.stations.by_source ?? {})
     .filter(([kind]) => isVolunteer(kind))
@@ -93,7 +109,7 @@ export default function Network({ loaderData }: Route.ComponentProps) {
                 <tr className="text-left text-caption text-fg-muted uppercase">
                   <th className="pb-1 font-medium" />
                   {windows.map(([label]) => (
-                    <th key={label} className={head}>
+                    <th key={label} className={head} title={label === "All" ? "Every vessel the network has heard" : undefined}>
                       {label}
                     </th>
                   ))}
@@ -101,29 +117,35 @@ export default function Network({ loaderData }: Route.ComponentProps) {
               </thead>
               <tbody>
                 <tr className="border-t border-line-subtle text-fg">
-                  <td className="py-1.5">Active</td>
+                  <td className="py-1.5" title="Vessels heard within each window">
+                    Active
+                  </td>
                   {windows.map(([label, active]) => count(label, active))}
                 </tr>
                 <tr className="border-t border-line-subtle text-fg">
-                  <td className="py-1.5">New</td>
+                  <td className="py-1.5" title="Vessels the network had never heard before each window">
+                    New
+                  </td>
                   {windows.map(([label, , fresh]) => count(label, fresh))}
                 </tr>
               </tbody>
             </table>
           </Section>
-          <p className="mt-2 px-0.5 text-footnote text-fg-muted">
-            "Active" counts vessels heard within each window, and "New" those the network had never heard before it.
-            "All" is every vessel the network has heard.
-          </p>
 
           <Section label="Sources">
             <table className="w-full text-subhead">
               <thead>
                 <tr className="text-left text-caption text-fg-muted uppercase">
                   <th className="pb-1 font-medium">Source</th>
-                  <th className={head}>24 h</th>
-                  <th className={head}>Unique</th>
-                  <th className={head}>Delay</th>
+                  <th className={head} title="Messages in the last 24 hours, a rolling window rather than a total since start">
+                    24 h
+                  </th>
+                  <th className={head} title="Vessels no other source kind heard in the last 30 minutes">
+                    Unique
+                  </th>
+                  <th className={head} title="Median delay">
+                    Delay
+                  </th>
                   <th className={head}>Last</th>
                 </tr>
               </thead>
@@ -142,10 +164,6 @@ export default function Network({ loaderData }: Route.ComponentProps) {
               </tbody>
             </table>
           </Section>
-          <p className="mt-2 px-0.5 text-footnote text-fg-muted">
-            "Unique" counts vessels no other source kind heard in the last 30 minutes, and delay is the median.
-            Counts are rolling windows, not totals since start.
-          </p>
 
           <Section label="Tracked now">
             <Facts
@@ -160,6 +178,14 @@ export default function Network({ loaderData }: Route.ComponentProps) {
             <a href={`${publicApiBase()}/v1/stats`} className="font-mono">
               /v1/stats
             </a>
+            {coverage && (
+              <>
+                {" "}and the map at{" "}
+                <a href={`${publicApiBase()}/v1/coverage/tiles.json`} className="font-mono">
+                  /v1/coverage/tiles.json
+                </a>
+              </>
+            )}
             , and every vessel in it is on the stream.
           </Prompt>
         </>

@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/BertoldVdb/go-ais"
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 // fakeCH records every batch and token it is handed, and fails the first `fail` of them: with a refusal when
@@ -146,8 +150,8 @@ func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
 		t.Errorf("an insert into a missing database is a refusal: %v", err)
 	}
 
-	// Reads come back in time order from every table. A one-minute step reads every position, a 15-minute step
-	// the earliest per window, and a day-long step the hourly rollup.
+	// Reads come back in time order. A one-minute step reads positions_1m's minutes, a 15-minute step the
+	// earliest of them in each window, and a day-long step the earliest of the day.
 	now := time.Now()
 	for _, c := range []struct {
 		step time.Duration
@@ -178,16 +182,8 @@ func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
 	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".receptions WHERE mmsi = 257000001").Scan(&n); err != nil || n != 3 {
 		t.Fatalf("every position: %d %v", n, err)
 	}
-	for _, rollup := range []string{"positions_15m", "positions_1h"} {
-		var first time.Time
-		var lat6 int32
-		q := "SELECT tupleElement(argMinMerge(first), 1), tupleElement(argMinMerge(first), 2) FROM " + db + "." + rollup + " WHERE mmsi = 257000001"
-		if err := conn.conn.QueryRow(ctx, q).Scan(&first, &lat6); err != nil {
-			t.Fatal(rollup, err)
-		}
-		if !first.Equal(slot.Add(time.Minute)) || lat6 != int32(59.89*600000) {
-			t.Errorf("%s keeps the earliest position in its window: %v %d", rollup, first, lat6)
-		}
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions_1m FINAL WHERE mmsi = 257000001").Scan(&n); err != nil || n != 3 {
+		t.Errorf("positions_1m keeps a moving vessel's minutes: %d %v", n, err)
 	}
 }
 
@@ -280,16 +276,18 @@ func TestClickHouseTableForAStep(t *testing.T) {
 		span   time.Duration // the range's length; zero reaches to now
 	}{
 		{3 * 24 * time.Hour, 0, "positions", 0, 0},
-		{3 * 24 * time.Hour, 10 * time.Minute, "positions", 0, 0},
-		{3 * 24 * time.Hour, 15 * time.Minute, "positions_15m", 15 * time.Minute, 0},
-		{40 * 24 * time.Hour, time.Minute, "positions_15m", 15 * time.Minute, 0},  // longer than the positions view reads
-		{40 * 24 * time.Hour, time.Minute, "positions", 0, 2 * time.Hour},         // any age, within its span
-		{400 * 24 * time.Hour, 0, "positions", 0, 31 * 24 * time.Hour},            // every position, a month a year back
-		{400 * 24 * time.Hour, 0, "positions_1h", time.Hour, 32 * 24 * time.Hour}, // and past the span, the rollup that holds it
-		{3 * 24 * time.Hour, 2 * time.Hour, "positions_1h", time.Hour, 0},
-		{400 * 24 * time.Hour, 15 * time.Minute, "positions_1h", time.Hour, 0}, // past the 15-minute rollup's 13 months
-		{3 * 24 * time.Hour, 20 * time.Minute, "positions", 0, 0},              // not whole 15-minute windows
-		{3 * 24 * time.Hour, 90 * time.Minute, "positions_15m", 15 * time.Minute, 0},
+		{24 * time.Hour, time.Hour, "positions", 0, 0}, // inside the 48-hour window
+		{3 * 24 * time.Hour, 10 * time.Minute, "positions_1m", time.Minute, 0},
+		{3 * 24 * time.Hour, 15 * time.Minute, "positions_1m", time.Minute, 0},
+		{40 * 24 * time.Hour, 0, "positions_1m", time.Minute, 0},                    // longer than the positions view reads
+		{40 * 24 * time.Hour, time.Second, "positions", 0, 2 * time.Hour},           // any age, within its span
+		{400 * 24 * time.Hour, 0, "positions", 0, 31 * 24 * time.Hour},              // every position, a month a year back
+		{400 * 24 * time.Hour, 0, "positions_1m", time.Minute, 32 * 24 * time.Hour}, // and past the span, positions_1m
+		{3 * 24 * time.Hour, 2 * time.Hour, "positions_1m", time.Minute, 0},
+		{400 * 24 * time.Hour, 15 * time.Minute, "positions_1m", time.Minute, 0},
+		{3 * 24 * time.Hour, 20 * time.Minute, "positions_1m", time.Minute, 0},
+		{3 * 24 * time.Hour, 90 * time.Minute, "positions_1m", time.Minute, 0},
+		{3 * 24 * time.Hour, 30 * time.Second, "positions", 0, 0},
 	} {
 		from, to := now.Add(-c.age), now
 		if c.span > 0 {
@@ -311,31 +309,40 @@ func (f *fakeHistory) history(context.Context, uint32, time.Time, time.Time, tim
 	return f.points, f.err
 }
 
+func (f *fakeHistory) first(context.Context, uint32, time.Time, time.Time) (time.Time, bool, error) {
+	if len(f.points) == 0 {
+		return time.Time{}, false, f.err
+	}
+	return f.points[0].ts, f.err == nil, f.err
+}
+
 func TestTrackReadsHistoryFromClickHouse(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-3 * 24 * time.Hour).Truncate(time.Hour)
 	ch := &fakeHistory{points: []trackPoint{{mmsi: 257000001, ts: old, lat6: int32(59.5 * 600000), lon6: int32(10.7 * 600000),
 		sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"}}}
-	p := lakePipeline(t, &fakeLake{positions: []map[string]any{lakePosition(old.Add(time.Hour), 59.6)}})
+	p, _ := trackPipeline(t)
 	p.attachClickHouse(&chStore{w: &fakeCH{}, r: ch})
-	sail(t, p, 257000001, time.Hour)
 	from := now.Add(-4 * 24 * time.Hour).UTC().Format(time.RFC3339)
 
 	tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from)
-	if first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0]); tr.Properties.Points != 2 || !first.Equal(old) || tr.Attribution["aishub"] == "" {
-		t.Errorf("history comes from ClickHouse, not the lake: %+v %v", tr.Properties, tr.Attribution)
+	if first, _ := time.Parse(time.RFC3339, tr.Properties.Times[0]); tr.Properties.Points != 1 || !first.Equal(old) || tr.Attribution["aishub"] == "" {
+		t.Errorf("history comes from ClickHouse: %+v %v", tr.Properties, tr.Attribution)
+	}
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+now.Add(-300*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 200 {
+		t.Errorf("a track reaches most of a year: %d %s", w.Code, w.Body)
 	}
 	ch.err = errors.New("clickhouse is down")
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from); tr.Properties.Points != 2 || tr.Attribution["digitraffic"] == "" {
-		t.Errorf("the lake answers while ClickHouse fails: %+v %v", tr.Properties, tr.Attribution)
+	if w := get(t, p, "/v1/vessels/257000001/track?from="+from); w.Code != 500 {
+		t.Errorf("ClickHouse down: %d", w.Code)
 	}
-	// Past the lake's own reach, a failing ClickHouse fails the request rather than scan months of the lake.
-	if w := get(t, p, "/v1/vessels/257000001/track?from="+now.Add(-20*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 500 {
-		t.Errorf("20 days with ClickHouse down: %d", w.Code)
+	p.attachClickHouse(nil)
+	if w := get(t, p, "/v1/vessels/257000001/track"); w.Code != 503 {
+		t.Errorf("without ClickHouse: %d", w.Code)
 	}
-	ch.err = nil
-	if w := get(t, p, "/v1/vessels/257000001/track?from="+now.Add(-300*24*time.Hour).UTC().Format(time.RFC3339)); w.Code != 200 {
-		t.Errorf("with ClickHouse a track reaches most of a year: %d %s", w.Code, w.Body)
+	var out mcpTrack
+	if msg := mcpCall(t, mcpClient(t, p), "get_vessel_track", map[string]any{"mmsi": 257000001}, &out); !strings.Contains(msg, "not available") {
+		t.Errorf("MCP without ClickHouse: %q", msg)
 	}
 }
 
@@ -374,6 +381,12 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 	// The thinning happens in ClickHouse: ten-minute buckets bring 12 rows back, not 120.
 	if got, err := conn.history(context.Background(), 257000001, start, start.Add(2*time.Hour), 10*time.Minute, 1000, time.Now()); err != nil || len(got) != 12 {
 		t.Errorf("thinned in the query: %d rows, %v", len(got), err)
+	}
+	if got, ok, err := conn.first(context.Background(), 257000001, start.Add(-time.Hour), start.Add(time.Hour)); !ok || err != nil || !got.Equal(start) {
+		t.Errorf("first position: %v %v %v", got, ok, err)
+	}
+	if _, ok, err := conn.first(context.Background(), 257000009, start, start.Add(time.Hour)); ok || err != nil {
+		t.Errorf("first position of a vessel with none: %v %v", ok, err)
 	}
 	from := start.Add(-time.Hour).UTC().Format(time.RFC3339)
 	to := start.Add(3 * time.Hour).UTC().Format(time.RFC3339)
@@ -424,7 +437,7 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 		t.Errorf("interval=0 40 days back: interval %d, %d points; want 0 and 3", tr.Properties.Interval, tr.Properties.Points)
 	}
 
-	// A step under a millisecond keeps every position, as the track store does.
+	// A step under a millisecond keeps every position, as ClickHouse stores them.
 	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=500us"); tr.Properties.Points != 120 || tr.Properties.Interval != 0 {
 		t.Errorf("a sub-millisecond step: %d points", tr.Properties.Points)
 	}
@@ -439,7 +452,7 @@ func TestTrackKeepsTheExtraHistoryRowAsTheSpikeAnchor(t *testing.T) {
 		return trackPoint{mmsi: 257000001, ts: t0.Add(at), lat6: int32(lat * 600000), lon6: int32(10.7 * 600000),
 			sog10: 100, cog10: 3600, heading: 511, navStatus: 15, source: "aishub"}
 	}
-	p := lakePipeline(t, &fakeLake{})
+	p, _ := trackPipeline(t)
 	p.attachClickHouse(&chStore{w: &fakeCH{}, r: &fakeHistory{points: []trackPoint{pt(0, 59.0), pt(time.Minute, 61.0), pt(2*time.Minute, 59.001)}}})
 	from := t0.Add(-time.Hour).UTC().Format(time.RFC3339)
 	to := t0.Add(time.Hour).UTC().Format(time.RFC3339)
@@ -504,25 +517,25 @@ func TestClickHouseQueuesEveryCopy(t *testing.T) {
 		t.Fatalf("%d copies queued, want 10: %+v", len(q), q)
 	}
 	accepted := q[0]
-	if accepted.dup || accepted.tx == 0 || accepted.station != "kystverket" || accepted.recv.IsZero() {
+	if accepted.dup || accepted.txAt.IsZero() || accepted.station != "kystverket" || accepted.recv.IsZero() {
 		t.Errorf("the accepted copy: %+v", accepted)
 	}
-	if c := q[1]; !c.dup || c.tx != accepted.tx || c.station != "barentswatch" {
+	if c := q[1]; !c.dup || txKey(c) != txKey(accepted) || c.station != "barentswatch" {
 		t.Errorf("dedupe's copy names the accepted transmission: %+v", c)
 	}
-	if c := q[2]; c.dup || c.tx == accepted.tx {
+	if c := q[2]; c.dup || txKey(c) == txKey(accepted) {
 		t.Errorf("the next report is a transmission of its own: %+v", c)
 	}
-	if c := q[3]; !c.dup || c.tx != accepted.tx || c.source != "aishub" {
+	if c := q[3]; !c.dup || txKey(c) != txKey(accepted) || c.source != "aishub" {
 		t.Errorf("AISHub's stale copy at the first position names that transmission: %+v", c)
 	}
-	if c := q[4]; c.dup || c.tx == accepted.tx || c.tx == q[2].tx {
+	if c := q[4]; c.dup || txKey(c) == txKey(accepted) || txKey(c) == txKey(q[2]) {
 		t.Errorf("a late report matching no recent position is accepted on its own: %+v", c)
 	}
 	if c := q[5]; !c.implausible {
 		t.Errorf("the jump is kept and flagged: %+v", c)
 	}
-	if c := q[6]; !c.dup || c.tx != q[5].tx || !c.implausible {
+	if c := q[6]; !c.dup || txKey(c) != txKey(q[5]) || !c.implausible {
 		t.Errorf("a copy of the jump is flagged with it, so no read serves the jump through it: %+v", c)
 	}
 	if c := q[7]; !c.implausible {
@@ -583,14 +596,14 @@ func TestClickHouseKeepsEveryCopyAndServesOne(t *testing.T) {
 		t.Fatalf("one transmission, its first copy: %+v", got)
 	}
 	var source string
-	q := "SELECT tupleElement(argMinMerge(first), 8) FROM " + db + ".positions_15m WHERE mmsi = ?"
+	q := "SELECT argMax(source, ts) FROM " + db + ".positions_1m FINAL WHERE mmsi = ?"
 	if err := conn.conn.QueryRow(ctx, q, mmsi).Scan(&source); err != nil || source != "kystverket" {
 		t.Errorf("the rollup keeps the accepted copy: %q %v", source, err)
 	}
 
 	// A transmission with one implausible copy is never served, through any of its copies.
 	jump := trackPoint{mmsi: mmsi, ts: t0.Add(30 * time.Second), lat6: int32(59.0 * 600000), lon6: int32(10.7 * 600000),
-		sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "kystverket", tx: 42, recv: t0.Add(30 * time.Second), implausible: true}
+		sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "kystverket", txAt: t0.Add(30 * time.Second), txDisc: 42, recv: t0.Add(30 * time.Second), implausible: true}
 	copied := jump
 	copied.source, copied.recv, copied.implausible, copied.dup = "barentswatch", t0.Add(31*time.Second), false, true
 	if err := conn.insert(ctx, "jump", []trackPoint{jump, copied}); err != nil {
@@ -601,14 +614,14 @@ func TestClickHouseKeepsEveryCopyAndServesOne(t *testing.T) {
 	}
 	// The same when the implausible copy also has a bad clock: the clock picks which copy is served, never
 	// whether a flagged transmission is.
-	jump.tx, copied.tx, jump.clockBad = 43, 43, true
+	jump.txDisc, copied.txDisc, jump.clockBad = 43, 43, true
 	if err := conn.insert(ctx, "jump-clock", []trackPoint{jump, copied}); err != nil {
 		t.Fatal(err)
 	}
 	if got := served(); len(got) != 1 || !got[0].ts.Equal(t0) {
 		t.Errorf("an implausible copy with a bad clock still keeps its transmission out: %+v", got)
 	}
-	if err := conn.conn.Exec(ctx, "DELETE FROM "+db+".receptions WHERE tx IN (42, 43)"); err != nil {
+	if err := conn.conn.Exec(ctx, "DELETE FROM "+db+".receptions WHERE tx_disc IN (42, 43)"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -620,21 +633,23 @@ func TestClickHouseKeepsEveryCopyAndServesOne(t *testing.T) {
 		t.Errorf("after the purge, the other copy: %+v", got)
 	}
 
-	// The lake load names transmissions in ClickHouse, so it must agree with txOf.
+	// The lake load names transmissions in ClickHouse, so its byte must agree with discOf.
 	id := eventID("payload" + "A")
-	var tx uint64
-	if err := conn.conn.QueryRow(ctx, "SELECT "+chTxOf("?", "toDateTime64(?, 3, 'UTC')"), id, chTime(t0)).Scan(&tx); err != nil || tx != txOf(id, t0) {
-		t.Errorf("tx in ClickHouse %d, txOf %d: %v", tx, txOf(id, t0), err)
+	var disc uint8
+	if err := conn.conn.QueryRow(ctx, "SELECT "+chDiscOf("?"), id).Scan(&disc); err != nil || disc != discOf(id) {
+		t.Errorf("tx_disc in ClickHouse %d, discOf %d: %v", disc, discOf(id), err)
 	}
 }
 
-func TestClickHouseMigratesThePositionsTable(t *testing.T) {
+// A database in the first layout, as main leaves it, gains the current columns in place. Nothing is dropped or
+// renamed at start, so a view over receptions, like the coverage map's, keeps filling, and a server rolled back
+// to main still writes.
+func TestClickHouseMigratesInPlace(t *testing.T) {
 	url := os.Getenv("CLICKHOUSE_TEST_URL")
 	if url == "" {
 		t.Skip("CLICKHOUSE_TEST_URL is not set")
 	}
 	ctx := context.Background()
-	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
 	opts, err := clickhouse.ParseDSN(url)
 	if err != nil {
 		t.Fatal(err)
@@ -643,45 +658,94 @@ func TestClickHouseMigratesThePositionsTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
 	t.Cleanup(func() { raw.Exec(ctx, "DROP DATABASE IF EXISTS "+db); raw.Close() })
-	// The schema before receptions: a positions table with rollup views reading it.
+	mainInsert := "INSERT INTO " + db + ".receptions (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad)" +
+		" VALUES (257000001, now64(3), 7, now64(3), 1, 1, 1023, 3600, 511, 15, 'aishub', 'aishub', true, true, false, false)"
 	for _, stmt := range []string{
 		"CREATE DATABASE " + db,
-		"CREATE TABLE " + db + ".positions (mmsi UInt32, ts DateTime64(3, 'UTC'), lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String)) ENGINE = MergeTree PARTITION BY toYYYYMMDD(ts) ORDER BY (mmsi, ts)",
-		strings.ReplaceAll(chRollup("15m", ""), "{db}", db),
-		"CREATE MATERIALIZED VIEW " + db + ".positions_15m_mv TO " + db + ".positions_15m AS SELECT mmsi, toDateTime(toStartOfInterval(ts, INTERVAL 15 MINUTE), 'UTC') AS slot, argMinState((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), ts) AS first FROM " + db + ".positions GROUP BY mmsi, slot",
-		"INSERT INTO " + db + ".positions VALUES (257000001, now64(3), 1, 1, 1023, 3600, 511, 15, 'aishub')",
+		"CREATE TABLE " + db + ".receptions (mmsi UInt32, ts DateTime64(3, 'UTC'), tx UInt64, recv_ts DateTime64(3, 'UTC'), lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String), station LowCardinality(String), accepted Bool DEFAULT true, corroborated Bool DEFAULT true, implausible Bool DEFAULT false, clock_bad Bool DEFAULT false) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (mmsi, ts)",
+		"CREATE TABLE " + db + ".positions_1h (mmsi UInt32, slot DateTime('UTC'), first AggregateFunction(argMin, Tuple(DateTime64(3, 'UTC'), Int32, Int32, UInt16, UInt16, UInt16, UInt8, String), DateTime64(3, 'UTC'))) ENGINE = AggregatingMergeTree ORDER BY (mmsi, slot)",
+		"CREATE MATERIALIZED VIEW " + db + ".positions_1h_mv TO " + db + ".positions_1h AS SELECT mmsi, toDateTime(toStartOfInterval(ts, INTERVAL 1 HOUR), 'UTC') AS slot, argMinState((ts, lat6, lon6, sog10, cog10, heading, navstat, toString(source)), ts) AS first FROM " + db + ".receptions WHERE accepted GROUP BY mmsi, slot",
+		"CREATE TABLE " + db + ".heard (mmsi UInt32) ENGINE = MergeTree ORDER BY mmsi",
+		"CREATE MATERIALIZED VIEW " + db + ".heard_mv TO " + db + ".heard AS SELECT mmsi FROM " + db + ".receptions WHERE NOT implausible AND NOT clock_bad",
+		mainInsert,
 	} {
 		if err := raw.Exec(ctx, stmt); err != nil {
 			t.Fatal(err)
 		}
 	}
+	var conn *chConn
 	for range 2 { // and again over itself
-		conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
-		if err != nil {
+		if conn, err = openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db); err != nil {
 			t.Fatal(err)
 		}
-		conn.conn.Close()
 	}
-	var engine string
-	var kept uint64
-	if err := raw.QueryRow(ctx, "SELECT engine FROM system.tables WHERE database = ? AND name = 'positions'", db).Scan(&engine); err != nil || engine != "View" {
-		t.Errorf("positions is the view: %q %v", engine, err)
+	t.Cleanup(func() { conn.conn.Close() })
+	steps, err := chColumn[uint32](ctx, raw, "SELECT version FROM "+db+".schema_migrations ORDER BY version")
+	if err != nil || len(steps) != len(chMigrations)-1 {
+		t.Fatalf("each step recorded once: %v %v", steps, err)
 	}
-	if err := raw.QueryRow(ctx, "SELECT count() FROM "+db+".positions_old").Scan(&kept); err != nil || kept != 1 {
-		t.Errorf("the old table is kept for the load: %d %v", kept, err)
+	now := time.Now().Truncate(time.Millisecond)
+	if err := conn.insert(ctx, "new", []trackPoint{{mmsi: 257000001, ts: now, lat6: 2, lon6: 2, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "kystverket", station: "kystverket"}}); err != nil {
+		t.Fatal("the current writer:", err)
 	}
-	var source string
-	if err := raw.QueryRow(ctx, "SELECT create_table_query FROM system.tables WHERE database = ? AND name = 'positions_15m_mv'", db).Scan(&source); err != nil || !strings.Contains(source, ".receptions") {
-		t.Errorf("the rollup view reads receptions: %v %s", err, source)
+	if err := raw.Exec(ctx, mainInsert); err != nil {
+		t.Fatal("main's writer, after a rollback:", err)
+	}
+	// Cleanup run before every day is converted drops nothing, the rollup main reads included.
+	if err := conn.cleanup(ctx, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	tables, err := chColumn[string](ctx, raw, "SELECT name FROM system.tables WHERE database = ? ORDER BY name", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"positions", "positions_1h", "positions_1h_mv", "positions_1m", "positions_1m_mv", "receptions", "receptions_converted"} {
+		if !slices.Contains(tables, want) {
+			t.Errorf("no %s: %v", want, tables)
+		}
+	}
+	var heard, minutes, served uint64
+	raw.QueryRow(ctx, "SELECT count() FROM "+db+".heard").Scan(&heard)
+	raw.QueryRow(ctx, "SELECT count() FROM "+db+".positions_1m").Scan(&minutes)
+	if heard != 3 || minutes != 2 {
+		t.Errorf("a view over receptions sees every insert, before and after: %d; positions_1m sees those after: %d", heard, minutes)
+	}
+	if err := raw.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = now64(3) - INTERVAL 1 HOUR, to = now64(3) + INTERVAL 1 MINUTE)").Scan(&served); err != nil || served != 2 {
+		t.Errorf("the view serves the first layout's transmission and the current one: %d %v", served, err)
+	}
+	// A first-layout transmission whose AISHub copy is stamped 40 seconds early is in a range by the copy
+	// served, the accepted one, as main's view placed it.
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		ts, recv time.Time
+		source   string
+		accepted bool
+	}{{at, at.Add(time.Second), "kystverket", true}, {at.Add(-40 * time.Second), at.Add(time.Minute), "aishub", false}} {
+		if err := raw.Exec(ctx, "INSERT INTO "+db+".receptions (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted)"+
+			" VALUES (257000007, ?, 5, ?, 1, 1, 1023, 3600, 511, 15, ?, ?, ?)", c.ts, c.recv, c.source, c.source, c.accepted); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		from, to time.Time
+		want     uint64
+	}{{at.Add(-time.Minute), at.Add(-20 * time.Second), 0}, {at.Add(-10 * time.Second), at.Add(10 * time.Second), 1}} {
+		if err := raw.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000007, from = ?, to = ?)", chTime(c.from), chTime(c.to)).Scan(&served); err != nil || served != c.want {
+			t.Errorf("%v to %v: %d served, want %d, %v", c.from, c.to, served, c.want, err)
+		}
 	}
 }
 
-// chTxOf is txOf in ClickHouse, for a hex event id and a time: the id's first 64 bits, read big-endian as
-// ParseUint reads them, XORed with the time in milliseconds. clickhouse-load.py uses the same expression.
-func chTxOf(id, ts string) string {
-	return "bitXor(reinterpretAsUInt64(reverse(unhex(substring(" + id + ", 1, 16)))), toUInt64(toUnixTimestamp64Milli(" + ts + ")))"
+// chDiscOf is discOf in ClickHouse, for a hex event id: the low byte of the id's first 64 bits, read
+// big-endian as ParseUint reads them, for a loader that names transmissions in ClickHouse.
+func chDiscOf(id string) string {
+	return "toUInt8(reinterpretAsUInt64(reverse(unhex(substring(" + id + ", 1, 16)))) % 256)"
 }
+
+// txKey is a copy's transmission, for comparing two copies.
+func txKey(pt trackPoint) string { return fmt.Sprint(pt.txAt.UnixMilli(), "/", pt.txDisc) }
 
 // A copy dedupe matches while its transmission is still folding waits for the fold's verdict, so a copy of an
 // implausible transmission is never written unflagged.
@@ -701,7 +765,7 @@ func TestClickHouseHoldsACopyUntilTheFoldDecides(t *testing.T) {
 	}
 	p.settleFold(key, &Event{Time: t0, Implausible: true})
 	q := queued(p, mmsi)
-	if len(q) != 1 || !q[0].implausible || !q[0].dup || q[0].tx != txOf(eventID(key), t0) {
+	if len(q) != 1 || !q[0].implausible || !q[0].dup || !q[0].txAt.Equal(t0) || q[0].txDisc != discOf(eventID(key)) {
 		t.Fatalf("the waiting copy is written with the verdict: %+v", q)
 	}
 	p.mu.Lock()
@@ -741,10 +805,665 @@ func TestClickHouseCopiesOfAnUnservedReportAreFlagged(t *testing.T) {
 	p.ingestPacket("udp:feeder", "udp:feeder", t0.Add(6*time.Second), t0.Add(70*time.Second), late)
 	p.ingestPacket("barentswatch", "barentswatch", t0.Add(7*time.Second), t0.Add(71*time.Second), late)
 	q := queued(p, mmsi)
-	if len(q) != 3 || !q[1].implausible || !q[2].dup || !q[2].implausible || q[2].tx != q[1].tx {
+	if len(q) != 3 || !q[1].implausible || !q[2].dup || !q[2].implausible || txKey(q[2]) != txKey(q[1]) {
 		t.Fatalf("the late report and its copy are both kept out: %+v", q)
 	}
 	if p.stats.implausible.Load() != 0 {
 		t.Errorf("the stream counted a stale report implausible")
+	}
+}
+
+func TestAnchorDecidesMoving(t *testing.T) {
+	at := func(dLatM float64, sog10 uint16) trackPoint { // a report dLatM meters north of 59.9 N
+		return trackPoint{lat6: int32(math.Round((59.9 + dLatM/111320) * 600000)), lon6: int32(10.7 * 600000), sog10: sog10}
+	}
+	seed := &[2]int32{int32(59.9 * 600000), int32(10.7 * 600000)}
+
+	var a anchor
+	if a.still(at(0, 3), nil, true) {
+		t.Error("with no anchor and no seed, a report is moving")
+	}
+	a = anchor{}
+	if !a.still(at(10, 3), seed, true) || !a.set {
+		t.Error("an unset anchor starts at the seed, the vessel's restored position")
+	}
+	if a.still(at(20, 60), nil, true) {
+		t.Error("reported speed over half a knot is moving, however near")
+	}
+	// Drifting at 0.3 kn, a report every 10 s, 1.5 m apart: still until the drift adds up past movedM.
+	a = anchor{lat6: seed[0], lon6: seed[1], set: true}
+	moved := 0
+	for i := 1; i <= 60; i++ {
+		if !a.still(at(float64(i)*1.5, 3), nil, true) {
+			moved++
+		}
+	}
+	if moved != 1 {
+		t.Errorf("90 m of drift past a 50 m anchor moves once, then re-anchors: moved %d times", moved)
+	}
+	// No speed: distance alone decides.
+	a = anchor{lat6: seed[0], lon6: seed[1], set: true}
+	if !a.still(at(30, 1023), nil, true) || a.still(at(200, 1023), nil, true) {
+		t.Error("without speed, within 50 m is still and beyond it moving")
+	}
+	// A report that does not enter positions_1m never moves the anchor.
+	a = anchor{lat6: seed[0], lon6: seed[1], set: true}
+	a.still(at(500, 1023), nil, false)
+	if !a.still(at(10, 1023), nil, true) {
+		t.Error("an unadvanced report left the anchor where it was")
+	}
+}
+
+func TestClickHousePositions1mKeepsMinutesAndHeartbeats(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Now().Add(-5 * 24 * time.Hour).UTC().Truncate(24 * time.Hour)
+	pt := func(mmsi uint32, at time.Duration, lat float64, still bool) trackPoint {
+		return trackPoint{mmsi: mmsi, ts: day.Add(at), lat6: int32(lat * 600000), lon6: int32(10.7 * 600000),
+			sog10: 0, cog10: 3600, heading: 511, navStatus: 5, source: "kystverket", still: still}
+	}
+	var points []trackPoint
+	// Underway for ten minutes, a report every 10 seconds: one row a minute.
+	for i := range 60 {
+		points = append(points, pt(257000001, 8*time.Hour+time.Duration(i)*10*time.Second, 59+float64(i)/1000, false))
+	}
+	// Moored all morning at one harbor, then all afternoon at another, a report every 3 minutes: a heartbeat at each.
+	for i := range 80 {
+		points = append(points, pt(257000002, time.Duration(i)*3*time.Minute, 59.9, true))
+		points = append(points, pt(257000002, 12*time.Hour+time.Duration(i)*3*time.Minute, 58.1, true))
+	}
+	if err := conn.insert(ctx, "p1m", points); err != nil {
+		t.Fatal(err)
+	}
+	var n uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions_1m FINAL WHERE mmsi = 257000001").Scan(&n); err != nil || n != 10 {
+		t.Errorf("a moving vessel's ten minutes: %d rows, %v", n, err)
+	}
+	rows, err := conn.conn.Query(ctx, "SELECT ts FROM "+db+".positions_1m FINAL WHERE mmsi = 257000002 ORDER BY ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beats []time.Time
+	for rows.Next() {
+		var ts time.Time
+		rows.Scan(&ts)
+		beats = append(beats, ts.UTC())
+	}
+	rows.Close()
+	var want []time.Time // a heartbeat each 30 minutes it sat at each place, the last report there
+	for _, at := range []time.Duration{0, 12 * time.Hour} {
+		for i := range 8 {
+			want = append(want, day.Add(at+time.Duration(i)*30*time.Minute+27*time.Minute))
+		}
+	}
+	if fmt.Sprint(beats) != fmt.Sprint(want) {
+		t.Errorf("heartbeats %v, want %v", beats, want)
+	}
+	// Any step of a minute or more reads positions_1m grouped by the step: the moving vessel's 5-minute track
+	// has two points, and the moored one's track is its heartbeats, a morning hour of them included.
+	for _, c := range []struct {
+		mmsi     uint32
+		from, to time.Duration
+		step     time.Duration
+		want     int
+	}{
+		{257000001, 0, 24 * time.Hour, 5 * time.Minute, 2},
+		{257000001, 0, 24 * time.Hour, time.Minute, 10},
+		{257000002, 0, 24 * time.Hour, 15 * time.Minute, 16},
+		{257000002, time.Hour, 2 * time.Hour, time.Minute, 2},
+	} {
+		got, err := conn.history(ctx, c.mmsi, day.Add(c.from), day.Add(c.to-time.Millisecond), c.step, 1000, time.Now())
+		if err != nil || len(got) != c.want {
+			t.Errorf("%d from %v at %v: %d points, want %d: %v", c.mmsi, c.from, c.step, len(got), c.want, err)
+		}
+	}
+}
+
+func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	opts, err := clickhouse.ParseDSN(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	// The first layout, as main created it; the server adds the current columns beside its own.
+	for _, stmt := range []string{"CREATE DATABASE " + db, "CREATE TABLE " + db + ".receptions (mmsi UInt32, ts DateTime64(3, 'UTC'), tx UInt64, recv_ts DateTime64(3, 'UTC')," +
+		" lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String), station LowCardinality(String)," +
+		" accepted Bool DEFAULT true, corroborated Bool DEFAULT true, implausible Bool DEFAULT false, clock_bad Bool DEFAULT false) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (mmsi, ts)" +
+		" SETTINGS non_replicated_deduplication_window = 1000"} {
+		if err := raw.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	v1 := "INSERT INTO " + db + ".receptions (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad)"
+	day := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	noon := day.Add(12 * time.Hour)
+	type copyOf struct {
+		mmsi          uint32
+		ts, at, recv  time.Duration // after noon: the copy's stamp, its transmission's, and its arrival
+		id            string
+		latM          float64 // meters north of 59.9 N
+		sog10         uint16
+		source        string
+		accepted, bad bool
+	}
+	ida, idb, idc := eventID("a"), eventID("b"), eventID("c")
+	copies := []copyOf{
+		{257000001, 0, 0, time.Second, ida, 0, 100, "kystverket", true, false},
+		{257000001, 2 * time.Second, 0, time.Minute, ida, 0, 100, "aishub", false, false}, // a rebuilt copy, stamped 2 s off
+		{257000001, time.Minute, time.Minute, time.Minute + time.Second, idb, 500, 100, "kystverket", true, false},
+		{257000002, 0, 0, time.Second, idc, 0, 1023, "aishub", true, false},
+		{257000002, 3 * time.Minute, 3 * time.Minute, 3*time.Minute + time.Second, eventID("d"), 10, 1023, "aishub", true, false},
+		{257000002, 6 * time.Minute, 6 * time.Minute, 6*time.Minute + time.Second, eventID("e"), 500, 1023, "aishub", true, true},
+		// Drifting under half a knot. The report at 60 m arrives after the one at 30 m stamped later, so it is stale
+		// and leaves the anchor at 0 m, and the report at 100 m is moving from there.
+		{257000004, 0, 0, time.Second, eventID("f"), 0, 0, "kystverket", true, false},
+		{257000004, 2 * time.Minute, 2 * time.Minute, 5 * time.Minute, eventID("g"), 60, 0, "aishub", true, false},
+		{257000004, 4 * time.Minute, 4 * time.Minute, 4*time.Minute + time.Second, eventID("h"), 30, 0, "kystverket", true, false},
+		{257000004, 6 * time.Minute, 6 * time.Minute, 6*time.Minute + time.Second, eventID("i"), 100, 0, "kystverket", true, false},
+		// Still at 0 m, then moving at 100 m: AISHub's copy of the still report, stamped after, is still with it.
+		{257000005, 0, 0, time.Second, eventID("j"), 0, 0, "kystverket", true, false},
+		{257000005, 3 * time.Minute, 3 * time.Minute, 3*time.Minute + time.Second, eventID("k"), 0, 0, "kystverket", true, false},
+		{257000005, 3*time.Minute + time.Second, 3*time.Minute + time.Second, 3*time.Minute + 2*time.Second, eventID("l"), 100, 0, "kystverket", true, false},
+		{257000005, 3*time.Minute + 2*time.Second, 3 * time.Minute, 4 * time.Minute, eventID("k"), 0, 0, "aishub", false, false},
+	}
+	batch, err := conn.conn.PrepareBatch(ctx, v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range copies {
+		h, _ := strconv.ParseUint(c.id[:16], 16, 64)
+		tx := h ^ uint64(noon.Add(c.at).UnixMilli())
+		lat6 := int32(math.Round((59.9 + c.latM/111320) * 600000))
+		if err := batch.Append(c.mmsi, noon.Add(c.ts), tx, noon.Add(c.recv), lat6, int32(10.7*600000), c.sog10, uint16(3600), uint16(511), uint8(15),
+			c.source, c.source, c.accepted, true, c.bad, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		t.Fatal(err)
+	}
+	// Inserts go out while the day's read is still streaming, as they do for any real day: a batch of 2 here.
+	was := convertBatch
+	convertBatch = 2
+	t.Cleanup(func() { convertBatch = was })
+	// Two more transmissions of a third vessel, stamped in one millisecond, whose ids share a byte.
+	var idx, idy string
+	for i := 0; idy == ""; i++ {
+		id := eventID(fmt.Sprint("collide", i))
+		switch {
+		case idx == "":
+			idx = id
+		case discOf(id) == discOf(idx):
+			idy = id
+		}
+	}
+	for i, id := range []string{idx, idy} {
+		h, _ := strconv.ParseUint(id[:16], 16, 64)
+		tx := h ^ uint64(noon.UnixMilli())
+		if err := conn.conn.Exec(ctx, v1+" VALUES (257000003, ?, ?, ?, ?, ?, 0, 3600, 511, 15, 'aishub', 'aishub', true, true, false, false)",
+			noon, tx, noon.Add(time.Duration(i+1)*time.Second), int32(58*600000)+int32(i*1000), int32(10.7*600000)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Cleanup keeps the first layout while a day is left to convert.
+	if err := conn.cleanup(ctx, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if legacy, _ := conn.legacy(ctx); !legacy {
+		t.Fatal("cleanup dropped the first layout before its rows were converted")
+	}
+	// A run that stopped partway through the day, after its first batch, and the run that does the day again.
+	if err := conn.write(ctx, "", []trackPoint{{mmsi: 257000001, ts: noon, recv: noon.Add(time.Second)}}, true); err != nil {
+		t.Fatal(err)
+	}
+	days, err := conn.unconverted(ctx)
+	if err != nil || len(days) != 1 || !days[0].Equal(day) {
+		t.Fatalf("the day to convert: %v %v", days, err)
+	}
+	n, err := conn.convertDay(ctx, day, newConvertState())
+	if err != nil || n != len(copies)+2 {
+		t.Fatalf("converted %d of %d: %v", n, len(copies), err)
+	}
+	if days, err := conn.unconverted(ctx); err != nil || len(days) != 0 {
+		t.Fatalf("the day is recorded as converted: %v %v", days, err)
+	}
+	// Once more, after the day's record is lost: the same rows again, which deduplication must not swallow.
+	if err := conn.conn.Exec(ctx, "TRUNCATE TABLE "+db+".receptions_converted"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := conn.convertDay(ctx, day, newConvertState()); err != nil || n != len(copies)+2 {
+		t.Fatalf("converted again %d: %v", n, err)
+	}
+	// A server rolled back to the first layout writes into the converted day: the day is to do again, and
+	// cleanup waits for it.
+	if err := conn.conn.Exec(ctx, v1+" VALUES (257000006, ?, 99, ?, 1, 1, 1023, 3600, 511, 15, 'aishub', 'aishub', true, true, false, false)",
+		noon, noon.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if days, err := conn.unconverted(ctx); err != nil || len(days) != 1 {
+		t.Fatalf("the day is to convert again: %v %v", days, err)
+	}
+	if err := conn.cleanup(ctx, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if legacy, _ := conn.legacy(ctx); !legacy {
+		t.Fatal("cleanup dropped a row written since its day was converted")
+	}
+	if n, err := conn.convertDay(ctx, day, newConvertState()); err != nil || n != len(copies)+3 {
+		t.Fatalf("converted again with the new row %d: %v", n, err)
+	}
+	var converted uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".receptions WHERE tx = 0").Scan(&converted); err != nil || converted != uint64(len(copies)+3) {
+		t.Fatalf("a rerun leaves each row once: %d %v", converted, err)
+	}
+	rows, err := conn.conn.Query(ctx, "SELECT mmsi, ts, tx_off, tx_disc, recv_delay, accepted, implausible, moving FROM "+db+".receptions WHERE tx = 0 AND mmsi NOT IN (257000003, 257000006) ORDER BY mmsi, ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	wantMoving := []bool{true, true, true, true, false, true, true, true, false, true, true, false, true, false}
+	i := 0
+	for rows.Next() {
+		var mmsi uint32
+		var ts time.Time
+		var off, delay int32
+		var disc uint8
+		var accepted, implausible, moving bool
+		if err := rows.Scan(&mmsi, &ts, &off, &disc, &delay, &accepted, &implausible, &moving); err != nil {
+			t.Fatal(err)
+		}
+		c := copies[i]
+		if want := int32((c.at - c.ts).Milliseconds()); off != want || disc != discOf(c.id) {
+			t.Errorf("row %d: tx_off %d disc %d, want %d %d: the transmission the live writer would name", i, off, disc, want, discOf(c.id))
+		}
+		if delay != int32((c.recv-c.ts).Milliseconds()) || accepted != c.accepted || implausible != c.bad || moving != wantMoving[i] {
+			t.Errorf("row %d: delay %d accepted %v implausible %v moving %v", i, delay, accepted, implausible, moving)
+		}
+		i++
+	}
+	var served uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = '2026-09-01 00:00:00', to = '2026-09-02 00:00:00')").Scan(&served); err != nil || served != 2 {
+		t.Errorf("the view serves each transmission once: %d %v", served, err)
+	}
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000003, from = '2026-09-01 00:00:00', to = '2026-09-02 00:00:00')").Scan(&served); err != nil || served != 2 {
+		t.Errorf("two transmissions in one millisecond with one byte are still two: %d %v", served, err)
+	}
+	// With every day converted, cleanup drops the first layout, and the view serves the same.
+	if err := conn.cleanup(ctx, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if legacy, _ := conn.legacy(ctx); legacy {
+		t.Fatal("cleanup kept tx")
+	}
+	var left uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".receptions").Scan(&left); err != nil || left != converted {
+		t.Errorf("only the converted rows are left: %d of %d, %v", left, converted, err)
+	}
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = '2026-09-01 00:00:00', to = '2026-09-02 00:00:00')").Scan(&served); err != nil || served != 2 {
+		t.Errorf("after cleanup the view serves each transmission once: %d %v", served, err)
+	}
+}
+
+// A report that arrives a day or more after its stamp is kept out of positions_1m, so it must not move the
+// anchor either: later reports are judged against where the vessel was last moving in positions_1m.
+func TestALateReportDoesNotMoveTheAnchor(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
+	v := newVessel()
+	v.moved = anchor{lat6: int32(59.9 * 600000), lon6: int32(10.7 * 600000), set: true}
+	was := v.moved
+	// Two kilometers away, newer than anything the vessel sent, but arriving 25 hours after its stamp.
+	u := newVessel()
+	u.Lat, u.Lon, u.Sog = 59.918, 10.7, 0
+	ev := &Event{MMSI: mmsi, Time: t0, RecvTime: t0.Add(25 * time.Hour), ID: eventID("late"), Source: "aishub", Station: "aishub"}
+	p.vmu.Lock()
+	p.noteFolded(ev, v, u, false, true, 59.9, 10.7)
+	p.vmu.Unlock()
+	q := queued(p, mmsi)
+	if len(q) != 1 || !q[0].clockBad || v.moved != was {
+		t.Fatalf("the late report is clock_bad and leaves the anchor where it was: %+v, anchor %+v", q, v.moved)
+	}
+}
+
+// Two distinct reports of a vessel stamped in one millisecond whose ids share a byte are still two
+// transmissions: the second takes the next free byte, and a copy of it follows it there.
+func TestATransmissionsByteIsFreeInItsMillisecond(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	a, b := "first", ""
+	for i := 0; b == ""; i++ {
+		if c := fmt.Sprint("second", i); discOf(eventID(c+"A")) == discOf(eventID(a+"A")) {
+			b = c
+		}
+	}
+	report := func(payload, source string, recv time.Duration, lat float64) {
+		p.emit(&Event{Payload: []byte(payload), Channel: 'A', Time: t0, RecvTime: t0.Add(recv),
+			Source: source, Station: source, Packet: posReport(mmsi, lat, 10.7)})
+	}
+	report(a, "aishub", 0, 59.900)
+	report(b, "aishub", time.Second, 59.901)
+	report(b, "barentswatch", 2*time.Second, 59.901) // dedupe's copy of the second
+	q := queued(p, mmsi)
+	if len(q) != 3 || q[0].txDisc == q[1].txDisc || q[1].dup || !q[2].dup || txKey(q[2]) != txKey(q[1]) {
+		t.Fatalf("two transmissions with two bytes, and the copy with the second's: %+v", q)
+	}
+}
+
+// An implausible report keeps its byte too, so a valid report in its millisecond is not hidden with it.
+func TestAnImplausibleTransmissionKeepsItsByte(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	a, b := "jump", ""
+	for i := 0; b == ""; i++ {
+		if c := fmt.Sprint("valid", i); discOf(eventID(c+"A")) == discOf(eventID(a+"A")) {
+			b = c
+		}
+	}
+	report := func(payload string, at time.Time, lat float64) {
+		p.emit(&Event{Payload: []byte(payload), Channel: 'A', Time: at, RecvTime: at,
+			Source: "kystverket", Station: "kystverket", Packet: posReport(mmsi, lat, 10.7)})
+	}
+	report("before", t0.Add(-time.Minute), 59.900)
+	report(a, t0, 10.0) // 2,900 nm in a minute
+	report(b, t0, 59.901)
+	q := queued(p, mmsi)
+	if len(q) != 3 || !q[1].implausible || q[2].implausible || q[1].txDisc == q[2].txDisc {
+		t.Fatalf("the implausible report and the valid one in its millisecond take two bytes: %+v", q)
+	}
+}
+
+// A flood of impossible positions for a vessel never pushes its plausible recent ones out of the ring.
+func TestImplausibleReportsNeverEvictPlausibleOnes(t *testing.T) {
+	v := &vessel{}
+	t0 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for i := range recentMax + 40 { // the ring full of plausible reports, then a flood of impossible ones
+		v.remember(trackPoint{ts: t0.Add(time.Duration(i) * time.Second), lat6: int32(i), txDisc: 7, implausible: i >= recentMax})
+	}
+	good, bad := 0, 0
+	for _, r := range v.recent {
+		if r.bad {
+			bad++
+		} else {
+			good++
+		}
+	}
+	newest := t0.Add(time.Duration(recentMax+39) * time.Second)
+	if good != recentMax || bad != recentBad || v.recent[len(v.recent)-1].ms != newest.UnixMilli() {
+		t.Fatalf("every plausible one stays beside the newest implausible ones: %d and %d, %+v", good, bad, v.recent)
+	}
+	// The newest implausible report's byte stays taken, so a valid report in its millisecond is not hidden with it.
+	pt := trackPoint{ts: newest, txAt: newest, txDisc: 7}
+	if v.freeDisc(&pt); pt.txDisc == 7 {
+		t.Error("a valid report took an implausible one's byte")
+	}
+}
+
+// A copy is still or moving with its transmission, not by where the vessel has gone since, so positions_1m
+// rebuilt from it after its source is purged keeps the track's shape.
+func TestACopyIsStillWithItsTransmission(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}})
+	const mmsi = 257000001
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	report := func(payload, source string, at, recv time.Time, lat float64) {
+		p.emit(&Event{Payload: []byte(payload), Channel: 'A', Time: at, RecvTime: recv,
+			Source: source, Station: source, Packet: posReport(mmsi, lat, 10.7)})
+	}
+	report("a", "kystverket", t0, t0, 59.900)
+	report("b", "kystverket", t0.Add(time.Minute), t0.Add(time.Minute), 59.900)
+	report("c", "kystverket", t0.Add(70*time.Second), t0.Add(70*time.Second), 59.901) // 111 m on: moving
+	report("b", "barentswatch", t0.Add(time.Minute), t0.Add(75*time.Second), 59.900)
+	q := queued(p, mmsi)
+	if len(q) != 4 || !q[1].still || q[2].still || !q[3].dup || !q[3].still {
+		t.Fatalf("the copy of the still report is still: %+v", q)
+	}
+}
+
+// A copy stamped off its transmission, as AISHub's run, belongs to the page its transmission falls in, so two
+// pages that split between the stamps serve the transmission once.
+func TestClickHousePositionsServesATransmissionOnceAcrossPages(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	tx := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	pt := trackPoint{mmsi: 257000001, ts: tx, txAt: tx, txDisc: 9, recv: tx.Add(time.Second), lat6: 1, lon6: 1,
+		sog10: 100, cog10: 3600, heading: 511, navStatus: 0, source: "kystverket", station: "kystverket"}
+	late := pt
+	late.ts, late.recv, late.source, late.station, late.dup = tx.Add(40*time.Second), tx.Add(time.Minute), "aishub", "aishub", true
+	if err := conn.insert(ctx, "edge", []trackPoint{pt, late}); err != nil {
+		t.Fatal(err)
+	}
+	served := 0
+	for _, page := range [][2]time.Time{{tx.Add(-time.Minute), tx.Add(20 * time.Second)}, {tx.Add(20*time.Second + time.Millisecond), tx.Add(time.Minute)}} {
+		var n uint64
+		if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = ?, to = ?)", page[0], page[1]).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		served += int(n)
+	}
+	if served != 1 {
+		t.Errorf("the transmission is served %d times across the two pages", served)
+	}
+}
+
+// Purging the source of a day's accepted copies and rebuilding the day leaves positions_1m as it was, from the
+// copies left: the same minutes underway and heartbeats moored.
+func TestClickHouseRebuildsPositions1mAfterAPurge(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	var points []trackPoint
+	add := func(mmsi uint32, at time.Duration, lat float64, still bool, disc uint8) {
+		ts := day.Add(at)
+		pt := trackPoint{mmsi: mmsi, ts: ts, txAt: ts, txDisc: disc, lat6: int32(lat * 600000), lon6: int32(10.7 * 600000),
+			sog10: 0, cog10: 3600, heading: 511, navStatus: 5, still: still}
+		first, copy := pt, pt
+		first.source, first.station, first.recv = "aishub", "aishub", ts.Add(time.Second)
+		copy.source, copy.station, copy.recv, copy.dup = "kystverket", "kystverket", ts.Add(2*time.Second), true
+		points = append(points, first, copy)
+	}
+	for i := range 60 {
+		add(257000001, 8*time.Hour+time.Duration(i)*10*time.Second, 59+float64(i)/1000, false, uint8(i))
+	}
+	for i := range 80 {
+		add(257000002, time.Duration(i)*3*time.Minute, 59.9, true, uint8(i))
+	}
+	add(257000003, 24*time.Hour-5*time.Millisecond, 57, false, 1) // the day's last moment
+	if err := conn.insert(ctx, "day", points); err != nil {
+		t.Fatal(err)
+	}
+	dump := func() string {
+		rows, err := conn.conn.Query(ctx, "SELECT mmsi, slot, cell, ts, lat6, toString(source) FROM "+db+".positions_1m FINAL ORDER BY mmsi, slot, cell")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var b strings.Builder
+		for rows.Next() {
+			var mmsi, cell uint32
+			var slot, ts time.Time
+			var lat int32
+			var src string
+			rows.Scan(&mmsi, &slot, &cell, &ts, &lat, &src)
+			fmt.Fprintln(&b, mmsi, slot.UTC(), cell, ts.UTC(), lat, src)
+		}
+		return b.String()
+	}
+	before := dump()
+	if err := conn.conn.Exec(ctx, "ALTER TABLE "+db+".receptions DELETE WHERE source = 'aishub' SETTINGS mutations_sync = 2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.rebuildPositions1m(ctx, day); err != nil {
+		t.Fatal(err)
+	}
+	if after := dump(); !strings.Contains(before, "aishub") || strings.ReplaceAll(before, "aishub", "kystverket") != after {
+		t.Errorf("before:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// A day converted in a run of its own, as one a rollback leaves to do again, starts from where each vessel was
+// last moving in positions_1m, so it judges moving as the day after a converted one would.
+func TestConvertSeedsAnchorsForADayOnItsOwn(t *testing.T) {
+	raw, conn, db := firstLayout(t)
+	ctx := context.Background()
+	day1 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	day2 := day1.AddDate(0, 0, 1)
+	lat := func(m float64) int32 { return int32(math.Round((59.9 + m/111320) * 600000)) }
+	for i, r := range []struct {
+		ts    time.Time
+		latM  float64
+		sog10 uint16
+	}{
+		{day1.Add(12 * time.Hour), 0, 100},
+		{day1.Add(12*time.Hour + time.Minute), 100, 100}, // where it was last moving
+		{day2.Add(8 * time.Hour), 130, 0},                // 30 m on the next day: still
+	} {
+		if err := raw.Exec(ctx, "INSERT INTO "+db+".receptions (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station)"+
+			" VALUES (257000009, ?, ?, ?, ?, 6420000, ?, 3600, 511, 15, 'kystverket', 'kystverket')", r.ts, uint64(i+1), r.ts, lat(r.latM), r.sog10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []time.Time{day1, day2} { // two runs
+		if err := conn.convertDays(ctx, []time.Time{d}, func(time.Time, int, time.Duration) {}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var moving bool
+	if err := conn.conn.QueryRow(ctx, "SELECT moving FROM "+db+".receptions WHERE tx = 0 AND ts >= ?", day2).Scan(&moving); err != nil || moving {
+		t.Errorf("the next day's report 30 m from where the vessel was last moving is still: moving %v, %v", moving, err)
+	}
+}
+
+// firstLayout is a test database whose receptions are in the first layout, as main created it, migrated by the
+// server: the raw connection, the server's, and the database.
+func firstLayout(t *testing.T) (driver.Conn, *chConn, string) {
+	t.Helper()
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	opts, err := clickhouse.ParseDSN(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { raw.Close() })
+	for _, stmt := range []string{"CREATE DATABASE " + db, "CREATE TABLE " + db + ".receptions (mmsi UInt32, ts DateTime64(3, 'UTC'), tx UInt64, recv_ts DateTime64(3, 'UTC')," +
+		" lat6 Int32, lon6 Int32, sog10 UInt16, cog10 UInt16, heading UInt16, navstat UInt8, source LowCardinality(String), station LowCardinality(String)," +
+		" accepted Bool DEFAULT true, corroborated Bool DEFAULT true, implausible Bool DEFAULT false, clock_bad Bool DEFAULT false) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (mmsi, ts)" +
+		" SETTINGS non_replicated_deduplication_window = 1000"} {
+		if err := raw.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(ctx, "DROP DATABASE "+db); conn.conn.Close() })
+	return raw, conn, db
+}
+
+// A copy stamped after midnight of a transmission accepted just before it carries that transmission's verdict on
+// moving, whether the two days convert in one run or the second in a run of its own.
+func TestConvertCarriesAVerdictAcrossMidnight(t *testing.T) {
+	raw, conn, db := firstLayout(t)
+	ctx := context.Background()
+	day1 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	day2 := day1.AddDate(0, 0, 1)
+	lat := func(m float64) int32 { return int32(math.Round((59.9 + m/111320) * 600000)) }
+	for _, r := range []struct {
+		ts, recv time.Time
+		tx       uint64
+		latM     float64
+		sog10    uint16
+		source   string
+		accepted bool
+	}{
+		{day2.Add(-10 * time.Minute), day2.Add(-10 * time.Minute), 1, 0, 100, "kystverket", true},
+		{day2.Add(-10 * time.Second), day2.Add(-9 * time.Second), 2, 10, 0, "kystverket", true}, // still, 10 m on
+		{day2.Add(10 * time.Second), day2.Add(11 * time.Second), 3, 200, 100, "kystverket", true},
+		{day2.Add(30 * time.Second), day2.Add(time.Minute), 2, 10, 0, "aishub", false}, // AISHub's copy of the still one
+	} {
+		if err := raw.Exec(ctx, "INSERT INTO "+db+".receptions (mmsi, ts, tx, recv_ts, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted)"+
+			" VALUES (257000010, ?, ?, ?, ?, 6420000, ?, 3600, 511, 15, ?, ?, ?)", r.ts, r.tx, r.recv, lat(r.latM), r.sog10, r.source, r.source, r.accepted); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copyMoving := func() bool {
+		t.Helper()
+		var moving bool
+		if err := conn.conn.QueryRow(ctx, "SELECT moving FROM "+db+".receptions WHERE tx = 0 AND source = 'aishub'").Scan(&moving); err != nil {
+			t.Fatal(err)
+		}
+		return moving
+	}
+	if err := conn.convertDays(ctx, []time.Time{day1, day2}, func(time.Time, int, time.Duration) {}); err != nil {
+		t.Fatal(err)
+	}
+	if copyMoving() {
+		t.Error("in one run, the copy is still with its transmission")
+	}
+	if err := conn.conn.Exec(clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"mutations_sync": 2})),
+		"ALTER TABLE "+db+".receptions_converted DELETE WHERE day = ?", day2); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.convertDays(ctx, []time.Time{day2}, func(time.Time, int, time.Duration) {}); err != nil {
+		t.Fatal(err)
+	}
+	if copyMoving() {
+		t.Error("in a run of its own, the copy is still with its transmission")
 	}
 }

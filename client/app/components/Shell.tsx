@@ -11,12 +11,14 @@ import {
 } from "react";
 import { useLocation, useMatches, useNavigate, useNavigation, useNavigationType, useOutlet } from "react-router";
 import { parseVesselParam, vesselPath } from "../lib/ais";
+import type { CoverageTiles } from "../lib/api";
 import { createMap } from "../lib/map.client";
 import { liveInstance, LiveContext, setLiveInstance, type Live } from "../lib/live";
 import { NO_FILTERS, type SearchFilters } from "../lib/searchFilters";
 import { Stream } from "../lib/stream";
 import { resolveTheme, useTheme, type ThemeChoice } from "../lib/theme";
 import { readVisitor } from "../lib/visitor";
+import { CoverageKey } from "./CoverageKey";
 import { Sheet, type Detent } from "./Sheet";
 import { Header } from "./Header";
 import { StatusChip } from "./StatusChip";
@@ -108,6 +110,9 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
   const navigation = useNavigation();
   const vessel = matches.find((m) => m.id === "routes/vessel");
+  // The network page draws coverage in place of the vessels, and its key goes over the map.
+  const coverage = (matches.find((m) => m.id === "routes/network")?.loaderData as { coverage?: CoverageTiles } | undefined)
+    ?.coverage;
 
   // Set while rendering the new route rather than in an effect, so the sheet has moved in the
   // same commit and a route's camera move is aimed above where the sheet is going.
@@ -247,6 +252,7 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
         <Header />
         <StatusChip />
+        {coverage && <CoverageKey coverage={coverage} />}
 
         <Sheet detent={detent} onDetentChange={setDetent}>
           {/* While the next entry loads, or a search. Most answer before its delay runs out,

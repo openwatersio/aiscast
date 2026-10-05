@@ -56,14 +56,13 @@ func BenchmarkVessels400SqDeg(b *testing.B)     { benchVessels(b, "50,0,70,20", 
 func BenchmarkVessels400SqDegCold(b *testing.B) { benchVessels(b, "50,0,70,20", true) }
 
 // benchFold times folding one position report into a 60k-vessel cache. recorded attaches the vessel
-// record's dirty set and the track queue, the fold's only extra work when the stores are on; the writes
+// record's dirty set and the ClickHouse queue, the fold's only extra work when the stores are on; the writes
 // themselves run outside the fold, once a second.
 func benchFold(b *testing.B, recorded bool) {
 	p := testPipeline(nil)
 	benchFleet(p, 60000)
 	if recorded {
 		p.dirty = map[uint32]struct{}{}
-		p.tracks, p.trackQueue = &trackStore{}, make([]trackPoint, 0, maxPending)
 		p.ch, p.chQueue = &chStore{}, make([]trackPoint, 0, maxPending)
 		p.chOn.Store(true)
 	}
