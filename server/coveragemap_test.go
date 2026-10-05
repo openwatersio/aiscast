@@ -165,10 +165,12 @@ func decodeCoverageTile(t *testing.T, b []byte) map[uint64]covFeature {
 func TestCoverageTiles(t *testing.T) {
 	// The window is the 7 complete days before now: 2026-09-20 is before it, 2026-09-25 has no coverage, and
 	// 2026-09-30 is today and not over.
+	oslo3 := covRowOf(t, 3, osloRes3, 60, 6, osloRes3Outline)
+	oslo3.stations = 3
 	f := &fakeCoverageSource{
 		days: []string{"2026-09-20", "2026-09-23", "2026-09-24", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29", "2026-09-30"},
 		cells: []covRow{
-			covRowOf(t, 3, osloRes3, 60, 6, osloRes3Outline),
+			oslo3,
 			covRowOf(t, 6, osloRes6, 12, 3, osloRes6Outline),
 			covRowOf(t, 3, beringRes3, 3, 1, beringOutline),
 		},
@@ -214,7 +216,7 @@ func TestCoverageTiles(t *testing.T) {
 
 	// z0 draws resolution 3: vessels a day is the window's sum over its packaged days
 	fs := tile(0, 0, 0)
-	if len(fs) != 2 || fs[osloRes3].props["vessels"] != 10.0 || fs[osloRes3].props["days"] != uint64(6) {
+	if len(fs) != 2 || fs[osloRes3].props["vessels"] != 10.0 || fs[osloRes3].props["days"] != uint64(6) || fs[osloRes3].props["stations"] != uint64(3) {
 		t.Fatalf("z0: %v", fs)
 	}
 	if b := fs[beringRes3]; len(b.ring) != 6 {
@@ -307,17 +309,17 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	day2 := day1.AddDate(0, 0, 1)
 	at := func(mmsi uint32, ts time.Time) trackPoint {
 		return trackPoint{mmsi: mmsi, ts: ts, lat6: int32(59.9 * 600000), lon6: int32(10.7 * 600000), sog10: 1023, cog10: 3600,
-			heading: 511, navStatus: 15, source: "kystverket"}
+			heading: 511, navStatus: 15, source: "kystverket", station: "kystverket"}
 	}
 	// Two vessels on the first day, one of them twice, and one of them again on the second. The second vessel's
-	// transmission also arrives as a later copy from another station, which changes no count. A copy the fold
-	// judged implausible, far from the others, adds no cell.
+	// transmission also arrives as a later copy from another station, which adds a station but no vessel. A copy
+	// the fold judged implausible, far from the others, from a third station, adds no cell and no station.
 	first := at(2, day1.Add(3*time.Hour))
 	first.txAt, first.txDisc = first.ts, 7
 	again := first
 	again.station, again.recv, again.dup = "station:other", first.ts.Add(2*time.Second), true
 	wild := at(5, day1.Add(4*time.Hour))
-	wild.lat6, wild.lon6, wild.implausible = int32(10*600000), int32(10*600000), true
+	wild.lat6, wild.lon6, wild.implausible, wild.station = int32(10*600000), int32(10*600000), true, "station:wild"
 	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, wild, at(1, day2.Add(time.Hour))}
 	if err := conn.insert(ctx, "coverage", batch); err != nil {
 		t.Fatal(err)
@@ -338,10 +340,10 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no resolution-6 cell for Oslo among %d cells", when, len(got))
 		}
-		if oslo.res != 6 || oslo.vessels != 3 || oslo.days != 2 {
-			t.Errorf("%s: Oslo at resolution 6 is %+v, want 2 + 1 vessels over 2 days", when, oslo)
+		if oslo.res != 6 || oslo.vessels != 3 || oslo.days != 2 || oslo.stations != 2 {
+			t.Errorf("%s: Oslo at resolution 6 is %+v, want 2 + 1 vessels over 2 days from 2 stations", when, oslo)
 		}
-		if r := got[osloRes3]; r.res != 3 || r.vessels != 3 {
+		if r := got[osloRes3]; r.res != 3 || r.vessels != 3 || r.stations != 2 {
 			t.Errorf("%s: the resolution-3 cell containing it is %+v", when, r)
 		}
 		if len(got) != len(coverageBands) {

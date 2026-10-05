@@ -1,7 +1,7 @@
 package main
 
 // The coverage map: where there are vessel positions, from any source. ClickHouse keeps coverage, the distinct
-// vessels in each H3 cell each day, filled by a materialized view as receptions are written and once from the
+// vessels and stations in each H3 cell each day, filled by a materialized view as receptions are written and once from the
 // receptions it already held. The server reads the last coverageDays complete days of it, holds each cell's outline and
 // counts, and serves them as vector tiles: GET /v1/coverage/tiles/{z}/{x}/{y} and its TileJSON,
 // /v1/coverage/tiles.json. The outlines come from ClickHouse's H3 functions in the same query, so the server
@@ -51,6 +51,7 @@ type covCell struct {
 	minX, minY, maxX, maxY float32
 	vessels                float64 // distinct vessels a day, over the window
 	days                   int     // days in the window the cell was heard
+	stations               int     // distinct stations that heard it in the window
 }
 
 // coverageData is one load. It is never modified once published, so tiles read it without a lock.
@@ -79,12 +80,13 @@ func (c *coverageMap) data() *coverageData {
 }
 
 // covRow is one cell of a window as ClickHouse answers it: the window's sum of each day's distinct vessels,
-// the days it was heard, and its outline's vertices.
+// the days it was heard, the distinct stations that heard it, and its outline's vertices.
 type covRow struct {
 	res        int
 	cell       uint64
 	vessels    uint64
 	days       int
+	stations   int
 	lats, lons []float64
 }
 
@@ -163,7 +165,7 @@ func (c *coverageMap) load(ctx context.Context, src coverageSource, now time.Tim
 		if err != nil {
 			return err
 		}
-		cell.vessels, cell.days = float64(r.vessels)/float64(d.days), r.days
+		cell.vessels, cell.days, cell.stations = float64(r.vessels)/float64(d.days), r.days, r.stations
 		d.cells[b] = append(d.cells[b], cell)
 		return nil
 	})
@@ -280,7 +282,7 @@ func (d *coverageData) tile(z, x, y int) []byte {
 				ring[a], ring[e] = ring[e], ring[a]
 			}
 		}
-		l.polygon(c.id, ring, []mvtProp{{"vessels", math.Round(c.vessels*10) / 10}, {"days", uint64(c.days)}})
+		l.polygon(c.id, ring, []mvtProp{{"vessels", math.Round(c.vessels*10) / 10}, {"days", uint64(c.days)}, {"stations", uint64(c.stations)}})
 	}
 	return l.tile()
 }
@@ -319,8 +321,9 @@ func (p *Pipeline) serveCoverageTile(w http.ResponseWriter, r *http.Request) {
 
 // coverageFields describes the layer's attributes in TileJSON, as openapi.json does.
 var coverageFields = map[string]string{
-	"vessels": "Number: distinct vessels heard in the cell a day, averaged over the window",
-	"days":    "Number: days in the window the network heard the cell",
+	"vessels":  "Number: distinct vessels heard in the cell a day, averaged over the window",
+	"days":     "Number: days in the window the network heard the cell",
+	"stations": "Number: distinct stations that heard the cell in the window; each aggregator and government feed counts as one",
 }
 
 // serveCoverageTileJSON: GET /v1/coverage/tiles.json → TileJSON for the coverage tiles, plus the window they
@@ -366,14 +369,15 @@ const (
 	chCoverageMonths = 13
 )
 
-// chCoverageTable keeps each day's distinct vessels per cell at each resolution the map draws. Distinct sets
-// merge as unions, so every copy of a transmission, and the same copies counted again by a backfill that
-// overlaps the view, count each vessel once.
+// chCoverageTable keeps each day's distinct vessels, and the distinct stations that heard them, per cell at each
+// resolution the map draws. Distinct sets merge as unions, so every copy of a transmission, and the same copies
+// counted again by a backfill that overlaps the view, count each vessel and station once.
 var chCoverageTable = `CREATE TABLE IF NOT EXISTS {db}.coverage (
 	day     Date,
 	res     UInt8,
 	cell    UInt64,
-	vessels AggregateFunction(uniqExact, UInt32)
+	vessels AggregateFunction(uniqExact, UInt32),
+	stations AggregateFunction(uniqExact, String)
 ) ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(day)
 ORDER BY (res, day, cell)
@@ -395,7 +399,7 @@ func chCoverageSelect(table, and string) string {
 	}
 	finest := coverageBands[len(coverageBands)-1].res
 	return fmt.Sprintf(`SELECT toDate(ts) AS day, res, h3ToParent(geoToH3(lat6 / 600000, lon6 / 600000, %d), res) AS cell,
-		uniqExactState(mmsi) AS vessels
+		uniqExactState(mmsi) AS vessels, uniqExactState(station) AS stations
 	FROM %s ARRAY JOIN [%s] AS res %s
 	GROUP BY day, res, cell
 	SETTINGS geotoh3_argument_order = 'lat_lon'`, finest, table, strings.Join(res, ", "), where)
@@ -464,12 +468,12 @@ func (c *chConn) coverageDays(ctx context.Context, first, last time.Time) ([]str
 	return days, rows.Err()
 }
 
-// coverageCells answers each cell's window from each day's distinct vessels, with its outline as (lat, lon)
-// pairs, the order the result setting fixes.
+// coverageCells answers each cell's window from each day's distinct vessels and the window's distinct stations,
+// with its outline as (lat, lon) pairs, the order the result setting fixes.
 func (c *chConn) coverageCells(ctx context.Context, first, last time.Time, each func(covRow) error) error {
 	rows, err := c.conn.Query(ctx, `WITH h3ToGeoBoundary(cell) AS b
-		SELECT res, cell, sum(v), count(), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
-		FROM (SELECT res, cell, day, uniqExactMerge(vessels) AS v FROM `+c.db+`.coverage
+		SELECT res, cell, sum(v), count(), uniqExactMerge(s), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
+		FROM (SELECT res, cell, day, uniqExactMerge(vessels) AS v, uniqExactMergeState(stations) AS s FROM `+c.db+`.coverage
 			WHERE day >= ? AND day <= ? AND res >= ? AND res <= ? GROUP BY res, cell, day)
 		GROUP BY res, cell
 		SETTINGS h3togeo_lon_lat_result_order = 0`,
@@ -481,11 +485,11 @@ func (c *chConn) coverageCells(ctx context.Context, first, last time.Time, each 
 	for rows.Next() {
 		var r covRow
 		var res uint8
-		var days uint64
-		if err := rows.Scan(&res, &r.cell, &r.vessels, &days, &r.lats, &r.lons); err != nil {
+		var days, stations uint64
+		if err := rows.Scan(&res, &r.cell, &r.vessels, &days, &stations, &r.lats, &r.lons); err != nil {
 			return err
 		}
-		r.res, r.days = int(res), int(days)
+		r.res, r.days, r.stations = int(res), int(days), int(stations)
 		if err := each(r); err != nil {
 			return err
 		}
