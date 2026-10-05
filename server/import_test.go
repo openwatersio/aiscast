@@ -141,6 +141,12 @@ func TestImportSchedule(t *testing.T) {
 			t.Errorf("at %v: ran %v, want %v", c.at, got, c.want)
 		}
 	}
+
+	// An archive load makes the import due at once, so the vessels it brought in need not wait a day.
+	p.importSoon()
+	if !p.importIfDue(day.Add(26 * time.Hour)) {
+		t.Error("the import did not run after an archive load")
+	}
 }
 
 // The import's ClickHouse read pages through every vessel once, in MMSI order: positions_1m gives the first and

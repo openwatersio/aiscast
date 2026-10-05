@@ -248,6 +248,17 @@ func (c *chConn) vesselHistory(ctx context.Context, after uint32, limit int) ([]
 	return out, nil
 }
 
+// importSoon makes the import due at its next check, so vessels an archive load just brought in reach the record
+// within minutes rather than at the next daily run.
+func (p *Pipeline) importSoon() {
+	if p.store == nil || p.vesselHistory == nil {
+		return
+	}
+	if err := p.store.setMeta("vessels_import", ""); err != nil {
+		log.Printf("import: %v", err)
+	}
+}
+
 // runImport merges ClickHouse's vessel history into the record once a day, and after a restart when the last
 // import is more than a day old.
 func (p *Pipeline) runImport() {
