@@ -99,6 +99,10 @@ var chMigrations = []string{
 	7: chCoverageTable,
 	8: `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.coverage_mv TO {db}.coverage AS ` + chCoverageSelect("{db}.receptions", chUsable),
 	9: `CREATE TABLE IF NOT EXISTS {db}.coverage_backfilled (day Date) ENGINE = ReplacingMergeTree ORDER BY day`,
+	// the stations that heard each cell; the backfill bins every day again to fill them in
+	10: `ALTER TABLE {db}.coverage ADD COLUMN IF NOT EXISTS stations AggregateFunction(uniqExact, String)`,
+	11: `ALTER TABLE {db}.coverage_mv MODIFY QUERY ` + chCoverageSelect("{db}.receptions", chUsable),
+	12: `TRUNCATE TABLE {db}.coverage_backfilled`,
 }
 
 // positions_1m is each vessel's track at one position a minute while it moves, and one every 30 minutes for each
@@ -314,7 +318,45 @@ func (c *chConn) migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	return c.exec(ctx, chPositionsView(legacy))
+	if err := c.exec(ctx, chPositionsView(legacy)); err != nil {
+		return err
+	}
+	return c.coldTier(ctx)
+}
+
+// chColdDays is how many days receptions' parts stay on local disk before they move to the cold volume on R2.
+const chColdDays = 30
+
+// coldTier puts receptions on the tiered storage policy and moves its parts to the cold volume chColdDays past
+// their rows' time, once the server's config has the policy (clickhouse-r2.xml). Each step checks what is
+// already set, so a start that stopped between them finishes the second. The TTL recalculates each part's times
+// from ts alone, without rewriting it, and ClickHouse moves the parts in the background.
+func (c *chConn) coldTier(ctx context.Context) error {
+	policy, err := chColumn[string](ctx, c.conn, "SELECT policy_name FROM system.storage_policies WHERE policy_name = 'tiered' LIMIT 1")
+	if err != nil || len(policy) == 0 {
+		return err
+	}
+	table, err := chColumn[string](ctx, c.conn, "SELECT storage_policy FROM system.tables WHERE database = ? AND name = 'receptions'", c.db)
+	if err != nil {
+		return err
+	}
+	if len(table) == 1 && table[0] != "tiered" {
+		if err := c.exec(ctx, "ALTER TABLE {db}.receptions MODIFY SETTING storage_policy = 'tiered', materialize_ttl_recalculate_only = 1"); err != nil {
+			return fmt.Errorf("cold tier: %w", err)
+		}
+		log.Printf("clickhouse: %s.receptions is on the tiered storage policy", c.db)
+	}
+	ttl, err := chColumn[string](ctx, c.conn, "SELECT engine_full FROM system.tables WHERE database = ? AND name = 'receptions'", c.db)
+	if err != nil {
+		return err
+	}
+	if len(ttl) == 1 && !strings.Contains(ttl[0], "TO VOLUME 'cold'") {
+		if err := c.exec(ctx, fmt.Sprintf("ALTER TABLE {db}.receptions MODIFY TTL toDateTime(ts) + INTERVAL %d DAY TO VOLUME 'cold'", chColdDays)); err != nil {
+			return fmt.Errorf("cold tier: %w", err)
+		}
+		log.Printf("clickhouse: %s.receptions moves its parts to R2 %d days past their rows' time", c.db, chColdDays)
+	}
+	return nil
 }
 
 // chDeleteSync makes a lightweight DELETE wait until its rows are gone before it returns, so what follows it, a

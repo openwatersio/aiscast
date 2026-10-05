@@ -84,6 +84,9 @@ export function Panel({
             // The bar floats over the page. A photo starts under it; anything else starts below
             // it, the height of its buttons and the space above them.
             hasBar && !hero && "pt-11",
+            // Once the bar shows the title, what is under it fades out so the title reads on the glass.
+            hasBar && "bar-fade",
+            hasBar && !largeTitleVisible && "bar-fade-hidden",
           )}
         >
           {children}
