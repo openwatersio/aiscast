@@ -165,10 +165,12 @@ func decodeCoverageTile(t *testing.T, b []byte) map[uint64]covFeature {
 func TestCoverageTiles(t *testing.T) {
 	// The window is the 7 complete days before now: 2026-09-20 is before it, 2026-09-25 has no coverage, and
 	// 2026-09-30 is today and not over.
+	oslo3 := covRowOf(t, 3, osloRes3, 60, 6, osloRes3Outline)
+	oslo3.stations = 3
 	f := &fakeCoverageSource{
 		days: []string{"2026-09-20", "2026-09-23", "2026-09-24", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29", "2026-09-30"},
 		cells: []covRow{
-			covRowOf(t, 3, osloRes3, 60, 6, osloRes3Outline),
+			oslo3,
 			covRowOf(t, 6, osloRes6, 12, 3, osloRes6Outline),
 			covRowOf(t, 3, beringRes3, 3, 1, beringOutline),
 		},
@@ -214,7 +216,7 @@ func TestCoverageTiles(t *testing.T) {
 
 	// z0 draws resolution 3: vessels a day is the window's sum over its packaged days
 	fs := tile(0, 0, 0)
-	if len(fs) != 2 || fs[osloRes3].props["vessels"] != 10.0 || fs[osloRes3].props["days"] != uint64(6) {
+	if len(fs) != 2 || fs[osloRes3].props["vessels"] != 10.0 || fs[osloRes3].props["days"] != uint64(6) || fs[osloRes3].props["stations"] != uint64(3) {
 		t.Fatalf("z0: %v", fs)
 	}
 	if b := fs[beringRes3]; len(b.ring) != 6 {
@@ -307,18 +309,25 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	day2 := day1.AddDate(0, 0, 1)
 	at := func(mmsi uint32, ts time.Time) trackPoint {
 		return trackPoint{mmsi: mmsi, ts: ts, lat6: int32(59.9 * 600000), lon6: int32(10.7 * 600000), sog10: 1023, cog10: 3600,
-			heading: 511, navStatus: 15, source: "kystverket"}
+			heading: 511, navStatus: 15, source: "kystverket", station: "kystverket"}
 	}
 	// Two vessels on the first day, one of them twice, and one of them again on the second. The second vessel's
-	// transmission also arrives as a later copy from another station, which changes no count. A copy the fold
-	// judged implausible, far from the others, adds no cell.
+	// transmission also arrives as a later copy from another station, which adds a station but no vessel, and
+	// from another receiver of the same feed and another stream of that station, which add neither. A copy
+	// the fold judged implausible, far from the others, from a third station, adds no cell and no station.
 	first := at(2, day1.Add(3*time.Hour))
 	first.txAt, first.txDisc = first.ts, 7
 	again := first
-	again.station, again.recv, again.dup = "station:other", first.ts.Add(2*time.Second), true
+	again.source, again.station, again.recv, again.dup = "station", "station:other", first.ts.Add(2*time.Second), true
+	// and from another of the first feed's receivers, which is the same source, and from another stream of
+	// the other station, which is the same station
+	path := first
+	path.station, path.recv, path.dup = "kystverket/2573010", first.ts.Add(time.Second), true
+	stream := again
+	stream.station, stream.recv = "station:other/n2k", first.ts.Add(3*time.Second)
 	wild := at(5, day1.Add(4*time.Hour))
-	wild.lat6, wild.lon6, wild.implausible = int32(10*600000), int32(10*600000), true
-	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, wild, at(1, day2.Add(time.Hour))}
+	wild.lat6, wild.lon6, wild.implausible, wild.station = int32(10*600000), int32(10*600000), true, "station:wild"
+	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, path, stream, wild, at(1, day2.Add(time.Hour))}
 	if err := conn.insert(ctx, "coverage", batch); err != nil {
 		t.Fatal(err)
 	}
@@ -338,10 +347,10 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no resolution-6 cell for Oslo among %d cells", when, len(got))
 		}
-		if oslo.res != 6 || oslo.vessels != 3 || oslo.days != 2 {
-			t.Errorf("%s: Oslo at resolution 6 is %+v, want 2 + 1 vessels over 2 days", when, oslo)
+		if oslo.res != 6 || oslo.vessels != 3 || oslo.days != 2 || oslo.stations != 2 {
+			t.Errorf("%s: Oslo at resolution 6 is %+v, want 2 + 1 vessels over 2 days from 2 stations", when, oslo)
 		}
-		if r := got[osloRes3]; r.res != 3 || r.vessels != 3 {
+		if r := got[osloRes3]; r.res != 3 || r.vessels != 3 || r.stations != 2 {
 			t.Errorf("%s: the resolution-3 cell containing it is %+v", when, r)
 		}
 		if len(got) != len(coverageBands) {
@@ -397,4 +406,80 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("after the rest is backfilled")
+}
+
+// A database at step 9 has coverage without stations and a view that does not fill them. Steps 10 to 12 add the
+// column, point the view at it, and clear the backfill's record, so the backfill bins the old days again with
+// their stations and new receptions arrive with theirs.
+func TestCoverageStationsMigrateInPlace(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	dsn := strings.TrimRight(url, "/") + "/" + db
+	conn, err := openClickHouse(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+
+	step9Select := strings.Replace(chCoverageSelect("{db}.receptions", chUsable), ", uniqExactState("+chCoverageStation+") AS stations", "", 1)
+	step9Table := strings.Replace(chCoverageTable, ",\n\tstations AggregateFunction(uniqExact, String)", "", 1)
+	if step9Select == chCoverageSelect("{db}.receptions", chUsable) || step9Table == chCoverageTable {
+		t.Fatal("the step-9 coverage definitions no longer differ from the current ones by stations")
+	}
+	if err := conn.exec(ctx,
+		"DROP VIEW {db}.coverage_mv",
+		"DROP TABLE {db}.coverage",
+		step9Table,
+		"CREATE MATERIALIZED VIEW {db}.coverage_mv TO {db}.coverage AS "+step9Select,
+		"ALTER TABLE {db}.schema_migrations DELETE WHERE version > 9 SETTINGS mutations_sync = 2",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	at := func(mmsi uint32, source, station string, ts time.Time) trackPoint {
+		return trackPoint{mmsi: mmsi, ts: ts, lat6: int32(59.9 * 600000), lon6: int32(10.7 * 600000), sog10: 1023, cog10: 3600,
+			heading: 511, navStatus: 15, source: source, station: station}
+	}
+	if err := conn.insert(ctx, "old", []trackPoint{at(1, "aishub", "aishub", day.Add(time.Hour)), at(2, "station", "station:a", day.Add(2*time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	// as a step-9 server's backfill leaves it, with the day binned without stations
+	if err := conn.exec(ctx, "INSERT INTO {db}.coverage_backfilled VALUES ('"+day.Format("2006-01-02")+"')"); err != nil {
+		t.Fatal(err)
+	}
+	oslo := func() covRow {
+		t.Helper()
+		var got covRow
+		if err := conn.coverageCells(ctx, day, day, func(r covRow) error {
+			if r.cell == osloRes6 {
+				got = r
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	conn.conn.Close()
+	if conn, err = openClickHouse(ctx, dsn); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.coverageBackfill(ctx, day); err != nil {
+		t.Fatal(err)
+	}
+	if r := oslo(); r.vessels != 2 || r.stations != 2 {
+		t.Errorf("after steps 10 to 12 and the backfill Oslo is %+v, want 2 vessels from 2 stations", r)
+	}
+	if err := conn.insert(ctx, "new", []trackPoint{at(3, "udp", "udp:b", day.Add(3*time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	if r := oslo(); r.vessels != 3 || r.stations != 3 {
+		t.Errorf("after a reception from a third station Oslo is %+v, want 3 vessels from 3 stations", r)
+	}
 }

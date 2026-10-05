@@ -14,10 +14,20 @@ describe("coverageOpacity", () => {
 
 describe("coverageSummary", () => {
   it("rounds vessels a day and says how often the cell was heard", () => {
-    expect(coverageSummary(12.4, 7, 7)).toEqual(["About 12 vessels a day", "Heard on all of the last 7 days"]);
-    expect(coverageSummary(1.2, 3, 7)).toEqual(["About 1 vessel a day", "Heard on 3 of the last 7 days"]);
-    expect(coverageSummary(0.3, 1, 6)).toEqual(["Fewer than one vessel a day", "Heard on 1 of the last 6 days"]);
-    expect(coverageSummary(1234, 7, 7)[0]).toBe("About 1,234 vessels a day");
+    const cell = (vessels: number, days: number) => ({ vessels, days, stations: 1 });
+    expect(coverageSummary("vessels", cell(12.4, 7), 7)).toEqual(["About 12 vessels a day", "Heard on all of the last 7 days"]);
+    expect(coverageSummary("vessels", cell(1.2, 3), 7)).toEqual(["About 1 vessel a day", "Heard on 3 of the last 7 days"]);
+    expect(coverageSummary("vessels", cell(0.3, 1), 6)).toEqual(["Fewer than one vessel a day", "Heard on 1 of the last 6 days"]);
+    expect(coverageSummary("vessels", cell(1234, 7), 7)[0]).toBe("About 1,234 vessels a day");
+  });
+
+  it("leads with the stations that heard the cell when the map counts them", () => {
+    expect(coverageSummary("stations", { vessels: 40, days: 7, stations: 2 }, 7)).toEqual([
+      "Heard by 2 stations",
+      "About 40 vessels a day",
+      "Heard on all of the last 7 days",
+    ]);
+    expect(coverageSummary("stations", { vessels: 3, days: 2, stations: 1 }, 7)[0]).toBe("Heard by 1 station");
   });
 });
 
@@ -30,7 +40,7 @@ describe("coverageDay", () => {
 describe("coverageColor", () => {
   it("colors a cell by the first step whose bound it is at or under", () => {
     const [light] = [COVERAGE_COLORS.light];
-    expect(coverageColor("light")).toEqual([
+    expect(coverageColor("light", "vessels")).toEqual([
       "case",
       ["<=", ["get", "vessels"], 1],
       light[0],
@@ -41,9 +51,25 @@ describe("coverageColor", () => {
       light[3],
     ]);
   });
+
+  it("colors by stations on the stations map, with 4 or more in the last step", () => {
+    const dark = COVERAGE_COLORS.dark;
+    expect(coverageColor("dark", "stations")).toEqual([
+      "case",
+      ["<=", ["get", "stations"], 1],
+      dark[0],
+      ["<=", ["get", "stations"], 2],
+      dark[1],
+      ["<=", ["get", "stations"], 3],
+      dark[2],
+      dark[3],
+    ]);
+  });
 });
 
-it("has a color for every key step in both themes", () => {
-  expect(COVERAGE_COLORS.light).toHaveLength(COVERAGE_STEPS.length);
-  expect(COVERAGE_COLORS.dark).toHaveLength(COVERAGE_STEPS.length);
+it("has a color for every key step of every measure in both themes", () => {
+  for (const steps of Object.values(COVERAGE_STEPS)) {
+    expect(COVERAGE_COLORS.light).toHaveLength(steps.length);
+    expect(COVERAGE_COLORS.dark).toHaveLength(steps.length);
+  }
 });
