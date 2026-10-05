@@ -5,7 +5,8 @@
 set -eu
 month=$(date -u +%Y-%m)
 day=$(date -u +%Y-%m-%dT%H%M)
-q() { clickhouse-client --query "$1"; }
+# A backup answers only when it is done, which for a full one is well past the client's default 300 s wait.
+q() { clickhouse-client --receive_timeout 86400 --query "$1"; }
 # An incremental backup needs the month's full one, which lives in the bucket rather than in this box's logs, so
 # a replacement box restored from it carries on. Without it, as on the first night of a month, the full one is made.
 if ! q "BACKUP DATABASE aiscast TO Disk('backups', 'incr-$day') SETTINGS base_backup = Disk('backups', 'full-$month')"; then
