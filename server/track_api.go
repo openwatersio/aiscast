@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -221,7 +222,7 @@ func (p *Pipeline) answeredStep(from, to time.Time, interval time.Duration, now 
 func pointSources(points []trackPoint) []string {
 	var sources []string
 	for _, pt := range points {
-		if pt.source != "" && !contains(sources, pt.source) {
+		if pt.source != "" && !slices.Contains(sources, pt.source) {
 			sources = append(sources, pt.source)
 		}
 	}

@@ -323,3 +323,17 @@ export interface Stats {
 export async function getStats(auth: ApiAuth): Promise<Stats | undefined> {
   return soft(get<Stats>(auth, "/v1/stats"));
 }
+
+/** TileJSON for the coverage map, with the days it covers. */
+export interface CoverageTiles {
+  tiles: string[];
+  minzoom?: number;
+  maxzoom?: number;
+  attribution?: string;
+  window: { from: string; to: string; days: number };
+}
+
+/** Nothing when the server has no coverage loaded, which it answers with a 503. */
+export async function getCoverage(auth: ApiAuth): Promise<CoverageTiles | undefined> {
+  return soft(get<CoverageTiles>(auth, "/v1/coverage/tiles.json"));
+}

@@ -2,7 +2,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -72,9 +71,8 @@ func main() {
 			if err := p.names.attach(st); err != nil {
 				log.Printf("stations: %v; station names will not survive a restart", err)
 			}
-			if c := duckLakeFromEnv(); c != nil {
-				p.lake = &lake{client: c}
-				go c.open(context.Background()) // attach the lake before the first import needs it
+			if os.Getenv("CLICKHOUSE_URL") != "" {
+				p.vesselHistory = p.vesselHistoryFromClickHouse
 				go p.runImport()
 			}
 			go p.runStore()
@@ -191,6 +189,8 @@ func main() {
 				go p.runHistory(loader, sources)
 			}
 		}
+		p.coverage = newCoverageMap()
+		go p.runCoverage()
 	}
 	go p.logStats()
 	go p.runStationNames()
@@ -243,25 +243,27 @@ func main() {
 // build until the document mentions it.
 func routes(p *Pipeline) map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"/v0/stream":                    p.serveV0,
-		"/v1/stream":                    p.serveV1,
-		"/v1/receive":                   p.serveReceive,
-		"/v1/keys":                      p.serveKeys,
-		"/v1/nmea":                      p.serveNMEA,
-		"/v1/stations":                  p.api(corsHeaders, p.serveStations),
-		"/v1/stations/":                 p.api(corsHeaders, p.serveStations),
-		"/v1/vessels":                   p.api(corsHeaders, p.serveVessels),
-		"/v1/vessels/{mmsi}":            p.api(corsHeaders, p.serveVessel),
-		"/v1/vessels/{mmsi}/track":      p.api(corsHeaders, p.serveTrack),
-		"/v1/vessels/tiles.json":        p.api(corsHeaders, p.serveTileJSON),
-		"/v1/vessels/tiles/{z}/{x}/{y}": p.serveVesselTile,
-		"/v1/stats":                     p.api(corsHeaders, p.serveStats),
-		"/mcp":                          p.api(mcpHeaders, p.serveMCP),
-		"/health":                       p.serveHealth,
-		"/metrics":                      p.serveMetrics,
-		"/robots.txt":                   serveRobots,
-		"/sitemap/vessels":              p.api(corsHeaders, p.serveVesselSitemap),
-		"/openapi.json":                 p.api(corsHeaders, serveOpenAPI),
+		"/v0/stream":                     p.serveV0,
+		"/v1/stream":                     p.serveV1,
+		"/v1/receive":                    p.serveReceive,
+		"/v1/keys":                       p.serveKeys,
+		"/v1/nmea":                       p.serveNMEA,
+		"/v1/stations":                   p.api(corsHeaders, p.serveStations),
+		"/v1/stations/":                  p.api(corsHeaders, p.serveStations),
+		"/v1/vessels":                    p.api(corsHeaders, p.serveVessels),
+		"/v1/vessels/{mmsi}":             p.api(corsHeaders, p.serveVessel),
+		"/v1/vessels/{mmsi}/track":       p.api(corsHeaders, p.serveTrack),
+		"/v1/vessels/tiles.json":         p.api(corsHeaders, p.serveTileJSON),
+		"/v1/vessels/tiles/{z}/{x}/{y}":  p.serveVesselTile,
+		"/v1/coverage/tiles.json":        p.api(corsHeaders, p.serveCoverageTileJSON),
+		"/v1/coverage/tiles/{z}/{x}/{y}": p.serveCoverageTile,
+		"/v1/stats":                      p.api(corsHeaders, p.serveStats),
+		"/mcp":                           p.api(mcpHeaders, p.serveMCP),
+		"/health":                        p.serveHealth,
+		"/metrics":                       p.serveMetrics,
+		"/robots.txt":                    serveRobots,
+		"/sitemap/vessels":               p.api(corsHeaders, p.serveVesselSitemap),
+		"/openapi.json":                  p.api(corsHeaders, serveOpenAPI),
 	}
 }
 
