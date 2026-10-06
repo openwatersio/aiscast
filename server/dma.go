@@ -3,8 +3,10 @@ package main
 // DMA: the Danish Maritime Authority's AIS archive, every report its shore network heard in Danish waters, the
 // Skagerrak, the Kattegat, and the western Baltic, stamped to the second, in a public S3 bucket, three days
 // behind. Published under the Danish public sector information act, on the condition that it is not combined so
-// that private individuals become identifiable. Each day is a zipped CSV, and ClickHouse reads the CSV inside the
-// zip itself. Coordinates have six decimal places, which round back to the exact wire value.
+// that private individuals become identifiable. Its rows carry only what AIS does, a vessel's identity and motion,
+// and the vessel record they join adds vessel facts, never an individual's name (docs/policy.md). Each day is a
+// zipped CSV, and ClickHouse reads the CSV inside the zip itself. Coordinates have six decimal places, which round
+// back to the exact wire value.
 
 import (
 	"context"
