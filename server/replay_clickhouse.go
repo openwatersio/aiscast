@@ -167,10 +167,15 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	}
 	p := newPipeline(newArchive("", nil))
 	p.normGate = day
-	if p.anchorSeeds, err = c.anchorsBefore(ctx, day.Add(-warmup)); err != nil {
+	// Historical archives' rows never passed through live's cache, so they seed nothing, and the swap leaves them be.
+	archives, err := chColumn[string](ctx, c.conn, "SELECT DISTINCT source FROM "+c.db+".history_loads")
+	if err != nil {
+		return err
+	}
+	if p.anchorSeeds, err = c.anchorsBefore(ctx, day.Add(-warmup), archives); err != nil {
 		return fmt.Errorf("anchors: %w", err)
 	}
-	if err := c.seedVessels(ctx, p, day.Add(-warmup)); err != nil {
+	if err := c.seedVessels(ctx, p, day.Add(-warmup), archives); err != nil {
 		return fmt.Errorf("vessels: %w", err)
 	}
 	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}}
@@ -212,10 +217,6 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		return fmt.Errorf("%d copies dropped from a full queue", d)
 	}
 
-	archives, err := chColumn[string](ctx, c.conn, "SELECT DISTINCT source FROM "+c.db+".history_loads")
-	if err != nil {
-		return err
-	}
 	where, args := replayWindow(day, archives)
 	stored, err := c.replayCounts(ctx, "receptions", where, args)
 	if err != nil {
@@ -292,11 +293,11 @@ func (c *chConn) createReplayStaging(ctx context.Context) (string, error) {
 // vessel since long before, flagged the rest as implausible and replay would flag the opposite. positions_1m holds
 // only usable accepted reports, a row a minute while moving and every 30 minutes while still, so each vessel heard
 // within vesselTTL has its last there.
-func (c *chConn) seedVessels(ctx context.Context, p *Pipeline, at time.Time) error {
+func (c *chConn) seedVessels(ctx context.Context, p *Pipeline, at time.Time, archives []string) error {
 	rows, err := c.conn.Query(ctx, "SELECT mmsi, max(ts), argMax(lat6, ts), argMax(lon6, ts), argMax(sog10, ts), argMax(cog10, ts), argMax(heading, ts),"+
 		" maxIf(ts, source NOT IN ('udp', 'mmsi'))"+
-		" FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND ts < ? GROUP BY mmsi HAVING max(ts) >= ?",
-		at.Add(-corroborationWindow).Truncate(30*time.Minute), at, at, at.Add(-vesselTTL))
+		" FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND ts < ? AND NOT has(?, source) GROUP BY mmsi HAVING max(ts) >= ?",
+		at.Add(-corroborationWindow).Truncate(30*time.Minute), at, at, archives, at.Add(-vesselTTL))
 	if err != nil {
 		return err
 	}

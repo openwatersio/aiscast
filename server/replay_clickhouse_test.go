@@ -361,7 +361,8 @@ func TestReplayFetchesInParallel(t *testing.T) {
 	}
 }
 
-// A replay judges plausibility from what live held before its lead-in, not from the lead-in's first report. Here
+// A replay judges plausibility from what live held before its lead-in, not from the lead-in's first report or an
+// archive's rows. Here
 // two vessels share an MMSI: live has held the one off Sicily since before the lead-in, so a report off Gibraltar
 // during it is the implausible jump, and the next report off Sicily, on the replayed day, is plausible. A lead-in
 // starting from nothing would take Gibraltar first and flag Sicily instead.
@@ -386,6 +387,16 @@ func TestReplaySeedsWhatLiveHeldBeforeTheLeadIn(t *testing.T) {
 	if err := c.conn.Exec(ctx, "INSERT INTO "+db+".positions_1m (mmsi, slot, cell, ts, lat6, lon6, sog10, cog10, heading, navstat, source)"+
 		" VALUES (?, ?, 0, ?, ?, ?, 0, 3600, 511, 15, 'kystverket')", mmsi, before.Truncate(time.Minute), before,
 		int32(36.74*600000), int32(14.21*600000)); err != nil {
+		t.Fatal(err)
+	}
+	// An archive's later row off Gibraltar, which never passed through live's cache, so it seeds nothing.
+	archived := before.Add(2 * time.Minute)
+	if err := c.conn.Exec(ctx, "INSERT INTO "+db+".positions_1m (mmsi, slot, cell, ts, lat6, lon6, sog10, cog10, heading, navstat, source)"+
+		" VALUES (?, ?, 0, ?, ?, ?, 0, 3600, 511, 15, 'marinecadastre')", mmsi, archived.Truncate(time.Minute), archived,
+		int32(35.96*600000), int32(-5.80*600000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.conn.Exec(ctx, "INSERT INTO "+db+".history_loads (source, file, day, etag, complete, loaded) VALUES ('marinecadastre', 'f', ?, 'e', true, now64(3))", day); err != nil {
 		t.Fatal(err)
 	}
 	enc := testPipeline(t)
