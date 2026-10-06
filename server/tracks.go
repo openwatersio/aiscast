@@ -364,8 +364,11 @@ func (p *Pipeline) noteOwn(ev *Event) {
 	sh := ownKey{station: claimer, hour: recvHour}
 	claimed, known := p.chOwnClaimed[sh]
 	last, ok := p.chOwn[k]
-	if !claimed[k.mmsi] && len(claimed) >= maxOwnPerStation || !ok && len(p.chOwn) >= maxOwnPending ||
-		!known && len(p.chOwnClaimed) >= maxOwnPending {
+	if !claimed[k.mmsi] && len(claimed) >= maxOwnPerStation {
+		p.ch.ownRefused.Add(1) // the sender's allowance, which a replay of the same messages refuses again
+		return
+	}
+	if !ok && len(p.chOwn) >= maxOwnPending || !known && len(p.chOwnClaimed) >= maxOwnPending {
 		p.ch.ownDropped.Add(1)
 		return
 	}

@@ -220,8 +220,9 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if d := staging.dropped.Load(); d > 0 {
 		return fmt.Errorf("%d copies dropped from a full queue", d)
 	}
+	// Sightings past a sender's allowance were refused live too; only ones lost to a full map leave the day short.
 	if d := staging.ownDropped.Load(); d > 0 {
-		return fmt.Errorf("%d own-ship sightings dropped past their bounds", d)
+		return fmt.Errorf("%d own-ship sightings dropped from a full map", d)
 	}
 
 	where, args := replayWindow(day, archives)

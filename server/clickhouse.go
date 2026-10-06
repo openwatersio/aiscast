@@ -261,7 +261,9 @@ type chStore struct {
 	// Stale rebuilt copies the fold matched to a recent transmission, and those it kept as late reports of
 	// their own. A late share far above what the sources' delays explain means copies are being served twice.
 	rebuiltMatched, rebuiltLate atomic.Int64
-	ownDropped                  atomic.Int64 // own-ship sightings dropped past maxOwnPending
+	ownDropped                  atomic.Int64 // own-ship sightings lost past maxOwnPending: memory, not policy
+	ownRefused                  atomic.Int64 // own-ship sightings past a sender's maxOwnPerStation: policy, not loss
+	ownFailing                  atomic.Bool  // the last station_own insert failed; cleared when one is written
 	failing                     atomic.Bool  // the last batch failed; cleared when one is written
 }
 
@@ -609,13 +611,23 @@ func (p *Pipeline) runClickHouse(url string) {
 
 // drainClickHouse sends a failed batch and then the queue behind it, for shutdown.
 func (p *Pipeline) drainClickHouse() error {
+	var ownErr error
 	for range 2 {
 		if err := p.flushClickHouse(); err != nil {
-			return err
+			// A failed station_own insert must not stop the positions queued behind it from going.
+			if !errors.As(err, new(ownFailed)) {
+				return err
+			}
+			ownErr = err
 		}
 	}
-	return nil
+	return ownErr
 }
+
+// ownFailed is a station_own insert that failed while the receptions were written.
+type ownFailed struct{ error }
+
+func (e ownFailed) Unwrap() error { return e.error }
 
 // flushClickHouse writes one batch: the one that failed last time, unchanged and under its token, or else
 // everything queued since. Positions keep queueing behind a failed batch, within the queue's bound.
@@ -699,6 +711,14 @@ func (p *Pipeline) flushOwn(c *chStore) error {
 	ctx, cancel := context.WithTimeout(context.Background(), chInsertTimeout)
 	err := c.own.insertOwn(ctx, own)
 	cancel()
+	// Logged when inserts start failing and when they recover, as the receptions' are.
+	if was := c.ownFailing.Swap(err != nil); was != (err != nil) {
+		if err != nil {
+			log.Printf("clickhouse: station_own: %v; own-ship sightings wait for the next flush", err)
+		} else {
+			log.Printf("clickhouse: station_own writing again")
+		}
+	}
 	if err == nil {
 		return nil
 	}
@@ -715,7 +735,7 @@ func (p *Pipeline) flushOwn(c *chStore) error {
 		}
 	}
 	p.chMu.Unlock()
-	return fmt.Errorf("station_own: %w", err)
+	return ownFailed{fmt.Errorf("station_own: %w", err)}
 }
 
 // insertOwn writes own-ship sightings to station_own.

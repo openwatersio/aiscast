@@ -1655,6 +1655,55 @@ func TestClickHouseLimitsAUDPSendersOwnShips(t *testing.T) {
 	}
 }
 
+// A feed's receivers, told apart by TAG path, are stations of their own, each with its own allowance.
+func TestClickHouseGivesEachFeedReceiverItsOwnAllowance(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	now := time.Now()
+	tagged := func(src, s string) string {
+		var sum byte
+		for i := range len(src) {
+			sum ^= src[i]
+		}
+		return fmt.Sprintf("\\%s*%02X\\%s", src, sum, s)
+	}
+	for i, path := range []string{"s:2573010", "s:2573011"} {
+		for m := range uint32(3) {
+			p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now,
+				Body: tagged(path, ownSentence(p, posReport(257000100+uint32(i)*10+m, 59.9, 10.7)))})
+		}
+	}
+	if n := len(p.chOwn); n != 6 {
+		t.Errorf("%d sightings from two receivers claiming three each, want 6: %v", n, p.chOwn)
+	}
+	if r := p.ch.ownRefused.Load(); r != 0 {
+		t.Errorf("%d refused", r)
+	}
+}
+
+// A failed station_own insert during shutdown does not keep the positions queued behind it from being written.
+func TestClickHouseDrainsPositionsPastAnOwnFailure(t *testing.T) {
+	p := testPipeline(t)
+	f := &fakeCH{fail: 1}
+	p.attachClickHouse(&chStore{w: f, own: &fakeOwn{fail: 1 << 30}})
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	ingestAt(p, 257000001, start, 59.90)
+	p.flushClickHouse() // the positions fail, and wait as the batch to resend
+	ingestAt(p, 257000001, start.Add(time.Minute), 59.91)
+	p.noteOwn(&Event{Station: "udp:boat", Time: start, RecvTime: start, Packet: posReport(368168720, 59.9, 10.7)})
+	err := p.drainClickHouse()
+	if err == nil || !strings.Contains(err.Error(), "station_own") {
+		t.Errorf("the own-ship failure is reported: %v", err)
+	}
+	var sent int
+	for _, b := range f.batches[1:] {
+		sent += len(b)
+	}
+	if sent != 2 {
+		t.Errorf("%d positions written after the failure, want both: %v", sent, f.batches)
+	}
+}
+
 // Claims count by the hour the server received a message, so stamping own-ship reports across many hours opens no
 // new allowance.
 func TestClickHouseCountsOwnShipClaimsByArrival(t *testing.T) {
@@ -1717,7 +1766,7 @@ func TestClickHouseBoundsOwnShipSightings(t *testing.T) {
 	if d := p.ch.ownDropped.Load(); d != 5 {
 		t.Errorf("%d dropped, want 5", d)
 	}
-	if body := get(t, p, "/metrics").Body.String(); !strings.Contains(body, "aiscast_clickhouse_own_dropped_total 5\n") {
+	if body := get(t, p, "/metrics").Body.String(); !strings.Contains(body, "aiscast_clickhouse_own_dropped_total{reason=\"full\"} 5\n") {
 		t.Error("dropped sightings reach /metrics")
 	}
 }

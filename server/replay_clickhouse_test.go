@@ -62,16 +62,20 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		}
 		return fmt.Sprintf("%s*%02X", s[:star], sum)
 	}
-	static := ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true, Name: "TENDER"}
-	for _, s := range enc.encoder.EncodeSentence(aisnmeaPacket('A', enc.codec.EncodePacket(static))) {
-		at := day.Add(10*time.Hour + 30*time.Second)
-		hour := at.Format("2006/01/02/15")
-		lines[hour] = append(lines[hour], at.Format(time.RFC3339Nano)+"\tkystverket\t"+vdo(s))
+	// Five vessels claimed in an hour, one past the allowance: live refused the fifth, and so does the replay,
+	// which is policy, not loss, and must not keep the day from being replaced.
+	for m := range uint32(5) {
+		static := ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009 + m}, Valid: true, Name: "TENDER"}
+		for _, s := range enc.encoder.EncodeSentence(aisnmeaPacket('A', enc.codec.EncodePacket(static))) {
+			at := day.Add(10*time.Hour + 30*time.Second + time.Duration(m)*time.Second)
+			hour := at.Format("2006/01/02/15")
+			lines[hour] = append(lines[hour], at.Format(time.RFC3339Nano)+"\tkystverket\t"+vdo(s))
+		}
 	}
 	owned := func() uint64 {
 		t.Helper()
 		var n uint64
-		if err := c.conn.QueryRow(ctx, "SELECT count() FROM "+db+".station_own").Scan(&n); err != nil {
+		if err := c.conn.QueryRow(ctx, "SELECT count() FROM (SELECT DISTINCT station, hour, mmsi FROM "+db+".station_own)").Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -156,8 +160,8 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := owned(); n == 0 {
-		t.Error("a replay swapped in wrote no own-ship sighting")
+	if n := owned(); n != maxOwnPerStation {
+		t.Errorf("a replay swapped in wrote %d own-ship sightings, want the allowance %d", n, maxOwnPerStation)
 	}
 
 	var network, previous, archived []row

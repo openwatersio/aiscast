@@ -46,7 +46,7 @@ type Event struct {
 	Sentences    []string
 	Synthesized  bool
 	Own          bool   // an own-ship sentence (!AIVDO): the sender reporting itself, not a reception
-	Sender       string // who sent it, before a UDP sender is relabeled by the MMSI it claims as its own; empty means Source
+	Sender       string // the station before a UDP sender is relabeled by the MMSI it claims as its own; empty means Station
 	rebuilt      bool   // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
 	unserved     bool   // kept out of history by the ClickHouse writer though not implausible to the stream: a stale report it does not believe
 	LowTrust     bool   // from a source that cannot be authenticated (UDP)
@@ -341,6 +341,9 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	if volunteer(rx.Source) {
 		station = rx.Station
 	}
+	// The station before any relabel below: a feed's receiver path, a volunteer's receiver, a UDP sender's address.
+	// Own-ship allowances follow it, since a relabel would give a sender a fresh one per MMSI.
+	sender := station
 	// A UDP sender that transmits !AIVDO (own ship) has told us who it is: key it by MMSI from then on.
 	// Self-reported and spoofable, so this is an identity label, never a trust upgrade.
 	source := rx.Source
@@ -358,7 +361,7 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	}
 	// TAG s:self on an own-ship sentence is signalk-aiscast building reports from GPS on a boat with no
 	// transponder: not a VHF reception. VDO-only, so the tag cannot mislabel received traffic as synthesized.
-	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self", Own: vdm.Type == "VDO", Sender: rx.Source})
+	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self", Own: vdm.Type == "VDO", Sender: sender})
 }
 
 // ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).
