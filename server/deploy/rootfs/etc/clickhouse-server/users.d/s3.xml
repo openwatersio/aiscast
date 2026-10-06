@@ -1,0 +1,10 @@
+<!-- R2 rejects a multipart upload whose parts, all but the last, differ in size (InvalidPart), and ClickHouse sizes
+     them as it goes. A fixed size makes every upload to R2 valid: the cold volume's moves and the nightly backup,
+     which run with the default profile. It changes nothing on a box without R2. -->
+<clickhouse>
+    <profiles>
+        <default>
+            <s3_strict_upload_part_size>16777216</s3_strict_upload_part_size>
+        </default>
+    </profiles>
+</clickhouse>
