@@ -35,8 +35,8 @@ export function stackStateFor(current: { state: unknown }, currentIsVessel: bool
 /**
  * The bar at the top of a stack entry: the way back, the entry's title, and whatever acts on
  * the entry. It floats over the top of the page, which scrolls under it. The title shows only
- * while the page's own large title is out of sight, scrolled away or below a lowered sheet, as
- * a navigation bar's does in iOS, and the bar's ground fades in with it.
+ * once the page's own large title has scrolled away, as a navigation bar's does in iOS, and
+ * what scrolls under the bar fades out with it.
  */
 export function PanelHeader({
   back,
@@ -57,10 +57,8 @@ export function PanelHeader({
     <div
       data-over-photo={(overPhoto && !showTitle) || undefined}
       className={cn(
-        // Its ground, once the title shows, is the surface fading out downward, so what scrolls
-        // under the bar disappears into it rather than behind a band.
-        "pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-1 px-3 pt-3 pb-6 *:pointer-events-auto before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-linear-to-b before:from-surface before:from-45% before:to-transparent before:opacity-0 before:transition-opacity before:duration-300",
-        showTitle && "before:opacity-100",
+        // No ground of its own: once the title shows, Panel fades out what scrolls under it.
+        "pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-1 px-3 pt-3 *:pointer-events-auto",
         // Over a photo the buttons need their own scrim, as the photo's credit has.
         "data-over-photo:*:[a]:bg-black/45 data-over-photo:*:[a]:text-white data-over-photo:*:[a]:backdrop-blur-sm data-over-photo:*:[a]:hover:bg-black/60",
       )}

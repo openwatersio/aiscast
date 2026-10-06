@@ -104,6 +104,7 @@ func fromCP1252(s string) string {
 
 // fccStats is read by /metrics.
 type fccStats struct {
+	enabled               atomic.Bool // set when the sync's env flag is on; gates the last-success metric
 	runs, failures, ships atomic.Int64
 	lastSuccess           atomic.Int64 // unix seconds
 }
@@ -339,6 +340,7 @@ func (p *Pipeline) runFCC(endpoint string) {
 // syncFCCIfDue replaces the stored licenses when the last sync is a week old or there has never been
 // one, and reports whether it did.
 func (p *Pipeline) syncFCCIfDue(now time.Time, endpoint string) bool {
+	p.fcc.enabled.Store(true) // a sync that runs is enabled, whoever called it
 	last, err := p.store.meta("fcc_sync")
 	if err != nil {
 		log.Printf("fcc: %v", err)

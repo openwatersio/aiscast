@@ -14,7 +14,8 @@ import {
   splitTrack,
   viewBoxes,
 } from "./ais";
-import { publicApiBase } from "./api";
+import { publicApiBase, type CoverageTiles } from "./api";
+import { coverageColor, coverageOpacity, coverageSummary, type CoverageMeasure } from "./coverage";
 import { reportError } from "./report";
 import type { BBox, Stream } from "./stream";
 import type { Theme } from "./theme";
@@ -111,6 +112,11 @@ export interface MapController {
   setResults(results: SearchResult[]): void;
   /** Rings one result's mark brighter, as its row is pointed at. */
   highlightResult(mmsi: number | undefined): void;
+  /**
+   * Draws where the network hears vessels from these tiles, colored by the measure, in place of
+   * the vessels, until called with nothing.
+   */
+  setCoverage(tiles: CoverageTiles | undefined, measure?: CoverageMeasure): void;
 }
 
 export interface MapView {
@@ -827,6 +833,89 @@ export function createMap(
     };
   }
 
+  // The coverage map, while its route is open. The vessels are hidden, since they would cover
+  // the cells they were counted in.
+  let coverage: CoverageTiles | undefined;
+  let measure: CoverageMeasure = "vessels";
+  const VESSEL_LAYERS = [
+    "vessel-halo",
+    "vessel-still",
+    "vessel-moving",
+    "vessel-label",
+    "tile-still",
+    "tile-moving",
+    "tile-label",
+    "result-ring",
+    "result-dot",
+  ];
+
+  function applyCoverage() {
+    if (!ready) return;
+    if (coverage && !map.getSource("coverage")) {
+      map.addSource("coverage", {
+        type: "vector",
+        tiles: coverage.tiles,
+        minzoom: coverage.minzoom ?? 0,
+        maxzoom: coverage.maxzoom ?? 10,
+        attribution: coverage.attribution,
+      });
+      // Under the basemap's labels, so place names stay readable over the cells.
+      const labels = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+      map.addLayer(
+        {
+          id: "coverage",
+          type: "fill",
+          source: "coverage",
+          "source-layer": "coverage",
+          filter: ["has", measure],
+          paint: {
+            "fill-color": coverageColor(theme, measure) as maplibregl.DataDrivenPropertyValueSpecification<string>,
+            // A cell heard on fewer days of the window fades toward the water.
+            "fill-opacity": coverageOpacity(coverage.window.days) as maplibregl.DataDrivenPropertyValueSpecification<number>,
+          },
+        } as maplibregl.LayerSpecification,
+        labels,
+      );
+    }
+    if (map.getLayer("coverage")) {
+      map.setLayoutProperty("coverage", "visibility", coverage ? "visible" : "none");
+      // The layer outlives the page, and the window can have grown since it was added, or another
+      // page colors it by another measure. A tile cached from a server that did not count the
+      // measure lacks it, and its cells are left out until a fresh tile arrives.
+      if (coverage) {
+        map.setFilter("coverage", ["has", measure]);
+        map.setPaintProperty("coverage", "fill-color", coverageColor(theme, measure) as maplibregl.DataDrivenPropertyValueSpecification<string>);
+        map.setPaintProperty(
+          "coverage",
+          "fill-opacity",
+          coverageOpacity(coverage.window.days) as maplibregl.DataDrivenPropertyValueSpecification<number>,
+        );
+      }
+    }
+    for (const id of VESSEL_LAYERS) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", coverage ? "none" : "visible");
+    }
+  }
+
+  // On hover, or on a tap, since a phone has no pointer to hover with.
+  function showCoverage(e: maplibregl.MapLayerMouseEvent) {
+    const p = e.features?.[0]?.properties;
+    if (!p || !coverage) return;
+    const cell = { vessels: Number(p.vessels), days: Number(p.days), stations: Number(p.stations) };
+    const [headline, ...rest] = coverageSummary(measure, cell, coverage.window.days);
+    const el = document.createElement("div");
+    el.appendChild(document.createElement("strong")).textContent = headline!;
+    for (const line of rest) {
+      const meta = el.appendChild(document.createElement("div"));
+      meta.className = "meta";
+      meta.textContent = line;
+    }
+    hover.setLngLat(e.lngLat).setDOMContent(el).addTo(map);
+  }
+  map.on("mousemove", "coverage", showCoverage);
+  map.on("click", "coverage", showCoverage);
+  map.on("mouseleave", "coverage", () => hover.remove());
+
   // Sources, layers, and images belong to the style, so swapping the basemap for a theme
   // removes them. This puts them back, on the first style and on every swap.
   map.on("style.load", () => {
@@ -932,6 +1021,7 @@ export function createMap(
     if (tileJSON) addTileLayers();
 
     ready = true;
+    applyCoverage();
     updateView();
     render();
     applyInsets();
@@ -985,11 +1075,13 @@ export function createMap(
     // vessel's halo draws over everything.
     for (const layer of vesselLayers("tile", "tiles", "vessels", tileFadeExpr)) map.addLayer(layer, "vessel-halo");
     hasTiles = true;
+    applyCoverage();
   }
 
   function refreshTiles() {
-    // A hidden tab would fetch tiles nobody sees. The next visible tick catches up.
-    if (!hasTiles || document.hidden || Date.now() - lastRefresh < TILE_FRESH_MS) return;
+    // A hidden tab, or the coverage map in place of the vessels, would fetch tiles nobody
+    // sees. The next visible tick catches up.
+    if (!hasTiles || coverage || document.hidden || Date.now() - lastRefresh < TILE_FRESH_MS) return;
     lastRefresh = Date.now();
     map.refreshTiles("tiles");
   }
@@ -1143,6 +1235,18 @@ export function createMap(
     },
     onSelect(fn) {
       selectHandlers.push(fn);
+    },
+    setCoverage(tiles, by = "vessels") {
+      const leaving = coverage && !tiles;
+      coverage = tiles;
+      measure = by;
+      applyCoverage();
+      if (leaving) {
+        // A tapped cell's card has no mouseleave to close it, and the vessel tiles did not
+        // reload while hidden.
+        hover.remove();
+        refreshTiles();
+      }
     },
     followCamera: setCameraFollow,
     onCameraFollow(fn) {

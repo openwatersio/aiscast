@@ -247,21 +247,15 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"true\"} %d\n", c.rebuiltMatched.Load())
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"false\"} %d\n", c.rebuiltLate.Load())
 	}
-	if l := p.lake; l != nil {
-		metricHead(w, "aiscast_lake_queries_total", "counter", "lake queries for the record import")
-		fmt.Fprintf(w, "aiscast_lake_queries_total %d\n", l.queries.Load())
-		metricHead(w, "aiscast_lake_query_failures_total", "counter", "lake queries that failed")
-		fmt.Fprintf(w, "aiscast_lake_query_failures_total %d\n", l.failures.Load())
-		metricHead(w, "aiscast_lake_query_seconds_total", "counter", "time spent in lake queries")
-		fmt.Fprintf(w, "aiscast_lake_query_seconds_total %.3f\n", float64(l.queryNanos.Load())/1e9)
-		metricHead(w, "aiscast_import_runs_total", "counter", "daily merges of the lake's vessels into the record")
+	if p.vesselHistory != nil {
+		metricHead(w, "aiscast_import_runs_total", "counter", "daily merges of ClickHouse's vessel history into the record")
 		fmt.Fprintf(w, "aiscast_import_runs_total %d\n", p.imports.runs.Load())
-		metricHead(w, "aiscast_import_failures_total", "counter", "merges of the lake's vessels that failed; the next check retries")
+		metricHead(w, "aiscast_import_failures_total", "counter", "merges of ClickHouse's vessel history that failed; the next check retries")
 		fmt.Fprintf(w, "aiscast_import_failures_total %d\n", p.imports.failures.Load())
-		metricHead(w, "aiscast_import_rows_total", "counter", "vessels merged into the record from the lake")
+		metricHead(w, "aiscast_import_rows_total", "counter", "vessels merged into the record from ClickHouse")
 		fmt.Fprintf(w, "aiscast_import_rows_total %d\n", p.imports.rows.Load())
 		if t := p.imports.lastSuccess.Load(); t > 0 {
-			metricHead(w, "aiscast_import_last_success_timestamp_seconds", "gauge", "when the lake's vessels last merged into the record")
+			metricHead(w, "aiscast_import_last_success_timestamp_seconds", "gauge", "when ClickHouse's vessel history last merged into the record")
 			fmt.Fprintf(w, "aiscast_import_last_success_timestamp_seconds %d\n", t)
 		}
 	}
@@ -297,7 +291,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_wikidata_sync_failures_total %d\n", p.wikidata.failures.Load())
 		metricHead(w, "aiscast_wikidata_ships", "gauge", "IMO numbers with particulars from Wikidata")
 		fmt.Fprintf(w, "aiscast_wikidata_ships %d\n", p.wikidata.ships.Load())
-		if t := p.wikidata.lastSuccess.Load(); t > 0 {
+		if t := p.wikidata.lastSuccess.Load(); p.wikidata.enabled.Load() && t > 0 {
 			metricHead(w, "aiscast_wikidata_last_success_timestamp_seconds", "gauge", "when vessel particulars last synced from Wikidata")
 			fmt.Fprintf(w, "aiscast_wikidata_last_success_timestamp_seconds %d\n", t)
 		}
@@ -311,7 +305,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_uscg_details_total %d\n", p.uscg.details.Load())
 		metricHead(w, "aiscast_uscg_detail_failures_total", "counter", "PSIX dimension and tonnage reads that failed; the round stops and the next resumes")
 		fmt.Fprintf(w, "aiscast_uscg_detail_failures_total %d\n", p.uscg.detailFailures.Load())
-		if t := p.uscg.lastSuccess.Load(); t > 0 {
+		if t := p.uscg.lastSuccess.Load(); p.uscg.enabled.Load() && t > 0 {
 			metricHead(w, "aiscast_uscg_last_success_timestamp_seconds", "gauge", "when US-flag vessels were last listed from PSIX")
 			fmt.Fprintf(w, "aiscast_uscg_last_success_timestamp_seconds %d\n", t)
 		}
@@ -321,7 +315,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_fiskeridir_sync_failures_total %d\n", p.fiskeridir.failures.Load())
 		metricHead(w, "aiscast_fiskeridir_vessels", "gauge", "registered Norwegian fishing vessels with a call sign stored")
 		fmt.Fprintf(w, "aiscast_fiskeridir_vessels %d\n", p.fiskeridir.vessels.Load())
-		if t := p.fiskeridir.lastSuccess.Load(); t > 0 {
+		if t := p.fiskeridir.lastSuccess.Load(); p.fiskeridir.enabled.Load() && t > 0 {
 			metricHead(w, "aiscast_fiskeridir_last_success_timestamp_seconds", "gauge", "when the register was last synced")
 			fmt.Fprintf(w, "aiscast_fiskeridir_last_success_timestamp_seconds %d\n", t)
 		}
@@ -331,7 +325,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_fcc_sync_failures_total %d\n", p.fcc.failures.Load())
 		metricHead(w, "aiscast_fcc_ships", "gauge", "active FCC ship licenses with an MMSI stored")
 		fmt.Fprintf(w, "aiscast_fcc_ships %d\n", p.fcc.ships.Load())
-		if t := p.fcc.lastSuccess.Load(); t > 0 {
+		if t := p.fcc.lastSuccess.Load(); p.fcc.enabled.Load() && t > 0 {
 			metricHead(w, "aiscast_fcc_last_success_timestamp_seconds", "gauge", "when the licenses were last synced")
 			fmt.Fprintf(w, "aiscast_fcc_last_success_timestamp_seconds %d\n", t)
 		}
@@ -341,7 +335,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_tc_sync_failures_total %d\n", p.tc.failures.Load())
 		metricHead(w, "aiscast_tc_vessels", "gauge", "registered Canadian vessels with an IMO stored")
 		fmt.Fprintf(w, "aiscast_tc_vessels %d\n", p.tc.vessels.Load())
-		if t := p.tc.lastSuccess.Load(); t > 0 {
+		if t := p.tc.lastSuccess.Load(); p.tc.enabled.Load() && t > 0 {
 			metricHead(w, "aiscast_tc_last_success_timestamp_seconds", "gauge", "when the register was last synced")
 			fmt.Fprintf(w, "aiscast_tc_last_success_timestamp_seconds %d\n", t)
 		}

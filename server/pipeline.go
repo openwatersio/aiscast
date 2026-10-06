@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -96,26 +97,28 @@ type Pipeline struct {
 	normGate time.Time               // replay warm-up: records received before this are state-building only, not written
 	nSeen    int
 
-	vmu        sync.RWMutex
-	nextSweep  time.Time // reception time of the next vessel cache sweep; guarded by vmu
-	vessels    map[uint32]*vessel
-	cells      map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
-	tiles      tileCache                      // encoded vector tiles, shared for tileTTL (tiles.go)
-	dirty      map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
-	store      *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
-	lake       *lake                          // packaged vessels for the record import (lake.go); nil without LAKE_CATALOG_TOKEN or a record
-	imports    importStats                    // the daily merge of the lake's vessels into the record (import.go)
-	wikidata   wikidataStats                  // the weekly sync of vessel particulars from Wikidata (wikidata.go)
-	uscg       uscgStats                      // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
-	fiskeridir fdirStats                      // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
-	fcc        fccStats                       // the weekly sync of FCC ship station licenses (fcc.go)
-	tc         tcStats                        // the weekly sync of Transport Canada's vessel register (tc.go)
-	ised       isedStats                      // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
-	ch         *chStore                       // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
-	chMu       sync.Mutex                     // guards chQueue; taken after vmu when both are held
-	chQueue    []trackPoint                   // copies received since the last flush to ClickHouse; nil until it connects
-	chOn       atomic.Bool                    // ClickHouse is attached, so copies are worth building
-	history    *historyStats                  // historical archives loaded into ClickHouse (history.go); nil unless a source is on
+	vmu       sync.RWMutex
+	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu
+	vessels   map[uint32]*vessel
+	cells     map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
+	tiles     tileCache                      // encoded vector tiles, shared for tileTTL (tiles.go)
+	dirty     map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
+	store     *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
+	coverage  *coverageMap                   // where there are vessel positions, from ClickHouse (coveragemap.go); nil without CLICKHOUSE_URL
+	imports   importStats                    // the daily merge of ClickHouse's vessel history into the record (import.go)
+	// vesselHistory reads the record import's pages (import.go); nil without ClickHouse or a record
+	vesselHistory func(ctx context.Context, after uint32, limit int) ([]historyRow, error)
+	wikidata      wikidataStats // the weekly sync of vessel particulars from Wikidata (wikidata.go)
+	uscg          uscgStats     // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
+	fiskeridir    fdirStats     // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
+	fcc           fccStats      // the weekly sync of FCC ship station licenses (fcc.go)
+	tc            tcStats       // the weekly sync of Transport Canada's vessel register (tc.go)
+	ised          isedStats     // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
+	ch            *chStore      // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
+	chMu          sync.Mutex    // guards chQueue; taken after vmu when both are held
+	chQueue       []trackPoint  // copies received since the last flush to ClickHouse; nil until it connects
+	chOn          atomic.Bool   // ClickHouse is attached, so copies are worth building
+	history       *historyStats // historical archives loaded into ClickHouse (history.go); nil unless a source is on
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
 	storesClosed bool       // set by closeStore; flushes after it do nothing

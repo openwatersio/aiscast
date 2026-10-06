@@ -2,9 +2,8 @@
 # One-step deploy: ship the binary and the config bundle, converge the box,
 # restart once.
 # Usage: server/deploy/deploy.sh root@ais.example.org [linux-amd64-binary]
-# Without a binary argument it builds first: natively on linux/amd64, and in the Go container elsewhere,
-# since the lake reader links DuckDB through cgo and cannot be cross-compiled from macOS. Bookworm's glibc is older
-# than the box's, so the binary runs there. Works the same on a fresh Ubuntu box
+# Without a binary argument it builds first: natively on linux/amd64, and in the Go container elsewhere.
+# Bookworm's glibc is older than the box's, so the binary runs there. Works the same on a fresh Ubuntu box
 # and the live one; CI runs it on every push to main with the tested build artifact.
 set -eu
 host=${1:?usage: deploy.sh root@host [linux-amd64-binary]}
@@ -28,5 +27,5 @@ trap 'rm -rf "$stage"' EXIT
 cp "$bin" "$stage/aiscast-linux"
 # The box is silent for most of the converge and GitHub-hosted runners drop idle TCP after
 # about four minutes, so keep the session alive from this side.
-tar czf - apply.sh aiscast.env.example alloy.env.example rootfs -C "$stage" aiscast-linux |
+tar czf - apply.sh aiscast.env.example alloy.env.example clickhouse-r2.env.example clickhouse-r2.xml rootfs -C "$stage" aiscast-linux |
 	ssh -o ServerAliveInterval=30 "$host" 'rm -rf aiscast-deploy && mkdir aiscast-deploy && tar xzf - -C aiscast-deploy && sh aiscast-deploy/apply.sh'

@@ -1,9 +1,9 @@
 package main
 
-// The record import merges ais.vessels from the lake into the vessel record, so the record holds vessels heard
-// before it existed and each vessel's first_seen reaches back to the earliest report any archive holds. The
-// packager records, per MMSI, the earliest report of any kind and the latest position across every day it has
-// packaged, and every historical source it packages reaches the record through this one path.
+// The record import merges each vessel's history in ClickHouse into the vessel record, so the record holds
+// vessels only an archive heard and each vessel's first_seen reaches back to the earliest report ClickHouse
+// holds: positions_1m gives the first and last position, vessel_statics an archive's particulars and earliest
+// row. Every source in ClickHouse, live or archive, reaches the record through this one path.
 //
 // The merge has its own rule because history is usually older than what the record holds: a stored name or
 // particular is never replaced, only filled when blank; first_seen takes the earlier value; a position is
@@ -11,26 +11,24 @@ package main
 // would let an old name overwrite a current one.
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
+	"math"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
-// importPage is the rows read from the lake per query.
+// importPage is the vessels read per page.
 var importPage = 20_000
 
-const (
-	// importHour is the UTC hour after which the day's import runs: the packager starts at 01:30 and a
-	// week of catch-up normally finishes well within the hour after.
-	importHour  = 3
-	importEvery = 23 * time.Hour
-)
+const importEvery = 23 * time.Hour
 
 // importStats is read by /metrics.
 type importStats struct {
@@ -40,9 +38,9 @@ type importStats struct {
 
 // importUpsertSQL merges a vessel from history into its row with the import's rule.
 const importUpsertSQL = `
-INSERT INTO vessels (mmsi, name, search, kind, class, ship_type, flag, draught, callsign, has_pos, lat, lon, cell,
-	pos_at, seen, first_seen, source)
-VALUES (?, ?, ?, 'vessel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO vessels (mmsi, name, search, kind, class, ship_type, flag, draught, callsign, imo, length, beam, has_pos,
+	lat, lon, cell, pos_at, seen, first_seen, source)
+VALUES (?, ?, ?, 'vessel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (mmsi) DO UPDATE SET
 	name       = iif(vessels.name = '', excluded.name, vessels.name),
 	search     = iif(vessels.name = '', excluded.search, vessels.search),
@@ -50,6 +48,9 @@ ON CONFLICT (mmsi) DO UPDATE SET
 	ship_type  = iif(vessels.ship_type = 0, excluded.ship_type, vessels.ship_type),
 	draught    = iif(vessels.draught = 0, excluded.draught, vessels.draught),
 	callsign   = iif(vessels.callsign = '', excluded.callsign, vessels.callsign),
+	imo        = iif(vessels.imo = 0, excluded.imo, vessels.imo),
+	length     = iif(vessels.length = 0, excluded.length, vessels.length),
+	beam       = iif(vessels.beam = 0, excluded.beam, vessels.beam),
 	lat        = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, excluded.lat, vessels.lat),
 	lon        = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, excluded.lon, vessels.lon),
 	cell       = iif(excluded.has_pos AND excluded.pos_at > vessels.pos_at, excluded.cell, vessels.cell),
@@ -66,11 +67,14 @@ ON CONFLICT (mmsi) DO UPDATE SET
 	first_seen = min(excluded.first_seen, vessels.first_seen)
 `
 
-// historyRow is one ais.vessels row as the import reads it.
+// historyRow is one vessel's history as the import reads it.
 type historyRow struct {
 	mmsi     uint32
 	name     string
 	callsign string
+	imo      uint32
+	length   uint16
+	beam     uint16
 	shipType uint8
 	draught  float64
 	class    string
@@ -114,7 +118,7 @@ func (s *store) importRows(rows []historyRow) error {
 		}
 		name := strings.TrimSpace(r.name)
 		if _, err := st.Exec(r.mmsi, name, searchKey(name), r.class, r.shipType, flagOf(r.mmsi), r.draught, strings.TrimSpace(r.callsign),
-			r.hasPos, r.lat, r.lon, cell, unixMs(r.last), unixMs(seen), unixMs(first), r.source); err != nil {
+			r.imo, r.length, r.beam, r.hasPos, r.lat, r.lon, cell, unixMs(r.last), unixMs(seen), unixMs(first), r.source); err != nil {
 			return err
 		}
 	}
@@ -139,90 +143,124 @@ func (s *store) setMeta(key, value string) error {
 	return err
 }
 
-// importVessels reads ais.vessels a page at a time in MMSI order and merges every row into the record.
+// importVessels reads every vessel's history a page at a time in MMSI order and merges it into the record.
 func (p *Pipeline) importVessels(ctx context.Context) (int, error) {
-	// last_source is the source whose copy the server accepted for the last position, so an imported
-	// position carries the credit line its license requires.
-	const cols = "mmsi, name, callsign, ship_type, draught10, cls, first_ts, last_ts, last_lat6, last_lon6, updated_ts, last_source"
-	total, after := 0, int64(-1)
+	total, after := 0, uint32(0)
 	for {
-		var batch []historyRow
-		err := p.lake.run(ctx, fmt.Sprintf(`SELECT %s FROM lake.ais.vessels WHERE mmsi > %d ORDER BY mmsi LIMIT %d`, cols, after, importPage), func(r map[string]json.RawMessage) error {
-			h, err := parseHistoryRow(r)
-			if err != nil {
-				return err
-			}
-			batch = append(batch, h)
-			after = int64(h.mmsi)
-			return nil
-		})
+		batch, err := p.vesselHistory(ctx, after, importPage)
 		if err != nil {
 			return total, err
+		}
+		// Stop on an empty page, not a short one, so a source that returns fewer rows than asked cannot end the
+		// import early and still count it done.
+		if len(batch) == 0 {
+			return total, nil
 		}
 		if err := p.store.importRows(batch); err != nil {
 			return total, err
 		}
 		total += len(batch)
 		p.imports.rows.Add(int64(len(batch)))
-		// Stop on an empty page, not a short one: a query engine that caps its rows below importPage would
-		// otherwise end the import early and still count it done.
-		if len(batch) == 0 {
-			return total, nil
-		}
+		after = batch[len(batch)-1].mmsi
 	}
 }
 
-func parseHistoryRow(r map[string]json.RawMessage) (historyRow, error) {
-	var h historyRow
-	var mmsi int64
-	if err := json.Unmarshal(r["mmsi"], &mmsi); err != nil {
-		return h, fmt.Errorf("ais.vessels mmsi: %w", err)
+// chImportSettings keeps the import's reads to what the live writer can spare, and lets a page of vessels stop
+// reading at its last one.
+var chImportSettings = clickhouse.Settings{"max_threads": 2, "max_memory_usage": 1_500_000_000, "optimize_aggregation_in_order": 1}
+
+// vesselHistoryFromClickHouse reads the import's pages from the attached ClickHouse.
+func (p *Pipeline) vesselHistoryFromClickHouse(ctx context.Context, after uint32, limit int) ([]historyRow, error) {
+	c := p.chConn()
+	if c == nil {
+		return nil, errors.New("ClickHouse is not attached")
 	}
-	h.mmsi = uint32(mmsi)
-	str := func(key string) string {
-		var s *string
-		json.Unmarshal(r[key], &s)
-		if s == nil {
-			return ""
-		}
-		return *s
-	}
-	num := func(key string) (int64, bool) {
-		var n *int64
-		if json.Unmarshal(r[key], &n) != nil || n == nil {
-			return 0, false
-		}
-		return *n, true
-	}
-	when := func(key string) time.Time {
-		raw := r[key]
-		if len(raw) == 0 || string(raw) == "null" {
-			return time.Time{}
-		}
-		t, _ := lakeTime(raw)
-		return t
-	}
-	h.name, h.callsign, h.class = str("name"), str("callsign"), str("cls")
-	if n, ok := num("ship_type"); ok && n > 0 && n < 256 {
-		h.shipType = uint8(n)
-	}
-	if n, ok := num("draught10"); ok && n > 0 {
-		h.draught = float64(n) / 10
-	}
-	h.first, h.last, h.updated = when("first_ts"), when("last_ts"), when("updated_ts")
-	lat, okLat := num("last_lat6")
-	lon, okLon := num("last_lon6")
-	if okLat && okLon && !h.last.IsZero() {
-		h.lat, h.lon, h.hasPos = float64(lat)/600000, float64(lon)/600000, true
-	}
-	if s := str("last_source"); s != "" {
-		h.source = sourceKind(s)
-	}
-	return h, nil
+	return c.vesselHistory(ctx, after, limit)
 }
 
-// runImport merges the lake's vessels into the record once a day after the packager has run, and after a
-// restart when the last import is more than a day old.
+// vesselHistory reads up to limit vessels after the MMSI after, in MMSI order: each one's first and last position
+// from positions_1m, and an archive's particulars and earliest row from vessel_statics. A vessel only
+// vessel_statics knows, with no position anywhere, comes in the page its MMSI falls in.
+// ponytail: positions_1m keeps a slot's latest report, so a first position can read up to a minute late, or 30
+// minutes for a still vessel; the record keeps the exact first_seen it saw live. Read receptions if that matters.
+func (c *chConn) vesselHistory(ctx context.Context, after uint32, limit int) ([]historyRow, error) {
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(chImportSettings))
+	rows, err := c.conn.Query(ctx, `SELECT mmsi, min(ts), max(ts), argMax(lat6, ts), argMax(lon6, ts), argMax(source, ts)
+		FROM `+c.db+`.positions_1m WHERE mmsi > ? GROUP BY mmsi ORDER BY mmsi LIMIT ?`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	byMMSI := map[uint32]*historyRow{}
+	for rows.Next() {
+		var h historyRow
+		var lat6, lon6 int32
+		var source string
+		if err := rows.Scan(&h.mmsi, &h.first, &h.last, &lat6, &lon6, &source); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		h.lat, h.lon, h.hasPos, h.source = float64(lat6)/600000, float64(lon6)/600000, true, sourceKind(source)
+		byMMSI[h.mmsi] = &h
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	upTo := uint32(math.MaxUint32) // a short page is the last, so it takes every static vessel after it
+	if len(byMMSI) == limit {
+		upTo = 0
+		for m := range byMMSI {
+			upTo = max(upTo, m)
+		}
+	}
+	rows, err = c.conn.Query(ctx, `SELECT mmsi, min(first_ts), max(last_ts), argMaxMerge(name), argMaxMerge(callsign), argMaxMerge(imo),
+		argMaxMerge(ship_type), argMaxMerge(length), argMaxMerge(beam), argMaxMerge(draught10)
+		FROM `+c.db+`.vessel_statics WHERE mmsi > ? AND mmsi <= ? GROUP BY mmsi`, after, upTo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s historyRow
+		var draught10 uint16
+		if err := rows.Scan(&s.mmsi, &s.first, &s.updated, &s.name, &s.callsign, &s.imo, &s.shipType, &s.length, &s.beam, &draught10); err != nil {
+			return nil, err
+		}
+		h := byMMSI[s.mmsi]
+		if h == nil {
+			h = &historyRow{mmsi: s.mmsi, first: s.first}
+			byMMSI[s.mmsi] = h
+		}
+		h.name, h.callsign, h.imo, h.shipType, h.length, h.beam, h.updated = s.name, s.callsign, s.imo, s.shipType, s.length, s.beam, s.updated
+		h.draught = float64(draught10) / 10
+		if s.first.Before(h.first) {
+			h.first = s.first
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]historyRow, 0, len(byMMSI))
+	for _, h := range byMMSI {
+		out = append(out, *h)
+	}
+	slices.SortFunc(out, func(a, b historyRow) int { return cmp.Compare(a.mmsi, b.mmsi) })
+	return out, nil
+}
+
+// importSoon makes the import due at its next check, so vessels an archive load just brought in reach the record
+// within minutes rather than at the next daily run.
+func (p *Pipeline) importSoon() {
+	if p.store == nil || p.vesselHistory == nil {
+		return
+	}
+	if err := p.store.setMeta("vessels_import", ""); err != nil {
+		log.Printf("import: %v", err)
+	}
+}
+
+// runImport merges ClickHouse's vessel history into the record once a day, and after a restart when the last
+// import is more than a day old.
 func (p *Pipeline) runImport() {
 	time.Sleep(time.Minute) // let the boot flush seed the record first
 	p.importIfDue(time.Now().UTC())
@@ -231,8 +269,8 @@ func (p *Pipeline) runImport() {
 	}
 }
 
-// importIfDue runs the import when the last one is a day old and the packager's night is over, or when there
-// has never been one. It reports whether an import ran and merged anything.
+// importIfDue runs the import when the last one is a day old, or when there has never been one. It reports
+// whether an import ran and merged anything.
 func (p *Pipeline) importIfDue(now time.Time) bool {
 	last, err := p.store.meta("vessels_import")
 	if err != nil {
@@ -242,9 +280,6 @@ func (p *Pipeline) importIfDue(now time.Time) bool {
 	if t, err := time.Parse(time.RFC3339, last); err == nil && now.Sub(t) < importEvery {
 		p.imports.lastSuccess.Store(t.Unix())
 		return false
-	}
-	if last != "" && now.Hour() < importHour {
-		return false // the packager may still be writing last night's days
 	}
 	p.imports.runs.Add(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -256,12 +291,12 @@ func (p *Pipeline) importIfDue(now time.Time) bool {
 		return false
 	}
 	if n == 0 {
-		return false // an empty lake: try again at the next check rather than waiting a day
+		return false // no history yet: try again at the next check rather than waiting a day
 	}
 	if err := p.store.setMeta("vessels_import", now.Format(time.RFC3339)); err != nil {
 		log.Printf("import: %v", err)
 	}
 	p.imports.lastSuccess.Store(now.Unix())
-	log.Printf("import: merged %d vessels from the lake", n)
+	log.Printf("import: merged %d vessels from ClickHouse", n)
 	return true
 }

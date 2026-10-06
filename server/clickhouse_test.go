@@ -1467,3 +1467,78 @@ func TestConvertCarriesAVerdictAcrossMidnight(t *testing.T) {
 		t.Error("in a run of its own, the copy is still with its transmission")
 	}
 }
+
+// On a server whose config has the tiered policy, receptions moves onto it at start, its parts older than
+// chColdDays move to the cold volume and newer ones stay local, a part written before the TTL moves once it is
+// set, and a second start changes nothing.
+func TestClickHouseMovesOldReceptionsToTheColdTier(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TIERED_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TIERED_TEST_URL is not set: a ClickHouse with deploy/clickhouse-r2.xml")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db+" SYNC"); conn.conn.Close() })
+	at := func(ts time.Time) trackPoint {
+		return trackPoint{mmsi: 257000001, ts: ts, lat6: 1, lon6: 1, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15,
+			source: "kystverket", station: "kystverket", txAt: ts, txDisc: 1, recv: ts}
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := conn.insert(ctx, "tiers", []trackPoint{at(now.AddDate(0, -3, 0)), at(now)}); err != nil {
+		t.Fatal(err)
+	}
+	disks := func() map[string]string {
+		t.Helper()
+		out := map[string]string{}
+		rows, err := conn.conn.Query(ctx, "SELECT partition, disk_name FROM system.parts WHERE database = ? AND table = 'receptions' AND active", db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p, d string
+			rows.Scan(&p, &d)
+			out[p] = d
+		}
+		return out
+	}
+	old, recent := now.AddDate(0, -3, 0).Format("200601"), now.Format("200601")
+	deadline := time.Now().Add(time.Minute)
+	for disks()[old] != "r2_cache" && time.Now().Before(deadline) {
+		time.Sleep(time.Second)
+	}
+	if d := disks(); d[old] != "r2_cache" || d[recent] != "default" {
+		t.Fatalf("old parts on R2, recent ones local: %v", d)
+	}
+	// A part from before the TTL, as every part on a box that runs this for the first time.
+	if err := conn.exec(ctx, "ALTER TABLE {db}.receptions REMOVE TTL"); err != nil {
+		t.Fatal(err)
+	}
+	before := now.AddDate(0, -6, 0).Format("200601")
+	if err := conn.insert(ctx, "before-ttl", []trackPoint{at(now.AddDate(0, -6, 0))}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.coldTier(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(time.Minute)
+	for disks()[before] != "r2_cache" && time.Now().Before(deadline) {
+		time.Sleep(time.Second)
+	}
+	if d := disks(); d[before] != "r2_cache" {
+		t.Fatalf("a part from before the TTL moves once it is set: %v", d)
+	}
+	again, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatalf("a second start: %v", err)
+	}
+	again.conn.Close()
+	var n uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = ?, to = ?)", now.AddDate(0, -7, 0), now.Add(time.Hour)).Scan(&n); err != nil || n != 3 {
+		t.Errorf("every position reads back, two from R2: %d %v", n, err)
+	}
+}

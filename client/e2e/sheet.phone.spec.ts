@@ -99,3 +99,13 @@ test("a page opens the sheet halfway, and moving the map lowers it", async ({ pa
   await drag(page, { x: 200, y: height / 4 }, height / 4 + 80);
   await expectDetent(page, "peek");
 });
+
+test("a lowered sheet shows the top of the page as a full one does", async ({ page }) => {
+  await page.goto("/ais/stations");
+  while (!/^Panel height: peek\./.test((await handle(page).getAttribute("aria-label")) ?? "")) await handle(page).tap();
+  await expectDetent(page, "peek");
+  // The large title is below the screen, but has not scrolled, so the bar neither takes it nor fades the page.
+  const barTitle = panel(page).getByText("Stations", { exact: true }).and(page.locator("span"));
+  await expect(barTitle).toHaveAttribute("aria-hidden", "true");
+  await expect(panel(page).locator("[data-sheet-scroll]")).not.toHaveClass(/\bbar-fade-hidden\b/);
+});
