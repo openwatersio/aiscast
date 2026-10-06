@@ -206,3 +206,81 @@ func TestReplayFetchesADaysRawHours(t *testing.T) {
 		t.Errorf("fetched %v, want %v", got, want)
 	}
 }
+
+// A batch sent to staging again under its token, after an acknowledgement lost on the way, lands once.
+func TestReplayStagingTakesABatchOnce(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	c, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.conn.Exec(context.Background(), "DROP DATABASE "+db); c.conn.Close() })
+	if err := c.createReplayStaging(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+	batch := []trackPoint{{mmsi: 257000001, ts: ts, lat6: 1, lon6: 1, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15,
+		source: "kystverket", station: "kystverket", txAt: ts, txDisc: 1, recv: ts}}
+	staging := &chConn{conn: c.conn, db: db, table: replayStaging}
+	for range 2 {
+		if err := staging.insert(ctx, "token", batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := chColumn[uint64](ctx, c.conn, "SELECT count() FROM "+db+"."+replayStaging); err != nil || n[0] != 1 {
+		t.Errorf("a batch sent twice under one token: %v %v", n, err)
+	}
+}
+
+// A day of AISHub snapshots, thousands of vessels to a record, queues more copies than the queue holds long
+// before many records are read; replay writes them as it goes and drops none.
+func TestReplayKeepsUpWithSnapshots(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	c, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.conn.Exec(context.Background(), "DROP DATABASE "+db); c.conn.Close() })
+	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	const vessels, snapshots = 2000, 160 // 320,000 copies, past the queue's 300,000
+	var b strings.Builder
+	for i := range snapshots {
+		recv := day.Add(10*time.Hour + time.Duration(i)*time.Minute)
+		fmt.Fprintf(&b, "%s\taishub\t[{\"ERROR\":false,\"FORMAT\":\"AIS\",\"RECORDS\":%d},[", recv.Format(time.RFC3339Nano), vessels)
+		for v := range vessels {
+			if v > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"MMSI":%d,"TIME":"%d","LONGITUDE":%d,"LATITUDE":%d,"COG":3600,"SOG":0,"HEADING":511,"NAVSTAT":15}`,
+				257100000+v, recv.Add(-30*time.Second).Unix(), 6420000+v*100, 35940000+i*10)
+		}
+		b.WriteString("]]\n")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "aishub-terms", "aishub", day.Format("2006/01/02")+"/10.gz")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	gz.Write([]byte(b.String()))
+	gz.Close()
+	f.Close()
+	if err := c.replayDay(ctx, dir, day, corroborationWindow+vesselTTL, false, true); err != nil {
+		t.Fatalf("replaying snapshots: %v", err)
+	}
+	if n, err := chColumn[uint64](ctx, c.conn, "SELECT count() FROM "+db+".receptions"); err != nil || n[0] < vessels*snapshots*9/10 {
+		t.Errorf("copies written: %v %v", n, err)
+	}
+}

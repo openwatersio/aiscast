@@ -122,11 +122,7 @@ func replayWindow(day time.Time, archives []string) (string, []any) {
 func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmup time.Duration, dryRun, force bool) error {
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(replaySettings))
 	started := time.Now()
-	if err := c.exec(ctx, "DROP TABLE IF EXISTS {db}."+replayStaging); err != nil {
-		return err
-	}
-	// An explicit engine keeps receptions' columns but not its TTL or storage policy, and no view reads it.
-	if err := c.exec(ctx, "CREATE TABLE {db}."+replayStaging+" AS {db}.receptions ENGINE = MergeTree PARTITION BY toYYYYMMDD(ts) ORDER BY (mmsi, ts)"); err != nil {
+	if err := c.createReplayStaging(ctx); err != nil {
 		return err
 	}
 	defer c.exec(context.Background(), "DROP TABLE IF EXISTS {db}."+replayStaging)
@@ -145,7 +141,19 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	}
 	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: replayStaging}}
 	p.attachClickHouse(staging)
+	var flushNow func() error
 	flush := func() error {
+		// One AISHub record is a snapshot of thousands of vessels, so the queue, not the records read, says when:
+		// at a third of its bound, which leaves room for any one record before a copy could be dropped.
+		p.chMu.Lock()
+		queued := len(p.chQueue)
+		p.chMu.Unlock()
+		if queued < maxPending/3 {
+			return nil
+		}
+		return flushNow()
+	}
+	flushNow = func() error {
 		for range 3 { // a refused batch goes again under its token, so a retry never doubles it
 			if err := p.flushClickHouse(); err == nil {
 				return nil
@@ -160,10 +168,10 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if err != nil {
 		return err
 	}
-	if err := flush(); err != nil {
+	if err := flushNow(); err != nil {
 		return err
 	}
-	if err := flush(); err != nil { // the batch the first sent, if it was resending one
+	if err := flushNow(); err != nil { // the batch the first sent, if it was resending one
 		return err
 	}
 	if d := staging.dropped.Load(); d > 0 {
@@ -214,6 +222,15 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	}
 	log.Printf("replay: %s: replaced, in %s", day.Format("2006-01-02"), time.Since(started).Round(time.Second))
 	return nil
+}
+
+// createReplayStaging makes an empty staging table. An explicit engine keeps receptions' columns but not its TTL
+// or storage policy, and no view reads it. Its deduplication window, like receptions', makes a batch sent again
+// after a lost acknowledgement land once.
+func (c *chConn) createReplayStaging(ctx context.Context) error {
+	return c.exec(ctx, "DROP TABLE IF EXISTS {db}."+replayStaging,
+		"CREATE TABLE {db}."+replayStaging+" AS {db}.receptions ENGINE = MergeTree PARTITION BY toYYYYMMDD(ts) ORDER BY (mmsi, ts)"+
+			" SETTINGS non_replicated_deduplication_window = 1000")
 }
 
 // replayCount is one source's copies on a day, and how many of them were accepted and judged implausible; the

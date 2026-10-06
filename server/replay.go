@@ -71,7 +71,7 @@ func runReplay(args []string) {
 }
 
 // replayReaders feeds every reception the readers hold before to through p in receive-time order, calling each
-// after every 100,000 when it is set. A reader that ends on corrupt input fails the replay: history must not
+// after every one when it is set. A reader that ends on corrupt input fails the replay: history must not
 // come out shorter than the archive.
 func replayReaders(p *Pipeline, readers []*rawReader, to time.Time, each func() error) (int64, error) {
 	h := &readerHeap{}
@@ -93,7 +93,7 @@ func replayReaders(p *Pipeline, readers []*rawReader, to time.Time, each func() 
 		if err := dispatch(p, r.source, rx); err != nil {
 			return n, err
 		}
-		if n++; each != nil && n%100_000 == 0 {
+		if n++; each != nil {
 			if err := each(); err != nil {
 				return n, err
 			}
