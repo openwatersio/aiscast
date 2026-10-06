@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -70,7 +71,11 @@ func (c *s3Client) put(key, path string) error {
 
 // sign implements AWS Signature Version 4 for a request with an unsigned payload.
 // https://docs.aws.amazon.com/IAM/latest/UserGuide/create-signed-request.html
+// A client without keys reads a public bucket, unsigned.
 func (c *s3Client) sign(req *http.Request, now time.Time) {
+	if c.accessKey == "" {
+		return
+	}
 	amzDate := now.Format("20060102T150405Z")
 	date := now.Format("20060102")
 	req.Header.Set("Host", req.URL.Host)
@@ -148,14 +153,15 @@ func (c *s3Client) size(key string) (int64, error) {
 	return res.ContentLength, nil
 }
 
-// s3Object is a key and its size, as list returns them.
+// s3Object is a key, its size, and its ETag, as list returns them.
 type s3Object struct {
 	Key  string
 	Size int64
+	ETag string
 }
 
 // list returns every object under prefix, a page of up to 1,000 at a time.
-func (c *s3Client) list(prefix string) ([]s3Object, error) {
+func (c *s3Client) list(ctx context.Context, prefix string) ([]s3Object, error) {
 	var out []s3Object
 	token := ""
 	for {
@@ -163,7 +169,7 @@ func (c *s3Client) list(prefix string) ([]s3Object, error) {
 		if token != "" {
 			q.Set("continuation-token", token)
 		}
-		req, err := http.NewRequest(http.MethodGet, c.endpoint+"/"+c.bucket+"?"+canonicalQuery(q), nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+"/"+c.bucket+"?"+canonicalQuery(q), nil)
 		if err != nil {
 			return nil, err
 		}

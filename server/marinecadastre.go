@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -74,14 +73,6 @@ func mcList(ctx context.Context, from time.Time) ([]historyFile, error) {
 		}
 	}
 	return files, nil
-}
-
-// mcFrom is the first day MarineCadastre loads: MARINECADASTRE_FROM, else 2025-10-01.
-func mcFrom() time.Time {
-	if t, err := time.Parse("2006-01-02", os.Getenv("MARINECADASTRE_FROM")); err == nil {
-		return t
-	}
-	return time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC)
 }
 
 type azureBlob struct {
