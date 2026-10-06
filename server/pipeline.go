@@ -95,7 +95,9 @@ type Pipeline struct {
 	folding  map[string][]trackPoint // keys whose accepted copy is still folding, with the copies that arrived meanwhile
 	seenHW   time.Time               // newest event time folded into seen; prune cutoff, so replay needs no wall clock
 	normGate time.Time               // replay warm-up: records received before this are state-building only, not written
-	nSeen    int
+	// anchorSeeds is where each vessel was last moving before a replay's lead-in, from positions_1m; nil live
+	anchorSeeds map[uint32]*anchor
+	nSeen       int
 
 	vmu       sync.RWMutex
 	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu

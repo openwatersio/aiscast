@@ -4,15 +4,20 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
-// s3Client is the minimum of S3 SigV4 needed to PUT archive objects into R2 (or any S3): no SDK, no listing.
+// s3Client is the minimum of S3 SigV4 that the archive and replay need from R2 (or any S3): put, head, list, and get.
 // Payload is sent as UNSIGNED-PAYLOAD (R2 and S3 both accept it), so large files stream without a pre-hash.
 type s3Client struct {
 	endpoint, region, bucket, accessKey, secretKey string
@@ -73,7 +78,7 @@ func (c *s3Client) sign(req *http.Request, now time.Time) {
 	req.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
 	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
 	canonical := strings.Join([]string{
-		req.Method, uriEncode(req.URL.Path), "",
+		req.Method, uriEncode(req.URL.Path), canonicalQuery(req.URL.Query()),
 		"host:" + req.URL.Host, "x-amz-content-sha256:UNSIGNED-PAYLOAD", "x-amz-date:" + amzDate, "",
 		signedHeaders, "UNSIGNED-PAYLOAD",
 	}, "\n")
@@ -85,6 +90,18 @@ func (c *s3Client) sign(req *http.Request, now time.Time) {
 	k = hmacSHA256(k, "aws4_request")
 	sig := hex.EncodeToString(hmacSHA256(k, toSign))
 	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+c.accessKey+"/"+scope+", SignedHeaders="+signedHeaders+", Signature="+sig)
+}
+
+// canonicalQuery is SigV4's query string: parameters sorted by name, names and values encoded, '/' included.
+func canonicalQuery(q url.Values) string {
+	keys := slices.Sorted(maps.Keys(q))
+	var parts []string
+	for _, k := range keys {
+		for _, v := range q[k] {
+			parts = append(parts, strings.ReplaceAll(uriEncode(k), "/", "%2F")+"="+strings.ReplaceAll(uriEncode(v), "/", "%2F"))
+		}
+	}
+	return strings.Join(parts, "&")
 }
 
 // uriEncode per SigV4: encode every byte except unreserved, but keep '/' in paths.
@@ -129,4 +146,81 @@ func (c *s3Client) size(key string) (int64, error) {
 		return 0, fmt.Errorf("s3 head %s: %s", key, res.Status)
 	}
 	return res.ContentLength, nil
+}
+
+// s3Object is a key and its size, as list returns them.
+type s3Object struct {
+	Key  string
+	Size int64
+}
+
+// list returns every object under prefix, a page of up to 1,000 at a time.
+func (c *s3Client) list(prefix string) ([]s3Object, error) {
+	var out []s3Object
+	token := ""
+	for {
+		q := url.Values{"list-type": {"2"}, "prefix": {prefix}}
+		if token != "" {
+			q.Set("continuation-token", token)
+		}
+		req, err := http.NewRequest(http.MethodGet, c.endpoint+"/"+c.bucket+"?"+canonicalQuery(q), nil)
+		if err != nil {
+			return nil, err
+		}
+		c.sign(req, time.Now().UTC())
+		res, err := s3HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Contents              []s3Object
+			IsTruncated           bool
+			NextContinuationToken string
+		}
+		if res.StatusCode/100 != 2 {
+			b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+			res.Body.Close()
+			return nil, fmt.Errorf("s3 list %s: %s: %s", prefix, res.Status, b)
+		}
+		err = xml.NewDecoder(res.Body).Decode(&page)
+		res.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("s3 list %s: %w", prefix, err)
+		}
+		out = append(out, page.Contents...)
+		if !page.IsTruncated {
+			return out, nil
+		}
+		token = page.NextContinuationToken
+	}
+}
+
+// get writes the object at key to path, creating its directory.
+func (c *s3Client) get(key, path string) error {
+	req, err := http.NewRequest(http.MethodGet, c.endpoint+"/"+c.bucket+"/"+key, nil)
+	if err != nil {
+		return err
+	}
+	c.sign(req, time.Now().UTC())
+	res, err := s3HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return fmt.Errorf("s3 get %s: %s: %s", key, res.Status, b)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, res.Body); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

@@ -27,11 +27,22 @@ func runReplay(args []string) {
 	// The lead-in must cover the longest window live state looks back over: corroboration checks a
 	// trusted report up to an hour back, on a vessel the cache keeps until it goes unheard for vesselTTL.
 	warmup := fset.Duration("warmup", corroborationWindow+vesselTTL, "state-building lead-in replayed before -from but not written")
+	chURL := fset.String("clickhouse", "", "replace each day's receptions in this ClickHouse instead of writing a normalized tree")
+	fetch := fset.Bool("fetch", false, "with -clickhouse: fetch each day's raw hours from R2_BUCKET into -archive, and delete them after")
+	dryRun := fset.Bool("dry-run", false, "with -clickhouse: compare each replayed day with the stored one and change nothing")
+	force := fset.Bool("force", false, "with -clickhouse: replace a day even when the replay has under 90% of its stored copies")
 	fset.Parse(args)
 	from, err1 := time.ParseInLocation("2006-01-02", *fromS, time.UTC)
 	to, err2 := time.ParseInLocation("2006-01-02", *toS, time.UTC)
 	if err1 != nil || err2 != nil || !to.After(from) {
 		log.Fatalf("replay: -from and -to must be YYYY-MM-DD with from < to")
+	}
+
+	if *chURL != "" {
+		if err := replayToClickHouse(*chURL, *archiveDir, *fetch, from, to, *warmup, *dryRun, *force); err != nil {
+			log.Fatalf("replay: %v", err)
+		}
+		return
 	}
 
 	// Hour files open for append, so a second run into the same tree would double every record.
@@ -50,12 +61,25 @@ func runReplay(args []string) {
 	if len(readers) == 0 {
 		log.Fatalf("replay: no raw files under %s for %s..%s", *archiveDir, *fromS, *toS)
 	}
+	n, err := replayReaders(p, readers, to, nil)
+	if err != nil {
+		log.Fatalf("replay: %v", err)
+	}
+	p.norm.shutdown()
+	log.Printf("replay: %d receptions -> %d events, %d dups, %d parse errors",
+		n, p.stats.events.Load()+p.stats.implausible.Load()+p.stats.stale.Load(), p.stats.dup.Load(), p.stats.parseErr.Load())
+}
+
+// replayReaders feeds every reception the readers hold before to through p in receive-time order, calling each
+// after every 100,000 when it is set. A reader that ends on corrupt input fails the replay: history must not
+// come out shorter than the archive.
+func replayReaders(p *Pipeline, readers []*rawReader, to time.Time, each func() error) (int64, error) {
 	h := &readerHeap{}
 	for _, r := range readers {
 		if r.next() {
 			heap.Push(h, r)
-		} else {
-			failOn(r)
+		} else if r.err != nil {
+			return 0, r.err
 		}
 	}
 	var n int64
@@ -67,26 +91,22 @@ func runReplay(args []string) {
 			continue
 		}
 		if err := dispatch(p, r.source, rx); err != nil {
-			log.Fatalf("replay: %v", err)
+			return n, err
 		}
-		n++
+		if n++; each != nil && n%100_000 == 0 {
+			if err := each(); err != nil {
+				return n, err
+			}
+		}
 		if r.next() {
 			heap.Fix(h, 0)
+		} else if r.err != nil {
+			return n, r.err
 		} else {
-			failOn(r)
 			heap.Pop(h)
 		}
 	}
-	p.norm.shutdown()
-	log.Printf("replay: %d receptions -> %d events, %d dups, %d parse errors",
-		n, p.stats.events.Load()+p.stats.implausible.Load()+p.stats.stale.Load(), p.stats.dup.Load(), p.stats.parseErr.Load())
-}
-
-// failOn stops replay on a reader that ended on corrupt input: history must not come out shorter than the archive.
-func failOn(r *rawReader) {
-	if r.err != nil {
-		log.Fatalf("replay: %v", r.err)
-	}
+	return n, nil
 }
 
 // dispatch feeds one archived reception to the adapter that consumed it live. Only /v1/receive
