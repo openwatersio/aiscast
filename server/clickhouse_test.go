@@ -121,8 +121,8 @@ func TestClickHouseWritesPositionsAndRollups(t *testing.T) {
 	if err := p.flushClickHouse(); err != nil {
 		t.Fatal(err)
 	}
-	// The pipeline withholds a report older than the vessel's last as stale, but history loaded later from the
-	// lake arrives out of order: an earlier position written after the others still wins its window.
+	// The pipeline withholds a report older than the vessel's last as stale, but history loaded later from an
+	// archive arrives out of order: an earlier position written after the others still wins its window.
 	early := trackPoint{mmsi: 257000001, ts: slot.Add(time.Minute), lat6: int32(59.89 * 600000), lon6: int32(10.7 * 600000),
 		sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "kystverket"}
 	if err := conn.insert(context.Background(), "early", []trackPoint{early}); err != nil {
@@ -633,7 +633,7 @@ func TestClickHouseKeepsEveryCopyAndServesOne(t *testing.T) {
 		t.Errorf("after the purge, the other copy: %+v", got)
 	}
 
-	// The lake load names transmissions in ClickHouse, so its byte must agree with discOf.
+	// An archive load names transmissions in ClickHouse, so its byte must agree with discOf.
 	id := eventID("payload" + "A")
 	var disc uint8
 	if err := conn.conn.QueryRow(ctx, "SELECT "+chDiscOf("?"), id).Scan(&disc); err != nil || disc != discOf(id) {

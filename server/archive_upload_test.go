@@ -194,7 +194,7 @@ func hasLine(lines []string, want string) bool {
 // file would each append their own gzip stream and interleave them into a corrupt hour.
 func TestMergedStreamKeepsOneWriterPerHour(t *testing.T) {
 	dir := t.TempDir()
-	a := newNormArchive(dir, nil)
+	a := mergedArchive(dir, nil)
 	hour := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	const n = 20000
 	for i := 0; i < n; i++ {
@@ -294,7 +294,7 @@ func (c *countStore) count(key string) int {
 // open side by side, and an hour uploads once, after its grace.
 func TestInterleavedHoursDoNotThrashUploads(t *testing.T) {
 	store := &countStore{puts: map[string]int{}, objects: map[string][]byte{}}
-	a := newNormArchive(t.TempDir(), nil)
+	a := mergedArchive(t.TempDir(), nil)
 	a.s3 = store
 	fetch := time.Date(2026, 9, 27, 14, 59, 59, 0, time.UTC)
 	h14, h15 := a.key("", fetch), a.key("", fetch.Add(time.Minute))
@@ -366,7 +366,7 @@ func TestShutdownLeavesTheOpenHourToTheNextSweep(t *testing.T) {
 // hour must not wait for a later reception, or for shutdown, to upload.
 func TestCrossingReceptionClosesTheHour(t *testing.T) {
 	store := &countStore{puts: map[string]int{}, objects: map[string][]byte{}}
-	a := newNormArchive(t.TempDir(), nil)
+	a := mergedArchive(t.TempDir(), nil)
 	a.s3 = store
 	h14 := time.Date(2026, 9, 27, 14, 30, 0, 0, time.UTC)
 	a.write(Reception{Source: "norm", RecvTime: h14, Body: `{"a":1}`})
@@ -381,4 +381,15 @@ func TestCrossingReceptionClosesTheHour(t *testing.T) {
 		t.Fatalf("hour 14 uploaded %d times before shutdown, want once, on the crossing reception", store.count(key))
 	}
 	a.shutdown()
+}
+
+// mergedArchive is the archive writer as the access log configures it: one merged file per hour, one record per
+// line.
+func mergedArchive(dir string, s3 *s3Client) *archive {
+	a := newArchive(dir, s3)
+	a.bare = true
+	a.keyFn = func(_ string, hour time.Time) string {
+		return filepath.Join("merged", hour.Format("2006/01/02/15")+".gz")
+	}
+	return a
 }

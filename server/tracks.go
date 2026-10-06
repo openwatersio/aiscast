@@ -1,8 +1,7 @@
 package main
 
 // Track positions: every copy of every position report goes to ClickHouse (clickhouse.go), which answers every
-// track, up to a year per request. A replay into a normalized tree attaches none and writes nothing there; replay
-// -clickhouse writes into a staging table (replay_clickhouse.go).
+// track, up to a year per request. Replay writes into a staging table first (replay_clickhouse.go).
 
 import (
 	"math"
@@ -18,7 +17,7 @@ const trackWindow = 48 * time.Hour
 // stalled, and dropping the oldest copies keeps memory flat; the drops are counted.
 const maxPending = 300_000
 
-// trackPoint is one accepted position report. Positions and motion are held in the lake's integer
+// trackPoint is one accepted position report. Positions and motion are held in AIS's own integer
 // encodings: 1/600000 degree, 0.1 knot (1023 not available), 0.1 degree (3600 not available).
 type trackPoint struct {
 	mmsi      uint32
@@ -57,8 +56,8 @@ func discOf(id string) uint8 {
 	return uint8(h)
 }
 
-// movedM is how far a vessel must be from the last place it was moving to count as moving again, the distance
-// ais.tracks uses: under it, a moored vessel's GPS jitter and a swing at anchor are noise.
+// movedM is how far a vessel must be from the last place it was moving to count as moving again: under it, a
+// moored vessel's GPS jitter and a swing at anchor are noise.
 const movedM = 50
 
 // anchor is where a vessel was last moving, which decides whether its next report is moving. Measuring from it
@@ -313,7 +312,7 @@ func despike(points []trackPoint) []trackPoint {
 
 // noteReception queues a copy for ClickHouse.
 func (p *Pipeline) noteReception(pt trackPoint) {
-	if pt.recv.Before(p.normGate) {
+	if pt.recv.Before(p.replayGate) {
 		return // a replay's lead-in builds state and writes nothing
 	}
 	p.chMu.Lock()

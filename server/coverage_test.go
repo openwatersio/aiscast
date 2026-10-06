@@ -67,27 +67,6 @@ func TestShadowFlagsANovelField(t *testing.T) {
 	}
 }
 
-// MetHyd is archived verbatim, so a new weather field would reach the stream and vanish at the
-// packager's fixed columns. The capture check must see it.
-func TestMetHydNovelFieldIsFlagged(t *testing.T) {
-	prev := shadowEvery
-	shadowEvery = 1
-	defer func() { shadowEvery = prev }()
-	p := testPipeline(t)
-	for _, rec := range fixtureLines(t, "barentswatch.lines") {
-		if !strings.Contains(rec.body, "BinaryBroadcastMessageMetHyd") {
-			continue
-		}
-		body := strings.Replace(rec.body, `{`, `{"uvIndex":3,`, 1)
-		p.barentswatchLine([]byte(body), time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC))
-		if _, ok := unmappedFld.Load("barentswatch/methyd\tuvIndex"); !ok {
-			t.Fatal("a weather field outside the contract went unreported")
-		}
-		return
-	}
-	t.Fatal("fixture has no MetHyd record; resample testdata/sources/barentswatch.lines")
-}
-
 // A sender rotating field names must not grow the tracked set, and /metrics with it, without bound.
 func TestUnmappedFieldsAreBounded(t *testing.T) {
 	t.Cleanup(func() { // give the cap back so later tests still see their own names

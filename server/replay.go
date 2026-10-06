@@ -14,60 +14,33 @@ import (
 	"time"
 )
 
-// aiscast replay: run archived raw days back through the same source adapters that ran live, with
-// the normalized stream as the only output. A raw archive line is a serialized adapter input
-// (receive time, station, source-native body), so backfill is replay, not reimplementation.
-// Reads and writes local trees only; syncing either side with a bucket is the caller's business.
+// aiscast replay runs archived raw days back through the same source adapters that ran live, into ClickHouse
+// (replay_clickhouse.go). A raw archive line is a serialized adapter input (receive time, station, source-native
+// body), so rebuilding history is replay, not reimplementation.
 func runReplay(args []string) {
 	fset := flag.NewFlagSet("replay", flag.ExitOnError)
-	archiveDir := fset.String("archive", "archive", "raw archive tree to read")
-	out := fset.String("out", "normalized-replay", "normalized output tree to write")
-	fromS := fset.String("from", "", "first day to write, YYYY-MM-DD UTC (required)")
+	archiveDir := fset.String("archive", "archive", "raw archive tree to read, or with -fetch to fetch into")
+	fromS := fset.String("from", "", "first day to replay, YYYY-MM-DD UTC (required)")
 	toS := fset.String("to", "", "day to stop before, YYYY-MM-DD UTC (required)")
 	// The lead-in must cover the longest window live state looks back over: corroboration checks a
 	// trusted report up to an hour back, on a vessel the cache keeps until it goes unheard for vesselTTL.
-	warmup := fset.Duration("warmup", corroborationWindow+vesselTTL, "state-building lead-in replayed before -from but not written")
-	chURL := fset.String("clickhouse", "", "replace each day's receptions in this ClickHouse instead of writing a normalized tree")
-	fetch := fset.Bool("fetch", false, "with -clickhouse: fetch each day's raw hours from R2_BUCKET into -archive, and delete them after")
-	dryRun := fset.Bool("dry-run", false, "with -clickhouse: compare each replayed day with the stored one and change nothing")
-	force := fset.Bool("force", false, "with -clickhouse: replace a day even when the replay has under 90% of its stored copies")
+	warmup := fset.Duration("warmup", corroborationWindow+vesselTTL, "state-building lead-in replayed before each day but not written")
+	chURL := fset.String("clickhouse", "", "the ClickHouse whose receptions each day replaces (required)")
+	fetch := fset.Bool("fetch", false, "fetch each day's raw hours from R2_BUCKET into -archive, and delete them after")
+	dryRun := fset.Bool("dry-run", false, "compare each replayed day with the stored one and change nothing")
+	force := fset.Bool("force", false, "replace a day even when the replay has under 90% of its stored copies")
 	fset.Parse(args)
 	from, err1 := time.ParseInLocation("2006-01-02", *fromS, time.UTC)
 	to, err2 := time.ParseInLocation("2006-01-02", *toS, time.UTC)
 	if err1 != nil || err2 != nil || !to.After(from) {
 		log.Fatalf("replay: -from and -to must be YYYY-MM-DD with from < to")
 	}
-
-	if *chURL != "" {
-		if err := replayToClickHouse(*chURL, *archiveDir, *fetch, from, to, *warmup, *dryRun, *force); err != nil {
-			log.Fatalf("replay: %v", err)
-		}
-		return
+	if *chURL == "" {
+		log.Fatalf("replay: -clickhouse is required")
 	}
-
-	// Hour files open for append, so a second run into the same tree would double every record.
-	if ents, err := os.ReadDir(*out); err == nil && len(ents) > 0 {
-		log.Fatalf("replay: %s is not empty; replay writes a fresh tree", *out)
-	}
-
-	p := newPipeline(newArchive("", nil)) // no raw writes: the raw archive is the input here
-	p.norm = newNormArchive(*out, nil)
-	p.normGate = from // the warm-up builds dedupe and per-source state, silently
-
-	readers, err := collectReaders(*archiveDir, from.Add(-*warmup), to)
-	if err != nil {
+	if err := replayToClickHouse(*chURL, *archiveDir, *fetch, from, to, *warmup, *dryRun, *force); err != nil {
 		log.Fatalf("replay: %v", err)
 	}
-	if len(readers) == 0 {
-		log.Fatalf("replay: no raw files under %s for %s..%s", *archiveDir, *fromS, *toS)
-	}
-	n, err := replayReaders(p, readers, to, nil)
-	if err != nil {
-		log.Fatalf("replay: %v", err)
-	}
-	p.norm.shutdown()
-	log.Printf("replay: %d receptions -> %d events, %d dups, %d parse errors",
-		n, p.stats.events.Load()+p.stats.implausible.Load()+p.stats.stale.Load(), p.stats.dup.Load(), p.stats.parseErr.Load())
 }
 
 // replayReaders feeds every reception the readers hold before to through p in receive-time order, calling each
@@ -109,7 +82,9 @@ func replayReaders(p *Pipeline, readers []*rawReader, to time.Time, each func() 
 	return n, nil
 }
 
-// dispatch feeds one archived reception to the adapter that consumed it live. Only /v1/receive
+// dispatch feeds one archived reception to the adapter that consumed it live. An envelope takes its station from
+// the line, which live archived as received: the source built back from the archive key turns every '/' in a
+// name into ':', so a station named with its own '/' would come back renamed. Only /v1/receive
 // parses AIS-catcher envelopes, archiving under http: (before station ids) or station:; UDP (udp:,
 // and mmsi: for a UDP sender named by its own ship) and /v1 publish (v1: before station ids) only
 // ever take lines. A /v1 publish line under station: carries the published mark; an unmarked
@@ -137,11 +112,11 @@ func dispatch(p *Pipeline, source string, rx Reception) error {
 	case strings.HasPrefix(source, "http:") && strings.HasPrefix(strings.TrimSpace(rx.Body), "{"):
 		// http: is /v1/receive alone, which archives an envelope only after it parses: one that does
 		// not is corrupt, not a line
-		if !p.ingestCatcher(source, []byte(rx.Body), rx.RecvTime) {
+		if !p.ingestCatcher(rx.Station, []byte(rx.Body), rx.RecvTime) {
 			return fmt.Errorf("%s: catcher envelope that does not parse: %.60q", source, rx.Body)
 		}
 	case strings.HasPrefix(source, "station:") && strings.HasPrefix(strings.TrimSpace(rx.Body), "{") &&
-		p.ingestCatcher(source, []byte(rx.Body), rx.RecvTime):
+		p.ingestCatcher(rx.Station, []byte(rx.Body), rx.RecvTime):
 		// an envelope posted to /v1/receive; station: also covers /v1 publish, so a record that does
 		// not parse as one is a publisher's line
 	default:
@@ -166,8 +141,8 @@ func collectReaders(dir string, start, end time.Time) ([]*rawReader, error) {
 		}
 		if d.IsDir() {
 			switch filepath.ToSlash(rel) {
-			case normPrefix:
-				return filepath.SkipDir // the normalized stream shares the bucket; it is replay's output, not its input
+			case "normalized":
+				return filepath.SkipDir // the retired normalized stream's hours, still in the bucket beside raw ones
 			case accessPrefix:
 				return filepath.SkipDir // so does the access log, in hours shaped like raw ones
 			}

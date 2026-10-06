@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,10 +14,9 @@ import (
 // The raw writer keeps a body's own newlines, so a valid pretty-printed envelope from any source
 // spans lines. Replay must reassemble it and reproduce what live ingested, not only for digitraffic.
 func TestReplayReassemblesMultiLineBodiesFromAnySource(t *testing.T) {
-	rawDir, normDir := t.TempDir(), t.TempDir()
-	p := testPipeline(t)
+	rawDir := t.TempDir()
+	p, written := recordingPipeline(t)
 	p.arch = newArchive(rawDir, nil)
-	p.norm = newNormArchive(normDir, nil)
 	recv := time.Date(2026, 9, 1, 12, 0, 40, 0, time.UTC)
 	body := "{\n  \"protocol\": \"jsonaiscatcher\",\n  \"msgs\": [\n    {\"class\": \"AIS\", \"channel\": \"A\", \"rxtime\": \"20260901120039\", \"nmea\": [\"" + testSentence + "\"]}\n  ]\n}"
 	if !p.ingestCatcher("http:pretty", []byte(body), recv) {
@@ -24,15 +24,11 @@ func TestReplayReassemblesMultiLineBodiesFromAnySource(t *testing.T) {
 	}
 	p.closeArchives()
 
-	out := t.TempDir()
-	runReplay([]string{"-archive", rawDir, "-out", out, "-from", "2026-09-01", "-to", "2026-09-02"})
-	rep := diffNorm(loadNorm(normDir), loadNorm(out))
-	if n := rep.live.eventCount(); n != 1 {
-		t.Fatalf("live produced %d transmissions, want 1", n)
+	live := written()
+	if len(live) != 1 {
+		t.Fatalf("live wrote %d copies, want 1", len(live))
 	}
-	if !rep.clean() {
-		t.Fatalf("replay lost the multi-line reception:\n%s", rep.render(3))
-	}
+	sameCopies(t, "replay lost the multi-line reception", live, replayRaw(t, rawDir, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)))
 }
 
 // allReaders collects readers over every hour in dir, failing the test on a walk error.
@@ -99,37 +95,27 @@ func TestReplayFailsOnAnUnreadableDirectory(t *testing.T) {
 // A feeder's offline backlog is archived raw but withheld from the stream. The raw record must
 // carry that mark so replay withholds it too.
 func TestReplayWithholdsABufferedBacklog(t *testing.T) {
-	rawDir, normDir := t.TempDir(), t.TempDir()
-	p := testPipeline(t)
+	rawDir := t.TempDir()
+	p, written := recordingPipeline(t)
 	p.arch = newArchive(rawDir, nil)
-	p.norm = newNormArchive(normDir, nil)
 	recv := time.Date(2026, 9, 1, 12, 0, 40, 0, time.UTC)
 	body := tagBlock(map[byte]string{'c': fmt.Sprint(recv.Add(-2 * replayAge).Unix())}) + testSentence
 	p.Ingest(Reception{Source: "station:boat", Station: "station:boat", RecvTime: recv, Body: body, Buffered: true})
 	p.closeArchives()
 
-	out := t.TempDir()
-	runReplay([]string{"-archive", rawDir, "-out", out, "-from", "2026-09-01", "-to", "2026-09-02"})
-	rep := diffNorm(loadNorm(normDir), loadNorm(out))
-	if n := rep.live.eventCount(); n != 0 {
-		t.Fatalf("live emitted %d transmissions from a stale backlog, want 0", n)
-	}
 	if p.stats.replayed.Load() != 1 {
 		t.Fatalf("live withheld %d backlog sentences, want 1", p.stats.replayed.Load())
 	}
-	if !rep.clean() {
-		t.Fatalf("replay emitted what live withheld:\n%s", rep.render(3))
-	}
+	sameCopies(t, "replay wrote what live withheld", written(), replayRaw(t, rawDir, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)))
 }
 
 // /v1 publish lines and /v1/receive envelopes archive under the same station:<sub> source, so a
 // published line whose body is a valid AIS-catcher envelope must round-trip its mark: live fed it
 // to the NMEA parser and produced nothing, and replay must not unpack it into events.
 func TestReplayKeepsAPublishedEnvelopeALine(t *testing.T) {
-	rawDir, normDir := t.TempDir(), t.TempDir()
-	p := testPipeline(t)
+	rawDir := t.TempDir()
+	p, written := recordingPipeline(t)
 	p.arch = newArchive(rawDir, nil)
-	p.norm = newNormArchive(normDir, nil)
 	recv := time.Date(2026, 9, 1, 12, 0, 40, 0, time.UTC)
 	envelope := `{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260901120039","nmea":["` + testSentence + `"]}]}`
 	p.Ingest(Reception{Source: "station:boat", Station: "station:boat", RecvTime: recv, Body: envelope, Published: true})
@@ -146,15 +132,10 @@ func TestReplayKeepsAPublishedEnvelopeALine(t *testing.T) {
 		t.Fatalf("round-tripped record: Published = %v, Station = %q", rx.Published, rx.Station)
 	}
 
-	out := t.TempDir()
-	runReplay([]string{"-archive", rawDir, "-out", out, "-from", "2026-09-01", "-to", "2026-09-02"})
-	rep := diffNorm(loadNorm(normDir), loadNorm(out))
-	if n := rep.live.eventCount(); n != 0 {
-		t.Fatalf("live produced %d transmissions from a published line, want 0", n)
+	if live := written(); len(live) != 0 {
+		t.Fatalf("live wrote %d copies from a published line, want 0", len(live))
 	}
-	if !rep.clean() {
-		t.Fatalf("replay unpacked a published line as an envelope:\n%s", rep.render(3))
-	}
+	sameCopies(t, "replay unpacked a published line as an envelope", nil, replayRaw(t, rawDir, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)))
 }
 
 // Both marks apply to one record when a publisher replays its offline backlog. The writer emits
@@ -254,19 +235,12 @@ func TestReplayLeadInCoversCorroboration(t *testing.T) {
 	write("CC0-1.0/udp/aaaa", from.Add(-20*time.Minute), "udp:aaaa")
 	write("CC0-1.0/udp/aaaa", from.Add(5*time.Minute), "udp:aaaa")
 
-	out := t.TempDir()
-	runReplay([]string{"-archive", dir, "-out", out, "-from", "2026-09-02", "-to", "2026-09-03"})
-	events := 0
-	for _, e := range readNorm(t, out) {
-		if e.K == "event" {
-			events++
-			if e.Uncorroborated {
-				t.Fatal("the lead-in missed the trusted report 45 minutes before -from; replay wrote the event uncorroborated")
-			}
-		}
+	pts := replayRaw(t, dir, from)
+	if len(pts) != 1 {
+		t.Fatalf("replay wrote %d copies, want the one low-trust report after the gate", len(pts))
 	}
-	if events != 1 {
-		t.Fatalf("events = %d, want the one low-trust report after -from", events)
+	if pts[0].uncorroborated {
+		t.Fatal("the lead-in missed the trusted report 45 minutes before the gate; replay wrote the copy uncorroborated")
 	}
 }
 
@@ -288,5 +262,59 @@ func TestBufferedBacklogKeepsTagTime(t *testing.T) {
 	p.Ingest(Reception{Source: "station:boat", Station: "station:boat", RecvTime: recv, Body: body})
 	if v := p.vessels[227006760]; v == nil || !v.PosAt.Equal(recv) {
 		t.Fatalf("live line beyond maxSkew stamped %+v, want the receive time %v", v, recv)
+	}
+}
+
+// replayRaw replays the raw tree under dir for day, after the default lead-in, the way replay -clickhouse does, and
+// returns the copies it writes.
+func replayRaw(t *testing.T, dir string, day time.Time) []trackPoint {
+	t.Helper()
+	p, written := recordingPipeline(t)
+	p.replayGate = day
+	readers, err := collectReaders(dir, day.Add(-(corroborationWindow + vesselTTL)), day.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replayReaders(p, readers, day.AddDate(0, 0, 1), nil); err != nil {
+		t.Fatal(err)
+	}
+	return written()
+}
+
+// sameCopies fails unless live and replayed wrote the same copies: vessel, stamp, arrival, source, and whether each
+// was the accepted one.
+func sameCopies(t *testing.T, what string, live, replayed []trackPoint) {
+	t.Helper()
+	key := func(pts []trackPoint) []string {
+		var out []string
+		for _, pt := range pts {
+			out = append(out, fmt.Sprint(pt.mmsi, pt.ts.UnixMilli(), pt.recv.UnixMilli(), pt.source, pt.dup, pt.uncorroborated))
+		}
+		slices.Sort(out)
+		return out
+	}
+	if a, b := key(live), key(replayed); !slices.Equal(a, b) {
+		t.Fatalf("%s: live wrote %v, replay %v", what, a, b)
+	}
+}
+
+// A station's name keeps every character through the archive and replay. Its archive key turns each ':' into a
+// directory, so the source a reader builds back from the key can differ for a name with its own '/' or ':', and an
+// envelope's copies take their station from the line, which holds the name as received.
+func TestReplayKeepsAStationsName(t *testing.T) {
+	rawDir := t.TempDir()
+	p, written := recordingPipeline(t)
+	p.arch = newArchive(rawDir, nil)
+	recv := time.Date(2026, 9, 1, 12, 0, 40, 0, time.UTC)
+	const station = "station:mmsi:368168720/n2k"
+	envelope := `{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260901120039","nmea":["` + testSentence + `"]}]}`
+	if !p.ingestCatcher(station, []byte(envelope), recv) {
+		t.Fatal("live rejected a valid envelope")
+	}
+	p.closeArchives()
+	live := written()
+	replayed := replayRaw(t, rawDir, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
+	if len(live) != 1 || len(replayed) != 1 || live[0].station != station || replayed[0].station != station {
+		t.Fatalf("station live %+v, replayed %+v, want %q both", live, replayed, station)
 	}
 }

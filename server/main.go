@@ -28,9 +28,6 @@ func main() {
 		case "replay":
 			runReplay(os.Args[2:])
 			return
-		case "normdiff":
-			runNormDiff(os.Args[2:])
-			return
 		case "convert-receptions":
 			runConvertReceptions(os.Args[2:])
 			return
@@ -47,10 +44,7 @@ func main() {
 	}
 	arch := newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv())
 	go arch.sweepLoop() // reclaim what the bucket already has; slow, so it must not hold up ingest
-	norm := newNormArchive(normDir(), s3NormFromEnv())
-	go norm.sweepLoop()
 	p := newPipeline(arch)
-	p.norm = norm
 	p.access = newAccessArchive(accessDir(), accessStoreFromEnv())
 	go p.access.sweepLoop()
 

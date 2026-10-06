@@ -203,10 +203,9 @@ func TestMQTTPublish(t *testing.T) {
 // protocol: live feeds it to the NMEA parser, and the raw record must carry the published mark so
 // replay keeps it a line instead of unpacking it into events.
 func TestMQTTPublishedEnvelopeStaysALine(t *testing.T) {
-	rawDir, normDir := t.TempDir(), t.TempDir()
+	rawDir := t.TempDir()
 	p := testPipeline(t)
 	p.arch = newArchive(rawDir, nil)
-	p.norm = newNormArchive(normDir, nil)
 	srv := httptest.NewServer(httpHandler(p))
 	defer srv.Close()
 	m := dialMQTT(t, srv, "")
@@ -231,13 +230,18 @@ func TestMQTTPublishedEnvelopeStaysALine(t *testing.T) {
 		t.Fatalf("round-tripped record: Published = %v, Station = %q", rx.Published, rx.Station)
 	}
 
-	out := t.TempDir()
+	// Replayed, the record is a line again: a parse error and no event, as live.
+	rp := testPipeline(t)
 	day := rx.RecvTime.UTC().Truncate(24 * time.Hour)
-	runReplay([]string{"-archive", rawDir, "-out", out,
-		"-from", day.Format("2006-01-02"), "-to", day.AddDate(0, 0, 1).Format("2006-01-02")})
-	rep := diffNorm(loadNorm(normDir), loadNorm(out))
-	if !rep.clean() {
-		t.Fatalf("replay unpacked an MQTT-published line as an envelope:\n%s", rep.render(3))
+	readers, err := collectReaders(rawDir, day, day.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replayReaders(rp, readers, day.AddDate(0, 0, 1), nil); err != nil {
+		t.Fatal(err)
+	}
+	if rp.stats.parseErr.Load() != 1 || rp.stats.events.Load() != 0 {
+		t.Fatalf("replay unpacked an MQTT-published line as an envelope: %d parse errors, %d events", rp.stats.parseErr.Load(), rp.stats.events.Load())
 	}
 }
 
