@@ -1,5 +1,7 @@
 # History and track APIs
 
+History is served from ClickHouse ([clickhouse.md](clickhouse.md)), and the lake and the normalized stream are retired. [Three layers, one endpoint](#three-layers-one-endpoint), [The engine and the lake's place](#the-engine-and-the-lakes-place), [The lake layout](#the-lake-layout), and [Backdating the record from history](#backdating-the-record-from-history) describe that design and no longer apply. The endpoints, metering, opt-out, and the web client's needs still do.
+
 Plan for [#32](https://github.com/openwatersio/aiscast/issues/32), and the server work the web client in [#88](https://github.com/openwatersio/aiscast/pull/88) still needs beyond it. It builds on [#63](https://github.com/openwatersio/aiscast/pull/63): the server writes the normalized stream, and the nightly packager turns closed days into `ais.positions`, `ais.receptions`, `ais.vessels`, and `ais.weather` in R2 Data Catalog.
 
 ## What the numbers say

@@ -74,6 +74,7 @@ type wikidataShip struct {
 
 // wikidataStats is read by /metrics.
 type wikidataStats struct {
+	enabled               atomic.Bool // set when the sync's env flag is on; gates the last-success metric
 	runs, failures, ships atomic.Int64
 	lastSuccess           atomic.Int64 // unix seconds
 }
@@ -554,6 +555,7 @@ func (p *Pipeline) runWikidata(endpoint string) {
 // syncWikidataIfDue replaces the particulars when the last sync is a week old or there has never been one,
 // and reports whether it did.
 func (p *Pipeline) syncWikidataIfDue(now time.Time, endpoint string) bool {
+	p.wikidata.enabled.Store(true) // a sync that runs is enabled, whoever called it
 	last, err := p.store.meta("wikidata_sync")
 	if err != nil {
 		log.Printf("wikidata: %v", err)

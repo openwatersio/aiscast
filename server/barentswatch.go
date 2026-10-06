@@ -159,11 +159,7 @@ func (p *Pipeline) barentswatchLine(line []byte, now time.Time) {
 		return
 	}
 	if m.Type == "BinaryBroadcastMessageMetHyd" {
-		if shadowSample("barentswatch/methyd") {
-			shadowCheck("barentswatch/methyd", line, metHydKnown)
-		}
-		p.writeMetHyd(line, now) // decoded weather: no AIS packet to map onto, archived verbatim
-		return
+		return // weather: no AIS packet to map onto; the raw archive keeps the broadcast
 	}
 	if shadowSample("barentswatch") {
 		shadowCheck("barentswatch", line, bwKnown)

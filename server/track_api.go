@@ -21,8 +21,8 @@ const (
 	trackDefaultLimit = 1000
 )
 
-// trackLimit is the most positions one track request returns for a tier. The window is the same for every
-// tier; the cap bounds the work a request can ask for.
+// trackLimit is the most positions one track request returns for a tier. Every tier reaches the same history;
+// the cap bounds the answer, and trackStep the step anonymous and personal requests read it at.
 func trackLimit(cl *Claims) int {
 	switch {
 	case cl.Role == "anonymous":
@@ -32,6 +32,19 @@ func trackLimit(cl *Claims) int {
 	default:
 		return 5000
 	}
+}
+
+// trackStep is the step a track is read at. An anonymous or personal range that reaches past the last 48 hours
+// is read in whole minutes, interval rounded up, so it reads positions_1m rather than group every copy in the
+// range through the positions view, which the limit does not bound. Feeder and above keep interval. A minute of
+// slack keeps "the last 48 hours" from a client whose clock runs behind out of the rounding.
+func trackStep(cl *Claims, from time.Time, interval time.Duration, now time.Time) time.Duration {
+	const w = time.Minute
+	if cl.Feeder || (cl.Role != "anonymous" && cl.Role != "personal") || !from.Before(now.Add(-trackWindow-time.Minute)) {
+		return interval
+	}
+	interval = min(interval, trackMaxSpan) // a step longer than any range keeps one position, and cannot overflow below
+	return max((interval+w-1)/w*w, w)
 }
 
 // trackRequest is a track query after defaults, clamping, and validation.
@@ -55,21 +68,10 @@ func (p *Pipeline) trackReader() chReader {
 	return p.ch.r
 }
 
-// canReachArchive reports whether a tier reads positions older than the 48-hour window, which is a feeder and
-// commercial capability.
-func canReachArchive(cl *Claims) bool {
-	return cl.Feeder || (cl.Role != "anonymous" && cl.Role != "personal")
-}
-
-const trackArchiveTierMsg = "positions older than 48 hours need a feeder or commercial token; see https://openwaters.io/ais/"
-
-// parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. With
-// history (span above 0) and archive true, a range may reach before the 48-hour window, at most span of
-// it. Otherwise the range is clamped to the window, and with history a range wholly before the window is
-// refused with a 403 that names the tier which reaches it. A range after now clamps to an empty one there, so
-// the answer is an empty track that says where it looked.
-func parseTrackRange(fromS, toS string, now time.Time, archive bool, span time.Duration) (from, to time.Time, status int, msg string) {
-	history := span > 0
+// parseTrackRange reads from and to, RFC 3339 times. to defaults to now and from to a day before to. A range
+// covers at most trackMaxSpan. A range after now clamps to an empty one there, so the answer is an empty track
+// that says where it looked.
+func parseTrackRange(fromS, toS string, now time.Time) (from, to time.Time, status int, msg string) {
 	to = now
 	if toS != "" {
 		t, err := time.Parse(time.RFC3339, toS)
@@ -89,18 +91,9 @@ func parseTrackRange(fromS, toS string, now time.Time, archive bool, span time.D
 	if !from.Before(to) {
 		return from, to, http.StatusBadRequest, "from must be before to"
 	}
-	start := now.Add(-trackWindow)
-	if !history || !archive {
-		// A range that only overlaps the window is clamped to it, so "the last 48 hours" computed on a client
-		// a moment ahead of the server still answers. One wholly before the window is the archive's to answer.
-		if history && to.Before(start) {
-			return from, to, http.StatusForbidden, trackArchiveTierMsg
-		}
-		return clampTime(from, start, now).UTC(), clampTime(to, start, now).UTC(), 0, ""
-	}
 	to = clampTime(to, time.Time{}, now)
-	if to.Sub(from) > span {
-		return from, to, http.StatusBadRequest, fmt.Sprintf("a track covers at most %d days per request; page back by moving to", span/(24*time.Hour))
+	if to.Sub(from) > trackMaxSpan {
+		return from, to, http.StatusBadRequest, fmt.Sprintf("a track covers at most %d days per request; page back by moving to", trackMaxSpan/(24*time.Hour))
 	}
 	return clampTime(from, time.Time{}, now).UTC(), to.UTC(), 0, ""
 }
@@ -125,7 +118,7 @@ func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time)
 	vals := r.URL.Query()
 	var status int
 	var msg string
-	if q.from, q.to, status, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now, canReachArchive(cl), trackMaxSpan); msg != "" {
+	if q.from, q.to, status, msg = parseTrackRange(vals.Get("from"), vals.Get("to"), now); msg != "" {
 		return q, status, msg
 	}
 	cap := trackLimit(cl)
@@ -147,7 +140,7 @@ func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time)
 			return q, http.StatusBadRequest, "interval=<seconds> or a duration such as 5m"
 		}
 	}
-	q.interval = p.answeredStep(q.from, q.to, q.interval, now)
+	q.interval = p.answeredStep(q.from, q.to, trackStep(cl, q.from, q.interval, now), now)
 	return q, 0, ""
 }
 
@@ -428,9 +421,9 @@ const mcpTrackDefaultLimit = 50
 
 type mcpTrackIn struct {
 	MMSI            uint32 `json:"mmsi" jsonschema:"the vessel's MMSI; use search_vessels_by_name first when you only have a name"`
-	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. Anonymous and personal calls reach back 48 hours; feeder and commercial tokens reach the archive, up to 366 days per call"`
+	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. A call covers up to 366 days"`
 	To              string `json:"to,omitempty" jsonschema:"end, RFC 3339 UTC; default now"`
-	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the limit is spread over the range at a round spacing, reported as interval_s"`
+	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes; by default the limit is spread over the range at a round spacing, reported as interval_s. Anonymous and personal calls reaching past 48 hours are rounded up to whole minutes"`
 	Limit           int    `json:"limit,omitempty" jsonschema:"positions to return: default 50, maximum 200; when more match, the newest are kept"`
 }
 
@@ -448,7 +441,7 @@ type mcpTrackPoint struct {
 type mcpTrack struct {
 	MMSI        uint32            `json:"mmsi"`
 	Name        string            `json:"name,omitempty"`
-	From        string            `json:"from" jsonschema:"start of the range covered, after clamping to what the caller can reach: the last 48 hours, or the archive for feeder and commercial tokens"`
+	From        string            `json:"from" jsonschema:"start of the range covered"`
 	To          string            `json:"to"`
 	IntervalS   int64             `json:"interval_s" jsonschema:"at most one position per this many seconds; 0 is every position heard"`
 	Positions   []mcpTrackPoint   `json:"positions" jsonschema:"oldest first"`
@@ -468,7 +461,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	limit = min(limit, trackLimit(cl))
 	now := time.Now()
-	from, to, _, msg := parseTrackRange(in.From, in.To, now, canReachArchive(cl), trackMaxSpan)
+	from, to, _, msg := parseTrackRange(in.From, in.To, now)
 	if msg != "" {
 		return nil, mcpTrack{}, errors.New(msg)
 	}
@@ -492,7 +485,7 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 		}
 		interval = defaultInterval(span, limit)
 	}
-	interval = p.answeredStep(from, to, interval, now)
+	interval = p.answeredStep(from, to, trackStep(cl, from, interval, now), now)
 	var points []trackPoint
 	var sources []string
 	var more bool

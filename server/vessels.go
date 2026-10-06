@@ -348,6 +348,8 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 	var seed *[2]int32
 	if hadPrev {
 		seed = &[2]int32{int32(math.Round(prevLat * 600000)), int32(math.Round(prevLon * 600000))}
+	} else if a := p.anchorSeeds[ev.MMSI]; a != nil && !v.moved.set {
+		v.moved = *a // a replay starts each vessel where positions_1m last had it moving
 	}
 	pt.clockBad = ev.RecvTime.Sub(ev.Time) >= clockBadAge
 	// Only a report that enters positions_1m moves the anchor, or later reports would be judged against a place

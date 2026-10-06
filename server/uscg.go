@@ -88,6 +88,7 @@ type uscgVessel struct {
 
 // uscgStats is read by /metrics.
 type uscgStats struct {
+	enabled                 atomic.Bool // set when the sync's env flag is on; gates the last-success metric
 	runs, failures, vessels atomic.Int64
 	details, detailFailures atomic.Int64
 	lastSuccess             atomic.Int64 // unix seconds
@@ -741,6 +742,7 @@ func (p *Pipeline) runUSCG(endpoint string) {
 // syncUSCGIfDue replaces the listing when the last one is a week old or there has never been one, and
 // reports whether it did.
 func (p *Pipeline) syncUSCGIfDue(now time.Time, endpoint string) bool {
+	p.uscg.enabled.Store(true) // a sync that runs is enabled, whoever called it
 	last, err := p.store.meta("uscg_sync")
 	if err != nil {
 		log.Printf("uscg: %v", err)

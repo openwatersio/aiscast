@@ -193,6 +193,29 @@
   @apply overflow-y-auto overscroll-contain;
 }
 
+/* What scrolls under a panel's bar fades out to the glass, as PanelHeader's title fades in.
+   A mask rather than a gradient of the surface colour, which reads as a band over the glass.
+   The opacity at the top is a registered property so the mask can transition: 1 shows
+   everything, 0 hides the bar's buttons and title row and ramps back in below them. */
+@property --bar-fade {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+@utility bar-fade {
+  mask-image: linear-gradient(to bottom, rgb(0 0 0 / var(--bar-fade)) 2.75rem, #000 4.5rem);
+  transition: --bar-fade 300ms;
+}
+@utility bar-fade-hidden {
+  --bar-fade: 0;
+}
+
+/* As tall as Base UI measures the room left on screen for a popup, so a long menu on a short
+   phone scrolls. */
+@utility max-h-available {
+  max-height: var(--available-height);
+}
+
 /* The header (components/Header.tsx) is a bar across the top edge, glass like the panel, so
    the map shows through it. Everything else placed over the map starts one --gap under
    --header-bottom, its lower edge. --gap is the one spacing over the map: between the header,

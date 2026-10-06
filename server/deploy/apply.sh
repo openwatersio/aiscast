@@ -58,14 +58,15 @@ fi
 rm -f "$drop.bak"
 systemctl reload ssh
 
-mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/aiscast/normalized /var/lib/alloy/textfile
+mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/alloy/textfile
 chown -R aiscast:aiscast /var/lib/aiscast
 
-# The packager runs on GitHub Actions (.github/workflows/packager.yml). Boxes converged before
-# that may still carry any of its units, script, or staging directory.
+# The packager and the normalized stream are retired. Boxes converged before may still carry the packager's
+# units, script, and staging directory, and the normalized stream's staged hours.
 systemctl disable --now packager.timer packager.service 2>/dev/null || true
 rm -f /etc/systemd/system/packager.timer /etc/systemd/system/packager.service /opt/aiscast/packager.py
-rm -rf /var/lib/aiscast/packager
+rm -rf /var/lib/aiscast/packager /var/lib/aiscast/normalized
+
 # Tracks read from ClickHouse. Boxes converged before that may still carry the SQLite track store.
 rm -f /var/lib/aiscast/tracks.db /var/lib/aiscast/tracks.db-*
 
@@ -105,7 +106,7 @@ systemctl enable aiscast caddy clickhouse-server fail2ban
 # never fails the deploy;
 # --no-block keeps a slow start from holding it up.
 ch_sum=$(cat /etc/clickhouse-server/config.d/aiscast.xml /etc/systemd/system/clickhouse-server.service.d/10-aiscast.conf \
-	/etc/clickhouse-server/config.d/r2.xml /etc/clickhouse-server/r2.env 2>/dev/null | md5sum)
+	/etc/clickhouse-server/users.d/s3.xml /etc/clickhouse-server/config.d/r2.xml /etc/clickhouse-server/r2.env 2>/dev/null | md5sum)
 ch_stamp=/var/lib/aiscast/clickhouse-config.md5
 if [ "$ch_sum" != "$(cat "$ch_stamp" 2>/dev/null)" ]; then
 	if systemctl --no-block restart clickhouse-server; then

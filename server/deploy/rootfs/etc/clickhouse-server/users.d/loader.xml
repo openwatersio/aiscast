@@ -12,6 +12,8 @@
             <max_execution_time>3600</max_execution_time>
             <!-- A reload deletes its day before it loads it again, so the delete has to be done when it returns. -->
             <lightweight_deletes_sync>2</lightweight_deletes_sync>
+            <!-- Rows past the cold tier's 30 days are written straight to R2, which needs one part size (s3.xml). -->
+            <s3_strict_upload_part_size>16777216</s3_strict_upload_part_size>
             <!-- Higher is later: the writer's queries go first when both wait. -->
             <priority>10</priority>
         </loader>

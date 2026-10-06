@@ -23,11 +23,6 @@ var waivers = map[string][]string{
 		"shipLength", "shipWidth", // redundant: dimensions A+B and C+D carry them
 		"reportClass", // duplicative of aisClass for the message types we map
 	},
-	"barentswatch/methyd": {
-		"type", "messageType", "stream", // envelope markers
-		"designatedAreaCode",    // 1 for every IMO message
-		"day", "hour", "minute", // embedded observation time, broken on real stations; msgtime is the clock
-	},
 	"catcher": {
 		"protocol",                   // constant envelope marker
 		"msgs.class", "msgs.channel", // class is constant "AIS"; channel is in the sentence itself
@@ -35,7 +30,7 @@ var waivers = map[string][]string{
 		// dozens more per message type). All of it is derivable from the nmea the adapter captures,
 		// and the set varies by message type, so the rest of each message is waived as a whole. That
 		// includes receiver metadata no sentence carries (signalpower, ppm, hardware, driver, version,
-		// rxuxtime): the normalized copy record has no fields for it yet, and raw keeps it verbatim.
+		// rxuxtime): receptions has no columns for it yet, and raw keeps it verbatim.
 		"msgs.*",
 		// envelope-level receiver details, likewise kept only in raw
 		"encodetime", "stationid", "station_lat", "station_lon", "receiver", "device",
@@ -222,20 +217,6 @@ var (
 	dtMetaKnown  = fieldsOf("digitraffic/metadata", reflect.TypeOf(dtMetadata{}))
 	aishubKnown  = fieldsOf("aishub", reflect.TypeOf(aishubRow{}))
 	catcherKnown = fieldsOf("catcher", reflect.TypeOf(jsonaiscatcher{}))
-
-	// MetHyd is archived verbatim, so nothing is lost at ingest; the loss point is the packager's
-	// fixed weather columns. This set is that contract: the fields it reads, plus the waivers above.
-	// packager/test_packager.py checks the same record against the columns themselves.
-	metHydKnown = withWaivers("barentswatch/methyd", flat(
-		"mmsi", "msgtime", "functionalId", "latitude", "longitude",
-		"avgWindSpeed", "windGust", "windDirection", "windGustDirection", "airTemperature",
-		"relativeHumidity", "dewPoint", "airPressure", "horizontalVisibility", "waterLevel",
-		"surfaceCurrentSpeed", "surfaceCurrentDirection", "currentSpeed2", "currentDirection2",
-		"currentMeasuringLevel2", "currentSpeed3", "currentDirection3", "currentMeasuringLevel3",
-		"significantWaveHeight", "wavePeriod", "waveDirection", "swellHeight", "swellPeriod",
-		"swellDirection", "waterTemperature", "salinity",
-		"airPressureTendency", "waterLevelTrend", "seaState", "precipitationType", "ice",
-	))
 
 	// Message is a map keyed by type name and checked per type below; MetaData has its own site.
 	v0EnvKnown  = flat("MessageType", "MetaData", "Message")

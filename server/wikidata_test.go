@@ -142,7 +142,9 @@ func TestWikidataSync(t *testing.T) {
 	}
 }
 
-// A restarted server reports what the last sync stored before any sync runs, and with the sync off.
+// A restarted server reports what the last sync stored before any sync runs. With the sync off the
+// stored rows still count, but freshness is not claimed: a disabled source's stale last-success would
+// otherwise page forever.
 func TestWikidataStatsOnBoot(t *testing.T) {
 	p := storePipeline(t)
 	at := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
@@ -153,10 +155,15 @@ func TestWikidataStatsOnBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := get(t, p, "/metrics").Body.String()
-	for _, want := range []string{"aiscast_wikidata_ships 4\n", fmt.Sprintf("aiscast_wikidata_last_success_timestamp_seconds %d\n", at.Unix())} {
-		if !strings.Contains(body, want) {
-			t.Errorf("/metrics lacks %q", want)
-		}
+	if !strings.Contains(body, "aiscast_wikidata_ships 4\n") {
+		t.Error("/metrics lacks the ships gauge")
+	}
+	if strings.Contains(body, "aiscast_wikidata_last_success_timestamp_seconds") {
+		t.Error("a disabled sync claimed freshness")
+	}
+	p.wikidata.enabled.Store(true)
+	if want := fmt.Sprintf("aiscast_wikidata_last_success_timestamp_seconds %d\n", at.Unix()); !strings.Contains(get(t, p, "/metrics").Body.String(), want) {
+		t.Errorf("/metrics lacks %q", want)
 	}
 }
 

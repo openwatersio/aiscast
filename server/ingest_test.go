@@ -2,15 +2,13 @@ package main
 
 import (
 	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,151 +19,80 @@ import (
 
 const testSentence = "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"
 
-// readNorm parses every envelope under a normalized output tree, in file order.
-func readNorm(t *testing.T, dir string) []normEnvelope {
-	t.Helper()
-	var out []normEnvelope
-	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".gz") {
-			return err
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f.Close()
-		gz, err := gzip.NewReader(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, err := io.ReadAll(gz)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-			if line == "" {
-				continue
-			}
-			var e normEnvelope
-			if err := json.Unmarshal([]byte(line), &e); err != nil {
-				t.Fatalf("bad envelope %q: %v", line, err)
-			}
-			out = append(out, e)
-		}
-		return nil
-	})
-	return out
+// memWriter stands in for ClickHouse and keeps every copy the pipeline writes, in the order it writes them.
+type memWriter struct {
+	mu  sync.Mutex
+	pts []trackPoint
 }
 
-func kinds(envs []normEnvelope) map[string]int {
-	m := map[string]int{}
-	for _, e := range envs {
-		m[e.K]++
-	}
-	return m
+func (m *memWriter) insert(_ context.Context, _ string, pts []trackPoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pts = append(m.pts, pts...)
+	return nil
 }
 
-func normPipeline(t *testing.T) (*Pipeline, string) {
+// recordingPipeline is a test pipeline whose copies land in a memWriter; written flushes and returns them.
+func recordingPipeline(t *testing.T) (*Pipeline, func() []trackPoint) {
 	t.Helper()
-	dir := t.TempDir()
 	p := testPipeline(t)
-	p.norm = newNormArchive(dir, nil)
-	return p, dir
-}
-
-func TestNormalizedStream(t *testing.T) {
-	p, dir := normPipeline(t)
-	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	p.ingestLine(Reception{Source: "kystverket", Station: "kystverket", RecvTime: recv, Body: testSentence})
-	p.ingestLine(Reception{Source: "udp:aaaa", Station: "udp:aaaa", RecvTime: recv.Add(time.Second), Body: testSentence})
-	p.writeMetHyd([]byte(`{"type":"BinaryBroadcastMessageMetHyd","mmsi":2573775,"airTemperature":4.5}`), recv.Add(2*time.Second))
-	p.norm.shutdown()
-
-	envs := readNorm(t, dir)
-	if got := kinds(envs); got["event"] != 1 || got["copy"] != 2 || got["methyd"] != 1 {
-		t.Fatalf("kinds = %v, want 1 event, 2 copies, 1 methyd", got)
-	}
-	var ev v1Event
-	var copies []normCopy
-	for _, e := range envs {
-		switch e.K {
-		case "event":
-			json.Unmarshal(e.R, &ev)
-		case "copy":
-			var c normCopy
-			json.Unmarshal(e.R, &c)
-			copies = append(copies, c)
+	w := &memWriter{}
+	p.attachClickHouse(&chStore{w: w})
+	return p, func() []trackPoint {
+		t.Helper()
+		for range 2 { // a batch held back to resend goes first
+			if err := p.flushClickHouse(); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if e.V != normVersion {
-			t.Fatalf("envelope version %d, want %d", e.V, normVersion)
-		}
-	}
-	if ev.ID == "" || ev.MMSI == 0 || len(ev.NMEA) == 0 {
-		t.Fatalf("event record incomplete: %+v", ev)
-	}
-	for _, c := range copies {
-		if c.ID != ev.ID {
-			t.Fatalf("copy id %s != event id %s", c.ID, ev.ID)
-		}
-		// each copy carries its own canonical time, and names the transmission it joins exactly
-		if ct, err := time.Parse(time.RFC3339Nano, c.Time); err != nil || absDur(ct.Sub(ev.Time)) >= dedupeWindow {
-			t.Fatalf("copy canonical time %q outside the window of the event's %s", c.Time, ev.Time)
-		}
-		if tx, err := time.Parse(time.RFC3339Nano, c.Tx); err != nil || !tx.Equal(ev.Time) {
-			t.Fatalf("copy names transmission %q, want the event's %s", c.Tx, ev.Time)
-		}
-	}
-	if copies[0].License != "NLOD-2.0" || copies[1].License != "CC0-1.0" {
-		t.Fatalf("licenses = %s, %s", copies[0].License, copies[1].License)
-	}
-	if copies[1].Source != "udp:aaaa" {
-		t.Fatalf("dup copy source = %s", copies[1].Source)
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return slices.Clone(w.pts)
 	}
 }
 
+// eventSentences drains a subscriber and returns each event's sentences, joined.
+func eventSentences(s *subscriber) []string {
+	var out []string
+	for {
+		select {
+		case ev := <-s.ch:
+			out = append(out, strings.Join(ev.Sentences, "|"))
+		default:
+			return out
+		}
+	}
+}
+
+// The dedupe window survives a restart: a copy heard just after it is a copy, not a new transmission.
 func TestDedupePersistsAcrossRestart(t *testing.T) {
-	p1, dir1 := normPipeline(t)
+	p1 := testPipeline(t)
 	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	p1.ingestLine(Reception{Source: "kystverket", Station: "kystverket", RecvTime: recv, Body: testSentence})
 	state := filepath.Join(t.TempDir(), "dedupe.json")
 	if err := p1.saveDedupe(state); err != nil {
 		t.Fatal(err)
 	}
-	p1.norm.shutdown()
-
-	p2, dir2 := normPipeline(t)
+	p2 := testPipeline(t)
 	if n, err := p2.loadDedupe(state); err != nil || n != 1 {
 		t.Fatalf("loadDedupe = %d, %v", n, err)
 	}
 	p2.ingestLine(Reception{Source: "udp:bbbb", Station: "udp:bbbb", RecvTime: recv.Add(2 * time.Second), Body: testSentence})
-	p2.norm.shutdown()
-
-	if got := kinds(readNorm(t, dir1)); got["event"] != 1 {
-		t.Fatalf("first run kinds = %v", got)
-	}
-	if got := kinds(readNorm(t, dir2)); got["event"] != 0 || got["copy"] != 1 {
-		t.Fatalf("post-restart copy re-accepted: kinds = %v, want copy only", got)
+	if p2.stats.events.Load() != 0 || p2.stats.dup.Load() != 1 {
+		t.Fatalf("after a restart: %d events, %d copies; want the copy only", p2.stats.events.Load(), p2.stats.dup.Load())
 	}
 }
 
-func TestNormGateHoldsWarmupBack(t *testing.T) {
-	p, dir := normPipeline(t)
+// A replay's lead-in builds state and writes nothing: only copies received from the gate on reach ClickHouse.
+func TestReplayGateHoldsTheLeadInBack(t *testing.T) {
+	p, written := recordingPipeline(t)
 	gate := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
-	p.normGate = gate
+	p.replayGate = gate
 	p.ingestLine(Reception{Source: "kystverket", Station: "kystverket", RecvTime: gate.Add(-time.Minute), Body: testSentence})
 	p.ingestLine(Reception{Source: "kystverket", Station: "kystverket", RecvTime: gate.Add(time.Minute), Body: testSentence})
-	p.norm.shutdown()
-	envs := readNorm(t, dir)
-	// the warm-up reception built dedupe state silently; the in-range one is its duplicate... but
-	// 61 s apart is outside the window, so it is a fresh accept. Only the in-range record appears.
-	if got := kinds(envs); got["event"] != 1 || got["copy"] != 1 {
-		t.Fatalf("kinds = %v, want exactly the in-range event", got)
-	}
-	for _, e := range envs {
-		ts, err := time.Parse(time.RFC3339Nano, e.T)
-		if err != nil || ts.Before(gate) {
-			t.Fatalf("record before the gate leaked out: %s", e.T)
-		}
+	pts := written()
+	if len(pts) != 1 || pts[0].recv.Before(gate) {
+		t.Fatalf("written %+v, want only the copy after the gate", pts)
 	}
 }
 
@@ -193,19 +120,25 @@ func TestBarentswatchAltitudeCaptured(t *testing.T) {
 	}
 }
 
+// Replaying the same raw day twice writes the same copies: replay depends on nothing but its input.
 func TestReplayTwiceIsIdentical(t *testing.T) {
 	raw := writeRawTree(t)
-	out1, out2 := t.TempDir(), t.TempDir()
-	runReplay([]string{"-archive", raw, "-out", out1, "-from", "2026-09-01", "-to", "2026-09-02"})
-	runReplay([]string{"-archive", raw, "-out", out2, "-from", "2026-09-01", "-to", "2026-09-02"})
-	h1, h2 := hashTree(t, out1), hashTree(t, out2)
-	if h1 != h2 {
-		t.Fatalf("replay output differs between runs: %s vs %s", h1, h2)
+	run := func() []trackPoint {
+		p, written := recordingPipeline(t)
+		readers, err := collectReaders(raw, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := replayReaders(p, readers, time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), nil); err != nil {
+			t.Fatal(err)
+		}
+		return written()
 	}
-	envs := readNorm(t, out1)
-	got := kinds(envs)
-	if got["event"] == 0 || got["copy"] < got["event"] || got["methyd"] != 1 {
-		t.Fatalf("replay kinds = %v", got)
+	first, second := run(), run()
+	a, _ := json.Marshal(fmt.Sprintf("%+v", first))
+	b, _ := json.Marshal(fmt.Sprintf("%+v", second))
+	if len(first) == 0 || string(a) != string(b) {
+		t.Fatalf("replay wrote %d copies, then %d, or differed between runs", len(first), len(second))
 	}
 }
 
@@ -270,35 +203,10 @@ func fixtureLines(t *testing.T, name string) []fixtureRec {
 	return out
 }
 
-func hashTree(t *testing.T, dir string) string {
-	t.Helper()
-	h := sha256.New()
-	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, _ := filepath.Rel(dir, path)
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		gz, err := gzip.NewReader(f)
-		if err != nil {
-			return err
-		}
-		b, _ := io.ReadAll(gz)
-		h.Write([]byte(rel))
-		h.Write(b)
-		return nil
-	})
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// Replay skips the normalized stream and the access log, whose hour keys look like raw ones.
+// Replay skips the retired normalized stream and the access log, whose hour keys look like raw ones.
 func TestReplaySkipsWhatSharesTheBucket(t *testing.T) {
 	raw := writeRawTree(t)
-	for _, prefix := range []string{normPrefix, accessPrefix} {
+	for _, prefix := range []string{"normalized", accessPrefix} {
 		stream := filepath.Join(raw, prefix, "v1", "2026", "09", "01", "12.gz")
 		os.MkdirAll(filepath.Dir(stream), 0o755)
 		f, err := os.Create(stream)
@@ -312,7 +220,7 @@ func TestReplaySkipsWhatSharesTheBucket(t *testing.T) {
 	}
 	for _, r := range allReaders(t, raw) {
 		for _, path := range r.paths {
-			for _, prefix := range []string{normPrefix, accessPrefix} {
+			for _, prefix := range []string{"normalized", accessPrefix} {
 				if strings.Contains(filepath.ToSlash(path), "/"+prefix+"/") {
 					t.Fatalf("replay would read %s as source %q: %s", prefix, r.source, path)
 				}
@@ -331,53 +239,27 @@ func TestHistoricalContributorSourcesStayCC0(t *testing.T) {
 	}
 }
 
-// The writer is opt-in: an env with neither variable, like a box set up before the stream existed,
-// must not stage hours that nothing uploads or reclaims.
-func TestNormalizedWriterIsOptIn(t *testing.T) {
-	for _, c := range []struct{ dir, bucket, want string }{
-		{"", "", ""},
-		{"", "ais-archive", "normalized"},
-		{"/var/lib/aiscast/normalized", "", "/var/lib/aiscast/normalized"},
-		{"/var/lib/aiscast/normalized", "ais-archive", "/var/lib/aiscast/normalized"},
-	} {
-		t.Setenv("NORMALIZED_DIR", c.dir)
-		t.Setenv("NORMALIZED_BUCKET", c.bucket)
-		if got := normDir(); got != c.want {
-			t.Errorf("NORMALIZED_DIR=%q NORMALIZED_BUCKET=%q: dir %q, want %q", c.dir, c.bucket, got, c.want)
-		}
-	}
-}
-
-// Corroboration is runtime state the archive cannot re-derive, so the envelope records it: set for
-// an event only an unauthenticated sender heard, clear for one from a trusted source.
-func TestNormalizedStreamRecordsCorroboration(t *testing.T) {
+// Corroboration is runtime state the archive cannot derive again, so each copy records it: set for a position only
+// an unauthenticated sender heard, clear for one from a trusted source.
+func TestCopiesRecordCorroboration(t *testing.T) {
 	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
 		source string
 		want   bool
 	}{{"udp:aaaa", true}, {"kystverket", false}} {
-		p, dir := normPipeline(t)
+		p, written := recordingPipeline(t)
 		p.ingestLine(Reception{Source: c.source, Station: c.source, RecvTime: recv, Body: testSentence})
-		p.norm.shutdown()
-		events := 0
-		for _, e := range readNorm(t, dir) {
-			if e.K == "event" {
-				events++
-				if e.Uncorroborated != c.want {
-					t.Fatalf("%s: uncorroborated = %v, want %v", c.source, e.Uncorroborated, c.want)
-				}
-			}
-		}
-		if events != 1 {
-			t.Fatalf("%s: %d events, want 1", c.source, events)
+		pts := written()
+		if len(pts) != 1 || pts[0].uncorroborated != c.want {
+			t.Fatalf("%s: written %+v, want one copy with uncorroborated %v", c.source, pts, c.want)
 		}
 	}
 }
 
-// A multipart message's recorded sentences are exactly its own. Real traffic from one station: part 1
-// of sequence 7 never completed, then sequence 9 arrived whole. And another station sends parts in
-// reverse order, which still assembles with both sentences.
-func TestMultipartRecordsOnlyItsOwnSentences(t *testing.T) {
+// A multipart message's sentences are exactly its own. Real traffic from one station: part 1 of sequence 7
+// never completed, then sequence 9 arrived whole. And another station sends parts in reverse order, which still
+// assembles with both sentences.
+func TestMultipartCarriesOnlyItsOwnSentences(t *testing.T) {
 	stale := "!AIVDM,2,1,7,A,55RGLH82G=qO<DuSB20d4d58TdV2222222222216?hP7B6LB0C3VUk1p,0*1A"
 	seq9 := []string{"!AIVDM,2,1,9,B,55RGLH82G=qO<DuSB20d4d58TdV2222222222216?hP7B6LB0C3VUk1p,0*17", "!AIVDM,2,2,9,B,888888888888880,2*2E"}
 	reversed := []string{"!AIVDM,2,2,0,B,000000000000000,2*27", "!AIVDM,2,1,0,B,53GQrVH2HFaLD4Hv221@4h5HE86222222222220l1P;4840Ht0000000,0*1E"}
@@ -389,22 +271,14 @@ func TestMultipartRecordsOnlyItsOwnSentences(t *testing.T) {
 		{"stale fragment before a whole message", append([]string{stale}, seq9...), seq9},
 		{"fragments in reverse order", reversed, reversed},
 	} {
-		p, dir := normPipeline(t)
+		p := testPipeline(t)
+		sub := p.subscribe()
 		recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 		for i, l := range c.lines {
 			p.ingestLine(Reception{Source: "station:s", Station: "station:s", RecvTime: recv.Add(time.Duration(i) * time.Second), Body: l})
 		}
-		p.norm.shutdown()
-		var got [][]string
-		for _, e := range readNorm(t, dir) {
-			if e.K == "event" {
-				var ev struct{ NMEA []string }
-				json.Unmarshal(e.R, &ev)
-				got = append(got, ev.NMEA)
-			}
-		}
-		if len(got) != 1 || strings.Join(got[0], "|") != strings.Join(c.want, "|") {
-			t.Fatalf("%s: events recorded sentences %q, want one with %q", c.name, got, c.want)
+		if got := eventSentences(sub); len(got) != 1 || got[0] != strings.Join(c.want, "|") {
+			t.Fatalf("%s: events carry sentences %q, want one with %q", c.name, got, c.want)
 		}
 	}
 }
@@ -443,35 +317,28 @@ func TestVesselCacheSweepsOnTheReceptionClock(t *testing.T) {
 
 // Two multipart messages from one station on one channel, fragments interleaved: pending fragments
 // are keyed by the sentence's sequence id (go-nmea's VDMVDO.MessageID is that field, not the AIS
-// message type), so each message records exactly its own sentences.
+// message type), so each message carries exactly its own sentences.
 func TestInterleavedMultipartMessagesStaySeparate(t *testing.T) {
 	a := []string{"!AIVDM,2,1,9,B,55RGLH82G=qO<DuSB20d4d58TdV2222222222216?hP7B6LB0C3VUk1p,0*17", "!AIVDM,2,2,9,B,888888888888880,2*2E"}
 	b := []string{"!AIVDM,2,1,0,B,53GQrVH2HFaLD4Hv221@4h5HE86222222222220l1P;4840Ht0000000,0*1E", "!AIVDM,2,2,0,B,000000000000000,2*27"}
-	p, dir := normPipeline(t)
+	p := testPipeline(t)
+	sub := p.subscribe()
 	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	for i, l := range []string{a[0], b[0], a[1], b[1]} {
 		p.ingestLine(Reception{Source: "station:s", Station: "station:s", RecvTime: recv.Add(time.Duration(i) * time.Second), Body: l})
 	}
-	p.norm.shutdown()
-	var got []string
-	for _, e := range readNorm(t, dir) {
-		if e.K == "event" {
-			var ev struct{ NMEA []string }
-			json.Unmarshal(e.R, &ev)
-			got = append(got, strings.Join(ev.NMEA, "|"))
-		}
-	}
+	got := eventSentences(sub)
 	want := []string{strings.Join(a, "|"), strings.Join(b, "|")}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("interleaved messages recorded\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		t.Fatalf("interleaved messages carry\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
-// Live stamps a reception's receive time when it is admitted, inside the ordering lock, so the order
-// receptions are processed and recorded is receive-time order: the order the raw archive keeps and
-// replay merges. Times taken before the lock, as a caller's clock or a fetch's start, would not be.
+// Live stamps a reception's receive time when it is admitted, inside the ordering lock, so the order receptions
+// are processed and written is receive-time order: the order the raw archive keeps and replay merges. Times taken
+// before the lock, as a caller's clock or a fetch's start, would not be.
 func TestAdmissionTimeIsProcessingOrder(t *testing.T) {
-	p, dir := normPipeline(t)
+	p, written := recordingPipeline(t)
 	p.stampAtAdmission = true
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
@@ -487,21 +354,14 @@ func TestAdmissionTimeIsProcessingOrder(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
-	p.norm.shutdown()
-	var last time.Time
-	n := 0
-	for _, e := range readNorm(t, dir) {
-		recv, err := time.Parse(time.RFC3339Nano, e.T)
-		if err != nil {
-			t.Fatal(err)
+	pts := written()
+	for i := 1; i < len(pts); i++ {
+		if pts[i].recv.Before(pts[i-1].recv) {
+			t.Fatalf("copy %d received %s after one received %s: processing order is not receive-time order", i,
+				pts[i].recv.Format(time.RFC3339Nano), pts[i-1].recv.Format(time.RFC3339Nano))
 		}
-		if recv.Before(last) {
-			t.Fatalf("record %d received %s after one received %s: processing order is not receive-time order", n, recv.Format(time.RFC3339Nano), last.Format(time.RFC3339Nano))
-		}
-		last = recv
-		n++
 	}
-	if n < 1600 {
-		t.Fatalf("%d records, want every reception recorded", n)
+	if len(pts) < 1600 {
+		t.Fatalf("%d copies written, want every reception", len(pts))
 	}
 }

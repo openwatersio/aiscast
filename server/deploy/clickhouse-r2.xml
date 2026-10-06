@@ -7,7 +7,8 @@
         <disks>
             <!-- A plain s3 disk: its object names are random and their metadata lives under /var/lib/clickhouse,
                  so only a backup rebuilds the cold data on another box. 26.8's plain_rewritable disk would not
-                 need the local metadata but refuses mutations, which purges and replays need. -->
+                 need the local metadata but refuses mutations, which purges and replays need. Uploads to R2 need
+                 the fixed part size in users.d/s3.xml. -->
             <r2>
                 <type>s3</type>
                 <endpoint from_env="CLICKHOUSE_R2_COLD_URL"/>

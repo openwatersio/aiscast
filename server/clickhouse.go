@@ -8,6 +8,7 @@ package main
 // sent again whole, under the same deduplication token, since a failure can come after ClickHouse committed it.
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -234,8 +235,9 @@ type chStore struct {
 
 // chConn writes positions through a native-protocol connection.
 type chConn struct {
-	conn driver.Conn
-	db   string
+	conn  driver.Conn
+	db    string
+	table string // the table write inserts into: receptions, or a replay's staging table
 }
 
 // openClickHouse connects to url, a clickhouse:// DSN, and creates the schema in the database it names, or
@@ -488,7 +490,7 @@ func (c *chConn) write(ctx context.Context, token string, points []trackPoint, c
 	if converted {
 		cols += ", recv_ts"
 	}
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".receptions ("+cols+")")
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+"."+cmp.Or(c.table, "receptions")+" ("+cols+")")
 	if err != nil {
 		return refusal(err)
 	}

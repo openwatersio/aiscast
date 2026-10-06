@@ -39,31 +39,20 @@ export function Panel({
     if (scroller.current) scroller.current.scrollTop = scrolled.get(key) ?? 0;
   }, [key]);
 
-  // The large title is out of sight when the sheet is too low to show it, which only the
-  // viewport sees, and when it scrolls under the bar's buttons, which only the scroller less
-  // the bar sees. Only all of it counts as in sight; a lowered sheet can leave its top few
-  // pixels showing.
+  // The large title is out of sight once it scrolls under the bar's buttons, which only the
+  // scroller less the bar sees. A lowered sheet does not count: it looks as the top of a full
+  // one does. Only all of the title counts as in sight.
   const observeTitle = useCallback(
     (el: HTMLElement | null) => {
       if (!el) return;
-      const inView = { viewport: true, scroller: true };
-      const watch = (key: keyof typeof inView, options: IntersectionObserverInit) => {
-        const io = new IntersectionObserver(
-          ([entry]) => {
-            inView[key] = entry!.intersectionRatio > 0.99;
-            setLargeTitleVisible(inView.viewport && inView.scroller);
-          },
-          { threshold: [0, 0.99, 1], ...options },
-        );
-        io.observe(el);
-        return io;
-      };
-      const observers = [
-        watch("viewport", {}),
+      const io = new IntersectionObserver(([entry]) => setLargeTitleVisible(entry!.intersectionRatio > 0.99), {
+        root: el.closest("[data-sheet-scroll]"),
         // The bar's buttons and the space above them, as pt-11 below.
-        watch("scroller", { root: el.closest("[data-sheet-scroll]"), rootMargin: hasBar ? "-44px 0px 0px 0px" : "0px" }),
-      ];
-      return () => observers.forEach((io) => io.disconnect());
+        rootMargin: hasBar ? "-44px 0px 0px 0px" : "0px",
+        threshold: [0, 0.99, 1],
+      });
+      io.observe(el);
+      return () => io.disconnect();
     },
     [hasBar],
   );
@@ -84,6 +73,9 @@ export function Panel({
             // The bar floats over the page. A photo starts under it; anything else starts below
             // it, the height of its buttons and the space above them.
             hasBar && !hero && "pt-11",
+            // Once the bar shows the title, what is under it fades out so the title reads on the glass.
+            hasBar && "bar-fade",
+            hasBar && !largeTitleVisible && "bar-fade-hidden",
           )}
         >
           {children}
