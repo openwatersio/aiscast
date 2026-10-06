@@ -1,7 +1,8 @@
 package main
 
 // Track positions: every copy of every position report goes to ClickHouse (clickhouse.go), which answers every
-// track, up to a year per request. Nothing attaches ClickHouse in replay, so replay never writes there.
+// track, up to a year per request. A replay into a normalized tree attaches none and writes nothing there; replay
+// -clickhouse writes into a staging table (replay_clickhouse.go).
 
 import (
 	"math"
@@ -312,6 +313,9 @@ func despike(points []trackPoint) []trackPoint {
 
 // noteReception queues a copy for ClickHouse.
 func (p *Pipeline) noteReception(pt trackPoint) {
+	if pt.recv.Before(p.normGate) {
+		return // a replay's lead-in builds state and writes nothing
+	}
 	p.chMu.Lock()
 	defer p.chMu.Unlock()
 	if p.chQueue == nil {
