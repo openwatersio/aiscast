@@ -482,24 +482,75 @@ export function isVolunteer(source: string | undefined): boolean {
   return source != null && VOLUNTEER_KINDS.has(source.split(":")[0]!);
 }
 
-/** What to call a station: its name, else the place nearest its traffic, else its id. */
-export function stationTitle(st: { station: string; name?: string; near?: string }): string {
-  return st.name ?? (st.near ? `Near ${st.near}` : st.station);
+// Feeds are stations named by their upstream's id, which reads as code. BarentsWatch splits into
+// its networks as `barentswatch/terra` and the like, each a station of its own.
+const FEED_NAMES: Record<string, string> = {
+  aishub: "AISHub",
+  aisstream: "aisstream.io",
+  digitraffic: "Digitraffic (Finland)",
+  kystverket: "Kystverket (Norway)",
+  barentswatch: "BarentsWatch (Norway)",
+  "barentswatch/terra": "BarentsWatch coastal",
+  "barentswatch/offshore": "BarentsWatch offshore",
+  "barentswatch/satellite": "BarentsWatch satellite",
+};
+
+/** A feed's name for people, or undefined for an id that is not a known feed. */
+export function feedName(id: string): string | undefined {
+  return FEED_NAMES[id];
+}
+
+/** A station's title, and the end of its id where the title alone could name more than one. */
+export interface StationName {
+  title: string;
+  suffix?: string;
 }
 
 /**
- * Titles for a list of stations, keyed by id. Where two would read the same, each gets its receiver's
+ * What to call a station: its name, else the place nearest its traffic, else the feed it is, else
+ * "Anonymous" and the end of its id. A receiver's full id is a key or a hash that reads as noise.
+ */
+export function stationName(st: { station: string; name?: string; near?: string }): StationName {
+  if (st.name) return { title: st.name };
+  if (st.near) return { title: `Near ${st.near}` };
+  const feed = feedName(st.station);
+  if (feed) return { title: feed };
+  const base = st.station.split("/", 1)[0]!;
+  return isVolunteer(base) ? { title: "Anonymous", suffix: `…${base.slice(-4)}` } : { title: st.station };
+}
+
+/** stationName as one line of text, for where it cannot be styled: "Anonymous …bCro". */
+export function stationTitle(st: { station: string; name?: string; near?: string }): string {
+  const { title, suffix } = stationName(st);
+  return suffix ? `${title} ${suffix}` : title;
+}
+
+/**
+ * Whether a station is sending: live within five minutes, quiet within the hour, offline after.
+ * A satellite feed hears in passes, so it goes quiet between them while working as it should.
+ */
+export type StationStatus = "live" | "quiet" | "offline";
+
+export function stationStatus(lastAgeS: number): StationStatus {
+  if (lastAgeS < 300) return "live";
+  if (lastAgeS < 3600) return "quiet";
+  return "offline";
+}
+
+/**
+ * Names for a list of stations, keyed by id. Where two would read the same, each gets its receiver's
  * tag (`n2k`) or the end of its id, so the list never shows two identical rows.
  */
-export function stationTitles(sts: Array<{ station: string; name?: string; near?: string }>): Map<string, string> {
+export function stationTitles(sts: Array<{ station: string; name?: string; near?: string }>): Map<string, StationName> {
   const count = new Map<string, number>();
   for (const st of sts) count.set(stationTitle(st), (count.get(stationTitle(st)) ?? 0) + 1);
   return new Map(
     sts.map((st) => {
-      const title = stationTitle(st);
-      if (count.get(title)! < 2 || title === st.station) return [st.station, title];
+      const name = stationName(st);
+      if (count.get(stationTitle(st))! < 2 || name.title === st.station) return [st.station, name];
       const [base, tag] = st.station.split("/", 2) as [string, string | undefined];
-      return [st.station, `${title} (${tag ?? `…${base.slice(-4)}`})`];
+      const tell = tag ?? `…${base.slice(-4)}`;
+      return [st.station, { title: name.title, suffix: name.suffix ? `${name.suffix} ${tell}` : tell }];
     }),
   );
 }

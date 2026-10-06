@@ -1,7 +1,9 @@
+import { createSocket } from "node:dgram";
 import { e2eAuth } from "./auth";
 
-/** The e2e server, from e2e/server.sh. */
+/** The e2e server, from e2e/server.sh, and the port it hears volunteer receivers on. */
 export const API = "http://127.0.0.1:8787";
+const UDP_PORT = 8788;
 
 /**
  * The Gulf of Finland between Helsinki and Tallinn, the busiest water Digitraffic reports on,
@@ -32,4 +34,25 @@ export async function namedVessel(): Promise<VesselRef> {
   const [vessel] = await namedVessels();
   if (!vessel) throw new Error("no named vessel in the test area");
   return vessel;
+}
+
+// Two position reports from gpsd's sample log, of ships Digitraffic will not also be reporting.
+const VOLUNTEER_HEARS = ["!AIVDM,1,1,,A,15RTgt0PAso;90TKcjM8h6g208CQ,0*4A", "!AIVDM,1,1,,A,16SteH0P00Jt63hHaa6SagvJ087r,0*42"];
+
+/**
+ * Plays a volunteer receiver: sends the e2e server what one heard, over UDP as a forwarder does, and
+ * waits until the station list has it. Digitraffic is a feed, which the station list leaves out.
+ */
+export async function heardFromVolunteer(): Promise<void> {
+  const socket = createSocket("udp4");
+  await new Promise<void>((resolve, reject) =>
+    socket.send(VOLUNTEER_HEARS.join("\n") + "\n", UDP_PORT, "127.0.0.1", (err) => (err ? reject(err) : resolve())),
+  );
+  socket.close();
+  for (let i = 0; i < 50; i++) {
+    const stations = await api<Array<{ source: string }>>("/v1/stations");
+    if (stations.some((s) => s.source.startsWith("udp:"))) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("the e2e server never listed the volunteer station");
 }
