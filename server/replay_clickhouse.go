@@ -187,10 +187,11 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	flush := func() error {
 		// One AISHub record is a snapshot of thousands of vessels, so the queue, not the records read, says when:
 		// at a third of its bound, which leaves room for any one record before a copy could be dropped.
+		// Own-ship sightings have a bound of their own, so either queue filling sends both.
 		p.chMu.Lock()
-		queued := len(p.chQueue)
+		queued, owned := len(p.chQueue), len(p.chOwn)
 		p.chMu.Unlock()
-		if queued < maxPending/3 {
+		if queued < maxPending/3 && owned < maxOwnPending/3 {
 			return nil
 		}
 		return flushNow()
@@ -218,6 +219,9 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	}
 	if d := staging.dropped.Load(); d > 0 {
 		return fmt.Errorf("%d copies dropped from a full queue", d)
+	}
+	if d := staging.ownDropped.Load(); d > 0 {
+		return fmt.Errorf("%d own-ship sightings dropped past their bounds", d)
 	}
 
 	where, args := replayWindow(day, archives)

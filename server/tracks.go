@@ -4,6 +4,7 @@ package main
 // track, up to a year per request. Replay writes into a staging table first (replay_clickhouse.go).
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"strconv"
@@ -351,13 +352,16 @@ func (p *Pipeline) noteOwn(ev *Event) {
 	// Claims count by the hour the message arrived, which the server sets, not the hour it is stamped, which the
 	// sender does: stamps across many hours would otherwise open a fresh allowance for each.
 	recvHour := ev.RecvTime.Unix() / 3600
+	// The allowance is the sender's: a UDP sender is relabeled by each MMSI it claims, so its station would be a new
+	// one for every MMSI and never reach the bound.
+	claimer := cmp.Or(ev.Sender, ev.Station)
 	p.chMu.Lock()
 	defer p.chMu.Unlock()
 	if p.chOwn == nil {
 		return
 	}
 	p.chOwnHW = max(p.chOwnHW, recvHour)
-	sh := ownKey{station: k.station, hour: recvHour}
+	sh := ownKey{station: claimer, hour: recvHour}
 	claimed, known := p.chOwnClaimed[sh]
 	last, ok := p.chOwn[k]
 	if !claimed[k.mmsi] && len(claimed) >= maxOwnPerStation || !ok && len(p.chOwn) >= maxOwnPending ||

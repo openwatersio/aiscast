@@ -1629,6 +1629,32 @@ func TestClickHouseKeepsOwnShipEvidenceTheStreamDrops(t *testing.T) {
 	}
 }
 
+// ownSentence is pkt as a station's own-ship sentence, !AIVDO, with its checksum.
+func ownSentence(p *Pipeline, pkt ais.Packet) string {
+	s := p.encoder.EncodeSentence(aisnmeaPacket('A', p.codec.EncodePacket(pkt)))[0]
+	s = strings.Replace(s, "!AIVDM", "!AIVDO", 1)
+	star := strings.LastIndex(s, "*")
+	var sum byte
+	for i := 1; i < star; i++ {
+		sum ^= s[i]
+	}
+	return fmt.Sprintf("%s*%02X", s[:star], sum)
+}
+
+// A UDP sender is relabeled by each MMSI it claims as its own, so its allowance follows the sender, not the
+// station it becomes: claiming ten vessels from one address keeps four.
+func TestClickHouseLimitsAUDPSendersOwnShips(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	now := time.Now()
+	for m := range uint32(10) {
+		p.Ingest(Reception{Source: "udp:spam", Station: "udp:spam", RecvTime: now, Body: ownSentence(p, posReport(366000100+m, 41.5, -70.6))})
+	}
+	if n := len(p.chOwn); n != maxOwnPerStation {
+		t.Errorf("%d sightings from one sender claiming 10 vessels, want %d: %v", n, maxOwnPerStation, p.chOwn)
+	}
+}
+
 // Claims count by the hour the server received a message, so stamping own-ship reports across many hours opens no
 // new allowance.
 func TestClickHouseCountsOwnShipClaimsByArrival(t *testing.T) {

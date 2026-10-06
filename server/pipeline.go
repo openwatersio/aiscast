@@ -45,13 +45,14 @@ type Event struct {
 	HasPos       bool
 	Sentences    []string
 	Synthesized  bool
-	Own          bool // an own-ship sentence (!AIVDO): the sender reporting itself, not a reception
-	rebuilt      bool // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
-	unserved     bool // kept out of history by the ClickHouse writer though not implausible to the stream: a stale report it does not believe
-	LowTrust     bool // from a source that cannot be authenticated (UDP)
-	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
-	Implausible  bool // position implying an impossible speed from the vessel's last; archived, not emitted
-	Stale        bool // older than the newest event already folded for the vessel; archived, not emitted
+	Own          bool   // an own-ship sentence (!AIVDO): the sender reporting itself, not a reception
+	Sender       string // who sent it, before a UDP sender is relabeled by the MMSI it claims as its own; empty means Source
+	rebuilt      bool   // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
+	unserved     bool   // kept out of history by the ClickHouse writer though not implausible to the stream: a stale report it does not believe
+	LowTrust     bool   // from a source that cannot be authenticated (UDP)
+	Corroborated bool   // low-trust event for a vessel a trusted source has also heard recently
+	Implausible  bool   // position implying an impossible speed from the vessel's last; archived, not emitted
+	Stale        bool   // older than the newest event already folded for the vessel; archived, not emitted
 
 	// Each wire format is rendered on first use and shared by every subscriber after that; an event does
 	// not change once it is broadcast.
@@ -357,7 +358,7 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	}
 	// TAG s:self on an own-ship sentence is signalk-aiscast building reports from GPS on a boat with no
 	// transponder: not a VHF reception. VDO-only, so the tag cannot mislabel received traffic as synthesized.
-	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self", Own: vdm.Type == "VDO"})
+	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self", Own: vdm.Type == "VDO", Sender: rx.Source})
 }
 
 // ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).
