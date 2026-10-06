@@ -80,30 +80,35 @@ func main() {
 				log.Printf("wikidata: %v", err)
 			}
 			if env("WIKIDATA", "1") == "1" {
+				p.wikidata.enabled.Store(true)
 				go p.runWikidata(env("WIKIDATA_URL", wikidataSPARQL))
 			}
 			if err := p.loadUSCGStats(); err != nil {
 				log.Printf("uscg: %v", err)
 			}
 			if env("USCG", "1") == "1" {
+				p.uscg.enabled.Store(true)
 				go p.runUSCG(env("USCG_URL", psixEndpoint))
 			}
 			if err := p.loadFiskeridirStats(); err != nil {
 				log.Printf("fiskeridir: %v", err)
 			}
 			if env("FISKERIDIR", "1") == "1" {
+				p.fiskeridir.enabled.Store(true)
 				go p.runFiskeridir(env("FISKERIDIR_URL", fdirEndpoint))
 			}
 			if err := p.loadFCCStats(); err != nil {
 				log.Printf("fcc: %v", err)
 			}
 			if env("FCC", "1") == "1" {
+				p.fcc.enabled.Store(true)
 				go p.runFCC(env("FCC_URL", fccEndpoint))
 			}
 			if err := p.loadTCStats(); err != nil {
 				log.Printf("tc: %v", err)
 			}
 			if env("TC", "1") == "1" {
+				p.tc.enabled.Store(true)
 				go p.runTC(env("TC_URL", tcEndpoint))
 			}
 			if err := p.loadISEDStats(); err != nil {
