@@ -249,6 +249,8 @@ export interface Track {
     to: string;
     /** Seconds between positions at most, the step the server thinned to; 0 is every position. */
     interval?: number;
+    /** Positions that start a stretch after the vessel went unheard. */
+    breaks?: number[];
     truncated: boolean;
     times: string[];
     sog?: Array<number | null>;

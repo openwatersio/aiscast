@@ -19,6 +19,7 @@ import {
   parsePlace,
   parseVesselParam,
   shipClass,
+  silences,
   speedAt,
   splitTrack,
   TRACK_GAP_MS,
@@ -263,13 +264,13 @@ describe("splitTrack", () => {
 
   it("keeps a continuous track whole", () => {
     const times = [0, minute, 2 * minute, 3 * minute];
-    expect(splitTrack(coords, times)).toEqual([coords]);
+    expect(splitTrack(coords, silences(times))).toEqual([coords]);
   });
 
   // The case that drew a 208 km line across 14 hours of silence.
   it("breaks where the vessel went unheard", () => {
     const times = [0, minute, 14 * 60 * minute, 14 * 60 * minute + minute];
-    expect(splitTrack(coords, times)).toEqual([
+    expect(splitTrack(coords, silences(times))).toEqual([
       [
         [0, 0],
         [1, 1],
@@ -283,7 +284,7 @@ describe("splitTrack", () => {
 
   it("drops a segment that is a single point, since a line needs two", () => {
     const times = [0, 31 * minute, 62 * minute, 62 * minute + minute];
-    expect(splitTrack(coords, times)).toEqual([
+    expect(splitTrack(coords, silences(times))).toEqual([
       [
         [2, 2],
         [3, 3],
@@ -292,8 +293,8 @@ describe("splitTrack", () => {
   });
 
   it("is empty for nothing to draw", () => {
-    expect(splitTrack([], [])).toEqual([]);
-    expect(splitTrack([[0, 0]], [0])).toEqual([]);
+    expect(splitTrack([], silences([]))).toEqual([]);
+    expect(splitTrack([[0, 0]], silences([0]))).toEqual([]);
   });
 });
 
@@ -553,8 +554,8 @@ describe("trackGap", () => {
     const hour = 3600e3;
     const times = [0, 1.9 * hour, 3.5 * hour, 9 * hour];
     const coords: Array<[number, number]> = times.map((_, i) => [i, i]);
-    expect(splitTrack(coords, times, trackGap(hour))).toEqual([coords.slice(0, 3)]);
-    expect(splitTrack(coords, times)).toEqual([]);
+    expect(splitTrack(coords, silences(times, trackGap(hour)))).toEqual([coords.slice(0, 3)]);
+    expect(splitTrack(coords, silences(times))).toEqual([]);
     expect(trackGap(0)).toBe(TRACK_GAP_MS);
   });
 });

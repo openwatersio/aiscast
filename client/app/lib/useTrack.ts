@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { trackGap } from "./ais";
+import { silences, trackGap } from "./ais";
 import { browserAuth, getTrack } from "./api";
 import { rangeBounds, type TrackRange } from "./trackRange";
 
@@ -9,11 +9,23 @@ export interface LoadedTrack {
   to: number;
   /** The range ends now, so the stream's positions continue it. */
   live: boolean;
-  /** How long a silence between positions means the vessel went unheard, given how far they were thinned. */
+  /** The positions that start a stretch after the vessel went unheard. */
+  breaks: ReadonlySet<number>;
+  /** How long a silence after the last position means the vessel went unheard, given the step it was thinned to. */
   gap: number;
   coords: Array<[number, number]>;
   times: number[];
   sog: Array<number | null>;
+}
+
+/**
+ * Where the vessel went unheard: the server's breaks, or, from a server that sends none, every
+ * silence longer than the gap for the step it thinned to.
+ */
+export function trackBreaks(times: number[], breaks: number[] | undefined, interval: number | undefined): ReadonlySet<number> {
+  if (breaks) return new Set(breaks);
+  const unheard = silences(times, trackGap((interval ?? 0) * 1000));
+  return new Set(times.map((_, i) => i).filter(unheard));
 }
 
 /** Why there is no track: the API did not answer. */
@@ -45,14 +57,16 @@ export function useTrack(
       }
       const g = t.geometry;
       const coords = !g ? [] : g.type === "Point" ? [g.coordinates] : g.coordinates;
+      const times = t.properties.times.map((x) => Date.parse(x));
       setFailure(undefined);
       setTrack({
         from: Date.parse(t.properties.from),
         to: Date.parse(t.properties.to),
         live: end == null,
+        breaks: trackBreaks(times, t.properties.breaks, t.properties.interval),
         gap: trackGap((t.properties.interval ?? 0) * 1000),
         coords,
-        times: t.properties.times.map((x) => Date.parse(x)),
+        times,
         sog: t.properties.sog ?? coords.map(() => null),
       });
     });

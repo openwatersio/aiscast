@@ -13,6 +13,7 @@ import {
   shipClass,
   splitTrack,
   TRACK_GAP_MS,
+  trackThenStream,
   viewBoxes,
 } from "./ais";
 import { publicApiBase, type CoverageTiles } from "./api";
@@ -78,7 +79,9 @@ export interface MapController {
     coords: Array<[number, number]>,
     times: number[],
     live: boolean,
-    /** How long a silence between positions is drawn as the vessel unheard. */
+    /** The positions that start a stretch after the vessel went unheard; by default, every silence longer than `gap`. */
+    breaks?: ReadonlySet<number>,
+    /** How long a silence after the track, into the stream's positions, is drawn as the vessel unheard. */
     gap?: number,
   ): void;
   /**
@@ -493,6 +496,7 @@ export function createMap(
   let historyTimes: number[] = [];
   let historyEnd = 0;
   let historyLive = true;
+  let historyBreaks: ReadonlySet<number> | undefined;
   let historyGap = TRACK_GAP_MS;
 
   /** A line per stretch the vessel was actually heard, so gaps are not drawn as passages. */
@@ -500,7 +504,7 @@ export function createMap(
     coords: Array<[number, number]>,
     times: number[],
   ): GeoJSON.FeatureCollection {
-    const segments = splitTrack(coords, times, historyGap);
+    const segments = splitTrack(coords, trackThenStream(history.length, historyBreaks, times, historyGap));
     return {
       type: "FeatureCollection",
       features: segments.map((seg) => ({
@@ -518,7 +522,7 @@ export function createMap(
   function scrubPoint() {
     return scrubAt === null
       ? undefined
-      : interpolateAt(history, historyTimes, scrubAt, historyGap);
+      : interpolateAt(history, historyTimes, scrubAt, trackThenStream(history.length, historyBreaks, historyTimes, historyGap));
   }
 
   function trackFeature(): GeoJSON.FeatureCollection {
@@ -1178,7 +1182,8 @@ export function createMap(
       ready = false;
       map.setStyle(BASEMAP[theme], { diff: false });
     },
-    setTrack(coords, times, live, gap = TRACK_GAP_MS) {
+    setTrack(coords, times, live, breaks, gap = TRACK_GAP_MS) {
+      historyBreaks = breaks;
       historyGap = gap;
       history = coords;
       historyRevision++;
@@ -1237,6 +1242,7 @@ export function createMap(
         historyTimes = [];
         historyEnd = 0;
         historyLive = true;
+        historyBreaks = undefined;
         historyGap = TRACK_GAP_MS;
         scrubAt = null;
       }

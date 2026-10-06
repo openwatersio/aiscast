@@ -49,7 +49,7 @@ export function VesselTrack({
   // range is somewhere the reader asked to go, so the map goes there.
   useEffect(() => {
     if (!live) return;
-    live.ctl.setTrack(track?.coords ?? [], track?.times ?? [], track?.live ?? true, track?.gap);
+    live.ctl.setTrack(track?.coords ?? [], track?.times ?? [], track?.live ?? true, track?.breaks, track?.gap);
     if (track && !track.live) live.ctl.fitTrack();
   }, [live, track]);
   useEffect(() => live?.ctl.scrubTo(scrubAt), [live, scrubAt]);
@@ -130,10 +130,10 @@ export function VesselTrack({
           {track && scrubAt != null ? (
             <>
               <span className="font-semibold text-fg tabular-nums">{momentOn(track, scrubAt)} UTC</span>
-              {speedAt(track, scrubAt, track.gap) != null && (
+              {speedAt(track, scrubAt, (i) => track.breaks.has(i), track.gap) != null && (
                 <>
                   {" · "}
-                  <span className="font-semibold text-fg tabular-nums">{speedAt(track, scrubAt, track.gap)!.toFixed(1)} kn</span>
+                  <span className="font-semibold text-fg tabular-nums">{speedAt(track, scrubAt, (i) => track.breaks.has(i), track.gap)!.toFixed(1)} kn</span>
                 </>
               )}
             </>
@@ -275,7 +275,7 @@ function TrackChart({
   let run: Array<[number, number]> = [];
   times.forEach((t, i) => {
     const v = sog[i];
-    if (v == null || (i > 0 && t - times[i - 1]! > track.gap)) {
+    if (v == null || track.breaks.has(i)) {
       if (run.length > 1) segments.push(run);
       run = [];
     }
@@ -323,7 +323,7 @@ function TrackChart({
     }
   };
 
-  const speed = scrubAt != null ? speedAt(track, scrubAt, track.gap) : undefined;
+  const speed = scrubAt != null ? speedAt(track, scrubAt, (i) => track.breaks.has(i), track.gap) : undefined;
   const readout = scrubAt != null ? `${momentOn(track, scrubAt)}${speed != null ? ` · ${speed.toFixed(1)} kn` : ""}` : undefined;
   const cursorX = scrubAt != null ? x(scrubAt) : undefined;
 
