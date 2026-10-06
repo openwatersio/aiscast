@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { PageTitle, Panel } from "../components/Panel";
-import { Activity, Antenna, Plus } from "lucide-react";
+import { Activity, Plus } from "lucide-react";
 import { ChipRow, MenuChip } from "../components/ui/Chip";
-import { iconButtonClass } from "../components/ui/IconButton";
 import { IconBadge, List, ListRow, StationTitle, StatusDot } from "../components/ui/List";
 import { Section } from "../components/ui/Section";
 import { isVolunteer, stationStatus, stationTitles } from "../lib/ais";
@@ -101,8 +100,13 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
       back="/vessels"
       title="Stations"
       actions={
-        <a href={CONTRIBUTE} aria-label={CONTRIBUTE_PROMPT} title={CONTRIBUTE_PROMPT} className={iconButtonClass(true)}>
+        <a
+          href={CONTRIBUTE}
+          title={CONTRIBUTE_PROMPT}
+          className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-subhead font-medium text-accent no-underline transition-colors hover:bg-surface-subtle hover:text-accent-hover"
+        >
           <Plus className="size-4" aria-hidden />
+          Add Station
         </a>
       }
     >
@@ -115,16 +119,7 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
       )}
       {stations && (
         <Section label="Volunteer receivers" aside={<LiveCount stations={volunteers} />} bare>
-          <List>
-            {/* Pinned: the reader looking at who receives is the one most likely to join them. */}
-            <ListRow
-              href={CONTRIBUTE}
-              leading={<IconBadge icon={Antenna} />}
-              title={CONTRIBUTE_PROMPT}
-              subtitle="Share it, and get the whole feed back"
-            />
-            {volunteers.map(row)}
-          </List>
+          <List>{volunteers.map(row)}</List>
         </Section>
       )}
       {/* Feeds are a handful of upstreams, not receivers anyone runs, so they live with the network's sources. */}
