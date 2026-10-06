@@ -76,13 +76,6 @@ func (m *memCH) history(_ context.Context, mmsi uint32, from, to time.Time, step
 	return out[max(len(out)-limit-1, 0):], nil
 }
 
-func (m *memCH) first(_ context.Context, mmsi uint32, from, to time.Time) (time.Time, bool, error) {
-	if out := m.view(mmsi, from, to); len(out) > 0 {
-		return out[0].ts, true, nil
-	}
-	return time.Time{}, false, nil
-}
-
 // trackPipeline is a test pipeline with a vessel record in a temporary directory and ClickHouse in memory.
 func trackPipeline(t testing.TB) (*Pipeline, *memCH) {
 	t.Helper()
@@ -154,17 +147,17 @@ func TestTrackEndpoint(t *testing.T) {
 	}
 	base := "/v1/vessels/257000001/track"
 
-	tr := getTrack(t, p, base)
+	tr := getTrack(t, p, base+"?interval=0")
 	if tr.Properties.Points != 5 || tr.Geometry == nil || tr.Geometry.Type != "LineString" || tr.Properties.Name != "NORDIC STAR" ||
 		len(tr.Properties.Times) != 5 || tr.Properties.Times[0] >= tr.Properties.Times[4] || tr.Attribution["kystverket"] == "" {
-		t.Errorf("default is the last 24 hours, oldest first: %+v", tr.Properties)
+		t.Errorf("the default range is the last 24 hours, oldest first: %+v", tr.Properties)
 	}
 	if tr.Properties.Sog[0] != nil {
 		t.Errorf("speed not available is null: %v", *tr.Properties.Sog[0])
 	}
 
 	from := time.Now().Add(-40 * time.Hour).UTC().Format(time.RFC3339)
-	if tr := getTrack(t, p, base+"?from="+from); tr.Properties.Points != 6 {
+	if tr := getTrack(t, p, base+"?interval=0&from="+from); tr.Properties.Points != 6 {
 		t.Errorf("a range inside the window: %d points", tr.Properties.Points)
 	}
 
@@ -179,7 +172,7 @@ func TestTrackEndpoint(t *testing.T) {
 		t.Errorf("limit kept older positions: %v", tr.Properties.Times)
 	}
 
-	w := get(t, p, base+"?format=gpx")
+	w := get(t, p, base+"?format=gpx&interval=0")
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/gpx+xml" || strings.Count(w.Body.String(), "<trkpt ") != 5 ||
 		!strings.Contains(w.Body.String(), "<name>NORDIC STAR (257000001)</name>") || !strings.Contains(w.Body.String(), "Norwegian Coastal Administration") {
 		t.Errorf("gpx: %d %s", w.Code, w.Body)
@@ -208,7 +201,7 @@ func TestTrackTierCap(t *testing.T) {
 	p, ch := trackPipeline(t)
 	now := time.Now()
 	var points []trackPoint
-	for i := range 300 {
+	for i := range 1200 {
 		v := newVessel()
 		v.Lat, v.Lon = 59.9, 10.7
 		points = append(points, newTrackPoint(257000001, now.Add(-time.Duration(i)*time.Minute), v, "kystverket"))
@@ -216,7 +209,7 @@ func TestTrackTierCap(t *testing.T) {
 	ch.insert(context.Background(), "", points)
 	allowAnon = false
 	t.Cleanup(func() { allowAnon = true })
-	if tr := getTrack(t, p, "/v1/vessels/257000001/track?limit=5000&interval=0"); tr.Properties.Points != 200 || !tr.Properties.Truncated {
+	if tr := getTrack(t, p, "/v1/vessels/257000001/track?limit=5000&interval=0"); tr.Properties.Points != 1000 || !tr.Properties.Truncated {
 		t.Errorf("anonymous cap: %d truncated %v", tr.Properties.Points, tr.Properties.Truncated)
 	}
 }
@@ -274,13 +267,14 @@ func TestMCPGetVesselTrack(t *testing.T) {
 	sail(t, p, 257000001, ages...)
 	cs := mcpClient(t, p)
 	var out mcpTrack
+	// Ten hours north at a steady speed is a straight line: simplified, its two ends.
 	if msg := mcpCall(t, cs, "get_vessel_track", map[string]any{"mmsi": 257000001}, &out); msg != "" ||
-		len(out.Positions) < 40 || len(out.Positions) > 51 || out.Attribution["kystverket"] == "" {
-		t.Errorf("default spreads the limit over the vessel's ten hours: %q %d", msg, len(out.Positions))
+		!out.Simplified || len(out.Positions) != 2 || out.ToleranceM == nil || out.Attribution["kystverket"] == "" {
+		t.Errorf("default is simplified by shape: %q %+v", msg, out)
 	}
 	first, _ := time.Parse(time.RFC3339, out.Positions[0].Seen)
 	if time.Since(first) < 9*time.Hour {
-		t.Errorf("spread should reach the oldest positions, first is %v", first)
+		t.Errorf("the track reaches the oldest positions, first is %v", first)
 	}
 	if msg := mcpCall(t, cs, "get_vessel_track", map[string]any{"mmsi": 257000001, "interval_minutes": 60}, &out); msg != "" || len(out.Positions) < 9 || len(out.Positions) > 11 {
 		t.Errorf("hourly: %q %d", msg, len(out.Positions))
@@ -370,47 +364,68 @@ func TestDespikeReanchorsAfterARun(t *testing.T) {
 	}
 }
 
-func TestDefaultIntervalCoversTheRange(t *testing.T) {
-	for _, c := range []struct {
-		span  time.Duration
-		limit int
-		want  time.Duration
-	}{
-		{time.Hour, 1000, 5 * time.Second},           // 3.6 s a position, rounded up
-		{20 * time.Minute, 1000, 0},                  // fits at full rate
-		{24 * time.Hour, 1000, 2 * time.Minute},      // 86 s
-		{24 * time.Hour, 200, 10 * time.Minute},      // anonymous: 432 s
-		{7 * 24 * time.Hour, 1000, 15 * time.Minute}, // 605 s
-		{7 * 24 * time.Hour, 1, 24 * time.Hour},      // the longest step
-	} {
-		if got := defaultInterval(c.span, c.limit); got != c.want {
-			t.Errorf("%v over %d: %v, want %v", c.span, c.limit, got, c.want)
-		}
-	}
-
-	// A vessel reporting every 10 seconds for six hours: without an interval the track spans all six hours
-	// instead of the last half hour, and says what spacing it used.
+func TestTrackDefaultIsSimplifiedByShape(t *testing.T) {
+	// A vessel tied up for six hours, reporting every 10 seconds, then an hour out and back with a turn. Without
+	// an interval the stay collapses to its ends and the trip keeps its turn, inside a limit of 100.
 	p, ch := trackPipeline(t)
-	now := time.Now()
+	now := time.Now().Truncate(time.Second)
+	start := now.Add(-7 * time.Hour)
 	var points []trackPoint
 	v := newVessel()
-	v.Lat, v.Lon = 59.9, 10.7
 	for i := range 6 * 360 {
-		points = append(points, newTrackPoint(257000001, now.Add(-time.Duration(i)*10*time.Second), v, "kystverket"))
+		v.Lat, v.Lon = 59.9, 10.7
+		points = append(points, newTrackPoint(257000001, start.Add(time.Duration(i)*10*time.Second), v, "kystverket"))
+	}
+	for i := range 360 { // 30 minutes east, then 30 minutes north, at about 6 kn
+		v.Lat, v.Lon = 59.9+float64(max(i-180, 0))*0.00027, 10.7+float64(min(i, 180))*0.00054
+		points = append(points, newTrackPoint(257000001, start.Add(6*time.Hour+time.Duration(i)*10*time.Second), v, "kystverket"))
 	}
 	ch.insert(context.Background(), "", points)
 	var raw struct {
 		Properties struct {
-			Interval  int64
-			Points    int
-			Truncated bool
-			Times     []string
+			Interval   int64
+			Points     int
+			Simplified bool
+			ToleranceM *float64 `json:"tolerance_m"`
+			Breaks     *[]int
+			Truncated  bool
+			Times      []string
 		}
 	}
-	w := get(t, p, "/v1/vessels/257000001/track?limit=100")
-	json.Unmarshal(w.Body.Bytes(), &raw)
-	first, _ := time.Parse(time.RFC3339, raw.Properties.Times[0])
-	if raw.Properties.Interval != 15*60 || raw.Properties.Truncated || now.Sub(first) < 5*time.Hour {
-		t.Errorf("interval %d, %d points, truncated %v, first %v", raw.Properties.Interval, raw.Properties.Points, raw.Properties.Truncated, first)
+	w := get(t, p, "/v1/vessels/257000001/track?limit=100&from="+start.Add(-time.Minute).UTC().Format(time.RFC3339))
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	pr := raw.Properties
+	if !pr.Simplified || pr.Truncated || pr.Interval != 0 || pr.ToleranceM == nil || *pr.ToleranceM != shapeTolerance || pr.Breaks == nil || len(*pr.Breaks) != 0 {
+		t.Fatalf("simplified within the limit at the floor tolerance, breaks present and empty: %s", w.Body)
+	}
+	if pr.Points > 10 || pr.Points < 3 {
+		t.Errorf("the stay collapses and the trip keeps its turn: %d points", pr.Points)
+	}
+	if first, _ := time.Parse(time.RFC3339, pr.Times[0]); !first.Equal(start) {
+		t.Errorf("the track starts where the stay did: %v", pr.Times[0])
+	}
+
+	// An explicit interval keeps even spacing and says nothing of shape.
+	w = get(t, p, "/v1/vessels/257000001/track?limit=100&interval=1h&from="+start.Add(-time.Minute).UTC().Format(time.RFC3339))
+	if strings.Contains(w.Body.String(), `"breaks"`) || strings.Contains(w.Body.String(), `"simplified":true`) {
+		t.Errorf("an interval answer is not simplified: %s", w.Body)
+	}
+}
+
+func TestTrackGPXHasASegmentPerStretch(t *testing.T) {
+	p, ch := trackPipeline(t)
+	now := time.Now().Truncate(time.Second)
+	v := newVessel()
+	var points []trackPoint
+	for i, age := range []time.Duration{5 * time.Hour, 4*time.Hour + 50*time.Minute, 4*time.Hour + 40*time.Minute, time.Hour, 50 * time.Minute, 40 * time.Minute} {
+		v.Lat, v.Lon = 59.9+float64(i%2)*0.01, 10.7+float64(i)*0.01 // a zigzag, so simplification keeps every position
+		points = append(points, newTrackPoint(257000001, now.Add(-age), v, "kystverket"))
+	}
+	ch.insert(context.Background(), "", points)
+	w := get(t, p, "/v1/vessels/257000001/track?format=gpx")
+	if n := strings.Count(w.Body.String(), "<trkseg>"); n != 2 || strings.Count(w.Body.String(), "<trkpt ") != 6 {
+		t.Errorf("two stretches either side of the 3 h 40 min silence: %d segments\n%s", n, w.Body)
 	}
 }

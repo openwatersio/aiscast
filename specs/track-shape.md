@@ -26,14 +26,14 @@ ClickHouse held 571 accepted positions for those 24 hours, 101 of them over 1 kn
 
 When a request names no `interval`, the server:
 
-1. Reads every position in the range. A range that starts in the last 48 hours reads the `positions` view, as now. Further back it reads `positions_1m` rows as they are, without grouping by a step. A range longer than 31 days groups `positions_1m` in ClickHouse to keep at most about 100,000 rows (a year is grouped to 6 minutes), the first position in each group, as the grouped reads do now.
+1. Reads every position in the range, at most 50,000 rows. A range that starts in the last 48 hours reads the `positions` view, grouped to whole seconds when more would match (a vessel reporting every 2 seconds for 48 hours is grouped to 4 seconds). Further back it reads `positions_1m` rows as they are, grouped to whole minutes past the cap (a year to 11 minutes), the first position in each group, as the grouped reads do now.
 2. Despikes the full-resolution positions with `despike`. Spikes are judged against real neighbors, not thinned ones.
 3. Splits the positions into segments wherever the vessel went unheard (see [Breaks](#breaks)).
-4. Simplifies each segment with Douglas–Peucker on synchronized Euclidean distance: a position's distance from where the line between its neighbors puts the vessel at that position's time. Distance alone would let a stop in the middle of a straight leg vanish; the time-synchronized distance keeps it, so the speed chart keeps the stop. The tolerance starts at 15 m, about GPS noise, so a track that fits the limit keeps every point that matters and draws the same path at 24 hours as at 48. Only when the kept positions exceed the limit does the tolerance grow, by binary search, until they fit. A segment always keeps its first and last position.
+4. Simplifies each segment on synchronized Euclidean distance: a position's distance from where the line between its neighbors puts the vessel at that position's time. Distance alone would let a stop in the middle of a straight leg vanish; the time-synchronized distance keeps it, so the speed chart keeps the stop. Positions are dropped from the bottom, the one nearest its neighbors' line first, with a heap that moves a position in place when a neighbor goes, so any track takes O(n log n); splitting from the top, as Douglas–Peucker does, can take quadratic time. The order of dropping ranks every position, so the tolerance starts at 15 m, about GPS noise, and a track that fits the limit keeps every point that matters and draws the same path at 24 hours as at 48. Only when the kept positions exceed the limit does the tolerance rise to the rank that fits it. A segment always keeps its first and last position. 50,000 positions take about 36 ms.
 
 A vessel tied up for 23 hours keeps its arrival and its departure, and the hour underway keeps its corners. A ferry keeps each crossing's turns.
 
-If a range has more segments than half the limit, the endpoints alone exceed it. The answer then keeps the newest `limit` positions and says `truncated`, as it does now.
+If a range has more segment ends than the limit holds, as for a vessel heard in short bursts with silences between, the answer keeps `limit` of those ends spread evenly over the range, and says `truncated`.
 
 An explicit `interval` keeps the current behavior: the first position per step, the newest `limit` when more match. `interval=0` keeps every position. Time series and GPX consumers that want even spacing ask for it.
 
@@ -53,11 +53,11 @@ GeoJSON properties gain:
 
 `interval` is the resolution the positions were read at: 0 for the `positions` view, 60 for `positions_1m`, or the grouping step past 31 days. `truncated` keeps its meaning. [server/openapi.json](../server/openapi.json) documents the new fields. The geometry stays a `LineString` (or `Point`, or `null`), so existing clients keep working; they only lose the breaks they derived.
 
-The MCP `get_vessel_track` tool gets the same default when `interval_minutes` is not given. Its schema and description change, so `mcpVersion` and `server.json` move together.
+The MCP `get_vessel_track` tool gets the same default when `interval_minutes` is not given, which retires the query for a vessel's first position that its default step needed. Its schema and description change, so `mcpVersion` and `server.json` move together.
 
 ### Limits
 
-Anonymous calls get 1,000 positions per track, as personal tokens do. Feeder and above stay at 5,000. The rate limit is unchanged. The cost of a track is the rows read, which does not depend on the limit, and the 31-day grouping bounds them. The MCP tool's own limits (50 by default, 200 at most) are unchanged.
+Anonymous calls get 1,000 positions per track, as personal tokens do. Feeder and above stay at 5,000. The rate limit is unchanged. The cost of a track is the rows read and simplified, which does not depend on the limit, and the 50,000-row cap bounds both. The MCP tool's own limits (50 by default, 200 at most) are unchanged.
 
 `trackStep`, which rounds an anonymous or personal step past 48 hours to whole minutes, still applies to an explicit `interval`.
 
