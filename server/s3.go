@@ -220,6 +220,7 @@ func (c *s3Client) get(key, path string) error {
 	}
 	if _, err := io.Copy(f, res.Body); err != nil {
 		f.Close()
+		os.Remove(path)
 		return err
 	}
 	return f.Close()

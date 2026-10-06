@@ -78,8 +78,14 @@ func replayToClickHouse(url, archiveDir string, fetch bool, from, to time.Time, 
 // fetchRawDay copies the raw hours replaying day reads, the day's and its lead-in's, from the bucket into dir.
 func fetchRawDay(s3 *s3Client, keys []s3Object, day time.Time, warmup time.Duration, dir string) error {
 	start := day.Add(-warmup).Truncate(time.Hour)
+	if err := os.RemoveAll(dir); err != nil { // what a replay that stopped partway left
+		return err
+	}
 	var n, size int64
 	for _, k := range keys {
+		if strings.Contains("/"+k.Key+"/", "/../") || strings.HasPrefix(k.Key, "/") {
+			return fmt.Errorf("raw key %q would leave %s", k.Key, dir)
+		}
 		if strings.HasPrefix(k.Key, "normalized/") || strings.HasPrefix(k.Key, "access/") {
 			continue
 		}
