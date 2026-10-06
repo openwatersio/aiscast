@@ -17,6 +17,11 @@ const trackWindow = 48 * time.Hour
 // stalled, and dropping the oldest copies keeps memory flat; the drops are counted.
 const maxPending = 300_000
 
+// maxOwnPending bounds the own-ship sightings waiting for ClickHouse. A station has one own ship, or a few, so
+// real traffic is a few keys an hour; the bound is for a station that claims thousands of MMSIs as its own, which
+// anyone running one can, and for an outage, when unsent sightings stay in memory.
+const maxOwnPending = 10_000
+
 // trackPoint is one accepted position report. Positions and motion are held in AIS's own integer
 // encodings: 1/600000 degree, 0.1 knot (1023 not available), 0.1 degree (3600 not available).
 type trackPoint struct {
@@ -340,7 +345,15 @@ func (p *Pipeline) noteOwn(ev *Event) {
 	k := ownKey{ev.Station, ev.Time.Unix() / 3600, ev.MMSI}
 	p.chMu.Lock()
 	defer p.chMu.Unlock()
-	if p.chOwn != nil && ev.Time.After(p.chOwn[k]) {
+	if p.chOwn == nil {
+		return
+	}
+	last, ok := p.chOwn[k]
+	if !ok && len(p.chOwn) >= maxOwnPending {
+		p.ch.ownDropped.Add(1)
+		return
+	}
+	if ev.Time.After(last) {
 		p.chOwn[k] = ev.Time
 	}
 }

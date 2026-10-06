@@ -243,6 +243,8 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_clickhouse_write_seconds_total %.3f\n", float64(c.writeNanos.Load())/1e9)
 		metricHead(w, "aiscast_clickhouse_points_dropped_total", "counter", "positions dropped because the ClickHouse writer fell behind by more than its queue holds, or in a batch ClickHouse refused for 10 minutes")
 		fmt.Fprintf(w, "aiscast_clickhouse_points_dropped_total %d\n", c.dropped.Load())
+		metricHead(w, "aiscast_clickhouse_own_dropped_total", "counter", "own-ship sightings dropped because more than 10,000 were waiting for ClickHouse")
+		fmt.Fprintf(w, "aiscast_clickhouse_own_dropped_total %d\n", c.ownDropped.Load())
 		metricHead(w, "aiscast_clickhouse_rebuilt_copies_total", "counter", "stale copies from rebuilt sources: matched to a transmission the vessel sent in the last five minutes, or kept as a late report of its own")
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"true\"} %d\n", c.rebuiltMatched.Load())
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"false\"} %d\n", c.rebuiltLate.Load())

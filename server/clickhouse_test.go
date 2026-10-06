@@ -1599,6 +1599,34 @@ func TestClickHouseGathersOwnShipSightings(t *testing.T) {
 	}
 }
 
+// A station claiming more MMSIs as its own than the bound allows, or an outage, costs sightings, counted, not
+// memory; a sighting already waiting still moves to its latest time.
+func TestClickHouseBoundsOwnShipSightings(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{fail: 1 << 30}})
+	now := time.Now()
+	for m := range uint32(maxOwnPending + 5) {
+		p.noteOwn(&Event{Station: "udp:spam", MMSI: 200000000 + m, Time: now, RecvTime: now})
+	}
+	p.noteOwn(&Event{Station: "udp:spam", MMSI: 200000000, Time: now.Add(time.Second), RecvTime: now})
+	if n := len(p.chOwn); n != maxOwnPending {
+		t.Errorf("%d sightings gathered, want the bound %d", n, maxOwnPending)
+	}
+	p.flushClickHouse() // fails, and puts them back within the bound
+	if n := len(p.chOwn); n != maxOwnPending {
+		t.Errorf("%d sightings waiting, want the bound %d", n, maxOwnPending)
+	}
+	if got := p.chOwn[ownKey{"udp:spam", now.Unix() / 3600, 200000000}]; !got.Equal(now.Add(time.Second)) {
+		t.Errorf("a waiting sighting kept its latest time: %v", got)
+	}
+	if d := p.ch.ownDropped.Load(); d != 5 {
+		t.Errorf("%d dropped, want 5", d)
+	}
+	if body := get(t, p, "/metrics").Body.String(); !strings.Contains(body, "aiscast_clickhouse_own_dropped_total 5\n") {
+		t.Error("dropped sightings reach /metrics")
+	}
+}
+
 // The stale flag reaches receptions, and station_own keeps the latest sighting per station, hour, and vessel
 // however many times it is written.
 func TestClickHouseWritesStaleAndStationOwn(t *testing.T) {

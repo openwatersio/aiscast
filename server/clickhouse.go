@@ -261,7 +261,8 @@ type chStore struct {
 	// Stale rebuilt copies the fold matched to a recent transmission, and those it kept as late reports of
 	// their own. A late share far above what the sources' delays explain means copies are being served twice.
 	rebuiltMatched, rebuiltLate atomic.Int64
-	failing                     atomic.Bool // the last batch failed; cleared when one is written
+	ownDropped                  atomic.Int64 // own-ship sightings dropped past maxOwnPending
+	failing                     atomic.Bool  // the last batch failed; cleared when one is written
 }
 
 // chConn writes positions through a native-protocol connection.
@@ -695,7 +696,12 @@ func (p *Pipeline) flushOwn(c *chStore) {
 	}
 	p.chMu.Lock()
 	for k, t := range own {
-		if t.After(p.chOwn[k]) {
+		last, ok := p.chOwn[k]
+		if !ok && len(p.chOwn) >= maxOwnPending {
+			c.ownDropped.Add(1)
+			continue
+		}
+		if t.After(last) {
 			p.chOwn[k] = t
 		}
 	}
