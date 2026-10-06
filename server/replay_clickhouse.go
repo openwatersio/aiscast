@@ -170,6 +170,9 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if p.anchorSeeds, err = c.anchorsBefore(ctx, day.Add(-warmup)); err != nil {
 		return fmt.Errorf("anchors: %w", err)
 	}
+	if err := c.seedVessels(ctx, p, day.Add(-warmup)); err != nil {
+		return fmt.Errorf("vessels: %w", err)
+	}
 	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}}
 	p.attachClickHouse(staging)
 	var flushNow func() error
@@ -279,6 +282,48 @@ func (c *chConn) createReplayStaging(ctx context.Context) (string, error) {
 	name := fmt.Sprintf("%s%d", replayStaging, time.Now().UnixNano())
 	return name, c.exec(ctx, "CREATE TABLE {db}."+name+" AS {db}.receptions ENGINE = MergeTree PARTITION BY toYYYYMMDD(ts) ORDER BY (mmsi, ts)"+
 		" SETTINGS non_replicated_deduplication_window = 1000")
+}
+
+// seedVessels fills the cache, at the start of a replay's lead-in, with what live held then for each vessel it
+// still kept: its last plausible position, when a source that is not low-trust last reported it, and the anchor in
+// p.anchorSeeds. A lead-in
+// that started from nothing would judge plausibility and corroboration against whichever report it met first, and
+// where two vessels share an MMSI, or a feed repeats a bad position, that can be the other one: live, holding the
+// vessel since long before, flagged the rest as implausible and replay would flag the opposite. positions_1m holds
+// only usable accepted reports, a row a minute while moving and every 30 minutes while still, so each vessel heard
+// within vesselTTL has its last there.
+func (c *chConn) seedVessels(ctx context.Context, p *Pipeline, at time.Time) error {
+	rows, err := c.conn.Query(ctx, "SELECT mmsi, max(ts), argMax(lat6, ts), argMax(lon6, ts), argMax(sog10, ts), argMax(cog10, ts), argMax(heading, ts),"+
+		" maxIf(ts, source NOT IN ('udp', 'mmsi'))"+
+		" FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND ts < ? GROUP BY mmsi HAVING max(ts) >= ?",
+		at.Add(-corroborationWindow).Truncate(30*time.Minute), at, at, at.Add(-vesselTTL))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	p.vmu.Lock()
+	defer p.vmu.Unlock()
+	for rows.Next() {
+		var mmsi uint32
+		var last time.Time
+		var lat6, lon6 int32
+		var sog10, cog10, heading uint16
+		var trusted time.Time
+		if err := rows.Scan(&mmsi, &last, &lat6, &lon6, &sog10, &cog10, &heading, &trusted); err != nil {
+			return err
+		}
+		v := newVessel()
+		v.Lat, v.Lon, v.HasPos, v.PosAt, v.Seen = float64(lat6)/600000, float64(lon6)/600000, true, last, last
+		v.Sog, v.Cog, v.Heading = float64(sog10)/10, float64(cog10)/10, heading
+		if trusted.Year() > 1970 {
+			v.TrustedAt = trusted
+		}
+		if a := p.anchorSeeds[mmsi]; a != nil {
+			v.moved = *a // where it was last moving, as live's anchor; its last position may be a still one
+		}
+		p.putVesselLocked(mmsi, v)
+	}
+	return rows.Err()
 }
 
 // replayCount is one source's copies on a day, and how many of them were accepted and judged implausible; the
