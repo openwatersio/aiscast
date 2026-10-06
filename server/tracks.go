@@ -1,7 +1,8 @@
 package main
 
 // Track positions: every copy of every position report goes to ClickHouse (clickhouse.go), which answers every
-// track, up to a year per request. Nothing attaches ClickHouse in replay, so replay never writes there.
+// track, up to a year per request. A replay into a normalized tree attaches none and writes nothing there; replay
+// -clickhouse writes into a staging table (replay_clickhouse.go).
 
 import (
 	"math"
