@@ -61,6 +61,12 @@ systemctl reload ssh
 mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/alloy/textfile
 chown -R aiscast:aiscast /var/lib/aiscast
 
+# The packager and the normalized stream are retired. Boxes converged before may still carry the packager's
+# units, script, and staging directory, and the normalized stream's staged hours.
+systemctl disable --now packager.timer packager.service 2>/dev/null || true
+rm -f /etc/systemd/system/packager.timer /etc/systemd/system/packager.service /opt/aiscast/packager.py
+rm -rf /var/lib/aiscast/packager /var/lib/aiscast/normalized
+
 # Tracks read from ClickHouse. Boxes converged before that may still carry the SQLite track store.
 rm -f /var/lib/aiscast/tracks.db /var/lib/aiscast/tracks.db-*
 

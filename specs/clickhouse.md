@@ -29,8 +29,7 @@ The rule: state the server needs to start or to answer live requests stays in SQ
 | Receptions, the `positions` view, `positions_1m` | ClickHouse, the source of truth |
 | Weather | ClickHouse, in a later step |
 | Station series, coverage cells | ClickHouse views, in later steps |
-| The normalized archive, every accepted event and copy | R2, a log of live ingest |
-| The public dataset | The lake on R2, written by the packager |
+| Every reception as received | R2, the raw archive, which `aiscast replay -clickhouse` rebuilds days of the record from |
 
 Backups, the R2 cold tier, and recovery from losing the box are in [historical-sources.md](historical-sources.md#durability).
 
@@ -138,7 +137,7 @@ Read times include the busiest vessel of a day, about 1,440 rows a day in a roll
 2. **Station series.** A view counts events, first copies, and distinct vessels per station per hour from receptions, replacing the in-memory 7-day rings for history.
 3. **Coverage cells.** A view per H3 cell per day of sources heard and distinct vessels, using ClickHouse's H3 functions, feeds the coverage tiles.
 4. **Area playback.** A projection of `positions` ordered by cell and time answers `/v1/history`.
-5. **The lake's role.** The packager keeps writing positions, receptions, vessels, and weather as the public dataset. `ais.tracks` is dropped, since nothing reads it. The vessel record keeps importing `ais.vessels`.
+5. **No lake.** ClickHouse is the record, replay rebuilds it from the raw archive, and the vessel record imports its history from ClickHouse.
 
 ## Decisions before starting
 
