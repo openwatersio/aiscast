@@ -158,7 +158,7 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if err != nil || len(complete) != 1 || complete[0] {
 		t.Errorf("the archive's day is marked to load again: %v %v", complete, err)
 	}
-	if staging, _ := chColumn[string](ctx, c.conn, "SELECT name FROM system.tables WHERE database = ? AND name = ?", db, replayStaging); len(staging) != 0 {
+	if staging, _ := chColumn[string](ctx, c.conn, "SELECT name FROM system.tables WHERE database = ? AND startsWith(name, ?)", db, replayStaging); len(staging) != 0 {
 		t.Error("the staging table is left behind")
 	}
 }
@@ -236,19 +236,25 @@ func TestReplayStagingTakesABatchOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.conn.Exec(context.Background(), "DROP DATABASE "+db); c.conn.Close() })
-	if err := c.createReplayStaging(ctx); err != nil {
+	stage, err := c.createReplayStaging(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	// A second run's staging table is its own, so neither drops nor fills the other's.
+	other, err := c.createReplayStaging(ctx)
+	if err != nil || other == stage {
+		t.Fatalf("two runs share %q: %v", stage, err)
 	}
 	ts := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
 	batch := []trackPoint{{mmsi: 257000001, ts: ts, lat6: 1, lon6: 1, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15,
 		source: "kystverket", station: "kystverket", txAt: ts, txDisc: 1, recv: ts}}
-	staging := &chConn{conn: c.conn, db: db, table: replayStaging}
+	staging := &chConn{conn: c.conn, db: db, table: stage}
 	for range 2 {
 		if err := staging.insert(ctx, "token", batch); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n, err := chColumn[uint64](ctx, c.conn, "SELECT count() FROM "+db+"."+replayStaging); err != nil || n[0] != 1 {
+	if n, err := chColumn[uint64](ctx, c.conn, "SELECT count() FROM "+db+"."+stage); err != nil || n[0] != 1 {
 		t.Errorf("a batch sent twice under one token: %v %v", n, err)
 	}
 }
@@ -298,5 +304,28 @@ func TestReplayKeepsUpWithSnapshots(t *testing.T) {
 	}
 	if n, err := chColumn[uint64](ctx, c.conn, "SELECT count() FROM "+db+".receptions"); err != nil || n[0] < vessels*snapshots*9/10 {
 		t.Errorf("copies written: %v %v", n, err)
+	}
+}
+
+// A database still holding first-layout rows, whose arrival is in recv_ts, is not replayed: the day's window reads
+// recv_delay and would pick the wrong copies.
+func TestReplayWaitsForTheConversion(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	c, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.conn.Exec(context.Background(), "DROP DATABASE "+db); c.conn.Close() })
+	if err := c.exec(ctx, "ALTER TABLE {db}.receptions ADD COLUMN tx UInt64 DEFAULT 0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.replayDay(ctx, t.TempDir(), time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), time.Hour, true, false); err == nil ||
+		!strings.Contains(err.Error(), "first layout") {
+		t.Errorf("replayed over first-layout rows: %v", err)
 	}
 }

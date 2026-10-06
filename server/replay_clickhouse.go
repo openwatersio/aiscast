@@ -21,8 +21,9 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
-// replayStaging is the table a replayed day is written to before it replaces the stored one.
-const replayStaging = "receptions_replay"
+// replayStaging begins the name of the table a replayed day is written to before it replaces the stored one;
+// each run has its own, so a replay never touches another's.
+const replayStaging = "receptions_replay_"
 
 // replayShare is how much of a stored day's copies a replay must have to replace it without -force: less means
 // raw hours are missing, or a change drops far more than it should.
@@ -128,10 +129,18 @@ func replayWindow(day time.Time, archives []string) (string, []any) {
 func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmup time.Duration, dryRun, force bool) error {
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(replaySettings))
 	started := time.Now()
-	if err := c.createReplayStaging(ctx); err != nil {
+	// Rows in the first layout keep their arrival in recv_ts, which the day's window does not read.
+	if legacy, err := c.legacy(ctx); err != nil || legacy {
+		if legacy {
+			err = fmt.Errorf("receptions still has rows in the first layout; run aiscast convert-receptions and clickhouse-cleanup first")
+		}
 		return err
 	}
-	defer c.exec(context.Background(), "DROP TABLE IF EXISTS {db}."+replayStaging)
+	stage, err := c.createReplayStaging(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.exec(context.Background(), "DROP TABLE IF EXISTS {db}."+stage)
 
 	readers, err := collectReaders(dir, day.Add(-warmup), day.Add(24*time.Hour))
 	if err != nil {
@@ -145,7 +154,7 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if p.anchorSeeds, err = c.anchorsBefore(ctx, day.Add(-warmup)); err != nil {
 		return fmt.Errorf("anchors: %w", err)
 	}
-	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: replayStaging}}
+	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}}
 	p.attachClickHouse(staging)
 	var flushNow func() error
 	flush := func() error {
@@ -193,7 +202,7 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if err != nil {
 		return err
 	}
-	replayed, err := c.replayCounts(ctx, replayStaging, where, args)
+	replayed, err := c.replayCounts(ctx, stage, where, args)
 	if err != nil {
 		return err
 	}
@@ -215,7 +224,7 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	// window would otherwise drop although the delete before has removed their rows.
 	insert := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"insert_deduplication_token": fmt.Sprintf("replay-%s-%d", day.Format("2006-01-02"), time.Now().UnixNano())}))
-	if err := c.conn.Exec(insert, "INSERT INTO "+c.db+".receptions SELECT * FROM "+c.db+"."+replayStaging+" WHERE "+where, args...); err != nil {
+	if err := c.conn.Exec(insert, "INSERT INTO "+c.db+".receptions SELECT * FROM "+c.db+"."+stage+" WHERE "+where, args...); err != nil {
 		return fmt.Errorf("insert the replayed day, after deleting the stored one; replay it again: %w", err)
 	}
 	// Copies that arrived on day carry stamps on the days beside it too.
@@ -247,13 +256,13 @@ func (c *chConn) rebuildCoverage(ctx context.Context, day time.Time) error {
 		day, day.AddDate(0, 0, 1))
 }
 
-// createReplayStaging makes an empty staging table. An explicit engine keeps receptions' columns but not its TTL
+// createReplayStaging makes an empty staging table of the run's own and returns its name. An explicit engine keeps receptions' columns but not its TTL
 // or storage policy, and no view reads it. Its deduplication window, like receptions', makes a batch sent again
 // after a lost acknowledgement land once.
-func (c *chConn) createReplayStaging(ctx context.Context) error {
-	return c.exec(ctx, "DROP TABLE IF EXISTS {db}."+replayStaging,
-		"CREATE TABLE {db}."+replayStaging+" AS {db}.receptions ENGINE = MergeTree PARTITION BY toYYYYMMDD(ts) ORDER BY (mmsi, ts)"+
-			" SETTINGS non_replicated_deduplication_window = 1000")
+func (c *chConn) createReplayStaging(ctx context.Context) (string, error) {
+	name := fmt.Sprintf("%s%d", replayStaging, time.Now().UnixNano())
+	return name, c.exec(ctx, "CREATE TABLE {db}."+name+" AS {db}.receptions ENGINE = MergeTree PARTITION BY toYYYYMMDD(ts) ORDER BY (mmsi, ts)"+
+		" SETTINGS non_replicated_deduplication_window = 1000")
 }
 
 // replayCount is one source's copies on a day, and how many of them were accepted and judged implausible; the
