@@ -119,12 +119,13 @@ func rawHourOf(key string) (time.Time, bool) {
 }
 
 // replayWindow selects the copies of the network's own sources that arrived on day. A copy stamped more than two
-// days from its arrival, a reset clock's, falls outside it on both sides, so it is neither replaced nor added;
-// bounding the stamp keeps the delete to the partitions beside the day.
+// days from its arrival, a reset clock's, falls outside it on both sides, so it is neither replaced nor added. The
+// bound on the stamp alone keeps the delete to the partitions beside the day.
 func replayWindow(day time.Time, archives []string) (string, []any) {
+	const twoDays = 2 * 24 * 60 * 60 * 1000
 	return "ts >= ? AND ts < ? AND fromUnixTimestamp64Milli(toUnixTimestamp64Milli(ts) + recv_delay, 'UTC') >= ? AND " +
-			"fromUnixTimestamp64Milli(toUnixTimestamp64Milli(ts) + recv_delay, 'UTC') < ? AND NOT has(?, source)",
-		[]any{day.AddDate(0, 0, -2), day.AddDate(0, 0, 3), day, day.AddDate(0, 0, 1), archives}
+			"fromUnixTimestamp64Milli(toUnixTimestamp64Milli(ts) + recv_delay, 'UTC') < ? AND abs(recv_delay) <= ? AND NOT has(?, source)",
+		[]any{day.AddDate(0, 0, -2), day.AddDate(0, 0, 3), day, day.AddDate(0, 0, 1), twoDays, archives}
 }
 
 // replayDay replays one day from the raw hours under dir and, unless dryRun, swaps it in.

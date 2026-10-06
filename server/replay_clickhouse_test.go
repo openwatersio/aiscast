@@ -73,6 +73,10 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		stored = append(stored, at(day.Add(10*time.Hour+time.Duration(i)*time.Minute), 58.0, "kystverket"))
 	}
 	stored = append(stored, at(day.Add(-time.Hour), 57.0, "kystverket"))
+	// A copy that arrived on the day 49 hours after its stamp, a reset clock's: past two days, so it stays.
+	late := at(day.Add(-26*time.Hour), 55.0, "kystverket")
+	late.recv = day.Add(23 * time.Hour)
+	stored = append(stored, late)
 	archive := at(day.Add(12*time.Hour), 56.0, "marinecadastre")
 	archive.recv = time.Time{}
 	if err := c.insert(ctx, "stored", append(stored, archive)); err != nil {
@@ -134,8 +138,9 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if len(network) != 6 || network[0].lat6 != int32(59.90*600000) || network[5].lat6 != int32(59.95*600000) {
 		t.Errorf("the day's copies are the replayed six: %+v", network)
 	}
-	if len(previous) != 1 || previous[0].lat6 != int32(57.0*600000) || len(archived) != 1 || archived[0].lat6 != int32(56.0*600000) {
-		t.Errorf("the day before and the archive's copy are untouched: %+v %+v", previous, archived)
+	if len(previous) != 2 || previous[0].lat6 != int32(55.0*600000) || previous[1].lat6 != int32(57.0*600000) ||
+		len(archived) != 1 || archived[0].lat6 != int32(56.0*600000) {
+		t.Errorf("the day before, the copy two days late, and the archive's copy are untouched: %+v %+v", previous, archived)
 	}
 	lats, err := chColumn[int32](ctx, c.conn, "SELECT lat6 FROM "+db+".positions_1m FINAL WHERE slot >= ? AND slot < ? AND source = 'kystverket' ORDER BY slot", day, day.AddDate(0, 0, 1))
 	if err != nil || len(lats) != 6 || lats[0] != int32(59.90*600000) {
