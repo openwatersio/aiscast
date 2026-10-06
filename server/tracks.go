@@ -22,6 +22,11 @@ const maxPending = 300_000
 // anyone running one can, and for an outage, when unsent sightings stay in memory.
 const maxOwnPending = 10_000
 
+// maxOwnPerStation is how many vessels one station may claim as its own in an hour. A boat has one, and a few
+// cover a mothership and its tender or a receiver moved between boats; past it a station is not reporting a
+// ship it is on, and taking more would let it crowd every other station's sightings out of maxOwnPending.
+const maxOwnPerStation = 4
+
 // trackPoint is one accepted position report. Positions and motion are held in AIS's own integer
 // encodings: 1/600000 degree, 0.1 knot (1023 not available), 0.1 degree (3600 not available).
 type trackPoint struct {
@@ -348,11 +353,18 @@ func (p *Pipeline) noteOwn(ev *Event) {
 	if p.chOwn == nil {
 		return
 	}
+	sh := ownKey{station: k.station, hour: k.hour}
+	claimed := p.chOwnClaimed[sh]
 	last, ok := p.chOwn[k]
-	if !ok && len(p.chOwn) >= maxOwnPending {
+	if !claimed[k.mmsi] && len(claimed) >= maxOwnPerStation || !ok && len(p.chOwn) >= maxOwnPending {
 		p.ch.ownDropped.Add(1)
 		return
 	}
+	if claimed == nil {
+		claimed = map[uint32]bool{}
+		p.chOwnClaimed[sh] = claimed
+	}
+	claimed[k.mmsi] = true
 	if ev.Time.After(last) {
 		p.chOwn[k] = ev.Time
 	}

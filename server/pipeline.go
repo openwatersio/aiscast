@@ -109,18 +109,19 @@ type Pipeline struct {
 	imports   importStats                    // the daily merge of ClickHouse's vessel history into the record (import.go)
 	// vesselHistory reads the record import's pages (import.go); nil without ClickHouse or a record
 	vesselHistory func(ctx context.Context, after uint32, limit int) ([]historyRow, error)
-	wikidata      wikidataStats        // the weekly sync of vessel particulars from Wikidata (wikidata.go)
-	uscg          uscgStats            // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
-	fiskeridir    fdirStats            // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
-	fcc           fccStats             // the weekly sync of FCC ship station licenses (fcc.go)
-	tc            tcStats              // the weekly sync of Transport Canada's vessel register (tc.go)
-	ised          isedStats            // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
-	ch            *chStore             // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
-	chMu          sync.Mutex           // guards chQueue; taken after vmu when both are held
-	chQueue       []trackPoint         // copies received since the last flush to ClickHouse; nil until it connects
-	chOwn         map[ownKey]time.Time // own-ship sightings since the last flush, the latest per key; nil until it connects
-	chOn          atomic.Bool          // ClickHouse is attached, so copies are worth building
-	history       *historyStats        // historical archives loaded into ClickHouse (history.go); nil unless a source is on
+	wikidata      wikidataStats              // the weekly sync of vessel particulars from Wikidata (wikidata.go)
+	uscg          uscgStats                  // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
+	fiskeridir    fdirStats                  // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
+	fcc           fccStats                   // the weekly sync of FCC ship station licenses (fcc.go)
+	tc            tcStats                    // the weekly sync of Transport Canada's vessel register (tc.go)
+	ised          isedStats                  // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
+	ch            *chStore                   // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
+	chMu          sync.Mutex                 // guards chQueue; taken after vmu when both are held
+	chQueue       []trackPoint               // copies received since the last flush to ClickHouse; nil until it connects
+	chOwn         map[ownKey]time.Time       // own-ship sightings since the last flush, the latest per key; nil until it connects
+	chOwnClaimed  map[ownKey]map[uint32]bool // the vessels each station claimed as its own each hour, keyed without mmsi, for maxOwnPerStation
+	chOn          atomic.Bool                // ClickHouse is attached, so copies are worth building
+	history       *historyStats              // historical archives loaded into ClickHouse (history.go); nil unless a source is on
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
 	storesClosed bool       // set by closeStore; flushes after it do nothing

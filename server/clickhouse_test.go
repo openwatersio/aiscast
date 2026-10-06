@@ -1599,16 +1599,40 @@ func TestClickHouseGathersOwnShipSightings(t *testing.T) {
 	}
 }
 
-// A station claiming more MMSIs as its own than the bound allows, or an outage, costs sightings, counted, not
-// memory; a sighting already waiting still moves to its latest time.
+// One station claiming more vessels as its own than a boat has keeps its first few and cannot crowd out another
+// station's sighting.
+func TestClickHouseBoundsOwnShipsPerStation(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	now := time.Now()
+	for m := range uint32(maxOwnPending + 5) {
+		p.noteOwn(&Event{Station: "udp:spam", MMSI: 200000000 + m, Time: now, RecvTime: now})
+	}
+	p.noteOwn(&Event{Station: "udp:boat", MMSI: 368168720, Time: now, RecvTime: now})
+	if n := len(p.chOwn); n != maxOwnPerStation+1 {
+		t.Errorf("%d sightings waiting, want %d from the spammer and the boat's own", n, maxOwnPerStation+1)
+	}
+	if _, ok := p.chOwn[ownKey{"udp:boat", now.Unix() / 3600, 368168720}]; !ok {
+		t.Error("another station's own ship was crowded out")
+	}
+	// A flush empties the waiting sightings but not the claims, so the spammer gains no new ones within the hour.
+	p.flushClickHouse()
+	p.noteOwn(&Event{Station: "udp:spam", MMSI: 299999999, Time: now, RecvTime: now})
+	if len(p.chOwn) != 0 {
+		t.Errorf("a flush reset the station's claims: %v", p.chOwn)
+	}
+}
+
+// Many stations, or an outage, cost sightings past the global bound, counted, not memory; a sighting already
+// waiting still moves to its latest time.
 func TestClickHouseBoundsOwnShipSightings(t *testing.T) {
 	p := testPipeline(t)
 	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{fail: 1 << 30}})
 	now := time.Now()
 	for m := range uint32(maxOwnPending + 5) {
-		p.noteOwn(&Event{Station: "udp:spam", MMSI: 200000000 + m, Time: now, RecvTime: now})
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:%d", m), MMSI: 200000000 + m, Time: now, RecvTime: now})
 	}
-	p.noteOwn(&Event{Station: "udp:spam", MMSI: 200000000, Time: now.Add(time.Second), RecvTime: now})
+	p.noteOwn(&Event{Station: "udp:0", MMSI: 200000000, Time: now.Add(time.Second), RecvTime: now})
 	if n := len(p.chOwn); n != maxOwnPending {
 		t.Errorf("%d sightings gathered, want the bound %d", n, maxOwnPending)
 	}
@@ -1616,7 +1640,7 @@ func TestClickHouseBoundsOwnShipSightings(t *testing.T) {
 	if n := len(p.chOwn); n != maxOwnPending {
 		t.Errorf("%d sightings waiting, want the bound %d", n, maxOwnPending)
 	}
-	if got := p.chOwn[ownKey{"udp:spam", now.Unix() / 3600, 200000000}]; !got.Equal(now.Add(time.Second)) {
+	if got := p.chOwn[ownKey{"udp:0", now.Unix() / 3600, 200000000}]; !got.Equal(now.Add(time.Second)) {
 		t.Errorf("a waiting sighting kept its latest time: %v", got)
 	}
 	if d := p.ch.ownDropped.Load(); d != 5 {
