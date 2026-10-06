@@ -201,7 +201,7 @@ func TestReplayFetchesADaysRawHours(t *testing.T) {
 	}))
 	defer srv.Close()
 	s3 := &s3Client{endpoint: srv.URL, region: "auto", bucket: "bucket", accessKey: "k", secretKey: "s"}
-	listed, err := s3.list("")
+	listed, err := s3.list(context.Background(), "")
 	if err != nil || len(listed) != len(keys) {
 		t.Fatalf("listed %d of %d keys: %v", len(listed), len(keys), err)
 	}

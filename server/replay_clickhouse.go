@@ -55,7 +55,7 @@ func replayToClickHouse(url, archiveDir string, fetch bool, from, to time.Time, 
 		}
 		// One listing serves every day. ponytail: it walks the whole bucket, about 150,000 objects for 45 days, a
 		// minute or so; list each source's day prefixes if that grows too slow.
-		if keys, err = s3.list(""); err != nil {
+		if keys, err = s3.list(ctx, ""); err != nil {
 			return err
 		}
 	}
