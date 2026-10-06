@@ -41,6 +41,7 @@ type trackPoint struct {
 	implausible    bool // the fold judged it an impossible jump from the vessel's last position
 	clockBad       bool // stamped clockBadAge or more before it arrived
 	still          bool // not moving: reporting half a knot or less, and within movedM of where the vessel was last moving
+	stale          bool // older than a report the vessel had already sent: the stream and the station counts leave it out
 }
 
 // discOf is one byte of an event id, the low byte of its first 64 bits, which with the vessel and the time its
@@ -328,6 +329,20 @@ func (p *Pipeline) noteReception(pt trackPoint) {
 		p.chQueue = append(p.chQueue[:0], p.chQueue[n:]...)
 	}
 	p.chQueue = append(p.chQueue, pt)
+}
+
+// noteOwn gathers a station's own-ship message for station_own, position or static, keeping the latest per
+// station, hour, and vessel until the next flush.
+func (p *Pipeline) noteOwn(ev *Event) {
+	if ev.RecvTime.Before(p.replayGate) {
+		return // a replay's lead-in builds state and writes nothing
+	}
+	k := ownKey{ev.Station, ev.Time.Unix() / 3600, ev.MMSI}
+	p.chMu.Lock()
+	defer p.chMu.Unlock()
+	if p.chOwn != nil && ev.Time.After(p.chOwn[k]) {
+		p.chOwn[k] = ev.Time
+	}
 }
 
 // noteCopy queues a copy that dedupe matched by payload to the transmission accepted at tx. It decodes to the

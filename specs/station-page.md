@@ -88,9 +88,9 @@ Measured on the box before step 2: rows a day in `coverage` per resolution, and 
 
 ## Order of work
 
-1. **Ingest evidence.** `receptions.stale`, and `station_own` with own-vessel detection reading its candidates from it at start, set by the live writer, replay, and the archive loader.
+1. **Ingest evidence.** `receptions.stale` and `station_own`, written by the live writer and replay. Archive rows are not late copies of a live report, so they write `stale` as false.
 2. **`station_coverage`.** The table, view, and backfill, the one deletion function rebuilding it and `coverage`, and the coverage tiles reading it. A week of tiles from both tables is compared before the switch. `coverage` and its view keep being written for one release, so the previous server still works on rollback, and a later change drops them.
-3. **Station series.** `station_hours`, `station_vessels`, `station_dirty` and its view, the rebuild job and backfill, the list fields, labels from cells, `/v1/stats` and MCP reading the rollup, and the names lookup keeping listed ids whole. The in-memory vessel maps, `exclusive`, and the station vessels file go.
+3. **Station series.** `station_hours`, `station_vessels`, `station_dirty` and its view, the rebuild job and backfill, own-vessel detection reading its candidates from `station_own` at start in place of the station vessels file, the list fields, labels from cells, `/v1/stats` and MCP reading the rollup, and the names lookup keeping listed ids whole. The in-memory vessel maps, `exclusive`, and the station vessels file go.
 4. **`statics`.** The table, the live writer's rows, the seed from the record, and archive loads writing through it.
 5. **Station page.** `hours`, `types`, and `?station=` on the coverage tiles, and the web client: the uptime gauge and sort, the messages chart, the vessels donut, and the footprint cells.
 

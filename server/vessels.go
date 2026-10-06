@@ -357,6 +357,7 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 	pt.still = v.moved.still(pt, seed, !stale && !ev.Implausible && !pt.clockBad)
 	pt.uncorroborated = ev.LowTrust && !ev.Corroborated
 	pt.implausible = ev.Implausible
+	pt.stale = stale
 	switch {
 	case ev.Implausible, !stale:
 	default:

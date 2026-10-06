@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"slices"
@@ -516,6 +517,13 @@ func TestClickHouseQueuesEveryCopy(t *testing.T) {
 	if len(q) != 10 {
 		t.Fatalf("%d copies queued, want 10: %+v", len(q), q)
 	}
+	// The copies that arrived after a later report are stale, the one dedupe matched included: the stream and the
+	// station counts left them out, and the station rollups read the flag to leave them out too.
+	for i, c := range q {
+		if want := i == 3 || i == 4 || i >= 7; c.stale != want {
+			t.Errorf("copy %d (%s) stale %v, want %v", i, c.source, c.stale, want)
+		}
+	}
 	accepted := q[0]
 	if accepted.dup || accepted.txAt.IsZero() || accepted.station != "kystverket" || accepted.recv.IsZero() {
 		t.Errorf("the accepted copy: %+v", accepted)
@@ -701,7 +709,7 @@ func TestClickHouseMigratesInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"positions", "positions_1h", "positions_1h_mv", "positions_1m", "positions_1m_mv", "receptions", "receptions_converted"} {
+	for _, want := range []string{"positions", "positions_1h", "positions_1h_mv", "positions_1m", "positions_1m_mv", "receptions", "receptions_converted", "station_own"} {
 		if !slices.Contains(tables, want) {
 			t.Errorf("no %s: %v", want, tables)
 		}
@@ -1540,5 +1548,95 @@ func TestClickHouseMovesOldReceptionsToTheColdTier(t *testing.T) {
 	var n uint64
 	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = ?, to = ?)", now.AddDate(0, -7, 0), now.Add(time.Hour)).Scan(&n); err != nil || n != 3 {
 		t.Errorf("every position reads back, two from R2: %d %v", n, err)
+	}
+}
+
+// fakeOwn records the own-ship sightings it is handed, and fails the first `fail` inserts.
+type fakeOwn struct {
+	fail    int
+	batches []map[ownKey]time.Time
+}
+
+func (f *fakeOwn) insertOwn(_ context.Context, own map[ownKey]time.Time) error {
+	f.batches = append(f.batches, maps.Clone(own))
+	if f.fail > 0 {
+		f.fail--
+		return errors.New("clickhouse is down")
+	}
+	return nil
+}
+
+// A station's own-ship messages, positions and static data alike, go to station_own as the latest per hour, and a
+// failed insert keeps them for the next flush rather than losing them.
+func TestClickHouseGathersOwnShipSightings(t *testing.T) {
+	p := testPipeline(t)
+	own := &fakeOwn{fail: 1}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: own})
+	now := time.Now().Truncate(time.Hour).Add(10 * time.Minute)
+	const station = "station:ed25519:k"
+	p.Ingest(Reception{Source: station, Station: station, RecvTime: now, Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
+	p.Ingest(Reception{Source: station, Station: station, RecvTime: now.Add(time.Minute), Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
+	p.ingestPacket(station, station, now, now, posReport(366000009, 41.5, -70.6)) // heard, not its own
+	p.flushClickHouse()
+	if len(own.batches) != 1 || len(own.batches[0]) != 1 {
+		t.Fatalf("one sighting per station, hour, and vessel: %+v", own.batches)
+	}
+	var k ownKey
+	var at time.Time
+	for k, at = range own.batches[0] {
+	}
+	if k.station != station || k.hour != now.Unix()/3600 || at.Before(now) {
+		t.Errorf("sighting %+v at %v", k, at)
+	}
+	// The first insert failed, so the next flush sends the same sighting again.
+	p.flushClickHouse()
+	if len(own.batches) != 2 || !maps.Equal(own.batches[0], own.batches[1]) {
+		t.Errorf("a failed insert kept its sightings for the next: %+v", own.batches)
+	}
+	p.flushClickHouse()
+	if len(own.batches) != 2 {
+		t.Errorf("a written sighting is not sent again: %+v", own.batches)
+	}
+}
+
+// The stale flag reaches receptions, and station_own keeps the latest sighting per station, hour, and vessel
+// however many times it is written.
+func TestClickHouseWritesStaleAndStationOwn(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(context.Background(), strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	ctx := context.Background()
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	late := newTrackPoint(257000001, t0, &vessel{Lat: 59.9, Lon: 10.7, HasPos: true}, "aishub")
+	late.station, late.stale = "aishub", true
+	fresh := newTrackPoint(257000001, t0.Add(time.Minute), &vessel{Lat: 59.91, Lon: 10.7, HasPos: true}, "kystverket")
+	fresh.station = "kystverket"
+	if err := conn.insert(ctx, newDedupeToken(), []trackPoint{late, fresh}); err != nil {
+		t.Fatal(err)
+	}
+	var stale uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT countIf(stale) FROM "+db+".receptions").Scan(&stale); err != nil || stale != 1 {
+		t.Errorf("stale copies written: %d, %v", stale, err)
+	}
+	k := ownKey{"station:ed25519:k", t0.Unix() / 3600, 366000009}
+	for _, at := range []time.Time{t0, t0.Add(2 * time.Minute), t0.Add(time.Minute)} {
+		if err := conn.insertOwn(ctx, map[ownKey]time.Time{k: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows uint64
+	var last time.Time
+	if err := conn.conn.QueryRow(ctx, "SELECT count(), max(last_ts) FROM (SELECT station, hour, mmsi, max(last_ts) AS last_ts FROM "+db+".station_own GROUP BY station, hour, mmsi)").Scan(&rows, &last); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || !last.Equal(t0.Add(2*time.Minute)) {
+		t.Errorf("station_own: %d rows, last %v, want 1 at %v", rows, last, t0.Add(2*time.Minute))
 	}
 }

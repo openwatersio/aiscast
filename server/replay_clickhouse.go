@@ -178,7 +178,8 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if err := c.seedVessels(ctx, p, day.Add(-warmup), archives); err != nil {
 		return fmt.Errorf("vessels: %w", err)
 	}
-	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}}
+	// Own-ship sightings go straight to station_own: its max merges a day replayed again without harm.
+	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}, own: &chConn{conn: c.conn, db: c.db}}
 	p.attachClickHouse(staging)
 	var flushNow func() error
 	flush := func() error {
