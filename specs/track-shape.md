@@ -1,6 +1,6 @@
 # Track shape
 
-A vessel's track should follow the path it took. Today a track that names no `interval` is thinned to one position per round time step, so a vessel that sits still most of the day gets almost no points for the hour it moved, and the line cuts across land. This plan keeps the shape: the server reads the range at full detail, drops spikes, and simplifies the line to fit the limit. It also stops counting a moored vessel's GPS noise as movement in `positions_1m`, and raises the anonymous limit to 1,000 positions.
+A vessel's track should follow the path it took. Today a track that names no `interval` is thinned to one position per round time step, so a vessel that sits still most of the day gets almost no points for the hour it moved, and the line cuts across land. This plan keeps the shape: the server reads the range at full detail, drops spikes, and simplifies the line to fit the limit. It also stops counting a moored vessel's GPS noise as movement in `positions_1m`, and raises the anonymous limit to 1,000 positions. A second step, gated on a measurement, promotes positions to the long-range table by shape rather than by the clock.
 
 ## What happens now
 
@@ -69,6 +69,38 @@ A report is moving when the vessel is more than 50 m from its anchor, or when it
 
 By the 100 m estimate, the rule would have kept about 0.69 M fewer rows on 2026-10-05, about 6%. The count that settles it is the rows per day in `positions_1m` after the change, against the 12.2 M on that day.
 
+## Promote by shape
+
+This is a second step, after the read side ships, and only if the measurement below supports it.
+
+`positions_1m` samples by the clock. A ClickHouse materialized view copies each accepted, usable reception into a window keyed by `(mmsi, slot, cell)`: a minute while the vessel moves, 30 minutes per place while it sits still, and the `ReplacingMergeTree` keeps the latest report per window. Every track past 48 hours reads it, so it bounds their detail:
+
+- A fast vessel loses its corners. At 20 kn a minute is about 600 m, so a ferry's turn into its slip is cut, whatever the read side does with it.
+- A straight leg keeps a row a minute that simplification then drops. About 10 M of the 12.2 M rows on 2026-10-05 were moving minutes, most of them on straight lines.
+
+### Promotion rule
+
+The writer decides which reports to keep, as it decides `moving` now. Per vessel, it keeps the last two positions it promoted and predicts where the vessel is at the new report's time by carrying the line between them forward. It promotes the report when:
+
+- the report is more than 15 m from the prediction, the same tolerance as the read side;
+- 10 minutes have passed since the last promoted row, so a track keeps a timeline for the speed chart and for breaks; or
+- the vessel goes from still to moving, or back.
+
+A vessel sitting still keeps its 30-minute heartbeat per place, as now, by the distance-only moving rule above.
+
+The verdict is a new `keep` column on `receptions`, set by one Go function that the live writer, `convert-receptions`, and the archive loads share, as they share `anchor.still`. A new table, keyed by `(mmsi, ts)`, takes the rows with `keep` set, and the track read reads it in place of `positions_1m`. It is built beside `positions_1m` and filled for past days in Go from `receptions`, since a single SQL statement cannot carry the per-vessel prediction through a day. `positions_1m` is dropped once the new table has served tracks for two weeks. A purge rebuilds the days it touched with the same Go path.
+
+A report that arrives late, behind the vessel's newest, is judged against the promoted rows around it rather than the prediction, and kept when it is more than 15 m from the line between them. Copies of a transmission take its accepted copy's verdict, as they take `moving`.
+
+### Measurement
+
+On one production day, for a sample of about 1,000 vessels across speed bands, run on the box so no data leaves it:
+
+- How far the minute grid strays from the full-detail track: for each accepted position, its distance from the line between the `positions_1m` rows either side of it, as the 50th, 95th, and 99th percentile per speed band. This is a ClickHouse query with window functions.
+- Rows kept by the rule above against rows in `positions_1m`, per speed band. Each verdict depends on the rows promoted before it, which a window function cannot carry, so this runs the Go rule as an `aiscast` subcommand reading `receptions`.
+
+Go ahead when the minute grid strays more than about 50 m at the 95th percentile for vessels over 10 kn, or when the rule keeps fewer rows than `positions_1m` overall. Otherwise the minute grid stays.
+
 ## Client
 
 On top of #157, [client/app/lib/useTrack.ts](../client/app/lib/useTrack.ts) splits at `breaks` when the answer has them, and falls back to `trackGap(interval)` when it does not. The map's track (`splitTrack` in [client/app/lib/ais.ts](../client/app/lib/ais.ts)) and the chart's speed line in [client/app/components/VesselTrack.tsx](../client/app/components/VesselTrack.tsx), which breaks its own line from `track.gap`, both take the segments from there. The client ships before the server change, because a client without `breaks` support breaks the line at every collapsed stay.
@@ -83,8 +115,10 @@ The server change updates, in the same pull request: [server/README.md](../serve
 2. Client: draw segments from `breaks`, with the fallback.
 3. Server: shape simplification, `breaks`, the new fields, GPX segments, the MCP default, the anonymous limit, and the moving rule. Tests: a synthetic dock-trip-dock track keeps the trip's corners and the dock's two ends; a stop mid-leg survives; a 2-hour silence makes a break and a 25-minute one does not; heartbeats 55 minutes apart in `positions_1m` do not; the tolerance grows only past the limit; a still vessel reporting 0.9 kn within 50 m is still. End to end against ClickHouse: the same, through the endpoint.
 4. Measure on production: CERULEAN and a ferry at 24 hours, 48 hours, 7 days, and 30 days; request time for a year of a ferry; `positions_1m` rows per day.
+5. Promotion by shape: run the measurement above. If it passes, add `keep`, the new table, its fill for past days, and the switch of the track read, then drop `positions_1m` after two weeks.
 
 ## Open questions
 
 - Whether the 15 m floor is right for fast vessels, whose one-minute rows are hundreds of meters apart. It only removes points the line already passes within 15 m of, so it cannot cut a corner wider than that.
 - Whether old days need their moving verdicts rewritten, after the measurement above.
+- The 10-minute floor for promotion: shorter keeps a finer timeline for the speed chart, longer keeps fewer rows on long straight legs.
