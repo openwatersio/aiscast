@@ -178,7 +178,12 @@ export default function Station({ loaderData }: Route.ComponentProps) {
                     subtitle={[p.name ? `MMSI ${p.mmsi}` : undefined, cls !== "other" ? CLASS_LABELS[cls] : undefined]
                       .filter(Boolean)
                       .join(" · ")}
-                    trailing={shortAge(seen)}
+                    trailing={
+                      // The server and the browser each take their own now, so the age may differ by a second.
+                      <time dateTime={p.seen} title={p.seen} suppressHydrationWarning>
+                        {shortAge(seen)}
+                      </time>
+                    }
                   />
                 );
               })}
