@@ -66,7 +66,6 @@ type subscriber struct {
 
 type Pipeline struct {
 	arch *archive
-	norm *archive // normalized stream: accepted events, reception copies, weather; no-op unless configured
 	// access log: a line per HTTP request (access.go); no-op unless configured
 	access        *archive
 	accessDropped atomic.Int64 // lines dropped because the writer fell behind
@@ -79,7 +78,7 @@ type Pipeline struct {
 	ownOf   map[string]string     // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
 	// intake is the shutdown barrier. Every reception is archived raw and processed under the read
 	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
-	// recorded (raw without its normalized events, or the reverse) and none can start.
+	// recorded (in ClickHouse's queue without its raw record, or the reverse) and none can start.
 	intake           sync.RWMutex
 	order            sync.Mutex // one reception at a time, in arrival order, as replay processes them (admit)
 	stampAtAdmission bool       // live only, set before any producer starts: receive times are taken at admission
@@ -90,11 +89,11 @@ type Pipeline struct {
 	aishubBatch []*Event
 	closing     atomic.Bool
 
-	seen     map[string]time.Time
-	bad      map[string]time.Time    // dedupe keys of transmissions the fold judged implausible, by time, pruned with seen
-	folding  map[string][]trackPoint // keys whose accepted copy is still folding, with the copies that arrived meanwhile
-	seenHW   time.Time               // newest event time folded into seen; prune cutoff, so replay needs no wall clock
-	normGate time.Time               // replay warm-up: records received before this are state-building only, not written
+	seen       map[string]time.Time
+	bad        map[string]time.Time    // dedupe keys of transmissions the fold judged implausible, by time, pruned with seen
+	folding    map[string][]trackPoint // keys whose accepted copy is still folding, with the copies that arrived meanwhile
+	seenHW     time.Time               // newest event time folded into seen; prune cutoff, so replay needs no wall clock
+	replayGate time.Time               // replay warm-up: records received before this are state-building only, not written
 	// anchorSeeds is where each vessel was last moving before a replay's lead-in, from positions_1m; nil live
 	anchorSeeds map[uint32]*anchor
 	nSeen       int
@@ -155,7 +154,7 @@ func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
 	p := &Pipeline{
-		arch: arch, norm: newArchive("", nil), access: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
+		arch: arch, access: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]fragment{},
@@ -231,8 +230,8 @@ func (p *Pipeline) release() {
 }
 
 // closeArchives stops intake, then drains both archives. Setting closing turns away receptions not
-// yet started; the write lock waits out those in flight; only then do the writers drain, so raw and
-// normalized hold the same receptions and replay regenerates the stream across a restart. A
+// yet started; the write lock waits out those in flight; only then do the writers drain, so the raw
+// archive holds every reception ClickHouse does and replay can rebuild a day across a restart. A
 // producer turned away is dropped; the process is exiting.
 func (p *Pipeline) closeArchives() {
 	p.closing.Store(true)
@@ -240,7 +239,6 @@ func (p *Pipeline) closeArchives() {
 	go func() { p.access.shutdown(); close(access) }() // in parallel, so its upload bound fits in TimeoutStopSec beside theirs
 	p.intake.Lock()
 	p.arch.shutdown()
-	p.norm.shutdown()
 	<-access
 }
 
@@ -414,7 +412,6 @@ func (p *Pipeline) emit(ev *Event) {
 			held = true
 		}
 		p.mu.Unlock()
-		p.writeCopy(ev, key, prev) // prev is the accepted transmission: proximity alone is ambiguous between two of them
 		if p.chOn.Load() && !held {
 			p.noteCopy(ev, key, prev, bad)
 		}
@@ -455,7 +452,6 @@ func (p *Pipeline) emit(ev *Event) {
 	ev.MMSI = ev.Packet.GetHeader().UserID
 	ev.LowTrust = lowTrust(ev.Source)
 	p.updateVessel(ev)
-	p.writeEvent(ev)                     // flagged or not: the normalized archive keeps what the raw archive keeps
 	if p.chOn.Load() || ev.Implausible { // without ClickHouse, nothing waits on the verdict
 		p.settleFold(key, ev)
 	}

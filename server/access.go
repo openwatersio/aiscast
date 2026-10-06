@@ -224,7 +224,7 @@ func accessDir() string {
 // accessStoreFromEnv refuses the archive buckets: the raw archive is meant to become public, and R2 opens a whole bucket.
 func accessStoreFromEnv() *s3Client {
 	b := os.Getenv("ACCESS_BUCKET")
-	if b != "" && (b == os.Getenv("R2_BUCKET") || b == os.Getenv("NORMALIZED_BUCKET")) {
+	if b != "" && b == os.Getenv("R2_BUCKET") {
 		log.Printf("ACCESS_BUCKET is the archive's bucket; the access log stays on disk")
 		return nil
 	}

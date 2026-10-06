@@ -231,3 +231,16 @@ func (c *s3Client) get(key, path string) error {
 	}
 	return f.Close()
 }
+
+// s3BucketFromEnv is a client for bucket in the raw archive's account, with its keys; nil for no bucket or no keys.
+func s3BucketFromEnv(bucket string) *s3Client {
+	if bucket == "" {
+		return nil
+	}
+	c := &s3Client{bucket: bucket, region: env("S3_REGION", "auto"), accessKey: os.Getenv("R2_ACCESS_KEY_ID"), secretKey: os.Getenv("R2_SECRET_ACCESS_KEY")}
+	c.endpoint = env("S3_ENDPOINT", "https://"+os.Getenv("R2_ACCOUNT_ID")+".r2.cloudflarestorage.com")
+	if c.accessKey == "" || c.secretKey == "" {
+		return nil
+	}
+	return c
+}

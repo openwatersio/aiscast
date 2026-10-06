@@ -126,8 +126,8 @@ func (r aishubRow) static() ais.Packet {
 }
 
 // ingestAishub maps one snapshot into events: a position when TIME advanced, a static when static fields changed.
-// Every row is ingested at once, as the raw archive records the snapshot, so the vessel cache, dedupe, and the
-// normalized stream see the order replay reproduces. Live, only delivery to subscribers is paced (deliverPaced).
+// Every row is ingested at once, as the raw archive records the snapshot, so the vessel cache, dedupe, and
+// ClickHouse see the order replay reproduces. Live, only delivery to subscribers is paced (deliverPaced).
 func (p *Pipeline) ingestAishub(body []byte, now time.Time) (int, error) {
 	var parts []json.RawMessage
 	if err := json.Unmarshal(body, &parts); err != nil {

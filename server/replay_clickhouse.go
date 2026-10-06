@@ -166,7 +166,7 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		return fmt.Errorf("no raw files under %s", dir)
 	}
 	p := newPipeline(newArchive("", nil))
-	p.normGate = day
+	p.replayGate = day
 	// Historical archives' rows never passed through live's cache, so they seed nothing, and the swap leaves them be.
 	archives, err := chColumn[string](ctx, c.conn, "SELECT DISTINCT source FROM "+c.db+".history_loads")
 	if err != nil {

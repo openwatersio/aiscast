@@ -186,7 +186,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	archives := []struct {
 		name string
 		a    *archive
-	}{{"raw", p.arch}, {"normalized", p.norm}, {"access", p.access}}
+	}{{"raw", p.arch}, {"access", p.access}}
 	metricHead(w, "aiscast_udp_datagrams_total", "counter", "raw NMEA datagrams received, per UDP listener")
 	for _, l := range p.udp {
 		fmt.Fprintf(w, "aiscast_udp_datagrams_total{listener=%q} %d\n", l.label, l.datagrams.Load())

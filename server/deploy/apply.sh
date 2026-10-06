@@ -58,14 +58,9 @@ fi
 rm -f "$drop.bak"
 systemctl reload ssh
 
-mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/aiscast/normalized /var/lib/alloy/textfile
+mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/alloy/textfile
 chown -R aiscast:aiscast /var/lib/aiscast
 
-# The packager runs on GitHub Actions (.github/workflows/packager.yml). Boxes converged before
-# that may still carry any of its units, script, or staging directory.
-systemctl disable --now packager.timer packager.service 2>/dev/null || true
-rm -f /etc/systemd/system/packager.timer /etc/systemd/system/packager.service /opt/aiscast/packager.py
-rm -rf /var/lib/aiscast/packager
 # Tracks read from ClickHouse. Boxes converged before that may still carry the SQLite track store.
 rm -f /var/lib/aiscast/tracks.db /var/lib/aiscast/tracks.db-*
 
