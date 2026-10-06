@@ -82,7 +82,9 @@ func replayReaders(p *Pipeline, readers []*rawReader, to time.Time, each func() 
 	return n, nil
 }
 
-// dispatch feeds one archived reception to the adapter that consumed it live. Only /v1/receive
+// dispatch feeds one archived reception to the adapter that consumed it live. An envelope takes its station from
+// the line, which live archived as received: the source built back from the archive key turns every '/' in a
+// name into ':', so a station named with its own '/' would come back renamed. Only /v1/receive
 // parses AIS-catcher envelopes, archiving under http: (before station ids) or station:; UDP (udp:,
 // and mmsi: for a UDP sender named by its own ship) and /v1 publish (v1: before station ids) only
 // ever take lines. A /v1 publish line under station: carries the published mark; an unmarked
@@ -110,11 +112,11 @@ func dispatch(p *Pipeline, source string, rx Reception) error {
 	case strings.HasPrefix(source, "http:") && strings.HasPrefix(strings.TrimSpace(rx.Body), "{"):
 		// http: is /v1/receive alone, which archives an envelope only after it parses: one that does
 		// not is corrupt, not a line
-		if !p.ingestCatcher(source, []byte(rx.Body), rx.RecvTime) {
+		if !p.ingestCatcher(rx.Station, []byte(rx.Body), rx.RecvTime) {
 			return fmt.Errorf("%s: catcher envelope that does not parse: %.60q", source, rx.Body)
 		}
 	case strings.HasPrefix(source, "station:") && strings.HasPrefix(strings.TrimSpace(rx.Body), "{") &&
-		p.ingestCatcher(source, []byte(rx.Body), rx.RecvTime):
+		p.ingestCatcher(rx.Station, []byte(rx.Body), rx.RecvTime):
 		// an envelope posted to /v1/receive; station: also covers /v1 publish, so a record that does
 		// not parse as one is a publisher's line
 	default:

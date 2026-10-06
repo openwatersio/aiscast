@@ -297,3 +297,24 @@ func sameCopies(t *testing.T, what string, live, replayed []trackPoint) {
 		t.Fatalf("%s: live wrote %v, replay %v", what, a, b)
 	}
 }
+
+// A station's name keeps every character through the archive and replay. Its archive key turns each ':' into a
+// directory, so the source a reader builds back from the key can differ for a name with its own '/' or ':', and an
+// envelope's copies take their station from the line, which holds the name as received.
+func TestReplayKeepsAStationsName(t *testing.T) {
+	rawDir := t.TempDir()
+	p, written := recordingPipeline(t)
+	p.arch = newArchive(rawDir, nil)
+	recv := time.Date(2026, 9, 1, 12, 0, 40, 0, time.UTC)
+	const station = "station:mmsi:368168720/n2k"
+	envelope := `{"protocol":"jsonaiscatcher","msgs":[{"class":"AIS","channel":"A","rxtime":"20260901120039","nmea":["` + testSentence + `"]}]}`
+	if !p.ingestCatcher(station, []byte(envelope), recv) {
+		t.Fatal("live rejected a valid envelope")
+	}
+	p.closeArchives()
+	live := written()
+	replayed := replayRaw(t, rawDir, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
+	if len(live) != 1 || len(replayed) != 1 || live[0].station != station || replayed[0].station != station {
+		t.Fatalf("station live %+v, replayed %+v, want %q both", live, replayed, station)
+	}
+}
