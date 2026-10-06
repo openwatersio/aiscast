@@ -6,6 +6,8 @@ import {
   shortAge,
   isValidImo,
   isVolunteer,
+  stationName,
+  stationStatus,
   stationTitle,
   volunteerReceiver,
   stationTitles,
@@ -496,10 +498,14 @@ describe("isVolunteer", () => {
 });
 
 describe("stationTitles", () => {
-  it("prefers the name, then the place, then the id", () => {
+  it("prefers the name, then the place, then the feed, then the end of the id", () => {
     expect(stationTitle({ station: "udp:1", name: "Pier", near: "Falmouth, MA" })).toBe("Pier");
     expect(stationTitle({ station: "udp:1", near: "Falmouth, MA" })).toBe("Near Falmouth, MA");
-    expect(stationTitle({ station: "udp:1" })).toBe("udp:1");
+    expect(stationTitle({ station: "barentswatch/terra" })).toBe("BarentsWatch coastal");
+    expect(stationTitle({ station: "udp:ec7cca876017" })).toBe("Anonymous …6017");
+    expect(stationTitle({ station: "station:ed25519:mFbn0k5uAk_PRO8CpX7H/n2k" })).toBe("Anonymous …pX7H");
+    expect(stationTitle({ station: "somefeed" })).toBe("somefeed");
+    expect(stationName({ station: "udp:ec7cca876017" })).toEqual({ title: "Anonymous", suffix: "…6017" });
   });
   it("tells apart stations that would read the same", () => {
     const titles = stationTitles([
@@ -510,12 +516,22 @@ describe("stationTitles", () => {
       { station: "aishub" },
     ]);
     expect([...titles.values()]).toEqual([
-      "Near Santa Monica, CA (…c34f)",
-      "Near Santa Monica, CA (…9d1e)",
-      "CERULEAN (…:xyz)",
-      "CERULEAN (n2k)",
-      "aishub",
+      { title: "Near Santa Monica, CA", suffix: "…c34f" },
+      { title: "Near Santa Monica, CA", suffix: "…9d1e" },
+      { title: "CERULEAN", suffix: "…:xyz" },
+      { title: "CERULEAN", suffix: "n2k" },
+      { title: "AISHub" },
     ]);
+  });
+});
+
+describe("stationStatus", () => {
+  it("is live for five minutes, quiet for the hour, then offline", () => {
+    expect(stationStatus(0)).toBe("live");
+    expect(stationStatus(299)).toBe("live");
+    expect(stationStatus(300)).toBe("quiet");
+    expect(stationStatus(3599)).toBe("quiet");
+    expect(stationStatus(3600)).toBe("offline");
   });
 });
 
