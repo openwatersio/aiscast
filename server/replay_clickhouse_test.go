@@ -113,8 +113,11 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if err := c.replayDay(ctx, dir, day, warmup, false, false); err == nil || !strings.Contains(err.Error(), "-force") {
 		t.Fatalf("six replayed copies against seven stored replaced the day without -force: %v", err)
 	}
-	if err := c.replayDay(ctx, dir, day, warmup, false, true); err != nil {
-		t.Fatal(err)
+	// Replayed twice, as after a fix that needs a second pass: the second replay's identical blocks land too.
+	for range 2 {
+		if err := c.replayDay(ctx, dir, day, warmup, false, true); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	var network, previous, archived []row
@@ -137,6 +140,19 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	lats, err := chColumn[int32](ctx, c.conn, "SELECT lat6 FROM "+db+".positions_1m FINAL WHERE slot >= ? AND slot < ? AND source = 'kystverket' ORDER BY slot", day, day.AddDate(0, 0, 1))
 	if err != nil || len(lats) != 6 || lats[0] != int32(59.90*600000) {
 		t.Errorf("positions_1m holds the replayed track: %v %v", lats, err)
+	}
+	finest := coverageBands[len(coverageBands)-1].res
+	cell := func(lat float64) uint64 {
+		t.Helper()
+		var n uint64
+		if err := c.conn.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s.coverage WHERE day = ? AND res = %d AND cell = geoToH3(?, 10.7, %d)"+
+			" SETTINGS geotoh3_argument_order = 'lat_lon'", db, finest, finest), day, lat).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if cell(58.0) != 0 || cell(59.90) == 0 {
+		t.Errorf("coverage drops the stored position's cell and has the replayed one's: %d %d", cell(58.0), cell(59.90))
 	}
 	complete, err := chColumn[bool](ctx, c.conn, "SELECT complete FROM "+db+".history_loads FINAL WHERE file = 'f'")
 	if err != nil || len(complete) != 1 || complete[0] {

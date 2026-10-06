@@ -211,13 +211,20 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".receptions WHERE "+where, args...); err != nil {
 		return fmt.Errorf("delete the stored day: %w", err)
 	}
-	if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".receptions SELECT * FROM "+c.db+"."+replayStaging+" WHERE "+where, args...); err != nil {
+	// A token of this run's own: replaying a day again inserts the same blocks, which receptions' deduplication
+	// window would otherwise drop although the delete before has removed their rows.
+	insert := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"insert_deduplication_token": fmt.Sprintf("replay-%s-%d", day.Format("2006-01-02"), time.Now().UnixNano())}))
+	if err := c.conn.Exec(insert, "INSERT INTO "+c.db+".receptions SELECT * FROM "+c.db+"."+replayStaging+" WHERE "+where, args...); err != nil {
 		return fmt.Errorf("insert the replayed day, after deleting the stored one; replay it again: %w", err)
 	}
 	// Copies that arrived on day carry stamps on the days beside it too.
 	for d := day.AddDate(0, 0, -1); !d.After(day.AddDate(0, 0, 1)); d = d.AddDate(0, 0, 1) {
 		if err := c.rebuildPositions1m(ctx, d); err != nil {
 			return fmt.Errorf("positions_1m %s: %w", d.Format("2006-01-02"), err)
+		}
+		if err := c.rebuildCoverage(ctx, d); err != nil {
+			return fmt.Errorf("coverage %s: %w", d.Format("2006-01-02"), err)
 		}
 	}
 	// An archive's copies of the network's transmissions name them; the loader loads those days again.
@@ -228,6 +235,16 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	}
 	log.Printf("replay: %s: replaced, in %s", day.Format("2006-01-02"), time.Since(started).Round(time.Second))
 	return nil
+}
+
+// rebuildCoverage bins day's usable positions into coverage again. Its distinct sets only ever grow, so a copy
+// replay replaced or judged implausible leaves the cell it counted toward unless the day is deleted first.
+func (c *chConn) rebuildCoverage(ctx context.Context, day time.Time) error {
+	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".coverage WHERE day = ?", day); err != nil {
+		return err
+	}
+	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".coverage "+chCoverageSelect(c.db+".receptions", chUsable+" AND ts >= ? AND ts < ?"),
+		day, day.AddDate(0, 0, 1))
 }
 
 // createReplayStaging makes an empty staging table. An explicit engine keeps receptions' columns but not its TTL
