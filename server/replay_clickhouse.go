@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"golang.org/x/sync/errgroup"
 )
 
 // replayStaging begins the name of the table a replayed day is written to before it replaces the stored one;
@@ -84,7 +85,8 @@ func fetchRawDay(s3 *s3Client, keys []s3Object, day time.Time, warmup time.Durat
 	if err := os.RemoveAll(dir); err != nil { // what a replay that stopped partway left
 		return err
 	}
-	var n, size int64
+	var want []s3Object
+	var size int64
 	for _, k := range keys {
 		if strings.Contains("/"+k.Key+"/", "/../") || strings.HasPrefix(k.Key, "/") {
 			return fmt.Errorf("raw key %q would leave %s", k.Key, dir)
@@ -96,17 +98,28 @@ func fetchRawDay(s3 *s3Client, keys []s3Object, day time.Time, warmup time.Durat
 		if !ok || at.Before(start) || !at.Before(day.Add(24*time.Hour)) {
 			continue
 		}
-		if err := s3.get(k.Key, filepath.Join(dir, k.Key)); err != nil {
-			return err
-		}
-		n, size = n+1, size+k.Size
+		want, size = append(want, k), size+k.Size
 	}
+	n := len(want)
 	if n == 0 {
 		return fmt.Errorf("no raw hours in the bucket")
+	}
+	// A day is thousands of small hour files, so one at a time waits on each request's round trip; several at once
+	// fill the link.
+	var g errgroup.Group
+	g.SetLimit(fetchWorkers)
+	for _, k := range want {
+		g.Go(func() error { return s3.get(k.Key, filepath.Join(dir, k.Key)) })
+	}
+	if err := g.Wait(); err != nil {
+		return err
 	}
 	log.Printf("replay: %s: fetched %d raw hours, %.1f GB", day.Format("2006-01-02"), n, float64(size)/1e9)
 	return nil
 }
+
+// fetchWorkers is how many raw hours a replay downloads at once.
+const fetchWorkers = 16
 
 // rawHourOf is the hour a raw archive key holds, from its trailing YYYY/MM/DD/HH.gz.
 func rawHourOf(key string) (time.Time, bool) {

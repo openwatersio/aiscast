@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -332,5 +333,30 @@ func TestReplayWaitsForTheConversion(t *testing.T) {
 	if err := c.replayDay(ctx, t.TempDir(), time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), time.Hour, true, false); err == nil ||
 		!strings.Contains(err.Error(), "first layout") {
 		t.Errorf("replayed over first-layout rows: %v", err)
+	}
+}
+
+// A day's raw hours download several at a time, never more than fetchWorkers at once.
+func TestReplayFetchesInParallel(t *testing.T) {
+	var inFlight, most atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		}
+		time.Sleep(20 * time.Millisecond) // long enough that the downloads overlap
+		fmt.Fprint(w, "x")
+	}))
+	defer srv.Close()
+	s3 := &s3Client{endpoint: srv.URL, region: "auto", bucket: "bucket", accessKey: "k", secretKey: "s"}
+	var keys []s3Object
+	for i := range 3 * fetchWorkers {
+		keys = append(keys, s3Object{Key: fmt.Sprintf("CC0-1.0/station/s%d/2026/09/02/00.gz", i), Size: 1})
+	}
+	if err := fetchRawDay(s3, keys, time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), time.Hour, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if m := most.Load(); m < 2 || m > fetchWorkers {
+		t.Errorf("at most %d downloads ran at once, want between 2 and %d", m, fetchWorkers)
 	}
 }
