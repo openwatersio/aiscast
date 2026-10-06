@@ -39,8 +39,10 @@ func replayToClickHouse(url, archiveDir string, fetch bool, from, to time.Time, 
 		return fmt.Errorf("-to %s: replay days that ended over a day ago, up to %s", to.Format("2006-01-02"), latest.Format("2006-01-02"))
 	}
 	ctx := context.Background()
-	// Dialed, not opened: replay runs as the loader user, whose grants do not reach the schema.
-	c, err := dialClickHouse(url)
+	// Dialed, not opened: replay runs as the loader user, whose grants do not reach the schema. A day's delete,
+	// insert, and rebuilds can each run past the client's default five minutes, and a timeout between the delete
+	// and the insert would leave the day short.
+	c, err := dialClickHouse(url, func(o *clickhouse.Options) { o.ReadTimeout = 6 * time.Hour })
 	if err != nil {
 		return err
 	}
