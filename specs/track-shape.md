@@ -6,7 +6,9 @@ A vessel's track should follow the path it took. Today a track that names no `in
 
 [server/track_api.go](../server/track_api.go) picks a default step with `defaultInterval`: the range divided by the limit, rounded up to a round step from 5 seconds to a day. The read keeps the first position in each step. Anonymous callers get 200 positions, personal tokens 1,000, feeder and above 5,000.
 
-CERULEAN (368168720) on 2026-10-06, anonymous, as the web client asks:
+The web client on `main` computes its own step from a budget of 190 positions (950 with a token) and sends it as `interval`. The client in #157 sends no `interval` and leaves the step to the server, so every fix below reaches the web client only once #157 ships.
+
+CERULEAN (368168720) on 2026-10-06, anonymous, with no `interval`, as the client in #157 asks:
 
 | Range | Step | Positions | Positions over 1 kn |
 | --- | --- | --- | --- |
@@ -16,7 +18,7 @@ CERULEAN (368168720) on 2026-10-06, anonymous, as the web client asks:
 
 ClickHouse held 571 accepted positions for those 24 hours, 101 of them over 1 kn. The boat was tied up for about 23 of the 24 hours, and even steps spend the limit on that. At 7.8 kn a 10-minute step is 2.4 km. Each range picks different moments, so the drawn path changes with the range.
 
-`positions_1m` ([server/clickhouse.go](../server/clickhouse.go)) keeps a row a minute while a vessel moves and a heartbeat every 30 minutes per place while it sits still. `anchor.still` in [server/tracks.go](../server/tracks.go) calls a report moving when it reports more than 0.5 kn, or when it is more than 50 m from where the vessel was last moving. CERULEAN reports 0.6 to 0.9 kn tied up, so 359 of its 458 rows on that day were one-minute rows from the dock. Across 2026-10-05, 0.69 M of 10.07 M one-minute rows came from vessel-hours that never left a 100 m box, 246,000 of them at 0.6 to 2 kn, from 14,165 vessels.
+`positions_1m` ([server/clickhouse.go](../server/clickhouse.go)) keeps a row a minute while a vessel moves and a heartbeat every 30 minutes per place while it sits still. `anchor.still` in [server/tracks.go](../server/tracks.go) calls a report moving when it reports more than 0.5 kn, or when it is more than 50 m from where the vessel was last moving. CERULEAN reports 0.6 to 0.9 kn tied up, so 359 of its 458 rows on that day were one-minute rows from the dock. Across 2026-10-05, 0.69 M of 10.07 M one-minute rows came from vessel-hours that never left a 100 m box, 246,000 of them at 0.6 to 2 kn, from 14,165 vessels. A 100 m box is not the 50 m anchor rule, so this estimates the noise rather than counting it.
 
 ## Design
 
@@ -37,7 +39,7 @@ An explicit `interval` keeps the current behavior: the first position per step, 
 
 ### Breaks
 
-A line is drawn only where there is evidence. The client splits a track at a silence longer than `trackGap(interval)`: 30 minutes plus two steps. A simplified track has no step, and collapsing a stay at the dock leaves hours between two kept positions while the vessel reported all along. So the server says where the vessel went unheard, from the full-resolution positions: a silence longer than 30 minutes in the `positions` view, or longer than 60 minutes in `positions_1m`, where a vessel sitting still has one heartbeat per 30-minute window and two can stand almost 60 minutes apart.
+A line is drawn only where there is evidence. The client in #157 splits a track at a silence longer than `trackGap(interval)`: 30 minutes plus two steps. A simplified track has no step, and collapsing a stay at the dock leaves hours between two kept positions while the vessel reported all along. So the server says where the vessel went unheard, from the full-resolution positions: a silence longer than 30 minutes in the `positions` view, or longer than 60 minutes in `positions_1m`, where a vessel sitting still has one heartbeat per 30-minute window and two can stand almost 60 minutes apart.
 
 The answer carries `breaks`, the indexes of positions that start a new segment. A segment's first and last position are always kept, so a break falls between two kept positions. GPX writes one `trkseg` per segment.
 
@@ -65,17 +67,22 @@ A report is moving when the vessel is more than 50 m from its anchor, or when it
 
 `anchor.still` is the one rule for the live writer, `convert-receptions`, and the archive loads, so they change together. Days already written keep their verdicts in `receptions.moving` and their rows in `positions_1m`. Shape simplification drops dock noise within 15 m on its own, so old days draw well without a rebuild. Rewriting old verdicts is left until measurement shows a need.
 
-On 2026-10-05 the rule would have kept up to 0.69 M fewer rows, about 6%. The measurement after the change is the rows per day in `positions_1m` against the 12.2 M on that day.
+By the 100 m estimate, the rule would have kept about 0.69 M fewer rows on 2026-10-05, about 6%. The count that settles it is the rows per day in `positions_1m` after the change, against the 12.2 M on that day.
 
 ## Client
 
-[client/app/lib/useTrack.ts](../client/app/lib/useTrack.ts) splits at `breaks` when the answer has them, and falls back to `trackGap(interval)` when it does not. The chart's speed line and the map's track use the same segments. The client ships before the server change, because a client without `breaks` support breaks the line at every collapsed stay.
+On top of #157, [client/app/lib/useTrack.ts](../client/app/lib/useTrack.ts) splits at `breaks` when the answer has them, and falls back to `trackGap(interval)` when it does not. The map's track (`splitTrack` in [client/app/lib/ais.ts](../client/app/lib/ais.ts)) and the chart's speed line in [client/app/components/VesselTrack.tsx](../client/app/components/VesselTrack.tsx), which breaks its own line from `track.gap`, both take the segments from there. The client ships before the server change, because a client without `breaks` support breaks the line at every collapsed stay.
+
+## Docs
+
+The server change updates, in the same pull request: [server/README.md](../server/README.md), its `positions_1m` paragraph for the moving rule and its tracks paragraph for simplification, breaks, and the anonymous limit; [docs/limits.md](../docs/limits.md) for the anonymous limit; [docs/architecture.md](../docs/architecture.md), whose tracks row says `positions_1m` keeps a track by speed; and [server/openapi.json](../server/openapi.json) for the new fields and the default.
 
 ## Order
 
-1. Client: draw segments from `breaks`, with the fallback. Ships with or after #157.
-2. Server: shape simplification, `breaks`, the new fields, GPX segments, the MCP default, the anonymous limit, and the moving rule. Tests: a synthetic dock-trip-dock track keeps the trip's corners and the dock's two ends; a stop mid-leg survives; a 2-hour silence makes a break and a 25-minute one does not; heartbeats 55 minutes apart in `positions_1m` do not; the tolerance grows only past the limit; a still vessel reporting 0.9 kn within 50 m is still. End to end against ClickHouse: the same, through the endpoint.
-3. Measure on production: CERULEAN and a ferry at 24 hours, 48 hours, 7 days, and 30 days; request time for a year of a ferry; `positions_1m` rows per day.
+1. #157, which stops the web client sending its own `interval`.
+2. Client: draw segments from `breaks`, with the fallback.
+3. Server: shape simplification, `breaks`, the new fields, GPX segments, the MCP default, the anonymous limit, and the moving rule. Tests: a synthetic dock-trip-dock track keeps the trip's corners and the dock's two ends; a stop mid-leg survives; a 2-hour silence makes a break and a 25-minute one does not; heartbeats 55 minutes apart in `positions_1m` do not; the tolerance grows only past the limit; a still vessel reporting 0.9 kn within 50 m is still. End to end against ClickHouse: the same, through the endpoint.
+4. Measure on production: CERULEAN and a ferry at 24 hours, 48 hours, 7 days, and 30 days; request time for a year of a ferry; `positions_1m` rows per day.
 
 ## Open questions
 
