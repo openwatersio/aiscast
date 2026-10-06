@@ -414,7 +414,7 @@ const archiveGrace = 2 * time.Hour
 //
 // Files inside archiveGrace are uploaded the same way but never deleted. Those are the hours the last
 // process closed at shutdown without uploading, and the sweep at boot sends them within a minute, well
-// well before anything reads the day. If this process reopens it while the upload runs, it goes up again,
+// before anything reads the day. If this process reopens it while the upload runs, it goes up again,
 // complete, when it rotates.
 func (a *archive) sweep() {
 	if a.dir == "" {
