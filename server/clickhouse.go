@@ -628,7 +628,8 @@ func (p *Pipeline) flushClickHouse() error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	p.flushOwn(c)
+	// Own-ship sightings go whatever the receptions do, and their failure is reported once the receptions are written.
+	ownErr := p.flushOwn(c)
 	if c.failed == nil {
 		p.chMu.Lock()
 		points := p.chQueue
@@ -637,7 +638,7 @@ func (p *Pipeline) flushClickHouse() error {
 		}
 		p.chMu.Unlock()
 		if len(points) == 0 {
-			return nil
+			return ownErr
 		}
 		c.failed, c.token, c.refused = points, newDedupeToken(), time.Time{}
 	}
@@ -671,37 +672,37 @@ func (p *Pipeline) flushClickHouse() error {
 	}
 	c.written.Add(int64(len(c.failed)))
 	c.failed = nil
-	return nil
+	return ownErr
 }
 
 // flushOwn writes the own-ship sightings gathered since the last flush. A failed insert puts them back, keeping
 // the later time where one arrived meanwhile, to go with the next; station_own's max makes a resend harmless.
-func (p *Pipeline) flushOwn(c *chStore) {
+func (p *Pipeline) flushOwn(c *chStore) error {
 	if c.own == nil {
-		return
+		return nil
 	}
 	p.chMu.Lock()
 	own := p.chOwn
 	if len(own) > 0 {
 		p.chOwn = map[ownKey]time.Time{}
 	}
-	// Claims older than the last hour no longer bound anything a live station sends.
-	cutoff := time.Now().Unix()/3600 - 1
+	// Claims from before the last hour received no longer bound anything a station sends.
 	for sh := range p.chOwnClaimed {
-		if sh.hour < cutoff {
+		if sh.hour < p.chOwnHW-1 {
 			delete(p.chOwnClaimed, sh)
 		}
 	}
 	p.chMu.Unlock()
 	if len(own) == 0 {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), chInsertTimeout)
 	err := c.own.insertOwn(ctx, own)
 	cancel()
 	if err == nil {
-		return
+		return nil
 	}
+	c.failures.Add(1)
 	p.chMu.Lock()
 	for k, t := range own {
 		last, ok := p.chOwn[k]
@@ -714,6 +715,7 @@ func (p *Pipeline) flushOwn(c *chStore) {
 		}
 	}
 	p.chMu.Unlock()
+	return fmt.Errorf("station_own: %w", err)
 }
 
 // insertOwn writes own-ship sightings to station_own.

@@ -405,6 +405,8 @@ func convertVessel(rows []v1Row, day, end time.Time, st *convertState, next map[
 		pt := trackPoint{mmsi: r.mmsi, ts: r.ts, lat6: r.lat6, lon6: r.lon6, sog10: r.sog10, cog10: r.cog10, heading: r.heading,
 			navStatus: r.navstat, source: r.source, txAt: txAt, txDisc: disc[r.tx], recv: r.recv,
 			station: r.station, dup: !r.accepted, uncorroborated: !r.corroborated, implausible: r.implausible, clockBad: r.clockBad}
+		// stale stays false: these rows came from the lake, which never held a report the fold judged stale, so stale[i]
+		// here marks only dedupe's late copies, which live ingest writes as heard.
 		pt.still = a.still(pt, nil, r.accepted && !stale[i] && !r.implausible && !r.clockBad)
 		if r.accepted {
 			still[r.tx] = pt.still

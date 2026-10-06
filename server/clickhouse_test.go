@@ -517,8 +517,8 @@ func TestClickHouseQueuesEveryCopy(t *testing.T) {
 	if len(q) != 10 {
 		t.Fatalf("%d copies queued, want 10: %+v", len(q), q)
 	}
-	// The copies that arrived after a later report are stale, the one dedupe matched included: the stream and the
-	// station counts left them out, and the station rollups read the flag to leave them out too.
+	// The copies the fold judged stale, arriving after a later report, carry the flag, the AISHub copy it matched to
+	// a transmission included: the stream and the station counts left them out, and the station rollups read it.
 	for i, c := range q {
 		if want := i == 3 || i == 4 || i >= 7; c.stale != want {
 			t.Errorf("copy %d (%s) stale %v, want %v", i, c.source, c.stale, want)
@@ -1577,7 +1577,9 @@ func TestClickHouseGathersOwnShipSightings(t *testing.T) {
 	p.Ingest(Reception{Source: station, Station: station, RecvTime: now, Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
 	p.Ingest(Reception{Source: station, Station: station, RecvTime: now.Add(time.Minute), Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
 	p.ingestPacket(station, station, now, now, posReport(366000009, 41.5, -70.6)) // heard, not its own
-	p.flushClickHouse()
+	if err := p.flushClickHouse(); err == nil || !strings.Contains(err.Error(), "station_own") {
+		t.Errorf("a failed own-ship insert reads as a successful flush: %v", err)
+	}
 	if len(own.batches) != 1 || len(own.batches[0]) != 1 {
 		t.Fatalf("one sighting per station, hour, and vessel: %+v", own.batches)
 	}
@@ -1599,6 +1601,49 @@ func TestClickHouseGathersOwnShipSightings(t *testing.T) {
 	}
 }
 
+// A station's own-ship message is evidence of the boat it is on whatever the stream made of it: the copy dedupe
+// matched to a shore receiver's identical payload, and a report the fold judged stale behind a newer one.
+func TestClickHouseKeepsOwnShipEvidenceTheStreamDrops(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	t0 := time.Now().Truncate(time.Hour).Add(5 * time.Minute)
+	const station = "station:ed25519:k"
+	const own = 227006760 // the MMSI in the sentence below
+	// A shore receiver delivers the payload first; the boat's own copy is dedupe's.
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: t0, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	p.Ingest(Reception{Source: station, Station: station, RecvTime: t0.Add(time.Second), Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
+	if _, ok := p.chOwn[ownKey{station, t0.Unix() / 3600, own}]; !ok {
+		t.Errorf("dedupe's own-ship copy left no sighting: %v", p.chOwn)
+	}
+	// Another source reports the vessel later than the boat's own-ship report, which arrives stale.
+	p = testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	p.ingestPacket("kystverket", "kystverket", t0.Add(40*time.Second), t0.Add(40*time.Second), posReport(own, 59.95, 10.7))
+	stale := p.stats.stale.Load()
+	p.Ingest(Reception{Source: station, Station: station, RecvTime: t0.Add(30 * time.Second), Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
+	if p.stats.stale.Load() != stale+1 {
+		t.Fatal("the own-ship report was not stale, so this case tests nothing")
+	}
+	if _, ok := p.chOwn[ownKey{station, t0.Unix() / 3600, own}]; !ok {
+		t.Errorf("a stale own-ship report left no sighting: %v", p.chOwn)
+	}
+}
+
+// Claims count by the hour the server received a message, so stamping own-ship reports across many hours opens no
+// new allowance.
+func TestClickHouseCountsOwnShipClaimsByArrival(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	now := time.Now()
+	for m := range uint32(50) {
+		stamp := now.Add(-time.Duration(m) * time.Hour) // a fresh hour for each MMSI
+		p.noteOwn(&Event{Station: "udp:spam", Time: stamp, RecvTime: now, Packet: posReport(200000000+m, 59.9, 10.7)})
+	}
+	if n := len(p.chOwn); n != maxOwnPerStation {
+		t.Errorf("%d sightings from stamps across 50 hours, want %d", n, maxOwnPerStation)
+	}
+}
+
 // One station claiming more vessels as its own than a boat has keeps its first few and cannot crowd out another
 // station's sighting.
 func TestClickHouseBoundsOwnShipsPerStation(t *testing.T) {
@@ -1606,9 +1651,9 @@ func TestClickHouseBoundsOwnShipsPerStation(t *testing.T) {
 	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
 	now := time.Now()
 	for m := range uint32(maxOwnPending + 5) {
-		p.noteOwn(&Event{Station: "udp:spam", MMSI: 200000000 + m, Time: now, RecvTime: now})
+		p.noteOwn(&Event{Station: "udp:spam", Time: now, RecvTime: now, Packet: posReport(200000000+m, 59.9, 10.7)})
 	}
-	p.noteOwn(&Event{Station: "udp:boat", MMSI: 368168720, Time: now, RecvTime: now})
+	p.noteOwn(&Event{Station: "udp:boat", Time: now, RecvTime: now, Packet: posReport(368168720, 59.9, 10.7)})
 	if n := len(p.chOwn); n != maxOwnPerStation+1 {
 		t.Errorf("%d sightings waiting, want %d from the spammer and the boat's own", n, maxOwnPerStation+1)
 	}
@@ -1617,7 +1662,7 @@ func TestClickHouseBoundsOwnShipsPerStation(t *testing.T) {
 	}
 	// A flush empties the waiting sightings but not the claims, so the spammer gains no new ones within the hour.
 	p.flushClickHouse()
-	p.noteOwn(&Event{Station: "udp:spam", MMSI: 299999999, Time: now, RecvTime: now})
+	p.noteOwn(&Event{Station: "udp:spam", Time: now, RecvTime: now, Packet: posReport(299999999, 59.9, 10.7)})
 	if len(p.chOwn) != 0 {
 		t.Errorf("a flush reset the station's claims: %v", p.chOwn)
 	}
@@ -1630,9 +1675,9 @@ func TestClickHouseBoundsOwnShipSightings(t *testing.T) {
 	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{fail: 1 << 30}})
 	now := time.Now()
 	for m := range uint32(maxOwnPending + 5) {
-		p.noteOwn(&Event{Station: fmt.Sprintf("udp:%d", m), MMSI: 200000000 + m, Time: now, RecvTime: now})
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:%d", m), Time: now, RecvTime: now, Packet: posReport(200000000+m, 59.9, 10.7)})
 	}
-	p.noteOwn(&Event{Station: "udp:0", MMSI: 200000000, Time: now.Add(time.Second), RecvTime: now})
+	p.noteOwn(&Event{Station: "udp:0", Time: now.Add(time.Second), RecvTime: now, Packet: posReport(200000000, 59.9, 10.7)})
 	if n := len(p.chOwn); n != maxOwnPending {
 		t.Errorf("%d sightings gathered, want the bound %d", n, maxOwnPending)
 	}

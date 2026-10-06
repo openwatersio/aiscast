@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"github.com/BertoldVdb/go-ais"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,31 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	add(day.Add(-30*time.Minute), 59.80)
 	for i := range 6 {
 		add(day.Add(10*time.Hour+time.Duration(i)*time.Minute), 59.90+float64(i)/100)
+	}
+	// A boat's own static data, as !AIVDO: an own-ship sighting with no position, so no reception, and nothing a
+	// replay that is compared but not swapped in may write.
+	vdo := func(s string) string {
+		s = strings.Replace(s, "!AIVDM", "!AIVDO", 1)
+		star := strings.LastIndex(s, "*")
+		var sum byte
+		for i := 1; i < star; i++ {
+			sum ^= s[i]
+		}
+		return fmt.Sprintf("%s*%02X", s[:star], sum)
+	}
+	static := ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009}, Valid: true, Name: "TENDER"}
+	for _, s := range enc.encoder.EncodeSentence(aisnmeaPacket('A', enc.codec.EncodePacket(static))) {
+		at := day.Add(10*time.Hour + 30*time.Second)
+		hour := at.Format("2006/01/02/15")
+		lines[hour] = append(lines[hour], at.Format(time.RFC3339Nano)+"\tkystverket\t"+vdo(s))
+	}
+	owned := func() uint64 {
+		t.Helper()
+		var n uint64
+		if err := c.conn.QueryRow(ctx, "SELECT count() FROM "+db+".station_own").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
 	}
 	for hour, ls := range lines {
 		path := filepath.Join(dir, "NLOD-2.0", "kystverket", hour+".gz")
@@ -115,14 +141,23 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if got := all(); len(got) != len(before) {
 		t.Fatalf("a dry run changed receptions: %d rows, was %d", len(got), len(before))
 	}
+	if n := owned(); n != 0 {
+		t.Fatalf("a dry run wrote %d own-ship sightings", n)
+	}
 	if err := c.replayDay(ctx, dir, day, warmup, false, false); err == nil || !strings.Contains(err.Error(), "-force") {
 		t.Fatalf("six replayed copies against seven stored replaced the day without -force: %v", err)
+	}
+	if n := owned(); n != 0 {
+		t.Fatalf("a refused replay wrote %d own-ship sightings", n)
 	}
 	// Replayed twice, as after a fix that needs a second pass: the second replay's identical blocks land too.
 	for range 2 {
 		if err := c.replayDay(ctx, dir, day, warmup, false, true); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if n := owned(); n == 0 {
+		t.Error("a replay swapped in wrote no own-ship sighting")
 	}
 
 	var network, previous, archived []row

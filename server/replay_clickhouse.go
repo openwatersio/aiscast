@@ -178,8 +178,10 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if err := c.seedVessels(ctx, p, day.Add(-warmup), archives); err != nil {
 		return fmt.Errorf("vessels: %w", err)
 	}
-	// Own-ship sightings go straight to station_own: its max merges a day replayed again without harm.
-	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}, own: &chConn{conn: c.conn, db: c.db}}
+	// Own-ship sightings wait in memory with the staged day and reach station_own only once the day is swapped in,
+	// so a dry run or a replay refused for its share changes nothing.
+	own := ownCollector{}
+	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}, own: own}
 	p.attachClickHouse(staging)
 	var flushNow func() error
 	flush := func() error {
@@ -245,8 +247,19 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	// window would otherwise drop although the delete before has removed their rows.
 	insert := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"insert_deduplication_token": fmt.Sprintf("replay-%s-%d", day.Format("2006-01-02"), time.Now().UnixNano())}))
-	if err := c.conn.Exec(insert, "INSERT INTO "+c.db+".receptions SELECT * FROM "+c.db+"."+stage+" WHERE "+where, args...); err != nil {
+	// By name, not position: a column a later migration adds to receptions while this runs reads as its default.
+	cols, err := chColumn[string](ctx, c.conn, "SELECT name FROM system.columns WHERE database = ? AND table = ? ORDER BY position", c.db, stage)
+	if err != nil {
+		return fmt.Errorf("the staged columns: %w", err)
+	}
+	list := strings.Join(cols, ", ")
+	if err := c.conn.Exec(insert, "INSERT INTO "+c.db+".receptions ("+list+") SELECT "+list+" FROM "+c.db+"."+stage+" WHERE "+where, args...); err != nil {
 		return fmt.Errorf("insert the replayed day, after deleting the stored one; replay it again: %w", err)
+	}
+	if len(own) > 0 {
+		if err := (&chConn{conn: c.conn, db: c.db}).insertOwn(ctx, own); err != nil {
+			return fmt.Errorf("station_own: %w", err)
+		}
 	}
 	// Copies that arrived on day carry stamps on the days beside it too.
 	for d := day.AddDate(0, 0, -1); !d.After(day.AddDate(0, 0, 1)); d = d.AddDate(0, 0, 1) {
@@ -378,4 +391,17 @@ func printReplayCounts(day time.Time, stored, replayed map[string]replayCount) {
 	a, b := stored[""], replayed[""]
 	fmt.Fprintf(w, "all\t%d\t%d\t%d\t%d\t%d\t%d\t\n", a.copies, b.copies, a.accepted, b.accepted, a.implausible, b.implausible)
 	w.Flush()
+}
+
+// ownCollector is a replay's own-ship sightings, the latest per station, hour, and vessel, held until the replayed
+// day is swapped in.
+type ownCollector map[ownKey]time.Time
+
+func (o ownCollector) insertOwn(_ context.Context, own map[ownKey]time.Time) error {
+	for k, t := range own {
+		if t.After(o[k]) {
+			o[k] = t
+		}
+	}
+	return nil
 }

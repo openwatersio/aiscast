@@ -119,7 +119,8 @@ type Pipeline struct {
 	chMu          sync.Mutex                 // guards chQueue; taken after vmu when both are held
 	chQueue       []trackPoint               // copies received since the last flush to ClickHouse; nil until it connects
 	chOwn         map[ownKey]time.Time       // own-ship sightings since the last flush, the latest per key; nil until it connects
-	chOwnClaimed  map[ownKey]map[uint32]bool // the vessels each station claimed as its own each hour, keyed without mmsi, for maxOwnPerStation
+	chOwnClaimed  map[ownKey]map[uint32]bool // the vessels each station claimed as its own each hour it received them, keyed without mmsi, for maxOwnPerStation
+	chOwnHW       int64                      // the latest hour an own-ship message was received in, which claims older than its last hour are pruned against
 	chOn          atomic.Bool                // ClickHouse is attached, so copies are worth building
 	history       *historyStats              // historical archives loaded into ClickHouse (history.go); nil unless a source is on
 
@@ -420,6 +421,9 @@ func (p *Pipeline) emit(ev *Event) {
 		p.stats.dup.Add(1)
 		p.usage.dups.add(time.Now())
 		p.stations.dup(ev)
+		if ev.Own {
+			p.noteOwn(ev) // a station's own ship is its own whichever copy dedupe kept
+		}
 		// A trusted source repeating what a UDP station delivered first still corroborates the vessel.
 		if !lowTrust(ev.Source) && isPositionType(typeName(ev.Packet)) {
 			p.markTrusted(ev.Packet.GetHeader().UserID, ev.Time)
@@ -457,6 +461,11 @@ func (p *Pipeline) emit(ev *Event) {
 	if p.chOn.Load() || ev.Implausible { // without ClickHouse, nothing waits on the verdict
 		p.settleFold(key, ev)
 	}
+	// Own-ship evidence holds whatever the fold made of the report: a stamp a newer copy beat is still the station
+	// saying which boat it is on.
+	if ev.Own {
+		p.noteOwn(ev)
+	}
 	if ev.Implausible {
 		p.stats.implausible.Add(1)
 		return
@@ -467,9 +476,6 @@ func (p *Pipeline) emit(ev *Event) {
 		p.stats.stale.Add(1)
 		p.touch(ev.Source) // still proof the source is delivering
 		return
-	}
-	if ev.Own {
-		p.noteOwn(ev)
 	}
 	p.stations.event(ev)
 	p.stats.events.Add(1)
