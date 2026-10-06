@@ -251,12 +251,12 @@ groups:
           summary: Vessel history has not merged into the record from ClickHouse for two days
           description: New history is not reaching vessel lookups or first_seen. Check the import lines in journalctl -u aiscast and that ClickHouse is up.
       - alert: HistoryArchiveStale
-        expr: time() - aiscast_history_latest_day_timestamp_seconds{source="marinecadastre"} > 150 * 86400 or increase(aiscast_history_files_total{result="failed"}[1d]) > 3 or increase(aiscast_history_check_failures_total[1d]) > 2
+        expr: time() - aiscast_history_latest_day_timestamp_seconds{source="marinecadastre"} > 150 * 86400 or time() - aiscast_history_latest_day_timestamp_seconds{source="dma"} > 7 * 86400 or increase(aiscast_history_files_total{result="failed"}[1d]) > 3 or increase(aiscast_history_check_failures_total[1d]) > 2
         for: 6h
         labels: {severity: warning}
         annotations:
           summary: '{{ $labels.source }} history is behind or failing to load'
-          description: MarineCadastre publishes a quarter about two months after it closes, so its newest day loaded should never be five months old, and neither files nor the checks every six hours, which list the archive, should keep failing. The newest day reads 0 until one loads. Check the history lines in journalctl -u aiscast and history_loads in ClickHouse.
+          description: MarineCadastre publishes a quarter about two months after it closes, so its newest day loaded should never be five months old. DMA publishes a day three days after it ends, so its newest should never be a week old. Neither files nor the checks every six hours, which list the archive, should keep failing. The newest day reads 0 until one loads. Check the history lines in journalctl -u aiscast and history_loads in ClickHouse.
       - alert: ClickHouseBackupStale
         # The backup's timestamp exists only on a box with the R2 keys. apply.sh sets it when backups are first on, so
         # a box whose backups never succeed alerts two days later.

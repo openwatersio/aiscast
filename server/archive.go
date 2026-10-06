@@ -19,7 +19,7 @@ import (
 var licenses = map[string]string{
 	"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
 	"station": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
-	"marinecadastre": "us-public-domain",
+	"marinecadastre": "us-public-domain", "dma": "DK-PSI",
 	// contributors were named by transport before station ids; raw hours from then still carry these
 	// sources, and replaying them must license their copies the same way
 	"http": "CC0-1.0", "v1": "CC0-1.0",
@@ -39,6 +39,7 @@ var attributions = map[string]string{
 	"aisstream":    "aisstream.io",
 	// a historical archive: its rows reach tracks, never the stream
 	"marinecadastre": "U.S. Coast Guard Nationwide AIS, via MarineCadastre.gov (NOAA and BOEM).",
+	"dma":            "Danish Maritime Authority.",
 }
 
 // licenseOf resolves a source's license tag: the full source name first, then its prefix (`station:ed25519:...` → `station`).

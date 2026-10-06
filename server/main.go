@@ -184,7 +184,10 @@ func main() {
 		go p.runClickHouse(url)
 		var sources []historySource
 		if os.Getenv("MARINECADASTRE") != "" {
-			sources = append(sources, marineCadastre(mcFrom()))
+			sources = append(sources, marineCadastre(historyFrom("MARINECADASTRE_FROM")))
+		}
+		if os.Getenv("DMA") != "" {
+			sources = append(sources, dma(historyFrom("DMA_FROM")))
 		}
 		if len(sources) > 0 {
 			if loader, err := historyLoaderURL(url, os.Getenv("CLICKHOUSE_LOADER_URL")); err != nil {
