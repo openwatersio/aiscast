@@ -360,3 +360,88 @@ func TestReplayFetchesInParallel(t *testing.T) {
 		t.Errorf("at most %d downloads ran at once, want between 2 and %d", m, fetchWorkers)
 	}
 }
+
+// A replay judges plausibility from what live held before its lead-in, not from the lead-in's first report or an
+// archive's rows. Here
+// two vessels share an MMSI: live has held the one off Sicily since before the lead-in, so a report off Gibraltar
+// during it is the implausible jump, and the next report off Sicily, on the replayed day, is plausible. A lead-in
+// starting from nothing would take Gibraltar first and flag Sicily instead.
+func TestReplaySeedsWhatLiveHeldBeforeTheLeadIn(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	c, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.conn.Exec(context.Background(), "DROP DATABASE "+db); c.conn.Close() })
+
+	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	warmup := corroborationWindow + vesselTTL
+	const mmsi = 257000001
+	// What live held: the vessel off Sicily, 5 minutes before the lead-in starts.
+	before := day.Add(-warmup - 5*time.Minute)
+	if err := c.conn.Exec(ctx, "INSERT INTO "+db+".positions_1m (mmsi, slot, cell, ts, lat6, lon6, sog10, cog10, heading, navstat, source)"+
+		" VALUES (?, ?, 0, ?, ?, ?, 0, 3600, 511, 15, 'kystverket')", mmsi, before.Truncate(time.Minute), before,
+		int32(36.74*600000), int32(14.21*600000)); err != nil {
+		t.Fatal(err)
+	}
+	// An archive's later row off Gibraltar, which never passed through live's cache, so it seeds nothing.
+	archived := before.Add(2 * time.Minute)
+	if err := c.conn.Exec(ctx, "INSERT INTO "+db+".positions_1m (mmsi, slot, cell, ts, lat6, lon6, sog10, cog10, heading, navstat, source)"+
+		" VALUES (?, ?, 0, ?, ?, ?, 0, 3600, 511, 15, 'marinecadastre')", mmsi, archived.Truncate(time.Minute), archived,
+		int32(35.96*600000), int32(-5.80*600000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.conn.Exec(ctx, "INSERT INTO "+db+".history_loads (source, file, day, etag, complete, loaded) VALUES ('marinecadastre', 'f', ?, 'e', true, now64(3))", day); err != nil {
+		t.Fatal(err)
+	}
+	enc := testPipeline(t)
+	sentence := func(lat, lon float64) string {
+		return enc.encoder.EncodeSentence(aisnmeaPacket('A', enc.codec.EncodePacket(posReport(mmsi, lat, lon))))[0]
+	}
+	dir := t.TempDir()
+	lines := map[string][]string{}
+	add := func(at time.Time, lat, lon float64) {
+		hour := at.Format("2006/01/02/15")
+		lines[hour] = append(lines[hour], at.Format(time.RFC3339Nano)+"\tkystverket\t"+sentence(lat, lon))
+	}
+	// Both keep reporting through the lead-in and into the day: off Gibraltar every 10 minutes, first at its start,
+	// and off Sicily every 20.
+	for at := -85 * time.Minute; at <= 5*time.Minute; at += 10 * time.Minute {
+		add(day.Add(at), 35.96+float64(at/time.Minute)/1e5, -5.80)
+	}
+	for at := -80 * time.Minute; at <= 10*time.Minute; at += 20 * time.Minute {
+		add(day.Add(at), 36.74+float64(at/time.Minute)/1e5, 14.21)
+	}
+	for hour, ls := range lines {
+		slices.Sort(ls) // a raw hour is in receive order, and each line starts with its receive time
+		path := filepath.Join(dir, "NLOD-2.0", "kystverket", hour+".gz")
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gz := gzip.NewWriter(f)
+		gz.Write([]byte(strings.Join(ls, "\n") + "\n"))
+		gz.Close()
+		f.Close()
+	}
+	if err := c.replayDay(ctx, dir, day, warmup, false, true); err != nil {
+		t.Fatal(err)
+	}
+	judged := func(lon float64) []bool {
+		t.Helper()
+		flags, err := chColumn[bool](ctx, c.conn, "SELECT implausible FROM "+db+".receptions WHERE mmsi = ? AND ts >= ? AND lon6 = ?", mmsi, day, int32(lon*600000))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return flags
+	}
+	if sicily, gibraltar := judged(14.21), judged(-5.80); len(sicily) != 1 || sicily[0] || len(gibraltar) != 1 || !gibraltar[0] {
+		t.Errorf("as live judged them, off Sicily is plausible and off Gibraltar is not: implausible %v and %v", sicily, gibraltar)
+	}
+}
