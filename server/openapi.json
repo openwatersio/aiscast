@@ -158,7 +158,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": {
-            "description": "No vessel with this MMSI has been heard.",
+            "description": "No vessel with this MMSI has been heard. An MMSI that many transmitters share, such as 0 or 123456789, never names a vessel here.",
             "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
           },
           "429": { "$ref": "#/components/responses/RateLimited" }
@@ -223,7 +223,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": {
-            "description": "No vessel with this MMSI has been heard.",
+            "description": "No vessel with this MMSI has been heard. An MMSI that many transmitters share, such as 0 or 123456789, never names a vessel here.",
             "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
           },
           "429": { "$ref": "#/components/responses/RateLimited" },
