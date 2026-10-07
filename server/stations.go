@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -564,6 +565,13 @@ func (s *stationStats) loadVessels(path string) error {
 	var in map[string]stationMemory
 	if err := json.Unmarshal(b, &in); err != nil {
 		return err
+	}
+	// A file saved before the fold kept these MMSIs out can hold them; restored, they would count as vessels
+	// heard and stand as own-ship candidates for another day.
+	for id, m := range in {
+		m.V = slices.DeleteFunc(m.V, func(v []float64) bool { return len(v) == 0 || !validMMSI(uint32(v[0])) })
+		m.Own = slices.DeleteFunc(m.Own, func(o [2]int64) bool { return !validMMSI(uint32(o[0])) })
+		in[id] = m
 	}
 	s.mu.Lock()
 	s.restoredV = in

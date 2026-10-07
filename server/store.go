@@ -1,6 +1,6 @@
 package main
 
-// The durable vessel record: one row per MMSI ever heard, in one SQLite file. The cache forgets a vessel
+// The durable vessel record: one row per vessel ever heard, keyed by MMSI, in one SQLite file. The cache forgets a vessel
 // 30 minutes after its last report. The record keeps its last known state, so a lookup by MMSI answers
 // for a boat at its berth and a search finds vessels not heard lately. On boot the cache is filled from
 // the record's last 30 minutes, so the record is the one state that survives a restart.
@@ -337,10 +337,16 @@ func openStore(path string) (*store, error) {
 		}
 	}
 	// The fold and the import skip MMSIs validMMSI rejects; this clears the rows a file already holds under them,
-	// a few range scans of the primary key each boot.
-	if _, err := db.Exec("DELETE FROM vessels WHERE " + invalidMMSIWhere()); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("%s: %w", path, err)
+	// a few range scans of the primary key each boot, and any station's own vessel chosen under one, which
+	// decideOwn would otherwise keep until the station sends a valid one.
+	for _, stmt := range []string{
+		"DELETE FROM vessels WHERE " + invalidMMSIWhere("mmsi"),
+		"UPDATE stations SET own = 0 WHERE own != 0 AND (" + invalidMMSIWhere("own") + ")",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	s := &store{db: db, path: path}
 	if s.mirror, err = loadMirror(s); err != nil {
@@ -355,18 +361,18 @@ const storeConns = 8
 
 func (s *store) close() error { return s.db.Close() }
 
-// invalidMMSIWhere matches the MMSIs validMMSI rejects, spelled from the same tables, in SQL that SQLite and
-// ClickHouse both read.
-func invalidMMSIWhere() string {
+// invalidMMSIWhere matches the MMSIs in col that validMMSI rejects, spelled from the same tables, in SQL that
+// SQLite and ClickHouse both read.
+func invalidMMSIWhere(col string) string {
 	var or []string
 	for _, r := range invalidMMSIRanges {
-		or = append(or, fmt.Sprintf("mmsi BETWEEN %d AND %d", r[0], r[1]))
+		or = append(or, fmt.Sprintf("%s BETWEEN %d AND %d", col, r[0], r[1]))
 	}
 	defaults := make([]string, 0, len(defaultMMSIs))
 	for m := range defaultMMSIs {
 		defaults = append(defaults, strconv.FormatUint(uint64(m), 10))
 	}
-	or = append(or, "mmsi IN ("+strings.Join(defaults, ", ")+")")
+	or = append(or, col+" IN ("+strings.Join(defaults, ", ")+")")
 	return strings.Join(or, " OR ")
 }
 

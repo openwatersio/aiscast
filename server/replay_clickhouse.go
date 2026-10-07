@@ -329,7 +329,7 @@ func (c *chConn) createReplayStaging(ctx context.Context) (string, error) {
 func (c *chConn) seedVessels(ctx context.Context, p *Pipeline, at time.Time, archives []string) error {
 	rows, err := c.conn.Query(ctx, "SELECT mmsi, max(ts), argMax(lat6, ts), argMax(lon6, ts), argMax(sog10, ts), argMax(cog10, ts), argMax(heading, ts),"+
 		" maxIf(ts, source NOT IN ('udp', 'mmsi'))"+
-		" FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND ts < ? AND NOT has(?, source) AND NOT ("+invalidMMSIWhere()+") GROUP BY mmsi HAVING max(ts) >= ?",
+		" FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND ts < ? AND NOT has(?, source) AND NOT ("+invalidMMSIWhere("mmsi")+") GROUP BY mmsi HAVING max(ts) >= ?",
 		at.Add(-corroborationWindow).Truncate(30*time.Minute), at, at, archives, at.Add(-vesselTTL))
 	if err != nil {
 		return err

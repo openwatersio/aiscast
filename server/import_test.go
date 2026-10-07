@@ -97,11 +97,22 @@ func TestOpenStoreRemovesInvalidMMSIs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for id, own := range map[string]uint32{"a": 555555555, "b": 257000001, "c": 0} {
+		if _, err := st.db.Exec(`INSERT INTO stations (id, own) VALUES (?, ?)`, id, own); err != nil {
+			t.Fatal(err)
+		}
+	}
 	st.close()
 	if st, err = openStore(path); err != nil {
 		t.Fatal(err)
 	}
 	defer st.close()
+	for id, want := range map[string]uint32{"a": 0, "b": 257000001, "c": 0} {
+		var own uint32
+		if err := st.db.QueryRow(`SELECT own FROM stations WHERE id = ?`, id).Scan(&own); err != nil || own != want {
+			t.Errorf("station %s own vessel %d (%v), want %d", id, own, err, want)
+		}
+	}
 	for _, m := range all {
 		if _, ok, _ := st.get(m); ok != validMMSI(m) {
 			t.Errorf("row for %d kept=%v, want %v", m, ok, validMMSI(m))

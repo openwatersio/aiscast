@@ -315,7 +315,7 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 	}
 	if err := exec(`CREATE TABLE ` + stage + ` ENGINE = MergeTree ORDER BY (mmsi, ts) AS
 		SELECT *, known AND abs(lat6) <= 54000000 AND abs(lon6) <= 108000000 AND NOT (lat6 = 0 AND lon6 = 0) AS placed
-		FROM (SELECT *, mmsi BETWEEN 201000000 AND 775999999 AND NOT (` + invalidMMSIWhere() + `) AND toDate(ts) = toDate('` + day + `') AS known
+		FROM (SELECT *, mmsi BETWEEN 201000000 AND 775999999 AND NOT (` + invalidMMSIWhere("mmsi") + `) AND toDate(ts) = toDate('` + day + `') AS known
 		      FROM (` + s.read(f) + `))`); err != nil {
 		return 0, fmt.Errorf("stage: %w", err)
 	}
