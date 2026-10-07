@@ -8,9 +8,9 @@ We publish what vessels broadcast over AIS. The track of a small boat can point 
 
 ## Vessel data
 
-AIS is an open radio broadcast. Vessels send their identity (MMSI), name, call sign, position, course, speed, destination, and dimensions, unencrypted, so that other vessels can see them. We receive these broadcasts from government open-data feeds, other AIS exchanges, and volunteer stations. We also load past years of AIS that governments publish, such as the US Coast Guard's archive on MarineCadastre. We add public registry details, such as build year, tonnage, owner, operator, and home port, from Wikidata, the US Coast Guard, the FCC, and Norway's Directorate of Fisheries. We take no owner names from the FCC, and none from the Norwegian register unless the owner is a company.
+AIS is an open radio broadcast. Vessels send their identity (MMSI), name, call sign, position, course, speed, destination, and dimensions, unencrypted, so that other vessels can see them. We receive these broadcasts from government open-data feeds, other AIS exchanges, and volunteer stations. We also load past years of AIS that governments publish, such as the US Coast Guard's archive on MarineCadastre and the Danish Maritime Authority's archive. We add public registry details, such as build year, tonnage, owner, operator, and home port, from Wikidata, the US Coast Guard, the FCC, and Norway's Directorate of Fisheries. We take no owner names from the FCC, and none from the Norwegian register unless the owner is a company.
 
-We publish this data as a live stream, current positions, vessel tracks, and an archive, under open licenses. We keep every reception indefinitely, with the source and station that delivered it, in our database and our archive. We also keep each vessel's last known position and details. A vessel's page shows its last known position however old, including vessels that only an archive heard. Anyone can see a vessel's track for the past 48 hours. Contributing stations and commercial users can see further back. Pages for named vessels heard in the past 30 days are listed for search engines.
+We publish this data as a live stream, current positions, vessel tracks, and an archive, under open licenses. We keep every reception indefinitely, with the source and station that delivered it, in our database. Live receptions are also kept in our archive. We back up the database every night and keep each backup for 70 days. We also keep each vessel's last known position and details. A vessel's page shows its last known position however old, including vessels that only an archive heard. Anyone can see a vessel's past tracks, as far back as we have them. Tracks older than 48 hours come in less detail unless you have a contributing station or a commercial token. Pages for named vessels heard in the past 30 days are listed for search engines.
 
 Our Explore pages feature some vessels with the people linked to them, such as sailing channels on YouTube and yachts whose owners have been publicly reported. They use only what those people, or public sources such as boat builders, yacht databases, and AIS tracking sites, have published. If you are featured, you can ask us to remove your entry, and we will. Removing your entry does not change the vessel's own page or track. The vessel opt-out below covers those.
 
@@ -22,9 +22,9 @@ We publish this data on the basis of legitimate interest. The vessel's own equip
 
 If your vessel is a small craft linked to you, you can ask us to stop publishing it. Email hello@openwaters.io with the MMSI and anything that shows your connection to the vessel. A photo, an insurance or mooring document, or a club listing is enough. You do not have to be the registered owner. A vessel registered to a company counts if you are its only user.
 
-The opt-out is free, and a person handles each request. Within 30 days we stop publishing the vessel in the live stream, on the map, in track and history queries, and on its vessel page, and we remove the page from the list we give search engines. We leave it out of any copy of our data that we publish after that, and confirm this to you in writing. We keep the MMSI on a list so that we do not publish the vessel again. We delete the proof you sent once we have handled the request.
+The opt-out is free, and a person handles each request. Within 30 days we stop publishing the vessel in the live stream, on the map, in track and history queries, and on its vessel page, and we remove the page from the list we give search engines. We delete it from our database, leave it out of any copy of our data that we publish after that, and confirm this to you in writing. Backups made before then expire within 70 days. We keep the MMSI on a list so that we do not publish the vessel again. We delete the proof you sent once we have handled the request.
 
-There are limits. Our stored records keep every vessel together in large files, so we do not promise to erase your vessel from them. We keep it out of everything we serve and publish instead. A station that sends your own vessel's position stays on the stations list under your vessel's name, and the opt-out does not remove it. Copies of the archive that others took under an open license are beyond our control. Anyone with a receiver can still hear your transponder. Search engines may keep their own copies of a vessel page for a while. Other tracking sites are separate, and you must ask each of them.
+There are limits. Our archive keeps every vessel together in hourly files, so the vessel stays there, but we leave it out whenever we rebuild our database from the archive. A station that sends your own vessel's position stays on the stations list under your vessel's name, and the opt-out does not remove it. Copies of the archive that others took under an open license are beyond our control. Anyone with a receiver can still hear your transponder. Search engines may keep their own copies of a vessel page for a while. Other tracking sites are separate, and you must ask each of them.
 
 The opt-out does not cover vessels that must carry AIS by law, such as commercial ships.
 
@@ -77,7 +77,7 @@ We send counts and timings to Grafana Cloud to watch the service's health. They 
 
 ## Who else handles data
 
-- **Cloudflare** serves the map and openwaters.io, so it sees those requests. Cloudflare Workers Logs keep a record of each request to the map, with your address, the page, and your browser's headers, for up to seven days. They can include Cloudflare's estimate of your location. We use them to find and fix errors. Our archives and the API log are stored in Cloudflare R2. The API log is in its own private bucket.
+- **Cloudflare** serves the map and openwaters.io, so it sees those requests. Cloudflare Workers Logs keep a record of each request to the map, with your address, the page, and your browser's headers, for up to seven days. They can include Cloudflare's estimate of your location. We use them to find and fix errors. Our archive, database history older than 30 days, nightly backups, and the API log are stored in Cloudflare R2. The API log is in its own private bucket.
 - **Hetzner** hosts the API server in Helsinki, Finland. The API does not pass through Cloudflare.
 - **Grafana Cloud** stores our monitoring data.
 - **Plausible** counts page views on the map.
@@ -86,9 +86,9 @@ These providers process data for us under their own terms. We do not sell person
 
 ## Your rights
 
-You can ask us what we hold about you, and ask us to correct it, or to delete it where we can. Our stored history keeps every vessel together, so we cannot erase one vessel from it. We have no accounts, so we may ask you for something that lets us find your data, such as your token, your MMSI, or your IP address and the times you used the service.
+You can ask us what we hold about you, and ask us to correct it or delete it. We have no accounts, so we may ask you for something that lets us find your data, such as your token, your MMSI, or your IP address and the times you used the service.
 
-If the GDPR applies to you, the vessel opt-out is how you use your right to object. You can complain to your data protection authority.
+If the GDPR applies to you, the vessel opt-out is how you use your right to object, and the deletion that follows is your right to erasure. You can complain to your data protection authority.
 
 ## Changes
 
