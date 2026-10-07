@@ -194,21 +194,15 @@ func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "optimize_aggregation_in_order": 1,
 		"max_threads": 2, "max_execution_time": 3600,
 	}))
-	levels := make([]string, 0, rebuildSlices-1)
+	var levels []string
 	for i := 1; i < rebuildSlices; i++ {
 		levels = append(levels, fmt.Sprint(float64(i)/float64(rebuildSlices)))
 	}
-	edges := []uint32{0}
+	var qs []uint32
 	if len(levels) > 0 {
-		var qs []uint32
 		if err := c.conn.QueryRow(ctx, "SELECT arrayMap(x -> if(isNaN(x), 0, toUInt32(x)), quantiles("+strings.Join(levels, ", ")+")(mmsi)) FROM "+c.db+
 			".receptions WHERE ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE", day, end).Scan(&qs); err != nil {
 			return err
-		}
-		for _, e := range qs {
-			if e > edges[len(edges)-1] {
-				edges = append(edges, e)
-			}
 		}
 	}
 	q := `INSERT INTO {db}.positions_1m
@@ -218,19 +212,36 @@ func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE AND mmsi >= ? AND mmsi <= ?") + `)
 	WHERE f.1 >= ? AND f.1 < ?`
 	q = strings.ReplaceAll(q, "{db}", c.db)
-	for i, lo := range edges {
-		hi := uint32(math.MaxUint32)
-		if i+1 < len(edges) {
-			hi = edges[i+1] - 1
-		}
-		if err := c.conn.Exec(ctx, q, day, end, lo, hi, day, end); err != nil {
+	for _, rg := range vesselRanges(qs) {
+		if err := c.conn.Exec(ctx, q, day, end, rg[0], rg[1], day, end); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// rebuildSlices is how many ranges of vessels a day of positions_1m is rebuilt in.
+// vesselRanges turns ascending MMSI edges into inclusive ranges that cover every MMSI exactly once: the first from
+// 0, each next one starting where the last ended, the last to the largest. An edge that repeats or is 0 adds no
+// range, so a day with few vessels, or none, has fewer ranges.
+func vesselRanges(edges []uint32) [][2]uint32 {
+	starts := []uint32{0}
+	for _, e := range edges {
+		if e > starts[len(starts)-1] {
+			starts = append(starts, e)
+		}
+	}
+	out := make([][2]uint32, len(starts))
+	for i, lo := range starts {
+		hi := uint32(math.MaxUint32)
+		if i+1 < len(starts) {
+			hi = starts[i+1] - 1
+		}
+		out[i] = [2]uint32{lo, hi}
+	}
+	return out
+}
+
+// rebuildSlices is how many ranges of vessels a day of positions_1m is rebuilt in; 1 or less rebuilds it whole.
 var rebuildSlices = 8
 
 // chWriter inserts a batch of positions under a deduplication token, so ClickHouse skips a batch it already

@@ -1559,10 +1559,10 @@ func TestClickHouseRebuildsPositions1mInSlices(t *testing.T) {
 	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
 	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
 	var pts []trackPoint
-	for v := range 200 { // neighbouring MMSIs, so some sit on the edges
+	for v := range 2000 { // neighbouring MMSIs, so some sit on the edges; enough rows that each range reads only its own
 		mmsi := uint32(257000000 + v)
 		for i := range 30 {
-			ts := day.Add(time.Duration(v*7+i*41) * time.Minute)
+			ts := day.Add(time.Duration((v*7+i*41)%1439) * time.Minute) // every report on the day
 			pt := trackPoint{mmsi: mmsi, ts: ts, lat6: int32((59 + float64(i)/100) * 600000), lon6: int32(10.7 * 600000), sog10: 100,
 				cog10: 3600, heading: 511, navStatus: 0, source: "kystverket", station: "kystverket", txAt: ts, txDisc: 1, recv: ts}
 			late := pt // a later copy of the same transmission from another source
@@ -1590,5 +1590,37 @@ func TestClickHouseRebuildsPositions1mInSlices(t *testing.T) {
 	whole, sliced := rebuilt(1), rebuilt(8)
 	if len(whole) == 0 || !slices.Equal(whole, sliced) {
 		t.Fatalf("rebuilt whole: %d rows; in 8 ranges: %d rows, or they differ", len(whole), len(sliced))
+	}
+	// What keeps a large day within memory: each range's query reads only its own share of the day's rows.
+	if err := conn.conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
+		t.Fatal(err)
+	}
+	read, err := chColumn[uint64](ctx, conn.conn, "SELECT read_rows FROM system.query_log WHERE type = 'QueryFinish' AND current_database = currentDatabase()"+
+		" AND startsWith(query, 'INSERT INTO "+db+".positions_1m') ORDER BY event_time_microseconds DESC LIMIT 8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 8 {
+		t.Fatalf("%d range queries logged, want 8", len(read))
+	}
+	for _, n := range read {
+		if n > uint64(len(pts))/2 {
+			t.Errorf("a range read %d of the day's %d rows, as a rebuild of the whole day would", n, len(pts))
+		}
+	}
+}
+
+// The ranges cover every MMSI once, whatever edges the quantiles give: none, repeated, or 0.
+func TestVesselRangesCoverEveryMMSIOnce(t *testing.T) {
+	for _, edges := range [][]uint32{nil, {0, 0, 0}, {257000050, 257000100, 257000150}, {5, 5, 9}, {math.MaxUint32}} {
+		rs := vesselRanges(edges)
+		if rs[0][0] != 0 || rs[len(rs)-1][1] != math.MaxUint32 {
+			t.Errorf("%v: ranges %v do not run from 0 to the largest MMSI", edges, rs)
+		}
+		for i := 1; i < len(rs); i++ {
+			if rs[i][0] != rs[i-1][1]+1 || rs[i][0] > rs[i][1] {
+				t.Errorf("%v: ranges %v leave a gap or overlap at %d", edges, rs, i)
+			}
+		}
 	}
 }
