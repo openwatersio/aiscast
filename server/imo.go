@@ -85,30 +85,33 @@ func (p *Pipeline) resolveIMOs(imos []uint32) (_ map[uint32][]record, cut bool, 
 	}
 	var recs []record
 	if p.store != nil {
-		var err error
-		if recs, err = p.store.find(recordQuery{imos: imos}); err != nil {
-			return nil, false, err
-		}
-		// The record runs up to a flush behind the cache, so the cache answers for the vessels folded since:
-		// a first static report is found at once, and a changed IMO answers for the new number. A vessel back
-		// from the sweep has not resent its IMO yet, and the record answers for it.
+		// The record runs up to a flush behind the cache, so the cache answers for the vessels folded since and
+		// the ones a flush is still writing: a first static report is found at once, and a changed IMO answers
+		// for the new number. A vessel back from the sweep has not resent its IMO yet, and the record answers
+		// for it. The cache is read first: a flush refreshes the mirror before it lets go of its vessels, so
+		// none falls between the two reads.
+		fresh := map[uint32]bool{}
 		p.vmu.RLock()
-		cached := func(mmsi uint32) *vessel {
-			if _, ok := p.dirty[mmsi]; !ok {
-				return nil
-			}
-			if v := p.vessels[mmsi]; v != nil && v.IMO != 0 {
-				return v
-			}
-			return nil
-		}
-		recs = slices.DeleteFunc(recs, func(r record) bool { return cached(r.mmsi) != nil })
-		for mmsi := range p.dirty {
-			if v := cached(mmsi); v != nil && want[v.IMO] {
-				recs = append(recs, record{mmsi: mmsi, v: v.state()})
+		for _, set := range []map[uint32]struct{}{p.dirty, p.flushing} {
+			for mmsi := range set {
+				if v := p.vessels[mmsi]; v != nil && v.IMO != 0 && !fresh[mmsi] {
+					fresh[mmsi] = true
+					if want[v.IMO] {
+						recs = append(recs, record{mmsi: mmsi, v: v.state()})
+					}
+				}
 			}
 		}
 		p.vmu.RUnlock()
+		filed, err := p.store.find(recordQuery{imos: imos})
+		if err != nil {
+			return nil, false, err
+		}
+		for _, r := range filed {
+			if !fresh[r.mmsi] {
+				recs = append(recs, r)
+			}
+		}
 	} else {
 		p.vmu.RLock()
 		for mmsi, v := range p.vessels {

@@ -731,14 +731,20 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	}
 	var recs []record
 	var err error
-	if imo != 0 {
-		qi := q
-		qi.prefix, qi.imos, qi.limit = "", []uint32{imo}, maxMMSIsPerIMO+1
-		recs, err = p.store.find(qi)
-	}
-	imoCut := len(recs) > maxMMSIsPerIMO
-	if imoCut {
-		recs = recs[:maxMMSIsPerIMO]
+	var imoCut bool
+	if imo != 0 { // resolved as every IMO lookup is, then narrowed by the search's own filters
+		var found map[uint32][]record
+		var mq *mirrorQuery
+		if found, imoCut, err = p.resolveIMOs([]uint32{imo}); err == nil {
+			mq, err = newMirrorQuery(q)
+		}
+		if err == nil {
+			for _, r := range found[imo] {
+				if mq.match(r.mmsi, r.v) {
+					recs = append(recs, r)
+				}
+			}
+		}
 	}
 	byIMO := len(recs) // the IMO's vessels come first, then the MMSI prefix matches
 	if err == nil && !explicit {

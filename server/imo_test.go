@@ -397,6 +397,10 @@ func TestIMOStreamFollowsNewVessels(t *testing.T) {
 		return m
 	}
 	read() // welcome
+	wsWriteJSON(ctx, c, map[string]any{"type": "subscribe", "imo": []uint32{}})
+	if m := read(); m["type"] != "error" {
+		t.Fatalf("an empty imo list widened the subscription: %v", m)
+	}
 	wsWriteJSON(ctx, c, map[string]any{"type": "subscribe", "mmsi": []uint32{257000001}, "imo": []uint32{9241061}, "snapshot": true})
 	if m := read(); m["mmsi"] != float64(257000001) { // the snapshot: the subscription is in place
 		t.Fatalf("snapshot: %v", m)
@@ -505,11 +509,31 @@ func TestIMOBetweenFlushes(t *testing.T) {
 	if w := get(t, p, "/v1/vessels/IMO7777777"); w.Code != 200 {
 		t.Errorf("by path before the flush: %d %s", w.Code, w.Body)
 	}
+	if got := ids(getFC(t, p, "/v1/vessels?q=IMO7777777")); !slices.Equal(got, []uint32{538000009}) {
+		t.Errorf("search before the flush: %v", got)
+	}
+	if got := ids(getFC(t, p, "/v1/vessels?q=IMO1234567")); slices.Contains(got, 230000100) || len(got) != maxMMSIsPerIMO {
+		t.Errorf("search for an IMO a vessel just left: %v", got)
+	}
 	cs := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, &Claims{Sub: "f", Role: "feeder"}))
 	var out mcpVessels
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"imo": []uint32{7777777}}, &out); msg != "" || len(out.Vessels) != 1 || len(out.UnknownIMO) != 0 {
 		t.Errorf("get_vessels before the flush: %q %+v", msg, out)
 	}
+
+	// while a flush writes a vessel it is in neither the dirty set nor the mirror yet, and the cache answers
+	at = time.Now()
+	p.ingestPacket("kystverket", "kystverket", at, at, posReport(538000010, 59.9, 10.7))
+	p.ingestPacket("kystverket", "kystverket", at, at, staticIMO(538000010, 7777778, "MID FLUSH"))
+	p.vmu.Lock()
+	p.flushing, p.dirty = p.dirty, map[uint32]struct{}{} // as flushRecord does before its upsert
+	p.vmu.Unlock()
+	if byIMO, _, _ := p.resolveIMOs([]uint32{7777778}); len(byIMO[7777778]) != 1 {
+		t.Errorf("mid-flush: %v", byIMO[7777778])
+	}
+	p.vmu.Lock()
+	p.dirty, p.flushing = p.flushing, nil
+	p.vmu.Unlock()
 
 	// a vessel back from the sweep has not resent its IMO, and the record still answers for it
 	mustFlush(t, p)

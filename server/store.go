@@ -861,10 +861,13 @@ func (p *Pipeline) flushRecord() error {
 			rows = append(rows, record{mmsi: mmsi, v: v.state()})
 		}
 	}
-	p.dirty = make(map[uint32]struct{}, len(rows))
+	p.flushing, p.dirty = p.dirty, make(map[uint32]struct{}, len(rows))
 	p.vmu.Unlock()
 	start := time.Now()
 	err := p.store.upsert(rows)
+	p.vmu.Lock()
+	p.flushing = nil
+	p.vmu.Unlock()
 	p.store.flushNanos.Add(int64(time.Since(start)))
 	p.store.flushes.Add(1)
 	if err != nil {

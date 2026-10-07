@@ -468,6 +468,10 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "bbox not allowed for this key"})
 					continue
 				}
+				if f.IMO != nil && len(f.IMO) == 0 { // as an empty imo= is refused: an empty list would widen to everything
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "imo needs at least one IMO number"})
+					continue
+				}
 				if len(f.IMO) > 0 {
 					f.IMO = slices.Compact(slices.Sorted(slices.Values(f.IMO))) // a repeated IMO counts once, as on SSE
 					if err := imoGate(cl); err != nil {
