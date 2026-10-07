@@ -213,7 +213,8 @@ func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	WHERE f.1 >= ? AND f.1 < ?`
 	q = strings.ReplaceAll(q, "{db}", c.db)
 	// Each range is deleted just before it is rebuilt, so a rebuild that stops partway leaves the ranges it had not
-	// reached with the rows they held, never with none.
+	// reached with the rows they held. Only the range in progress can be left empty, by a stop between its delete
+	// and its insert, until the day is rebuilt again.
 	for i, rg := range vesselRanges(qs) {
 		if err := c.conn.Exec(deletes, "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND mmsi >= ? AND mmsi <= ?",
 			day, end, rg[0], rg[1]); err != nil {
