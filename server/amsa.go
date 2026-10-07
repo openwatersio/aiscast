@@ -81,9 +81,9 @@ func amsaYear(s string) int {
 	return int(f)
 }
 
-// amsaSheetURL finds the spreadsheet's link on the list's page. The page has had one; a link naming the
-// list wins over any other, so a second spreadsheet added beside it, such as a list of deregistered
-// ships, is not read in its place.
+// amsaSheetURL finds the spreadsheet's link on the list's page: the one naming the list, so no other
+// spreadsheet, such as a list of deregistered ships, is ever read in its place. A list renamed past
+// recognition fails the sync, which the failure alert reports, rather than store another sheet.
 func amsaSheetURL(ctx context.Context, page string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, page, nil)
 	if err != nil {
@@ -102,22 +102,16 @@ func amsaSheetURL(ctx context.Context, page string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var links []string
-	for _, m := range amsaXlsxLink.FindAllSubmatch(body, -1) {
-		links = append(links, string(m[1]))
-	}
+	matches := amsaXlsxLink.FindAllSubmatch(body, -1)
 	link := ""
-	for _, l := range links {
-		if strings.Contains(strings.ToLower(l), "list-of-registered-ships") {
+	for _, m := range matches {
+		if l := string(m[1]); strings.Contains(strings.ToLower(l), "list-of-registered-ships") {
 			link = l
 			break
 		}
 	}
-	if link == "" && len(links) == 1 {
-		link = links[0]
-	}
 	if link == "" {
-		return "", fmt.Errorf("no spreadsheet link among %d on the page", len(links))
+		return "", fmt.Errorf("no link to the list among %d spreadsheet links on the page", len(matches))
 	}
 	base, err := url.Parse(page)
 	if err != nil {

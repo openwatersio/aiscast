@@ -144,8 +144,10 @@ func TestAMSASheetURL(t *testing.T) {
 		{`<a href="/a/fees.xlsx"></a><a href="/files/list-of-registered-ships-01.02.27.xlsx"></a>`, "/files/list-of-registered-ships-01.02.27.xlsx"},
 		// a list of deregistered ships ahead of the list is passed over
 		{`<a href="/files/list-of-deregistered-ships-13.10.26.xlsx"></a><a href="/files/copy-of-list-of-registered-ships-06.10.26.xlsx"></a>`, "/files/copy-of-list-of-registered-ships-06.10.26.xlsx"},
-		// one spreadsheet under a new name is still the list
-		{`<a href="https://cdn.example/register.xlsx?v=1&amp;x=2&#38;y=3"></a>`, "https://cdn.example/register.xlsx?v=1&x=2&y=3"},
+		{`<a href="https://cdn.example/list-of-registered-ships.xlsx?v=1&amp;x=2&#38;y=3"></a>`, "https://cdn.example/list-of-registered-ships.xlsx?v=1&x=2&y=3"},
+		// a sole spreadsheet that is not the list is never read in its place
+		{`<a href="/files/list-of-deregistered-ships-13.10.26.xlsx"></a>`, ""},
+		{`<a href="/files/register.xlsx"></a>`, ""},
 		// a cache-busting query, single quotes, and an upper-case extension
 		{`<a href='/files/List-Of-Registered-Ships.XLSX?v=123'></a>`, "/files/List-Of-Registered-Ships.XLSX?v=123"},
 		{`<a href="/a.xlsx"></a><a href="/b.xlsx"></a>`, ""},
