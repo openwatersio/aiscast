@@ -31,7 +31,7 @@ A rollup's `station` is the id a station page is addressed by, as `receptions` h
 ## What ClickHouse gains for live ingest
 
 - **`receptions.stale`**, a `Bool` added by a numbered `ADD COLUMN` step, so rows from before it read as false: the copy is older than a report the vessel had already sent, which live ingest keeps from subscribers and from the station counts. The live writer, replay, and the archive loader set it.
-- **`station_own`**: `hour`, `station`, `mmsi`, and `last_ts` as a max, one row per station, own vessel, and hour, from every message a station sends as its own ship (`!AIVDO`), position or static. An `AggregatingMergeTree` ordered by `(station, hour, mmsi)`, kept 35 days. The live writer and replay write it; max merges the same in any order and any number of times. Own-ship messages that are static never reach `receptions`, so this is the only place they are kept.
+- **`station_own`**: `hour`, `station`, `mmsi`, and `last_ts` as a max, one row per station, own vessel, and hour received, from every message a station sends as its own ship (`!AIVDO`), position or static. An `AggregatingMergeTree` ordered by `(station, hour, mmsi)`, kept 35 days. The live writer and replay write it; max merges the same in any order and any number of times. Own-ship messages that are static never reach `receptions`, so this is the only place they are kept.
 
 Rollups built from rows written before these exist count stale copies as heard and have no own-ship evidence; this is noted where those days are shown.
 

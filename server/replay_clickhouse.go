@@ -178,10 +178,14 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if err := c.seedVessels(ctx, p, day.Add(-warmup), archives); err != nil {
 		return fmt.Errorf("vessels: %w", err)
 	}
-	// Own-ship sightings wait in memory with the staged day and reach station_own only once the day is swapped in,
-	// so a dry run or a replay refused for its share changes nothing.
-	own := ownCollector{}
-	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}, own: own}
+	// Own-ship sightings are staged beside the day and reach station_own only once the day is swapped in, so a dry
+	// run or a replay refused for its share changes nothing.
+	ownStage := stage + "_own"
+	if err := c.exec(ctx, "CREATE TABLE {db}."+ownStage+" AS {db}.station_own"); err != nil {
+		return err
+	}
+	defer c.exec(context.Background(), "DROP TABLE IF EXISTS {db}."+ownStage)
+	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}, own: &chConn{conn: c.conn, db: c.db, own: ownStage}}
 	p.attachClickHouse(staging)
 	var flushNow func() error
 	flush := func() error {
@@ -270,15 +274,14 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		day.AddDate(0, 0, -1), day.AddDate(0, 0, 1)); err != nil {
 		return fmt.Errorf("mark archive days to load again: %w", err)
 	}
-	// Own-ship sightings last, so a failure here leaves the receptions' rollups already rebuilt. The day's are replaced,
-	// as its receptions are: a correction that changes which vessel a station claimed must not leave the old claim.
+	// Own-ship sightings last, so a failure here leaves the receptions' rollups already rebuilt. The hours received on
+	// the day are replaced, as its receptions are: a correction that changes which vessel a station claimed must not
+	// leave the old claim. The staged sightings are exactly those hours, since the replay takes messages by arrival.
 	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".station_own WHERE hour >= ? AND hour < ?", day, day.AddDate(0, 0, 1)); err != nil {
 		return fmt.Errorf("station_own: %w", err)
 	}
-	if len(own) > 0 {
-		if err := (&chConn{conn: c.conn, db: c.db}).insertOwn(ctx, own); err != nil {
-			return fmt.Errorf("station_own: %w", err)
-		}
+	if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_own (hour, station, mmsi, last_ts) SELECT hour, station, mmsi, last_ts FROM "+c.db+"."+ownStage); err != nil {
+		return fmt.Errorf("station_own: %w", err)
 	}
 	log.Printf("replay: %s: replaced, in %s", day.Format("2006-01-02"), time.Since(started).Round(time.Second))
 	return nil
@@ -407,17 +410,4 @@ func printReplayCounts(day time.Time, stored, replayed map[string]replayCount) {
 	a, b := stored[""], replayed[""]
 	fmt.Fprintf(w, "all\t%d\t%d\t%d\t%d\t%d\t%d\t\n", a.copies, b.copies, a.accepted, b.accepted, a.implausible, b.implausible)
 	w.Flush()
-}
-
-// ownCollector is a replay's own-ship sightings, the latest per station, hour, and vessel, held until the replayed
-// day is swapped in.
-type ownCollector map[ownKey]time.Time
-
-func (o ownCollector) insertOwn(_ context.Context, own map[ownKey]time.Time) error {
-	for k, t := range own {
-		if t.After(o[k]) {
-			o[k] = t
-		}
-	}
-	return nil
 }

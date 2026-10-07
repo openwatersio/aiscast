@@ -1861,3 +1861,23 @@ func TestClickHouseWritesStaleAndStationOwn(t *testing.T) {
 		t.Errorf("station_own: %d rows, last %v, want 1 at %v", rows, last, t0.Add(2*time.Minute))
 	}
 }
+
+// A sighting's hour is when it arrived, as a replay takes a day's messages, so one stamped late on a day and
+// received after midnight belongs to the next day's replay and is never deleted by this one's.
+func TestClickHouseKeysOwnShipSightingsByArrival(t *testing.T) {
+	p := testPipeline(t)
+	own := &fakeOwn{}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: own})
+	recv := time.Now().UTC().Truncate(24 * time.Hour).Add(time.Second)
+	stamp := recv.Add(-2 * time.Second)
+	p.noteOwn(&Event{Station: "station:boat", Time: stamp, RecvTime: recv, Packet: posReport(368168720, 59.9, 10.7)})
+	p.flushClickHouse()
+	if len(own.batches) != 1 {
+		t.Fatalf("batches %+v", own.batches)
+	}
+	for k, at := range own.batches[0] {
+		if k.hour != recv.Unix()/3600 || !at.Equal(stamp) {
+			t.Errorf("sighting %+v at %v: want the hour it arrived, %v, and the time it was stamped", k, at, recv.Truncate(time.Hour))
+		}
+	}
+}
