@@ -72,7 +72,7 @@ The per-station vessel maps, `exclusive`, the station vessels file, and its load
 
 - **`GET /v1/stations`**: each row adds `uptime_7d`, and `vessels_24h` and `vessels_exclusive_24h` come from the rollups, from one query for every station cached for a minute. Live fields stay as they are.
 - **`GET /v1/stations/{id}`**: the station adds `hours`, the 168 hourly reception counts oldest first, and `types`, the 24-hour vessels and unique vessels by ITU ship type or kind, from `station_vessels` joined with `statics`. Cached for a minute per station.
-- **`GET /v1/coverage/tiles.json?station=` and `/v1/coverage/tiles/{z}/{x}/{y}?station=`**: the coverage tiles for one station's cells over 7 days, at every resolution the network map draws, with the same layer and properties. The TileJSON's tile URLs carry the parameter, and its `bounds` are the extent of the station's cells. The server loads a station's cells from `station_coverage` the first time they are asked for after each network load and keeps them until the next, and the tile cache keys on the station. The station id is a query value, so an id holding a slash is read whole.
+- **`GET /v1/coverage/tiles.json?station=` and `/v1/coverage/tiles/{z}/{x}/{y}?station=`**: the coverage tiles for one station's cells over 7 days, at every resolution the network map draws, with the same layer and properties. The TileJSON's tile URLs carry the parameter, and its `bounds` are the extent of the station's cells and its `fit` the extent of the middle 90% of them. The server loads a station's cells from `station_coverage` the first time they are asked for after each network load and keeps them until the next, and the tile cache keys on the station. The station id is a query value, so an id holding a slash is read whole.
 
 ## Privacy
 
@@ -80,7 +80,7 @@ The per-station vessel counts and types inherit the vessel opt-out the [policy](
 
 ## Map
 
-The station page draws its tiles with the coverage map's own layer, fill, and color ramp, at a lower opacity than the coverage map, beneath every vessel layer. The map fits the TileJSON's `bounds`, and the size the page states is their extent.
+The station page draws its tiles with the coverage map's own layer, fill, and color ramp, at a lower opacity than the coverage map, beneath every vessel layer. The map fits the TileJSON's `fit`, and the size the page states is its extent.
 
 ## Sizing
 

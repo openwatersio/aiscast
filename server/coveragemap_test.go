@@ -48,6 +48,8 @@ type fakeCoverageSource struct {
 	cells        []covRow
 	stations     map[string][]covRow // each station's cells
 	stationLoads int
+	loading      chan string   // when set, each station load sends its station here
+	release      chan struct{} // when set, each station load waits for it
 	backfills    int
 	first, last  time.Time // the window last asked for
 }
@@ -84,6 +86,10 @@ func (f *fakeCoverageSource) coverageStations(context.Context, time.Time, time.T
 func (f *fakeCoverageSource) stationCoverageCells(_ context.Context, station string, first, last time.Time, each func(covRow) error) error {
 	f.stationLoads++
 	f.first, f.last = first, last
+	if f.loading != nil {
+		f.loading <- station
+		<-f.release
+	}
 	for _, r := range f.stations[station] {
 		if err := each(r); err != nil {
 			return err
@@ -662,5 +668,91 @@ func TestStationKey(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s %s at %s: %q, want %q", c.source, c.station, c.ts, got, c.want)
 		}
+	}
+}
+
+// square is a cell outline a hundredth of a degree across at lat, lon, in coverageCells' order.
+func square(lat, lon float64) ([]float64, []float64) {
+	return []float64{lat, lat - 0.01, lat - 0.01, lat}, []float64{lon, lon, lon + 0.01, lon + 0.01}
+}
+
+// A station's TileJSON bounds take in every cell, since a map requests no tiles past them, and its fit leaves out
+// the few farthest.
+func TestCoverageStationBounds(t *testing.T) {
+	var cells []covRow
+	for i := range 20 {
+		lats, lons := square(59.9, 10.5+float64(i)*0.02)
+		cells = append(cells, covRow{res: 6, cell: uint64(i + 1), vessels: 1, days: 1, lats: lats, lons: lons})
+	}
+	lats, lons := square(55.7, 12.6) // Copenhagen, once
+	cells = append(cells, covRow{res: 6, cell: 99, vessels: 1, days: 1, lats: lats, lons: lons})
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: cells, stations: map[string][]covRow{"station:roving": cells}}
+	p := coveragePipeline(t, f)
+	w := httptest.NewRecorder()
+	httpHandler(p).ServeHTTP(w, httptest.NewRequest("GET", "/v1/coverage/tiles.json?station=station:roving", nil))
+	var tj struct{ Bounds, Fit []float64 }
+	if err := json.Unmarshal(w.Body.Bytes(), &tj); err != nil || w.Code != 200 {
+		t.Fatalf("%d %v: %s", w.Code, err, w.Body)
+	}
+	if b := tj.Bounds; len(b) != 4 || b[1] > 55.7 || b[2] < 12.6 || b[0] > 10.5 || b[3] < 59.9 {
+		t.Errorf("bounds %v leave out a cell the tiles draw", b)
+	}
+	if b := tj.Fit; len(b) != 4 || b[1] < 59 || b[0] > 10.6 || b[2] < 10.8 {
+		t.Errorf("fit %v, want the Oslo cells without Copenhagen", b)
+	}
+	w = httptest.NewRecorder()
+	httpHandler(p).ServeHTTP(w, httptest.NewRequest("GET", "/v1/coverage/tiles.json", nil))
+	if strings.Contains(w.Body.String(), `"fit"`) {
+		t.Errorf("the network's TileJSON has a fit: %s", w.Body)
+	}
+}
+
+// One station's load, however slow, leaves stations already loaded and ids no station has answering, and a
+// request waiting behind it gives up when its client does.
+func TestCoverageStationLoadBlocksNoOne(t *testing.T) {
+	row := covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: []covRow{row},
+		stations: map[string][]covRow{"station:a": {row}, "station:slow": {row}, "station:next": {row}}}
+	p := coveragePipeline(t, f)
+	h := httpHandler(p)
+	get := func(ctx context.Context, station string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/coverage/tiles/0/0/0?station="+station, nil).WithContext(ctx))
+		return w.Code
+	}
+	if code := get(context.Background(), "station:a"); code != 200 {
+		t.Fatalf("station:a: %d", code)
+	}
+	f.loading, f.release = make(chan string), make(chan struct{})
+	done := make(chan int)
+	go func() { done <- get(context.Background(), "station:slow") }()
+	<-f.loading // the slow load has started and holds the loader
+	answered := make(chan [2]int)
+	go func() {
+		answered <- [2]int{get(context.Background(), "station:a"), get(context.Background(), "station:nobody")}
+	}()
+	select {
+	case codes := <-answered:
+		if codes != [2]int{200, 404} {
+			t.Errorf("cached and unknown stations answered %v, want 200 and 404", codes)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cached or unknown station waited on another station's load")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	waited := make(chan int)
+	go func() { waited <- get(ctx, "station:next") }()
+	cancel()
+	select {
+	case code := <-waited:
+		if code == 200 {
+			t.Errorf("a request its client gave up on loaded anyway")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a request waiting for the loader kept waiting after its client left")
+	}
+	close(f.release)
+	if code := <-done; code != 200 {
+		t.Errorf("the slow station: %d", code)
 	}
 }

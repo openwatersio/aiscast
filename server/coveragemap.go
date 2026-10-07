@@ -74,8 +74,9 @@ type coverageMap struct {
 	tiles tileCache
 
 	src       coverageSource // set by each network load; station loads read through it
-	stationMu sync.Mutex     // one station load at a time, so a burst of requests for one station loads it once
+	stationMu sync.Mutex     // guards stations, and is never held across a load
 	stations  map[string]stationCoverage
+	loading   chan struct{} // one station load at a time, so a burst of requests for one station loads it once
 }
 
 // stationCoverage is one station's cells, loaded for the network load net names.
@@ -88,7 +89,7 @@ type stationCoverage struct {
 const stationCoverageMax = 256
 
 func newCoverageMap() *coverageMap {
-	return &coverageMap{tiles: tileCache{ttl: coverageReload}}
+	return &coverageMap{tiles: tileCache{ttl: coverageReload}, loading: make(chan struct{}, 1)}
 }
 
 func (c *coverageMap) data() *coverageData {
@@ -213,13 +214,29 @@ func (c *coverageMap) stationData(ctx context.Context, station string, now time.
 	if net == nil {
 		return nil, errNoCoverage
 	}
-	c.stationMu.Lock()
-	defer c.stationMu.Unlock()
 	if !net.stations[station] {
 		return &coverageData{}, nil // heard nothing in the window, or no such station: no query for an id anyone can make up
 	}
-	if s, ok := c.stations[station]; ok && s.net == net.loaded {
-		return s.d, nil
+	cached := func() *coverageData {
+		c.stationMu.Lock()
+		defer c.stationMu.Unlock()
+		if s, ok := c.stations[station]; ok && s.net == net.loaded {
+			return s.d
+		}
+		return nil
+	}
+	if d := cached(); d != nil {
+		return d, nil
+	}
+	// Waiting for another station's load leaves cached stations and unknown ids answering, and gives up with the request.
+	select {
+	case c.loading <- struct{}{}:
+		defer func() { <-c.loading }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if d := cached(); d != nil { // loaded by the request this one waited behind
+		return d, nil
 	}
 	first, err1 := time.Parse("2006-01-02", net.from)
 	last, err2 := time.Parse("2006-01-02", net.to)
@@ -232,6 +249,8 @@ func (c *coverageMap) stationData(ctx context.Context, station string, now time.
 	if err != nil {
 		return nil, err
 	}
+	c.stationMu.Lock()
+	defer c.stationMu.Unlock()
 	if c.stations == nil {
 		c.stations = map[string]stationCoverage{}
 	}
@@ -286,10 +305,11 @@ func (d *coverageData) empty() bool {
 	return true
 }
 
-// bounds is the extent of the cells at the finest resolution as [west, south, east, north], from the middle 90% of
-// their centers on each axis, so a few bad or spoofed positions an ocean away do not stretch it.
+// bounds is the extent of the cells at the finest resolution as [west, south, east, north], from their centers
+// between the trim and 1-trim quantiles on each axis: 0 for every cell, as TileJSON's bounds, past which a map
+// requests no tiles, or 0.05 for a view that a few bad or spoofed positions an ocean away do not stretch.
 // ponytail: centers sort plainly, so cells either side of the antimeridian give a box the long way round.
-func (d *coverageData) bounds() []float64 {
+func (d *coverageData) bounds(trim float64) []float64 {
 	cells := d.cells[len(coverageBands)-1]
 	if len(cells) == 0 {
 		return []float64{-180, -mercatorLat, 180, mercatorLat}
@@ -305,7 +325,7 @@ func (d *coverageData) bounds() []float64 {
 	lat := func(y float64) float64 { return math.Atan(math.Sinh(math.Pi*(1-2*y))) * 180 / math.Pi }
 	// The cell's own size around the trimmed centers, so a station of one cell still has a box.
 	pad := float64(cells[0].maxX - cells[0].minX)
-	return []float64{lon(at(xs, 0.05) - pad), lat(at(ys, 0.95) + pad), lon(at(xs, 0.95) + pad), lat(at(ys, 0.05) - pad)}
+	return []float64{lon(at(xs, trim) - pad), lat(at(ys, 1-trim) + pad), lon(at(xs, 1-trim) + pad), lat(at(ys, trim) - pad)}
 }
 
 // covCellFrom projects a cell's outline to world units. A cell that crosses the antimeridian is drawn whole on
@@ -488,13 +508,13 @@ func (p *Pipeline) serveCoverageTileJSON(w http.ResponseWriter, r *http.Request)
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
-	name, desc, query, bounds := "Open Waters AIS coverage", "Where there are vessel positions from any source", "", []float64{-180, -mercatorLat, 180, mercatorLat}
+	name, desc, query, bounds, fit := "Open Waters AIS coverage", "Where there are vessel positions from any source", "", []float64{-180, -mercatorLat, 180, mercatorLat}, []float64(nil)
 	if station != "" {
-		name, desc, query, bounds = "Open Waters AIS coverage of "+station, "Where "+station+" heard vessel positions", "?station="+url.QueryEscape(station), d.bounds()
+		name, desc, query, bounds, fit = "Open Waters AIS coverage of "+station, "Where "+station+" heard vessel positions", "?station="+url.QueryEscape(station), d.bounds(0), d.bounds(0.05)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	json.NewEncoder(w).Encode(map[string]any{
+	tj := map[string]any{
 		"tilejson":      "3.0.0",
 		"name":          name,
 		"description":   fmt.Sprintf("%s for the %d days ending %s, by H3 cell", desc, coverageDays, d.to),
@@ -505,7 +525,11 @@ func (p *Pipeline) serveCoverageTileJSON(w http.ResponseWriter, r *http.Request)
 		"bounds":        bounds,
 		"vector_layers": []map[string]any{{"id": coverageLayer, "fields": coverageFields, "minzoom": 0, "maxzoom": coverageMaxZoom}},
 		"window":        map[string]any{"from": d.from, "to": d.to, "days": d.days},
-	})
+	}
+	if fit != nil {
+		tj["fit"] = fit // the extent to frame the station by, without its few farthest cells
+	}
+	json.NewEncoder(w).Encode(tj)
 }
 
 // ---- coverage in ClickHouse ----
