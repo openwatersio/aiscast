@@ -307,14 +307,14 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 
 	// A row is known when its vessel and time are believable, and placed when its position is too. A ship's
 	// MMSI begins with a maritime identification digit of 2 to 7; the rest are aids to navigation, base
-	// stations, and aircraft. Latitude 91 and longitude 181 are the not-available values, and (0, 0) a GPS
+	// stations, and aircraft. The defaults in that range are shared by unrelated boats, as live (validMMSI). Latitude 91 and longitude 181 are the not-available values, and (0, 0) a GPS
 	// default rather than a fix. A row stamped outside its file's day is not the archive's to give.
 	if err := exec("DROP TABLE IF EXISTS " + stage); err != nil {
 		return 0, err
 	}
 	if err := exec(`CREATE TABLE ` + stage + ` ENGINE = MergeTree ORDER BY (mmsi, ts) AS
 		SELECT *, known AND abs(lat6) <= 54000000 AND abs(lon6) <= 108000000 AND NOT (lat6 = 0 AND lon6 = 0) AS placed
-		FROM (SELECT *, mmsi BETWEEN 201000000 AND 775999999 AND toDate(ts) = toDate('` + day + `') AS known
+		FROM (SELECT *, mmsi BETWEEN 201000000 AND 775999999 AND NOT (` + invalidMMSIWhere() + `) AND toDate(ts) = toDate('` + day + `') AS known
 		      FROM (` + s.read(f) + `))`); err != nil {
 		return 0, fmt.Errorf("stage: %w", err)
 	}

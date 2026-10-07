@@ -180,6 +180,9 @@ func (p *Pipeline) trackShape(ctx context.Context, mmsi uint32, from, to time.Ti
 		return shape{}, 0, errNoTracks
 	}
 	step, silence := shapeRead(from, to, now)
+	if !validMMSI(mmsi) {
+		return shape{}, step, nil // see trackPoints
+	}
 	points, err := r.history(ctx, mmsi, from, to, step, shapeRows, now)
 	if err != nil {
 		return shape{}, 0, err
@@ -201,6 +204,10 @@ func (p *Pipeline) trackPoints(ctx context.Context, mmsi uint32, from, to time.T
 	r := p.trackReader()
 	if r == nil {
 		return shape{}, errNoTracks
+	}
+	// ClickHouse can hold rows under an MMSI the fold keeps out, several boats' positions as one track.
+	if !validMMSI(mmsi) {
+		return shape{}, nil
 	}
 	points, err := r.history(ctx, mmsi, from, to, interval, limit, now)
 	if err != nil {

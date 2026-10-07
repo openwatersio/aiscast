@@ -14,7 +14,8 @@ func TestPublicFixtures(t *testing.T) {
 	for _, tc := range []struct {
 		file      string
 		minEvents int
-	}{{"testdata/gpsd_sample.aivdm", 95}, {"testdata/tagblock.nmea", 3}} {
+		invalid   int // GPSD's samples include made-up MMSIs, decoded and then kept off the map
+	}{{"testdata/gpsd_sample.aivdm", 90, 5}, {"testdata/tagblock.nmea", 3, 0}} {
 		p := testPipeline(t)
 		sub := p.subscribe()
 		f, err := os.Open(tc.file)
@@ -39,10 +40,13 @@ func TestPublicFixtures(t *testing.T) {
 			n++
 			types[ev.Type]++
 		}
-		invalid := int(p.stats.invalidMMSI.Load()) // GPSD's samples include made-up MMSIs, decoded and then kept off the map
+		invalid := int(p.stats.invalidMMSI.Load())
 		t.Logf("%s: lines=%d events=%d invalid_mmsi=%d parse_err=%d decode_fail=%d dup=%d types=%v", tc.file, lines, n, invalid,
 			p.stats.parseErr.Load(), p.stats.decodeFail.Load(), p.stats.dup.Load(), types)
-		if n+invalid < tc.minEvents {
+		if invalid != tc.invalid {
+			t.Errorf("%s: invalid_mmsi=%d want %d", tc.file, invalid, tc.invalid)
+		}
+		if n < tc.minEvents {
 			t.Errorf("%s: events=%d want ≥%d", tc.file, n, tc.minEvents)
 		}
 	}

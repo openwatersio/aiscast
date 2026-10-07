@@ -405,12 +405,13 @@ func aisnmeaPacket(channel byte, payload []byte) aisnmea.VdmPacket {
 
 // emit is the common tail: dedupe on (payload, channel) within the window, then id, vessel cache, fan-out.
 func (p *Pipeline) emit(ev *Event) {
-	p.delays.observe(ev, time.Now())
-	// Kept out of the cache, the record, history, and the stream; the raw archive already holds the reception.
+	// Kept out of the cache, the record, history, the stream, and the delay stats; the raw archive already holds
+	// the reception.
 	if !validMMSI(ev.Packet.GetHeader().UserID) {
 		p.stats.invalidMMSI.Add(1)
 		return
 	}
+	p.delays.observe(ev, time.Now())
 	key := string(ev.Payload) + string(ev.Channel)
 	p.mu.Lock()
 	if prev, ok := p.seen[key]; ok && absDur(ev.Time.Sub(prev)) < dedupeWindow {

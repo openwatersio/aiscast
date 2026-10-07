@@ -337,8 +337,8 @@ func openStore(path string) (*store, error) {
 		}
 	}
 	// The fold and the import skip MMSIs validMMSI rejects; this clears the rows a file already holds under them,
-	// a few primary-key lookups each boot.
-	if _, err := db.Exec(invalidMMSIDelete()); err != nil {
+	// a few range scans of the primary key each boot.
+	if _, err := db.Exec("DELETE FROM vessels WHERE " + invalidMMSIWhere()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -355,8 +355,9 @@ const storeConns = 8
 
 func (s *store) close() error { return s.db.Close() }
 
-// invalidMMSIDelete removes the vessels validMMSI rejects, spelled from the same tables.
-func invalidMMSIDelete() string {
+// invalidMMSIWhere matches the MMSIs validMMSI rejects, spelled from the same tables, in SQL that SQLite and
+// ClickHouse both read.
+func invalidMMSIWhere() string {
 	var or []string
 	for _, r := range invalidMMSIRanges {
 		or = append(or, fmt.Sprintf("mmsi BETWEEN %d AND %d", r[0], r[1]))
@@ -366,7 +367,7 @@ func invalidMMSIDelete() string {
 		defaults = append(defaults, strconv.FormatUint(uint64(m), 10))
 	}
 	or = append(or, "mmsi IN ("+strings.Join(defaults, ", ")+")")
-	return "DELETE FROM vessels WHERE " + strings.Join(or, " OR ")
+	return strings.Join(or, " OR ")
 }
 
 // bytes is the size of the database and its write-ahead log on disk.
