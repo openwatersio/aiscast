@@ -822,7 +822,7 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 // completed by the record, or from the record alone for a vessel the cache no longer holds, with its
 // particulars from Wikidata when its IMO has an item and from the Coast Guard when it is a documented US
 // vessel. geometry is null for a vessel whose position was never heard. An unknown vessel is a 404.
-// /v1/vessels/IMO<n> answers for the vessel an IMO names (vesselPath).
+// /v1/vessels/{imo}, seven digits, answers for the vessel an IMO names (vesselPath).
 func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	cl, err := p.requestClaims(r)
 	if err != nil {

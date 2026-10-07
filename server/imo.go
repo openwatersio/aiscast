@@ -198,11 +198,17 @@ func imoQuery(text string) (imo uint32, explicit bool) {
 	return 0, false
 }
 
-// parseVesselPath reads the {mmsi} segment of /v1/vessels/{mmsi}: an MMSI, or IMO<n> for the vessel an IMO
-// names. MMSIs are all digits, so the two cannot collide.
+// parseVesselPath reads the {mmsi} segment of /v1/vessels/{mmsi}: seven digits are an IMO number, and any other
+// number an MMSI, which is nine digits. The rule reads the digits as written, because a coast station's MMSI
+// (00MIDxxxx) is seven digits once its leading zeros are dropped and has to be sent with them. IMO<n> names an
+// IMO too, in any case.
 func parseVesselPath(seg string) (mmsi, imo uint32, msg string) {
-	if len(seg) > 3 && strings.EqualFold(seg[:3], "IMO") {
-		n, ok := parseIMO(seg[3:])
+	prefixed := len(seg) > 3 && strings.EqualFold(seg[:3], "IMO")
+	if prefixed {
+		seg = seg[3:]
+	}
+	if prefixed || len(seg) == 7 && strings.Trim(seg, "0123456789") == "" {
+		n, ok := parseIMO(seg)
 		if !ok {
 			return 0, 0, imoRange
 		}
@@ -210,7 +216,7 @@ func parseVesselPath(seg string) (mmsi, imo uint32, msg string) {
 	}
 	n, err := strconv.ParseUint(seg, 10, 32)
 	if err != nil {
-		return 0, 0, "mmsi must be a number, or IMO followed by an IMO number"
+		return 0, 0, "the vessel is an MMSI of nine digits or an IMO number of seven"
 	}
 	return uint32(n), 0, ""
 }

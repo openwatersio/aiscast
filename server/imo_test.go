@@ -74,8 +74,8 @@ func TestIMOLookupNeedsTheRawFeedTier(t *testing.T) {
 		"/v1/vessels?imo=9241061",
 		"/v1/vessels?q=IMO9241061",
 		"/v1/vessels?q=imo%209241061",
-		"/v1/vessels/IMO9241061",
-		"/v1/vessels/IMO9241061/track",
+		"/v1/vessels/9241061",
+		"/v1/vessels/9241061/track",
 		"/v1/vessels/tiles/0/0/0?imo=9241061",
 		"/v1/vessels/tiles.json?imo=9241061",
 	}
@@ -155,7 +155,7 @@ func TestIMOResolution(t *testing.T) {
 	p := imoScene(t)
 
 	// a single answer serves the one MMSI heard in the last 30 days, and says which it is
-	w := get(t, p, "/v1/vessels/IMO9241061")
+	w := get(t, p, "/v1/vessels/9241061")
 	var f struct {
 		ID uint32 `json:"id"`
 	}
@@ -163,8 +163,10 @@ func TestIMOResolution(t *testing.T) {
 		w.Header().Get("Access-Control-Expose-Headers") != "Content-Location" {
 		t.Errorf("reflagged: %d %s %v", w.Code, w.Body, w.Header())
 	}
-	if w := get(t, p, "/v1/vessels/imo9241061"); w.Code != 200 {
-		t.Errorf("the prefix is case-insensitive: %d", w.Code)
+	for _, alias := range []string{"/v1/vessels/IMO9241061", "/v1/vessels/imo9241061"} {
+		if w := get(t, p, alias); w.Code != 200 || w.Header().Get("Content-Location") != "/v1/vessels/538000001" {
+			t.Errorf("%s, the prefixed form: %d", alias, w.Code)
+		}
 	}
 	// a list answers with both
 	if fc := getFC(t, p, "/v1/vessels?imo=9241061"); !sameIDs(ids(fc), 538000001, 257000001) || fc.Truncated { // a list has no order
@@ -172,7 +174,7 @@ func TestIMOResolution(t *testing.T) {
 	}
 
 	// a placeholder IMO names no one vessel: 300 with the ten most recently heard as candidates
-	w = get(t, p, "/v1/vessels/IMO1234567")
+	w = get(t, p, "/v1/vessels/1234567")
 	var c struct {
 		Features []struct {
 			ID   uint32 `json:"id"`
@@ -187,7 +189,7 @@ func TestIMOResolution(t *testing.T) {
 		t.Errorf("placeholder: %d %s", w.Code, w.Body)
 	}
 	// a candidate's link keeps the request's parameters but not its token
-	w = get(t, p, "/v1/vessels/IMO1234567/track?format=gpx&key=junk")
+	w = get(t, p, "/v1/vessels/1234567/track?format=gpx&key=junk")
 	if w.Code != http.StatusMultipleChoices || json.Unmarshal(w.Body.Bytes(), &c) != nil || c.Features[0].Href != "/v1/vessels/230000111/track?format=gpx" {
 		t.Errorf("placeholder track: %d %s", w.Code, w.Body)
 	}
@@ -207,7 +209,7 @@ func TestIMOResolution(t *testing.T) {
 	}
 
 	// an IMO no vessel reports
-	for _, target := range []string{"/v1/vessels/IMO7654321", "/v1/vessels/IMO7654321/track"} {
+	for _, target := range []string{"/v1/vessels/7654321", "/v1/vessels/7654321/track"} {
 		if w := get(t, p, target); w.Code != 404 || !strings.Contains(w.Body.String(), "unknown vessel") || w.Header().Get("Content-Location") != "" {
 			t.Errorf("%s: %d %s", target, w.Code, w.Body)
 		}
@@ -230,13 +232,13 @@ func TestIMOResolution(t *testing.T) {
 	}
 
 	// a request that resolves and then fails says nothing about where the answer lives
-	if w := get(t, p, "/v1/vessels/IMO9241061/track?from=garbage"); w.Code != 400 || w.Header().Get("Content-Location") != "" {
+	if w := get(t, p, "/v1/vessels/9241061/track?from=garbage"); w.Code != 400 || w.Header().Get("Content-Location") != "" {
 		t.Errorf("bad track request by imo: %d %v", w.Code, w.Header())
 	}
 
 	// the track follows the one resolved MMSI
 	sail(t, p, 538000001, 2*time.Hour, time.Hour)
-	w = get(t, p, "/v1/vessels/IMO9241061/track?interval=0")
+	w = get(t, p, "/v1/vessels/9241061/track?interval=0")
 	var tr struct {
 		ID         uint32 `json:"id"`
 		Properties struct{ Points int }
@@ -253,7 +255,7 @@ func TestIMOResolution(t *testing.T) {
 		t.Errorf("mmsi tile cache: %v", w.Header())
 	}
 
-	// tiles.json keeps its own route beside /v1/vessels/IMO<n>
+	// tiles.json keeps its own route beside /v1/vessels/{imo}
 	if w := get(t, p, "/v1/vessels/tiles.json?imo=9241061"); w.Code != 200 || !strings.Contains(w.Body.String(), `"tilejson"`) || w.Header().Get("Cache-Control") != "private, max-age=300" {
 		t.Errorf("tiles.json: %d %s", w.Code, w.Body)
 	}
@@ -506,7 +508,7 @@ func TestIMOBetweenFlushes(t *testing.T) {
 	if len(byIMO[9241061]) != 3 || slices.ContainsFunc(byIMO[1234567], func(r record) bool { return r.mmsi == 230000100 }) {
 		t.Errorf("changed imo: %d for 9241061, %d for 1234567", len(byIMO[9241061]), len(byIMO[1234567]))
 	}
-	if w := get(t, p, "/v1/vessels/IMO7777777"); w.Code != 200 {
+	if w := get(t, p, "/v1/vessels/7777777"); w.Code != 200 {
 		t.Errorf("by path before the flush: %d %s", w.Code, w.Body)
 	}
 	if got := ids(getFC(t, p, "/v1/vessels?q=IMO7777777")); !slices.Equal(got, []uint32{538000009}) {
@@ -564,5 +566,45 @@ func TestIMOFailedFlush(t *testing.T) {
 	}
 	if byIMO, _, err := p.resolveIMOs([]uint32{7777779}); err != nil || len(byIMO[7777779]) != 1 {
 		t.Errorf("after a failed flush: %v %v", byIMO[7777779], err)
+	}
+}
+
+// Seven digits are an IMO number and any other number an MMSI, read as written: a coast station's MMSI
+// (00MIDxxxx) is seven digits without its leading zeros, and is sent with them.
+func TestVesselPath(t *testing.T) {
+	for seg, want := range map[string][3]uint32{ // mmsi, imo, ok
+		"440468000":   {440468000, 0, 1},
+		"002573104":   {2573104, 0, 1},
+		"25000123":    {25000123, 0, 1}, // a group call, 0MIDxxxxx
+		"9241061":     {0, 9241061, 1},
+		"2573104":     {0, 2573104, 1},
+		"IMO9241061":  {0, 9241061, 1},
+		"imo123":      {0, 123, 1},
+		"0000000":     {0, 0, 0},
+		"IMO12345678": {0, 0, 0},
+		"IMO":         {0, 0, 0},
+		"IMOx":        {0, 0, 0},
+		"abc":         {0, 0, 0},
+	} {
+		mmsi, imo, msg := parseVesselPath(seg)
+		if mmsi != want[0] || imo != want[1] || (msg == "") != (want[2] == 1) {
+			t.Errorf("%s: mmsi %d imo %d %q, want %v", seg, mmsi, imo, msg, want)
+		}
+	}
+}
+
+func TestCoastStationPath(t *testing.T) {
+	p := imoScene(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	heardIMO(p, 2573104, 0, "", time.Minute) // Oslo's base station, MMSI 002573104
+	if w := get(t, p, "/v1/vessels/002573104"); w.Code != 200 || !strings.Contains(w.Body.String(), `"id":2573104`) {
+		t.Errorf("padded: %d %s", w.Code, w.Body)
+	}
+	if w := get(t, p, "/v1/vessels/002573104/track"); w.Code != 200 {
+		t.Errorf("padded track: %d %s", w.Code, w.Body)
+	}
+	if w := get(t, p, "/v1/vessels/2573104"); w.Code != http.StatusForbidden {
+		t.Errorf("unpadded is an IMO lookup: %d %s", w.Code, w.Body)
 	}
 }

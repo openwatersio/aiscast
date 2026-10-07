@@ -96,6 +96,14 @@ export function vesselSlug(name?: string): string {
   return s.slice(0, 60).replace(/-+$/, "");
 }
 
+/**
+ * An MMSI as the API's `/v1/vessels/{id}` path takes it: nine digits. The API reads seven digits as an IMO
+ * number, and a coast station's MMSI (`00MIDxxxx`) is seven digits once its leading zeros are dropped.
+ */
+export function mmsiSegment(mmsi: number): string {
+  return String(mmsi).padStart(9, "0");
+}
+
 export function vesselPath(mmsi: number, name?: string): string {
   const slug = vesselSlug(name);
   return slug ? `/vessels/${mmsi}-${slug}` : `/vessels/${mmsi}`;

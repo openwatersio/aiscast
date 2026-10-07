@@ -267,7 +267,7 @@ func (p *Pipeline) vesselName(mmsi uint32) (name string, known bool, err error) 
 
 // serveTrack: GET /v1/vessels/{mmsi}/track?from&to&interval&limit&format → the positions the network
 // heard from one vessel over the range, as a GeoJSON Feature or, with format=gpx, a GPX track. A track by IMO,
-// /v1/vessels/IMO<n>/track, follows the one MMSI the IMO names (vesselPath).
+// /v1/vessels/{imo}/track, follows the one MMSI the IMO names (vesselPath).
 func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
 	cl, err := p.requestClaims(r)
 	if err != nil {
