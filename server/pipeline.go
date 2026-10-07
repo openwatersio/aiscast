@@ -45,13 +45,14 @@ type Event struct {
 	HasPos       bool
 	Sentences    []string
 	Synthesized  bool
-	Own          bool // an own-ship sentence (!AIVDO): the sender reporting itself, not a reception
-	rebuilt      bool // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
-	unserved     bool // kept out of history by the ClickHouse writer though not implausible to the stream: a stale report it does not believe
-	LowTrust     bool // from a source that cannot be authenticated (UDP)
-	Corroborated bool // low-trust event for a vessel a trusted source has also heard recently
-	Implausible  bool // position implying an impossible speed from the vessel's last; archived, not emitted
-	Stale        bool // older than the newest event already folded for the vessel; archived, not emitted
+	Own          bool   // an own-ship sentence (!AIVDO): the sender reporting itself, not a reception
+	Sender       string // the station before a UDP sender is relabeled by the MMSI it claims as its own; empty means Station
+	rebuilt      bool   // from a non-NMEA source (BarentsWatch, Digitraffic, AISHub, aisstream), so near-duplicate in time = duplicate
+	unserved     bool   // kept out of history by the ClickHouse writer though not implausible to the stream: a stale report it does not believe
+	LowTrust     bool   // from a source that cannot be authenticated (UDP)
+	Corroborated bool   // low-trust event for a vessel a trusted source has also heard recently
+	Implausible  bool   // position implying an impossible speed from the vessel's last; archived, not emitted
+	Stale        bool   // older than the newest event already folded for the vessel; archived, not emitted
 
 	// Each wire format is rendered on first use and shared by every subscriber after that; an event does
 	// not change once it is broadcast.
@@ -66,7 +67,6 @@ type subscriber struct {
 
 type Pipeline struct {
 	arch *archive
-	norm *archive // normalized stream: accepted events, reception copies, weather; no-op unless configured
 	// access log: a line per HTTP request (access.go); no-op unless configured
 	access        *archive
 	accessDropped atomic.Int64 // lines dropped because the writer fell behind
@@ -79,7 +79,7 @@ type Pipeline struct {
 	ownOf   map[string]string     // UDP source → "mmsi:<n>" learned from its !AIVDO own-ship sentences
 	// intake is the shutdown barrier. Every reception is archived raw and processed under the read
 	// lock, and closeArchives takes the write lock, so once it holds it no reception is half
-	// recorded (raw without its normalized events, or the reverse) and none can start.
+	// recorded (in ClickHouse's queue without its raw record, or the reverse) and none can start.
 	intake           sync.RWMutex
 	order            sync.Mutex // one reception at a time, in arrival order, as replay processes them (admit)
 	stampAtAdmission bool       // live only, set before any producer starts: receive times are taken at admission
@@ -90,12 +90,14 @@ type Pipeline struct {
 	aishubBatch []*Event
 	closing     atomic.Bool
 
-	seen     map[string]time.Time
-	bad      map[string]time.Time    // dedupe keys of transmissions the fold judged implausible, by time, pruned with seen
-	folding  map[string][]trackPoint // keys whose accepted copy is still folding, with the copies that arrived meanwhile
-	seenHW   time.Time               // newest event time folded into seen; prune cutoff, so replay needs no wall clock
-	normGate time.Time               // replay warm-up: records received before this are state-building only, not written
-	nSeen    int
+	seen       map[string]time.Time
+	bad        map[string]time.Time    // dedupe keys of transmissions the fold judged implausible, by time, pruned with seen
+	folding    map[string][]trackPoint // keys whose accepted copy is still folding, with the copies that arrived meanwhile
+	seenHW     time.Time               // newest event time folded into seen; prune cutoff, so replay needs no wall clock
+	replayGate time.Time               // replay warm-up: records received before this are state-building only, not written
+	// anchorSeeds is where each vessel was last moving before a replay's lead-in, from positions_1m; nil live
+	anchorSeeds map[uint32]*anchor
+	nSeen       int
 
 	vmu       sync.RWMutex
 	nextSweep time.Time // reception time of the next vessel cache sweep; guarded by vmu
@@ -107,18 +109,22 @@ type Pipeline struct {
 	coverage  *coverageMap                   // where there are vessel positions, from ClickHouse (coveragemap.go); nil without CLICKHOUSE_URL
 	imports   importStats                    // the daily merge of ClickHouse's vessel history into the record (import.go)
 	// vesselHistory reads the record import's pages (import.go); nil without ClickHouse or a record
-	vesselHistory func(ctx context.Context, after uint32, limit int) ([]historyRow, error)
-	wikidata      wikidataStats // the weekly sync of vessel particulars from Wikidata (wikidata.go)
-	uscg          uscgStats     // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
-	fiskeridir    fdirStats     // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
-	fcc           fccStats      // the weekly sync of FCC ship station licenses (fcc.go)
-	tc            tcStats       // the weekly sync of Transport Canada's vessel register (tc.go)
-	ised          isedStats     // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
-	ch            *chStore      // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
-	chMu          sync.Mutex    // guards chQueue; taken after vmu when both are held
-	chQueue       []trackPoint  // copies received since the last flush to ClickHouse; nil until it connects
-	chOn          atomic.Bool   // ClickHouse is attached, so copies are worth building
-	history       *historyStats // historical archives loaded into ClickHouse (history.go); nil unless a source is on
+	vesselHistory   func(ctx context.Context, after uint32, limit int) ([]historyRow, error)
+	wikidata        wikidataStats              // the weekly sync of vessel particulars from Wikidata (wikidata.go)
+	uscg            uscgStats                  // the weekly listing and backfill of US-flag vessels from PSIX (uscg.go)
+	fiskeridir      fdirStats                  // the weekly sync of Norway's fishing vessel register (fiskeridir.go)
+	fcc             fccStats                   // the weekly sync of FCC ship station licenses (fcc.go)
+	tc              tcStats                    // the weekly sync of Transport Canada's vessel register (tc.go)
+	ised            isedStats                  // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
+	ch              *chStore                   // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
+	chMu            sync.Mutex                 // guards chQueue; taken after vmu when both are held
+	chQueue         []trackPoint               // copies received since the last flush to ClickHouse; nil until it connects
+	chOwn           map[ownKey]time.Time       // own-ship sightings since the last flush, the latest per key; nil until it connects
+	chOwnClaimed    map[ownKey]map[uint32]bool // the vessels each station claimed as its own each hour it received them, keyed without mmsi, for maxOwnPerStation
+	chOwnClaimHours map[int64]int              // how many claims chOwnClaimed holds for each hour, so pruning knows whether there is anything to scan for
+	chOwnHW         int64                      // the latest hour an own-ship message was received in, which claims older than its last hour are pruned against
+	chOn            atomic.Bool                // ClickHouse is attached, so copies are worth building
+	history         *historyStats              // historical archives loaded into ClickHouse (history.go); nil unless a source is on
 
 	flushMu      sync.Mutex // one flush at a time, so the shutdown flush waits for the writer's
 	storesClosed bool       // set by closeStore; flushes after it do nothing
@@ -153,7 +159,7 @@ func newPipeline(arch *archive) *Pipeline {
 	c := ais.CodecNewFast(false, false, true) // reflection codec is ~4× slower
 	c.DropSpace = true
 	p := &Pipeline{
-		arch: arch, norm: newArchive("", nil), access: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
+		arch: arch, access: newArchive("", nil), codec: c, auth: verifierFromEnv(), stations: newStationStats(), names: newStationNames(),
 		encoder: aisnmea.NMEACodecNew(c),
 		codecs:  map[string]*aisnmea.NMEACodec{},
 		pending: map[string][]fragment{},
@@ -229,8 +235,8 @@ func (p *Pipeline) release() {
 }
 
 // closeArchives stops intake, then drains both archives. Setting closing turns away receptions not
-// yet started; the write lock waits out those in flight; only then do the writers drain, so raw and
-// normalized hold the same receptions and replay regenerates the stream across a restart. A
+// yet started; the write lock waits out those in flight; only then do the writers drain, so the raw
+// archive holds every reception ClickHouse does and replay can rebuild a day across a restart. A
 // producer turned away is dropped; the process is exiting.
 func (p *Pipeline) closeArchives() {
 	p.closing.Store(true)
@@ -238,7 +244,6 @@ func (p *Pipeline) closeArchives() {
 	go func() { p.access.shutdown(); close(access) }() // in parallel, so its upload bound fits in TimeoutStopSec beside theirs
 	p.intake.Lock()
 	p.arch.shutdown()
-	p.norm.shutdown()
 	<-access
 }
 
@@ -337,6 +342,9 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	if volunteer(rx.Source) {
 		station = rx.Station
 	}
+	// The station before any relabel below: a feed's receiver path, a volunteer's receiver, a UDP sender's address.
+	// Own-ship allowances follow it, since a relabel would give a sender a fresh one per MMSI.
+	sender := station
 	// A UDP sender that transmits !AIVDO (own ship) has told us who it is: key it by MMSI from then on.
 	// Self-reported and spoofable, so this is an identity label, never a trust upgrade.
 	source := rx.Source
@@ -354,7 +362,7 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	}
 	// TAG s:self on an own-ship sentence is signalk-aiscast building reports from GPS on a boat with no
 	// transponder: not a VHF reception. VDO-only, so the tag cannot mislabel received traffic as synthesized.
-	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self", Own: vdm.Type == "VDO"})
+	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self", Own: vdm.Type == "VDO", Sender: sender})
 }
 
 // ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).
@@ -412,13 +420,15 @@ func (p *Pipeline) emit(ev *Event) {
 			held = true
 		}
 		p.mu.Unlock()
-		p.writeCopy(ev, key, prev) // prev is the accepted transmission: proximity alone is ambiguous between two of them
 		if p.chOn.Load() && !held {
 			p.noteCopy(ev, key, prev, bad)
 		}
 		p.stats.dup.Add(1)
 		p.usage.dups.add(time.Now())
 		p.stations.dup(ev)
+		if ev.Own {
+			p.noteOwn(ev) // a station's own ship is its own whichever copy dedupe kept
+		}
 		// A trusted source repeating what a UDP station delivered first still corroborates the vessel.
 		if !lowTrust(ev.Source) && isPositionType(typeName(ev.Packet)) {
 			p.markTrusted(ev.Packet.GetHeader().UserID, ev.Time)
@@ -453,9 +463,13 @@ func (p *Pipeline) emit(ev *Event) {
 	ev.MMSI = ev.Packet.GetHeader().UserID
 	ev.LowTrust = lowTrust(ev.Source)
 	p.updateVessel(ev)
-	p.writeEvent(ev)                     // flagged or not: the normalized archive keeps what the raw archive keeps
 	if p.chOn.Load() || ev.Implausible { // without ClickHouse, nothing waits on the verdict
 		p.settleFold(key, ev)
+	}
+	// Own-ship evidence holds whatever the fold made of the report: a stamp a newer copy beat is still the station
+	// saying which boat it is on.
+	if ev.Own {
+		p.noteOwn(ev)
 	}
 	if ev.Implausible {
 		p.stats.implausible.Add(1)

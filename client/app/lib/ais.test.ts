@@ -6,6 +6,8 @@ import {
   shortAge,
   isValidImo,
   isVolunteer,
+  stationName,
+  stationStatus,
   stationTitle,
   volunteerReceiver,
   stationTitles,
@@ -17,8 +19,11 @@ import {
   parsePlace,
   parseVesselParam,
   shipClass,
+  silences,
   speedAt,
   splitTrack,
+  TRACK_GAP_MS,
+  trackGap,
   vesselPath,
   vesselDimensions,
   viewBoxes,
@@ -259,13 +264,13 @@ describe("splitTrack", () => {
 
   it("keeps a continuous track whole", () => {
     const times = [0, minute, 2 * minute, 3 * minute];
-    expect(splitTrack(coords, times)).toEqual([coords]);
+    expect(splitTrack(coords, silences(times))).toEqual([coords]);
   });
 
   // The case that drew a 208 km line across 14 hours of silence.
   it("breaks where the vessel went unheard", () => {
     const times = [0, minute, 14 * 60 * minute, 14 * 60 * minute + minute];
-    expect(splitTrack(coords, times)).toEqual([
+    expect(splitTrack(coords, silences(times))).toEqual([
       [
         [0, 0],
         [1, 1],
@@ -279,7 +284,7 @@ describe("splitTrack", () => {
 
   it("drops a segment that is a single point, since a line needs two", () => {
     const times = [0, 31 * minute, 62 * minute, 62 * minute + minute];
-    expect(splitTrack(coords, times)).toEqual([
+    expect(splitTrack(coords, silences(times))).toEqual([
       [
         [2, 2],
         [3, 3],
@@ -288,8 +293,8 @@ describe("splitTrack", () => {
   });
 
   it("is empty for nothing to draw", () => {
-    expect(splitTrack([], [])).toEqual([]);
-    expect(splitTrack([[0, 0]], [0])).toEqual([]);
+    expect(splitTrack([], silences([]))).toEqual([]);
+    expect(splitTrack([[0, 0]], silences([0]))).toEqual([]);
   });
 });
 
@@ -496,10 +501,14 @@ describe("isVolunteer", () => {
 });
 
 describe("stationTitles", () => {
-  it("prefers the name, then the place, then the id", () => {
+  it("prefers the name, then the place, then the feed, then the end of the id", () => {
     expect(stationTitle({ station: "udp:1", name: "Pier", near: "Falmouth, MA" })).toBe("Pier");
     expect(stationTitle({ station: "udp:1", near: "Falmouth, MA" })).toBe("Near Falmouth, MA");
-    expect(stationTitle({ station: "udp:1" })).toBe("udp:1");
+    expect(stationTitle({ station: "barentswatch/terra" })).toBe("BarentsWatch coastal");
+    expect(stationTitle({ station: "udp:ec7cca876017" })).toBe("Anonymous …6017");
+    expect(stationTitle({ station: "station:ed25519:mFbn0k5uAk_PRO8CpX7H/n2k" })).toBe("Anonymous …pX7H");
+    expect(stationTitle({ station: "somefeed" })).toBe("somefeed");
+    expect(stationName({ station: "udp:ec7cca876017" })).toEqual({ title: "Anonymous", suffix: "…6017" });
   });
   it("tells apart stations that would read the same", () => {
     const titles = stationTitles([
@@ -510,12 +519,22 @@ describe("stationTitles", () => {
       { station: "aishub" },
     ]);
     expect([...titles.values()]).toEqual([
-      "Near Santa Monica, CA (…c34f)",
-      "Near Santa Monica, CA (…9d1e)",
-      "CERULEAN (…:xyz)",
-      "CERULEAN (n2k)",
-      "aishub",
+      { title: "Near Santa Monica, CA", suffix: "…c34f" },
+      { title: "Near Santa Monica, CA", suffix: "…9d1e" },
+      { title: "CERULEAN", suffix: "…:xyz" },
+      { title: "CERULEAN", suffix: "n2k" },
+      { title: "AISHub" },
     ]);
+  });
+});
+
+describe("stationStatus", () => {
+  it("is live for five minutes, quiet for the hour, then offline", () => {
+    expect(stationStatus(0)).toBe("live");
+    expect(stationStatus(299)).toBe("live");
+    expect(stationStatus(300)).toBe("quiet");
+    expect(stationStatus(3599)).toBe("quiet");
+    expect(stationStatus(3600)).toBe("offline");
   });
 });
 
@@ -527,5 +546,16 @@ describe("volunteerReceiver", () => {
   it("leaves feed stations and plain ids alone", () => {
     expect(volunteerReceiver("barentswatch/terra")).toBeUndefined();
     expect(volunteerReceiver("station:mmsi:368168720")).toBeUndefined();
+  });
+});
+
+describe("trackGap", () => {
+  it("lets a thinned track's spacing pass and still breaks at a real silence", () => {
+    const hour = 3600e3;
+    const times = [0, 1.9 * hour, 3.5 * hour, 9 * hour];
+    const coords: Array<[number, number]> = times.map((_, i) => [i, i]);
+    expect(splitTrack(coords, silences(times, trackGap(hour)))).toEqual([coords.slice(0, 3)]);
+    expect(splitTrack(coords, silences(times))).toEqual([]);
+    expect(trackGap(0)).toBe(TRACK_GAP_MS);
   });
 });

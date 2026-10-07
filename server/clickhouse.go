@@ -8,9 +8,9 @@ package main
 // sent again whole, under the same deduplication token, since a failure can come after ClickHouse committed it.
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -103,7 +103,25 @@ var chMigrations = []string{
 	10: `ALTER TABLE {db}.coverage ADD COLUMN IF NOT EXISTS stations AggregateFunction(uniqExact, String)`,
 	11: `ALTER TABLE {db}.coverage_mv MODIFY QUERY ` + chCoverageSelect("{db}.receptions", chUsable),
 	12: `TRUNCATE TABLE {db}.coverage_backfilled`,
+	// a late copy, which the stream and the station counts leave out; rows from before read as false
+	13: `ALTER TABLE {db}.receptions ADD COLUMN IF NOT EXISTS stale Bool DEFAULT false`,
+	14: chStationOwn,
 }
+
+// chStationOwn keeps, per station, hour, and vessel, the last time the station sent that vessel as its own ship
+// (!AIVDO), from position and static messages alike, so a station's counts can leave out the boat it is on.
+// Static messages never reach receptions, so this is the only record of an own ship that only sends those. Max
+// merges the same in any order and any number of times, so a resent batch or a replay writes it again safely.
+// It is kept as long as the per-vessel station counts that read it.
+const chStationOwn = `CREATE TABLE IF NOT EXISTS {db}.station_own (
+	hour    DateTime('UTC'),
+	station LowCardinality(String),
+	mmsi    UInt32,
+	last_ts SimpleAggregateFunction(max, DateTime64(3, 'UTC'))
+) ENGINE = AggregatingMergeTree
+PARTITION BY toYYYYMM(hour)
+ORDER BY (station, hour, mmsi)
+TTL hour + INTERVAL 35 DAY DELETE`
 
 // positions_1m is each vessel's track at one position a minute while it moves, and one every 30 minutes for each
 // place it sits still: a heartbeat that says it was heard there then, on the same 30 minutes that make a vessel
@@ -177,28 +195,86 @@ func chFirstCopies(legacy bool, where string) string {
 // copy as the positions view does. positions_1m keeps the copy accepted when it was written, and a purge or a
 // reload does not move accepted to the copy left, so either is followed by this for each day it touched. Rows
 // the live writer adds meanwhile are kept: positions_1m keeps the latest row per window, so the two agree. It
-// groups in receptions' order, a vessel at a time, so a day stays within the memory a query may take.
+// rebuilds rebuildSlices ranges of vessels in turn, the ranges splitting the day's rows evenly: grouping a large day
+// whole, such as an archive's 36 M rows, outgrows the memory a load's query may take, and receptions sorts by vessel
+// first, so each range reads only its own rows. A transmission is one vessel's, so its copies never span two.
+// ponytail: one vessel's rows always fall in one range, so a day where a single MMSI floods most of the rows still
+// groups them in one query; split a vessel's day by time if that ever happens.
 func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	end := day.Add(24 * time.Hour)
 	legacy, err := c.legacy(ctx)
 	if err != nil {
 		return err
 	}
-	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ?", day, end); err != nil {
-		return err
-	}
+	deletes := chDeleteSync(ctx)
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "optimize_aggregation_in_order": 1,
 		"max_threads": 2, "max_execution_time": 3600,
 	}))
+	var levels []string
+	for i := 1; i < rebuildSlices; i++ {
+		levels = append(levels, fmt.Sprint(float64(i)/float64(rebuildSlices)))
+	}
+	var qs []uint32
+	if len(levels) > 0 {
+		if err := c.conn.QueryRow(ctx, "SELECT arrayMap(x -> if(isNaN(x), 0, toUInt32(x)), quantiles("+strings.Join(levels, ", ")+")(mmsi)) FROM "+c.db+
+			".receptions WHERE ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE", day, end).Scan(&qs); err != nil {
+			return err
+		}
+	}
 	q := `INSERT INTO {db}.positions_1m
 	SELECT mmsi, toDateTime(if(f.9, toStartOfMinute(f.1), toStartOfInterval(f.1, INTERVAL 30 MINUTE)), 'UTC') AS slot,
 	       if(f.9, 0, ` + chCellOf("f.2", "f.3") + `) AS cell,
 	       f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
-	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE") + `)
+	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE AND mmsi >= ? AND mmsi <= ?") + `)
 	WHERE f.1 >= ? AND f.1 < ?`
-	return c.conn.Exec(ctx, strings.ReplaceAll(q, "{db}", c.db), day, end, day, end)
+	q = strings.ReplaceAll(q, "{db}", c.db)
+	// Each range is deleted just before it is rebuilt, so a rebuild that stops partway leaves the ranges it had not
+	// reached with the rows they held. Only the range in progress can be left empty, by a stop between its delete
+	// and its insert, until the day is rebuilt again.
+	for i, rg := range vesselRanges(qs) {
+		if err := c.conn.Exec(deletes, "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND mmsi >= ? AND mmsi <= ?",
+			day, end, rg[0], rg[1]); err != nil {
+			return err
+		}
+		if err := c.conn.Exec(ctx, q, day, end, rg[0], rg[1], day, end); err != nil {
+			return err
+		}
+		if rebuiltRange != nil {
+			if err := rebuiltRange(i); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
+
+// rebuiltRange, when set, is called after each range a rebuild finishes; tests use it to stop a rebuild partway.
+var rebuiltRange func(i int) error
+
+// vesselRanges turns ascending MMSI edges into inclusive ranges that cover every MMSI exactly once: the first from
+// 0, each next one starting where the last ended, the last to the largest. An edge that repeats or is 0 adds no
+// range, so a day with few vessels, or none, has fewer ranges.
+func vesselRanges(edges []uint32) [][2]uint32 {
+	starts := []uint32{0}
+	for _, e := range edges {
+		if e > starts[len(starts)-1] {
+			starts = append(starts, e)
+		}
+	}
+	out := make([][2]uint32, len(starts))
+	for i, lo := range starts {
+		hi := uint32(math.MaxUint32)
+		if i+1 < len(starts) {
+			hi = starts[i+1] - 1
+		}
+		out[i] = [2]uint32{lo, hi}
+	}
+	return out
+}
+
+// rebuildSlices is how many ranges of vessels a day of positions_1m is rebuilt in; 1 or less rebuilds it whole.
+var rebuildSlices = 8
 
 // chWriter inserts a batch of positions under a deduplication token, so ClickHouse skips a batch it already
 // holds; tests fake it.
@@ -206,10 +282,21 @@ type chWriter interface {
 	insert(ctx context.Context, token string, points []trackPoint) error
 }
 
+// ownWriter inserts own-ship sightings into station_own; tests fake it.
+type ownWriter interface {
+	insertOwn(ctx context.Context, own map[ownKey]time.Time) error
+}
+
+// ownKey is one station's own vessel in one hour, the grain of station_own.
+type ownKey struct {
+	station string
+	hour    int64 // unix hours
+	mmsi    uint32
+}
+
 // chReader reads one vessel's history; tests fake it.
 type chReader interface {
 	history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error)
-	first(ctx context.Context, mmsi uint32, from, to time.Time) (time.Time, bool, error)
 }
 
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
@@ -218,6 +305,7 @@ type chStore struct {
 	w   chWriter
 	r   chReader
 	cov coverageSource // nil leaves the coverage map unavailable
+	own ownWriter      // nil leaves own-ship sightings unwritten
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -229,13 +317,18 @@ type chStore struct {
 	// Stale rebuilt copies the fold matched to a recent transmission, and those it kept as late reports of
 	// their own. A late share far above what the sources' delays explain means copies are being served twice.
 	rebuiltMatched, rebuiltLate atomic.Int64
-	failing                     atomic.Bool // the last batch failed; cleared when one is written
+	ownDropped                  atomic.Int64 // own-ship sightings lost past maxOwnPending: memory, not policy
+	ownRefused                  atomic.Int64 // own-ship sightings past a sender's maxOwnPerStation: policy, not loss
+	ownFailing                  atomic.Bool  // the last station_own insert failed; cleared when one is written
+	failing                     atomic.Bool  // the last batch failed; cleared when one is written
 }
 
 // chConn writes positions through a native-protocol connection.
 type chConn struct {
-	conn driver.Conn
-	db   string
+	conn  driver.Conn
+	db    string
+	table string // the table write inserts into: receptions, or a replay's staging table
+	own   string // the table insertOwn writes: station_own when empty, or a replay's staging table
 }
 
 // openClickHouse connects to url, a clickhouse:// DSN, and creates the schema in the database it names, or
@@ -318,7 +411,45 @@ func (c *chConn) migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	return c.exec(ctx, chPositionsView(legacy))
+	if err := c.exec(ctx, chPositionsView(legacy)); err != nil {
+		return err
+	}
+	return c.coldTier(ctx)
+}
+
+// chColdDays is how many days receptions' parts stay on local disk before they move to the cold volume on R2.
+const chColdDays = 30
+
+// coldTier puts receptions on the tiered storage policy and moves its parts to the cold volume chColdDays past
+// their rows' time, once the server's config has the policy (clickhouse-r2.xml). Each step checks what is
+// already set, so a start that stopped between them finishes the second. The TTL recalculates each part's times
+// from ts alone, without rewriting it, and ClickHouse moves the parts in the background.
+func (c *chConn) coldTier(ctx context.Context) error {
+	policy, err := chColumn[string](ctx, c.conn, "SELECT policy_name FROM system.storage_policies WHERE policy_name = 'tiered' LIMIT 1")
+	if err != nil || len(policy) == 0 {
+		return err
+	}
+	table, err := chColumn[string](ctx, c.conn, "SELECT storage_policy FROM system.tables WHERE database = ? AND name = 'receptions'", c.db)
+	if err != nil {
+		return err
+	}
+	if len(table) == 1 && table[0] != "tiered" {
+		if err := c.exec(ctx, "ALTER TABLE {db}.receptions MODIFY SETTING storage_policy = 'tiered', materialize_ttl_recalculate_only = 1"); err != nil {
+			return fmt.Errorf("cold tier: %w", err)
+		}
+		log.Printf("clickhouse: %s.receptions is on the tiered storage policy", c.db)
+	}
+	ttl, err := chColumn[string](ctx, c.conn, "SELECT engine_full FROM system.tables WHERE database = ? AND name = 'receptions'", c.db)
+	if err != nil {
+		return err
+	}
+	if len(ttl) == 1 && !strings.Contains(ttl[0], "TO VOLUME 'cold'") {
+		if err := c.exec(ctx, fmt.Sprintf("ALTER TABLE {db}.receptions MODIFY TTL toDateTime(ts) + INTERVAL %d DAY TO VOLUME 'cold'", chColdDays)); err != nil {
+			return fmt.Errorf("cold tier: %w", err)
+		}
+		log.Printf("clickhouse: %s.receptions moves its parts to R2 %d days past their rows' time", c.db, chColdDays)
+	}
+	return nil
 }
 
 // chDeleteSync makes a lightweight DELETE wait until its rows are gone before it returns, so what follows it, a
@@ -423,16 +554,6 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 	return points, rows.Err()
 }
 
-// first is the time of the vessel's first usable copy between from and to; ok is false when it has none there.
-// It reads receptions on their sort key, so it costs one seek, not the view's grouping.
-func (c *chConn) first(ctx context.Context, mmsi uint32, from, to time.Time) (ts time.Time, ok bool, err error) {
-	err = c.conn.QueryRow(ctx, "SELECT ts FROM "+c.db+".receptions WHERE mmsi = ? AND ts >= ? AND ts <= ? AND "+chUsable+" ORDER BY ts LIMIT 1", mmsi, from, to).Scan(&ts)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ts, false, nil
-	}
-	return ts, err == nil, err
-}
-
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
 	return c.write(ctx, token, points, false)
 }
@@ -446,11 +567,11 @@ func (c *chConn) write(ctx context.Context, token string, points []trackPoint, c
 		"insert_deduplication_token":               token,
 		"throw_on_max_partitions_per_insert_block": 0,
 	}))
-	cols := "mmsi, ts, tx_off, tx_disc, recv_delay, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad, moving"
+	cols := "mmsi, ts, tx_off, tx_disc, recv_delay, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad, moving, stale"
 	if converted {
 		cols += ", recv_ts"
 	}
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".receptions ("+cols+")")
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+"."+cmp.Or(c.table, "receptions")+" ("+cols+")")
 	if err != nil {
 		return refusal(err)
 	}
@@ -467,7 +588,7 @@ func (c *chConn) write(ctx context.Context, token string, points []trackPoint, c
 		}
 		row := []any{pt.mmsi, pt.ts, clampInt32(txAt.Sub(pt.ts).Milliseconds()), disc, clampInt32(delay),
 			pt.lat6, pt.lon6, pt.sog10, pt.cog10, pt.heading, pt.navStatus, pt.source,
-			pt.station, !pt.dup, !pt.uncorroborated, pt.implausible, pt.clockBad, !pt.still}
+			pt.station, !pt.dup, !pt.uncorroborated, pt.implausible, pt.clockBad, !pt.still, pt.stale}
 		if converted {
 			row = append(row, pt.recv)
 		}
@@ -487,6 +608,10 @@ const chInsertTimeout = 30 * time.Second
 // with refusals such as a full memory budget or too many parts. Lost connections and timeouts never count:
 // through an outage the batch waits, and the queue behind it buffers.
 const chRefuseFor = 10 * time.Minute
+
+// chOwnInsertTimeout bounds a station_own insert, a few rows, well under chInsertTimeout, so shutdown's flushes
+// still fit the service's stop timeout with the positions first in line.
+const chOwnInsertTimeout = 5 * time.Second
 
 // chRefused is a batch ClickHouse answered with an error, or one the client could not encode: sending it again
 // may well fail the same way.
@@ -509,6 +634,9 @@ func (p *Pipeline) attachClickHouse(c *chStore) {
 	p.vmu.Unlock()
 	p.chMu.Lock()
 	p.chQueue = make([]trackPoint, 0, 1024)
+	p.chOwn = map[ownKey]time.Time{}
+	p.chOwnClaimed = map[ownKey]map[uint32]bool{}
+	p.chOwnClaimHours = map[int64]int{}
 	p.chMu.Unlock()
 	p.chOn.Store(true)
 }
@@ -521,7 +649,7 @@ func (p *Pipeline) runClickHouse(url string) {
 		conn, err := openClickHouse(ctx, url)
 		cancel()
 		if err == nil {
-			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn})
+			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn, own: conn})
 			log.Printf("clickhouse: writing receptions to %s", conn.db)
 			break
 		}
@@ -535,13 +663,23 @@ func (p *Pipeline) runClickHouse(url string) {
 
 // drainClickHouse sends a failed batch and then the queue behind it, for shutdown.
 func (p *Pipeline) drainClickHouse() error {
+	var ownErr error
 	for range 2 {
-		if err := p.flushClickHouse(); err != nil {
+		err := p.flushClickHouse()
+		// A failed station_own insert must not stop the positions queued behind it from going, and one the next
+		// attempt wrote is not an error.
+		if err != nil && !errors.As(err, new(ownFailed)) {
 			return err
 		}
+		ownErr = err
 	}
-	return nil
+	return ownErr
 }
+
+// ownFailed is a station_own insert that failed while the receptions were written.
+type ownFailed struct{ error }
+
+func (e ownFailed) Unwrap() error { return e.error }
 
 // flushClickHouse writes one batch: the one that failed last time, unchanged and under its token, or else
 // everything queued since. Positions keep queueing behind a failed batch, within the queue's bound.
@@ -554,6 +692,8 @@ func (p *Pipeline) flushClickHouse() error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Own-ship sightings go whatever the receptions do, and their failure is reported once the receptions are written.
+	ownErr := p.flushOwn(c)
 	if c.failed == nil {
 		p.chMu.Lock()
 		points := p.chQueue
@@ -562,7 +702,7 @@ func (p *Pipeline) flushClickHouse() error {
 		}
 		p.chMu.Unlock()
 		if len(points) == 0 {
-			return nil
+			return ownErr
 		}
 		c.failed, c.token, c.refused = points, newDedupeToken(), time.Time{}
 	}
@@ -596,7 +736,69 @@ func (p *Pipeline) flushClickHouse() error {
 	}
 	c.written.Add(int64(len(c.failed)))
 	c.failed = nil
-	return nil
+	return ownErr
+}
+
+// flushOwn writes the own-ship sightings gathered since the last flush. A failed insert puts them back, keeping
+// the later time where one arrived meanwhile, to go with the next; station_own's max makes a resend harmless.
+func (p *Pipeline) flushOwn(c *chStore) error {
+	if c.own == nil {
+		return nil
+	}
+	p.chMu.Lock()
+	own := p.chOwn
+	if len(own) > 0 {
+		p.chOwn = map[ownKey]time.Time{}
+	}
+	// Claims from before the last hour received no longer bound anything a station sends.
+	p.pruneClaims(p.chOwnHW - 1)
+	p.chMu.Unlock()
+	if len(own) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), chOwnInsertTimeout)
+	err := c.own.insertOwn(ctx, own)
+	cancel()
+	// Logged when inserts start failing and when they recover, as the receptions' are.
+	if was := c.ownFailing.Swap(err != nil); was != (err != nil) {
+		if err != nil {
+			log.Printf("clickhouse: station_own: %v; own-ship sightings wait for the next flush", err)
+		} else {
+			log.Printf("clickhouse: station_own writing again")
+		}
+	}
+	if err == nil {
+		return nil
+	}
+	c.failures.Add(1)
+	p.chMu.Lock()
+	for k, t := range own {
+		last, ok := p.chOwn[k]
+		if !ok && len(p.chOwn) >= maxOwnPending {
+			c.ownDropped.Add(1)
+			continue
+		}
+		if t.After(last) {
+			p.chOwn[k] = t
+		}
+	}
+	p.chMu.Unlock()
+	return ownFailed{fmt.Errorf("station_own: %w", err)}
+}
+
+// insertOwn writes own-ship sightings to station_own.
+func (c *chConn) insertOwn(ctx context.Context, own map[ownKey]time.Time) error {
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+"."+cmp.Or(c.own, "station_own")+" (hour, station, mmsi, last_ts)")
+	if err != nil {
+		return err
+	}
+	for k, t := range own {
+		if err := batch.Append(time.Unix(k.hour*3600, 0).UTC(), k.station, k.mmsi, t); err != nil {
+			batch.Abort()
+			return err
+		}
+	}
+	return batch.Send()
 }
 
 func newDedupeToken() string {

@@ -12,6 +12,8 @@ import {
   mergeTrack,
   shipClass,
   splitTrack,
+  TRACK_GAP_MS,
+  trackThenStream,
   viewBoxes,
 } from "./ais";
 import { publicApiBase, type CoverageTiles } from "./api";
@@ -71,13 +73,17 @@ export interface MapController {
   /** Draws the vessel the current route is about, and its track. */
   setFocus(mmsi: number | undefined): void;
   /**
-   * The positions the server holds for the focused vessel. `endedAt` is the time of its last
-   * point, so live positions already covered by it are not drawn a second time.
+   * The positions the server holds for the focused vessel over a range. When the range ends
+   * now, the stream's positions after its last point continue it; a past range stands alone.
    */
   setTrack(
     coords: Array<[number, number]>,
-    endedAt?: number,
-    times?: number[],
+    times: number[],
+    live: boolean,
+    /** The positions that start a stretch after the vessel went unheard; by default, every silence longer than `gap`. */
+    breaks?: ReadonlySet<number>,
+    /** How long a silence after the track, into the stream's positions, is drawn as the vessel unheard. */
+    gap?: number,
   ): void;
   /**
    * Reveal the track as far as this moment and mark the vessel's position there. Null
@@ -482,21 +488,24 @@ export function createMap(
     return features;
   }
 
-  // The history the server holds, set by the route. The session's own positions extend it so
-  // the line reaches the vessel's current mark between fetches.
+  // The history the server holds, set by the route. When it ends now, the session's own
+  // positions extend it so the line reaches the vessel's current mark between fetches.
   let history: Array<[number, number]> = [];
   // Bumped whenever the track is replaced, so the dashed line redraws for any new one: two
   // ranges thinned to the same point count and ending at the same report look alike otherwise.
   let historyRevision = 0;
   let historyTimes: number[] = [];
   let historyEnd = 0;
+  let historyLive = true;
+  let historyBreaks: ReadonlySet<number> | undefined;
+  let historyGap = TRACK_GAP_MS;
 
   /** A line per stretch the vessel was actually heard, so gaps are not drawn as passages. */
   function lines(
     coords: Array<[number, number]>,
     times: number[],
   ): GeoJSON.FeatureCollection {
-    const segments = splitTrack(coords, times);
+    const segments = splitTrack(coords, trackThenStream(history.length, historyBreaks, times, historyGap));
     return {
       type: "FeatureCollection",
       features: segments.map((seg) => ({
@@ -514,7 +523,7 @@ export function createMap(
   function scrubPoint() {
     return scrubAt === null
       ? undefined
-      : interpolateAt(history, historyTimes, scrubAt);
+      : interpolateAt(history, historyTimes, scrubAt, trackThenStream(history.length, historyBreaks, historyTimes, historyGap));
   }
 
   function trackFeature(): GeoJSON.FeatureCollection {
@@ -576,16 +585,20 @@ export function createMap(
       // Unsplit on purpose. The solid line above is split, so wherever the vessel went
       // unheard only this shows through, which is the whole point: a dashed stretch says a
       // course was never reported rather than leaving a blank the eye reads as an end.
+      // A range the vessel was heard in once has no line, so its one position is a dot.
       (
         map.getSource("track-all") as maplibregl.GeoJSONSource | undefined
       )?.setData(
-        history.length > 1
+        history.length > 0
           ? {
               type: "FeatureCollection",
               features: [
                 {
                   type: "Feature",
-                  geometry: { type: "LineString", coordinates: history },
+                  geometry:
+                    history.length > 1
+                      ? { type: "LineString", coordinates: history }
+                      : { type: "Point", coordinates: history[0]! },
                   properties: {},
                 },
               ],
@@ -942,6 +955,18 @@ export function createMap(
         "line-dasharray": [0.5, 3],
       },
     });
+    map.addLayer({
+      id: "track-point",
+      type: "circle",
+      source: "track-all",
+      filter: ["==", ["geometry-type"], "Point"],
+      paint: {
+        "circle-radius": 4,
+        "circle-color": c.track,
+        "circle-stroke-width": 1.5,
+        "circle-stroke-color": c.outline,
+      },
+    });
 
     map.addLayer({
       id: "track-line",
@@ -1159,23 +1184,32 @@ export function createMap(
       ready = false;
       map.setStyle(BASEMAP[theme], { diff: false });
     },
-    setTrack(coords, endedAt, times) {
+    setTrack(coords, times, live, breaks, gap = TRACK_GAP_MS) {
+      historyBreaks = breaks;
+      historyGap = gap;
       history = coords;
       historyRevision++;
-      historyTimes = times ?? coords.map((_, i) => i);
-      historyEnd = endedAt ?? 0;
+      historyTimes = times;
+      historyLive = live;
+      const endedAt = times[times.length - 1];
+      historyEnd = live ? (endedAt ?? 0) : Infinity;
 
       // The track and the vessel's position come from different endpoints, so the track can
       // end past where the icon sits: the recorded positions are current while the cached
       // one waits on the stream. Left alone the line runs on past its own vessel. The cache
       // keeps whichever is newer, so this is the same merge any late report gets.
       const last = coords[coords.length - 1];
-      if (focus && last && endedAt) {
+      if (live && focus && last && endedAt) {
         stream.seed({ mmsi: focus, seen: endedAt, lon: last[0], lat: last[1] });
       }
       render();
     },
     fitTrack() {
+      const only = history.length === 1 ? history[0] : undefined;
+      if (only) {
+        requestCamera(() => map.flyTo({ center: only, zoom: Math.max(map.getZoom(), 12), speed: 1.4 }));
+        return;
+      }
       if (history.length < 2) return;
       const lons = history.map((c) => c[0]);
       const lats = history.map((c) => c[1]);
@@ -1195,8 +1229,9 @@ export function createMap(
       if (at === scrubAt) return;
       scrubAt = at;
       render();
-      // Back to live brings the map back to where the vessel is now.
-      const live = focus != null ? stream.vessels.get(focus) : undefined;
+      // Back to live brings the map back to where the vessel is now. A past range is what the
+      // reader came to see, so the map stays on it.
+      const live = focus != null && historyLive ? stream.vessels.get(focus) : undefined;
       keepInView(at !== null ? scrubPoint()?.point : live?.lon != null && live.lat != null ? [live.lon, live.lat] : undefined);
     },
     setFocus(mmsi) {
@@ -1208,6 +1243,9 @@ export function createMap(
         historyRevision++;
         historyTimes = [];
         historyEnd = 0;
+        historyLive = true;
+        historyBreaks = undefined;
+        historyGap = TRACK_GAP_MS;
         scrubAt = null;
       }
       focus = mmsi;

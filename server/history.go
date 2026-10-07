@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -101,6 +102,14 @@ var historySettings = clickhouse.Settings{
 
 // historyBatch is how many receptions go to ClickHouse in one insert.
 var historyBatch = 200_000
+
+// historyFrom is the first day an archive loads: the date in env, else 2025-10-01.
+func historyFrom(env string) time.Time {
+	if t, err := time.Parse("2006-01-02", os.Getenv(env)); err == nil {
+		return t
+	}
+	return time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC)
+}
 
 // historyCheckEvery is how often the loader lists each source for files it has not loaded.
 const historyCheckEvery = 6 * time.Hour
@@ -309,8 +318,10 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 		      FROM (` + s.read(f) + `))`); err != nil {
 		return 0, fmt.Errorf("stage: %w", err)
 	}
+	// Repeats are counted by a hash of the row, which takes half the memory of the row itself: a busy DMA day has
+	// 16 million distinct rows, and the next doubling of the set would pass the load's 1.5 GB.
 	var read, known, placed, distinct uint64
-	if err := c.conn.QueryRow(ctx, "SELECT count(), countIf(known), countIf(placed), uniqExactIf((mmsi, ts, lat6, lon6), placed) FROM "+stage).
+	if err := c.conn.QueryRow(ctx, "SELECT count(), countIf(known), countIf(placed), uniqExactIf(cityHash64(mmsi, ts, lat6, lon6), placed) FROM "+stage).
 		Scan(&read, &known, &placed, &distinct); err != nil {
 		return 0, err
 	}

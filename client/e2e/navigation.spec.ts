@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { vesselPath } from "../app/lib/ais";
-import { namedVessel } from "./data";
+import { heardFromVolunteer, namedVessel } from "./data";
 import {
   expect,
   mapStatus,
@@ -15,7 +15,7 @@ import {
 // The map writes its camera into the address's hash as it moves.
 const HOME = /\/ais\/vessels(#.*)?$/;
 const STATIONS = /\/ais\/stations(#.*)?$/;
-const STATION = /\/ais\/stations\/digitraffic(#.*)?$/;
+const STATION = /\/ais\/stations\/udp:[0-9a-f]+(#.*)?$/;
 const vesselURL = (mmsi: number) => new RegExp(`/ais/vessels/${mmsi}(-[^/#]*)?(#.*)?$`);
 
 const back = (page: Page) => page.getByRole("link", { name: "Back", exact: true }).click();
@@ -29,9 +29,10 @@ async function openAnotherVesselOnMap(page: Page, first: number) {
 }
 
 async function openStationFromHome(page: Page) {
+  await heardFromVolunteer();
   await page.getByRole("navigation", { name: "Browse" }).getByRole("link", { name: /^Stations/ }).click();
   await expect(page).toHaveURL(STATIONS);
-  await page.getByRole("link", { name: /^digitraffic/ }).click();
+  await page.getByRole("link", { name: /^Anonymous/ }).click();
   await expect(page).toHaveURL(STATION);
 }
 

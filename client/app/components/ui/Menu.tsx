@@ -26,7 +26,7 @@ export function Menu({
       <BaseMenu.Portal>
         <BaseMenu.Positioner side={side} align={align} sideOffset={8} className="z-50">
           {/* Base UI measures the room left on screen, so a long menu on a short phone scrolls. */}
-          <BaseMenu.Popup className="pane max-h-(--available-height) min-w-40 overflow-y-auto p-1.5 outline-none">{children}</BaseMenu.Popup>
+          <BaseMenu.Popup className="pane max-h-available min-w-40 overflow-y-auto p-1.5 outline-none">{children}</BaseMenu.Popup>
         </BaseMenu.Positioner>
       </BaseMenu.Portal>
     </BaseMenu.Root>

@@ -1,23 +1,34 @@
 package main
 
 // Track positions: every copy of every position report goes to ClickHouse (clickhouse.go), which answers every
-// track. Nothing attaches ClickHouse in replay, so replay never writes there.
+// track, up to a year per request. Replay writes into a staging table first (replay_clickhouse.go).
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"strconv"
 	"time"
 )
 
-// trackWindow is how far back an anonymous or personal track reaches.
+// trackWindow is the recent stretch chTable reads from the raw positions table, whatever the step.
 const trackWindow = 48 * time.Hour
 
 // maxPending bounds the copies held for the ClickHouse writer, a few minutes of traffic. Past it ClickHouse has
 // stalled, and dropping the oldest copies keeps memory flat; the drops are counted.
 const maxPending = 300_000
 
-// trackPoint is one accepted position report. Positions and motion are held in the lake's integer
+// maxOwnPending bounds the own-ship sightings waiting for ClickHouse. A station has one own ship, or a few, so
+// real traffic is a few keys an hour; the bound is for a station that claims thousands of MMSIs as its own, which
+// anyone running one can, and for an outage, when unsent sightings stay in memory.
+const maxOwnPending = 10_000
+
+// maxOwnPerStation is how many vessels one station may claim as its own in an hour. A boat has one, and a few
+// cover a mothership and its tender or a receiver moved between boats; past it a station is not reporting a
+// ship it is on, and taking more would let it crowd every other station's sightings out of maxOwnPending.
+const maxOwnPerStation = 4
+
+// trackPoint is one accepted position report. Positions and motion are held in AIS's own integer
 // encodings: 1/600000 degree, 0.1 knot (1023 not available), 0.1 degree (3600 not available).
 type trackPoint struct {
 	mmsi      uint32
@@ -41,6 +52,7 @@ type trackPoint struct {
 	implausible    bool // the fold judged it an impossible jump from the vessel's last position
 	clockBad       bool // stamped clockBadAge or more before it arrived
 	still          bool // not moving: reporting half a knot or less, and within movedM of where the vessel was last moving
+	stale          bool // the fold judged it older than a report the vessel had already sent, so the stream and the station counts left it out; dedupe's copies are not judged, and count as heard
 }
 
 // discOf is one byte of an event id, the low byte of its first 64 bits, which with the vessel and the time its
@@ -56,8 +68,8 @@ func discOf(id string) uint8 {
 	return uint8(h)
 }
 
-// movedM is how far a vessel must be from the last place it was moving to count as moving again, the distance
-// ais.tracks uses: under it, a moored vessel's GPS jitter and a swing at anchor are noise.
+// movedM is how far a vessel must be from the last place it was moving to count as moving again: under it, a
+// moored vessel's GPS jitter and a swing at anchor are noise.
 const movedM = 50
 
 // anchor is where a vessel was last moving, which decides whether its next report is moving. Measuring from it
@@ -70,18 +82,16 @@ type anchor struct {
 	set        bool
 }
 
-// still reports whether pt is a vessel sitting still, for positions_1m: not reporting more than half a knot,
-// and within movedM of the anchor. Reported speed counts when there is one, since a vessel underway says so
-// before it has gone 50 m; about 0.3% of reports carry none, from a transmitter whose GPS gives it no speed,
-// and distance alone decides those. An anchor not yet set starts at seed, the vessel's last known position, such
-// as the one the vessel cache restores at start; with neither, pt is moving, so a voyage is never hidden. A
-// moving pt becomes the anchor when advance is set, which it is only for a report that enters positions_1m.
+// still reports whether pt is a vessel sitting still, for positions_1m: within movedM of the anchor. Distance
+// alone decides, not reported speed: a moored vessel's GPS can report 0.6 to 0.9 kn for days while it sits
+// within a few meters, and a vessel leaving at 3 kn passes movedM in about 30 seconds. An anchor not yet set starts at seed, the vessel's last known position, such as
+// the one the vessel cache restores at start; with neither, pt is moving, so a voyage is never hidden. A moving
+// pt becomes the anchor when advance is set, which it is only for a report that enters positions_1m.
 func (a *anchor) still(pt trackPoint, seed *[2]int32, advance bool) bool {
 	if !a.set && seed != nil {
 		a.lat6, a.lon6, a.set = seed[0], seed[1], true
 	}
-	moving := !a.set || pt.sog10 != 1023 && pt.sog10 > 5 ||
-		nm(float64(a.lat6)/600000, float64(a.lon6)/600000, float64(pt.lat6)/600000, float64(pt.lon6)/600000)*1852 > movedM
+	moving := !a.set || nm(float64(a.lat6)/600000, float64(a.lon6)/600000, float64(pt.lat6)/600000, float64(pt.lon6)/600000)*1852 > movedM
 	if moving && advance {
 		a.lat6, a.lon6, a.set = pt.lat6, pt.lon6, true
 	}
@@ -312,6 +322,9 @@ func despike(points []trackPoint) []trackPoint {
 
 // noteReception queues a copy for ClickHouse.
 func (p *Pipeline) noteReception(pt trackPoint) {
+	if pt.recv.Before(p.replayGate) {
+		return // a replay's lead-in builds state and writes nothing
+	}
 	p.chMu.Lock()
 	defer p.chMu.Unlock()
 	if p.chQueue == nil {
@@ -325,6 +338,74 @@ func (p *Pipeline) noteReception(pt trackPoint) {
 		p.chQueue = append(p.chQueue[:0], p.chQueue[n:]...)
 	}
 	p.chQueue = append(p.chQueue, pt)
+}
+
+// noteOwn gathers a station's own-ship message for station_own, position or static, keeping the latest per
+// station, hour received, and vessel until the next flush.
+func (p *Pipeline) noteOwn(ev *Event) {
+	if ev.RecvTime.Before(p.replayGate) {
+		return // a replay's lead-in builds state and writes nothing
+	}
+	// Sightings and claims go by the hour the message arrived, which the server sets, not the hour it is stamped,
+	// which the sender does: stamps across many hours would otherwise open a fresh allowance for each, and a replay,
+	// which takes a day's messages by arrival, replaces exactly the hours it writes.
+	recvHour := ev.RecvTime.Unix() / 3600
+	k := ownKey{ev.Station, recvHour, ev.Packet.GetHeader().UserID}
+	// The allowance is the sender's: a UDP sender is relabeled by each MMSI it claims, so its station would be a new
+	// one for every MMSI and never reach the bound.
+	claimer := cmp.Or(ev.Sender, ev.Station)
+	p.chMu.Lock()
+	defer p.chMu.Unlock()
+	if p.chOwn == nil {
+		return
+	}
+	p.chOwnHW = max(p.chOwnHW, recvHour)
+	sh := ownKey{station: claimer, hour: recvHour}
+	claimed, known := p.chOwnClaimed[sh]
+	last, ok := p.chOwn[k]
+	if !claimed[k.mmsi] && len(claimed) >= maxOwnPerStation {
+		p.ch.ownRefused.Add(1) // the sender's allowance, which a replay of the same messages refuses again
+		return
+	}
+	if !known && len(p.chOwnClaimed) >= maxOwnPending {
+		// A full map makes room from earlier hours first: their claims bound nothing arriving now, so a busy hour
+		// never costs the next one its senders.
+		p.pruneClaims(recvHour)
+	}
+	if !ok && len(p.chOwn) >= maxOwnPending || !known && len(p.chOwnClaimed) >= maxOwnPending {
+		p.ch.ownDropped.Add(1)
+		return
+	}
+	if !known {
+		claimed = map[uint32]bool{}
+		p.chOwnClaimed[sh] = claimed
+		p.chOwnClaimHours[recvHour]++
+	}
+	claimed[k.mmsi] = true
+	if ev.Time.After(last) {
+		p.chOwn[k] = ev.Time
+	}
+}
+
+// pruneClaims drops the claims of hours before the given one; the caller holds chMu. It scans the claims only when
+// chOwnClaimHours says some are that old, so a flood of senders refused within one hour costs a lookup each, not a
+// pass over every claim under the lock the receptions queue shares.
+func (p *Pipeline) pruneClaims(before int64) {
+	stale := false
+	for h := range p.chOwnClaimHours {
+		if h < before {
+			stale = true
+			delete(p.chOwnClaimHours, h)
+		}
+	}
+	if !stale {
+		return
+	}
+	for sh := range p.chOwnClaimed {
+		if sh.hour < before {
+			delete(p.chOwnClaimed, sh)
+		}
+	}
 }
 
 // noteCopy queues a copy that dedupe matched by payload to the transmission accepted at tx. It decodes to the

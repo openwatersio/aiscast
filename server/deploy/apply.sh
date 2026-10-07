@@ -58,14 +58,15 @@ fi
 rm -f "$drop.bak"
 systemctl reload ssh
 
-mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/aiscast/normalized
+mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/alloy/textfile
 chown -R aiscast:aiscast /var/lib/aiscast
 
-# The packager runs on GitHub Actions (.github/workflows/packager.yml). Boxes converged before
-# that may still carry any of its units, script, or staging directory.
+# The packager and the normalized stream are retired. Boxes converged before may still carry the packager's
+# units, script, and staging directory, and the normalized stream's staged hours.
 systemctl disable --now packager.timer packager.service 2>/dev/null || true
 rm -f /etc/systemd/system/packager.timer /etc/systemd/system/packager.service /opt/aiscast/packager.py
-rm -rf /var/lib/aiscast/packager
+rm -rf /var/lib/aiscast/packager /var/lib/aiscast/normalized
+
 # Tracks read from ClickHouse. Boxes converged before that may still carry the SQLite track store.
 rm -f /var/lib/aiscast/tracks.db /var/lib/aiscast/tracks.db-*
 
@@ -73,6 +74,23 @@ rm -f /var/lib/aiscast/tracks.db /var/lib/aiscast/tracks.db-*
 if [ ! -f /etc/aiscast.env ]; then
 	install -m 600 aiscast.env.example /etc/aiscast.env
 	echo 'created /etc/aiscast.env from template: fill in secrets before the service is useful' >&2
+fi
+if [ ! -f /etc/clickhouse-server/r2.env ]; then
+	install -m 600 clickhouse-r2.env.example /etc/clickhouse-server/r2.env
+fi
+# The cold volume and backups need the R2 keys: without them the disk would stop ClickHouse starting. Once
+# installed the file stays, since parts on R2 need it to be read.
+if [ "$(grep -cE '^CLICKHOUSE_R2_(COLD_URL|BACKUP_URL|ACCESS_KEY_ID|SECRET_ACCESS_KEY)=[^<]+$' /etc/clickhouse-server/r2.env)" = 4 ]; then
+	install -m 644 clickhouse-r2.xml /etc/clickhouse-server/config.d/r2.xml
+	# Start the backup's clock when backups are first on, so ClickHouseBackupStale fires if none ever succeeds.
+	if [ ! -f /var/lib/alloy/textfile/clickhouse-backup.prom ]; then
+		mkdir -p /var/lib/alloy/textfile
+		printf '# TYPE aiscast_clickhouse_backup_last_success_timestamp_seconds gauge\naiscast_clickhouse_backup_last_success_timestamp_seconds %s\n' "$(date +%s)" >/var/lib/alloy/textfile/clickhouse-backup.prom
+	fi
+	install -d -o clickhouse -g clickhouse /var/lib/clickhouse/disks # the server creates its disks' directories here as clickhouse
+	systemctl enable clickhouse-backup.timer
+elif [ -f /etc/clickhouse-server/config.d/r2.xml ]; then
+	echo '/etc/clickhouse-server/r2.env lacks an R2 URL or key, but r2.xml needs all four: ClickHouse will not start' >&2
 fi
 if [ ! -f /etc/alloy.env ]; then
 	install -m 600 alloy.env.example /etc/alloy.env
@@ -87,7 +105,8 @@ systemctl enable aiscast caddy clickhouse-server fail2ban
 # aiscast runs without ClickHouse, answering tracks with 503, so a ClickHouse that will not start warns and
 # never fails the deploy;
 # --no-block keeps a slow start from holding it up.
-ch_sum=$(cat /etc/clickhouse-server/config.d/aiscast.xml /etc/systemd/system/clickhouse-server.service.d/10-aiscast.conf | md5sum)
+ch_sum=$(cat /etc/clickhouse-server/config.d/aiscast.xml /etc/systemd/system/clickhouse-server.service.d/10-aiscast.conf \
+	/etc/clickhouse-server/users.d/s3.xml /etc/clickhouse-server/config.d/r2.xml /etc/clickhouse-server/r2.env 2>/dev/null | md5sum)
 ch_stamp=/var/lib/aiscast/clickhouse-config.md5
 if [ "$ch_sum" != "$(cat "$ch_stamp" 2>/dev/null)" ]; then
 	if systemctl --no-block restart clickhouse-server; then
@@ -97,6 +116,9 @@ if [ "$ch_sum" != "$(cat "$ch_stamp" 2>/dev/null)" ]; then
 	fi
 else
 	systemctl --no-block start clickhouse-server || echo 'clickhouse-server did not start' >&2
+fi
+if [ -f /etc/clickhouse-server/config.d/r2.xml ]; then
+	systemctl start clickhouse-backup.timer
 fi
 systemctl reload-or-restart fail2ban
 install -d -o caddy -g caddy /var/log/caddy

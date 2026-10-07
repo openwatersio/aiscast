@@ -28,9 +28,6 @@ func main() {
 		case "replay":
 			runReplay(os.Args[2:])
 			return
-		case "normdiff":
-			runNormDiff(os.Args[2:])
-			return
 		case "convert-receptions":
 			runConvertReceptions(os.Args[2:])
 			return
@@ -47,10 +44,7 @@ func main() {
 	}
 	arch := newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv())
 	go arch.sweepLoop() // reclaim what the bucket already has; slow, so it must not hold up ingest
-	norm := newNormArchive(normDir(), s3NormFromEnv())
-	go norm.sweepLoop()
 	p := newPipeline(arch)
-	p.norm = norm
 	p.access = newAccessArchive(accessDir(), accessStoreFromEnv())
 	go p.access.sweepLoop()
 
@@ -80,30 +74,35 @@ func main() {
 				log.Printf("wikidata: %v", err)
 			}
 			if env("WIKIDATA", "1") == "1" {
+				p.wikidata.enabled.Store(true)
 				go p.runWikidata(env("WIKIDATA_URL", wikidataSPARQL))
 			}
 			if err := p.loadUSCGStats(); err != nil {
 				log.Printf("uscg: %v", err)
 			}
 			if env("USCG", "1") == "1" {
+				p.uscg.enabled.Store(true)
 				go p.runUSCG(env("USCG_URL", psixEndpoint))
 			}
 			if err := p.loadFiskeridirStats(); err != nil {
 				log.Printf("fiskeridir: %v", err)
 			}
 			if env("FISKERIDIR", "1") == "1" {
+				p.fiskeridir.enabled.Store(true)
 				go p.runFiskeridir(env("FISKERIDIR_URL", fdirEndpoint))
 			}
 			if err := p.loadFCCStats(); err != nil {
 				log.Printf("fcc: %v", err)
 			}
 			if env("FCC", "1") == "1" {
+				p.fcc.enabled.Store(true)
 				go p.runFCC(env("FCC_URL", fccEndpoint))
 			}
 			if err := p.loadTCStats(); err != nil {
 				log.Printf("tc: %v", err)
 			}
 			if env("TC", "1") == "1" {
+				p.tc.enabled.Store(true)
 				go p.runTC(env("TC_URL", tcEndpoint))
 			}
 			if err := p.loadISEDStats(); err != nil {
@@ -179,7 +178,10 @@ func main() {
 		go p.runClickHouse(url)
 		var sources []historySource
 		if os.Getenv("MARINECADASTRE") != "" {
-			sources = append(sources, marineCadastre(mcFrom()))
+			sources = append(sources, marineCadastre(historyFrom("MARINECADASTRE_FROM")))
+		}
+		if os.Getenv("DMA") != "" {
+			sources = append(sources, dma(historyFrom("DMA_FROM")))
 		}
 		if len(sources) > 0 {
 			if loader, err := historyLoaderURL(url, os.Getenv("CLICKHOUSE_LOADER_URL")); err != nil {

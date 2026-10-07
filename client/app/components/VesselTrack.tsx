@@ -1,47 +1,56 @@
-import { ChevronDown, Pause, Play } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { speedAt, TRACK_GAP_MS } from "../lib/ais";
-import { publicApiBase } from "../lib/api";
+import { ChevronDown, ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { speedAt } from "../lib/ais";
+import { cn } from "../lib/cn";
+import { publicApiBase, storedToken, trackPath } from "../lib/api";
 import { useLive } from "../lib/live";
-import { TRACK_WINDOW_HOURS, type LoadedTrack } from "../lib/useTrack";
+import { earlier, later, rangeBounds, rangeLabel, timeTicks, TRACK_RANGES, utcMoment, type TrackRange, type TrackSpan } from "../lib/trackRange";
+import type { LoadedTrack, TrackFailure } from "../lib/useTrack";
 import { IconButton } from "./ui/IconButton";
 import { Menu, MenuRadioGroup, MenuRadioItem } from "./ui/Menu";
 import { Section } from "./ui/Section";
-
-const RANGES = [6, 12, 24, 48].filter((h) => h <= TRACK_WINDOW_HOURS);
 
 // Replay covers the whole track in about this many steps, one every PLAY_TICK_MS.
 const PLAY_STEPS = 240;
 const PLAY_TICK_MS = 90;
 
-const utcTime = (t: number) => new Date(t).toISOString().slice(11, 16);
+/** A moment on this track, dated when the track is not simply the last day. */
+const momentOn = (track: LoadedTrack, t: number) => utcMoment(t, !track.live || track.to - track.from > 24 * 3600e3);
 
 /**
  * The Track section: the vessel's speed over a chosen range, which is also how its past
  * positions are replayed on the map. Pointing at a moment on the chart puts the vessel where
- * it was then; letting go hands the map back to the live position.
+ * it was then; letting go hands the map back to the live position. The range ends now or
+ * pages back through the vessel's history.
  */
 export function VesselTrack({
   mmsi,
   track,
   loading,
-  hours,
-  onHoursChange,
+  failure,
+  range,
+  firstSeen,
+  onRangeChange,
 }: {
   mmsi: number;
   track: LoadedTrack | undefined;
   loading: boolean;
-  hours: number;
-  onHoursChange(hours: number): void;
+  failure: TrackFailure | undefined;
+  range: TrackRange;
+  /** The earliest the network heard the vessel, before which there is nothing to page back to. */
+  firstSeen: number | undefined;
+  onRangeChange(range: TrackRange): void;
 }) {
   const live = useLive();
   const [scrubAt, setScrubAt] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
 
-  // The map draws the track and, while scrubbing, the vessel at the moment being shown.
+  // The map draws the track and, while scrubbing, the vessel at the moment being shown. A past
+  // range is somewhere the reader asked to go, so the map goes there.
   useEffect(() => {
-    if (!live || !track) return;
-    live.ctl.setTrack(track.coords, track.times[track.times.length - 1] ?? 0, track.times);
+    if (!live) return;
+    live.ctl.setTrack(track?.coords ?? [], track?.times ?? [], track?.live ?? true, track?.breaks, track?.gap);
+    if (track && !track.live) live.ctl.fitTrack();
   }, [live, track]);
   useEffect(() => live?.ctl.scrubTo(scrubAt), [live, scrubAt]);
   useEffect(() => () => live?.ctl.scrubTo(null), [live]);
@@ -63,10 +72,20 @@ export function VesselTrack({
     return () => clearInterval(tick);
   }, [playing, first, last]);
 
+  const changeRange = (next: TrackRange) => {
+    setPlaying(false);
+    setScrubAt(null);
+    onRangeChange(next);
+  };
+  const { from } = rangeBounds(range);
+  // Before the vessel was first heard, an earlier page can only be empty.
+  const atEarliest = firstSeen != null && from <= firstSeen;
+
   const speeds = (track?.sog ?? []).filter((s): s is number => s != null);
   const avg = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : undefined;
   const max = speeds.length ? Math.max(...speeds) : undefined;
   const points = track?.coords.length ?? 0;
+  const label = rangeLabel(range);
 
   return (
     <Section
@@ -77,22 +96,15 @@ export function VesselTrack({
           align="end"
           trigger={
             <button type="button" className="inline-flex items-center gap-0.5 rounded-md text-fg-muted hover:text-fg">
-              Last {hours} hours
+              {label}
               <ChevronDown className="size-3.5" aria-hidden />
             </button>
           }
         >
-          <MenuRadioGroup
-            value={hours}
-            onChange={(h: number) => {
-              setPlaying(false);
-              setScrubAt(null);
-              onHoursChange(h);
-            }}
-          >
-            {RANGES.map((h) => (
-              <MenuRadioItem key={h} value={h}>
-                Last {h} hours
+          <MenuRadioGroup value={range.end == null ? range.span : null} onChange={(span: TrackSpan) => changeRange({ span, end: null })}>
+            {TRACK_RANGES.map((span) => (
+              <MenuRadioItem key={span} value={span}>
+                {rangeLabel({ span, end: null })}
               </MenuRadioItem>
             ))}
           </MenuRadioGroup>
@@ -117,11 +129,11 @@ export function VesselTrack({
         <span className="min-w-0 flex-1 text-footnote text-fg-muted" aria-live="polite">
           {track && scrubAt != null ? (
             <>
-              <span className="font-semibold text-fg tabular-nums">{utcTime(scrubAt)} UTC</span>
-              {speedAt(track, scrubAt) != null && (
+              <span className="font-semibold text-fg tabular-nums">{momentOn(track, scrubAt)} UTC</span>
+              {speedAt(track, scrubAt, (i) => track.breaks.has(i), track.gap) != null && (
                 <>
                   {" · "}
-                  <span className="font-semibold text-fg tabular-nums">{speedAt(track, scrubAt)!.toFixed(1)} kn</span>
+                  <span className="font-semibold text-fg tabular-nums">{speedAt(track, scrubAt, (i) => track.breaks.has(i), track.gap)!.toFixed(1)} kn</span>
                 </>
               )}
             </>
@@ -132,12 +144,15 @@ export function VesselTrack({
             </>
           ) : null}
         </span>
+        <IconButton icon={ChevronLeft} label="Earlier" small disabled={atEarliest} onClick={() => changeRange(earlier(range))} />
+        <IconButton icon={ChevronRight} label="Later" small disabled={range.end == null} onClick={() => changeRange(later(range))} />
       </div>
 
       {track && points > 1 ? (
         <TrackChart
           track={track}
           scrubAt={scrubAt}
+          loading={loading}
           onScrub={(t) => {
             setPlaying(false);
             // Starting to scrub frames the whole route, so every moment on the chart is on
@@ -148,22 +163,61 @@ export function VesselTrack({
         />
       ) : (
         <p className="py-8 text-center text-body text-fg-muted">
-          {loading ? "Loading…" : `Not heard in the last ${hours} hours.`}
+          {loading
+            ? "Loading…"
+            : track && points === 1
+              ? `Heard once, at ${momentOn(track, track.times[0]!)} UTC.`
+              : failure === "unavailable"
+                ? "The track is unavailable right now."
+                : range.end == null
+                  ? `Not heard in the ${label.toLowerCase()}.`
+                  : "Not heard in this period."}
         </p>
       )}
 
       <div className="mt-1 flex items-baseline justify-between text-footnote text-fg-muted">
         <span>Times in UTC</span>
-        <a href={`${publicApiBase()}/v1/vessels/${mmsi}/track?format=gpx`} download={`${mmsi}.gpx`}>
-          Download GPX
-        </a>
+        {/* Until a track loads, a range ending now has no fixed bounds, and computing them would
+            differ between the server's render and the browser's. */}
+        <GpxLink mmsi={mmsi} range={track ?? (range.end != null ? rangeBounds(range) : undefined)} />
       </div>
     </Section>
   );
 }
 
+/**
+ * The positions on screen as a GPX file. A plain link carries no token, so with one the file
+ * is fetched with it: otherwise the download gets the anonymous tier's reach and limit.
+ */
+function GpxLink({ mmsi, range }: { mmsi: number; range: { from: number; to: number } | undefined }) {
+  const href = `${publicApiBase()}${trackPath(mmsi, { ...range, format: "gpx" })}`;
+  const onClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    const token = storedToken();
+    if (!token) return;
+    e.preventDefault();
+    void fetch(href, { headers: { authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.blob() : Promise.reject(new Error(`${res.status}`))))
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${mmsi}.gpx`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 0);
+      })
+      .catch(() => undefined);
+  };
+  return (
+    <a href={href} download={`${mmsi}.gpx`} onClick={onClick}>
+      Download GPX
+    </a>
+  );
+}
+
 const HEIGHT = 128;
 const PAD = { top: 10, right: 6, bottom: 20, left: 24 };
+const EDGE = 20;
 
 /** Gridline spacing for speeds up to `top`: at most four lines, on a round step. */
 function scale(top: number): { max: number; step: number } {
@@ -178,17 +232,20 @@ function scale(top: number): { max: number; step: number } {
 
 /**
  * Speed over time as a line over a soft fill, broken wherever the vessel went unheard for
- * longer than TRACK_GAP_MS, since joining across a silence draws speeds nobody reported.
+ * longer than the track's gap, since joining across a silence draws speeds nobody reported.
  * The chart is also the scrubber: a mouse scrubs by hovering, a finger by pressing and
  * dragging, and the keyboard with the arrow keys.
  */
 function TrackChart({
   track,
   scrubAt,
+  loading,
   onScrub,
 }: {
   track: LoadedTrack;
   scrubAt: number | null;
+  /** Another range is on its way, so this one is shown dimmed. */
+  loading: boolean;
   onScrub(at: number | null): void;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -218,7 +275,7 @@ function TrackChart({
   let run: Array<[number, number]> = [];
   times.forEach((t, i) => {
     const v = sog[i];
-    if (v == null || (i > 0 && t - times[i - 1]! > TRACK_GAP_MS)) {
+    if (v == null || track.breaks.has(i)) {
       if (run.length > 1) segments.push(run);
       run = [];
     }
@@ -232,7 +289,7 @@ function TrackChart({
 
   const gridlines: number[] = [];
   for (let v = 0; v <= max; v += step) gridlines.push(v);
-  const ticks = [0, 1, 2, 3].map((i) => from + ((to - from) * i) / 3);
+  const ticks = timeTicks(from, to);
 
   /** The moment under a pointer, kept within the stretch the track covers. */
   const timeAt = (clientX: number) => {
@@ -266,8 +323,8 @@ function TrackChart({
     }
   };
 
-  const speed = scrubAt != null ? speedAt(track, scrubAt) : undefined;
-  const readout = scrubAt != null ? `${utcTime(scrubAt)}${speed != null ? ` · ${speed.toFixed(1)} kn` : ""}` : undefined;
+  const speed = scrubAt != null ? speedAt(track, scrubAt, (i) => track.breaks.has(i), track.gap) : undefined;
+  const readout = scrubAt != null ? `${momentOn(track, scrubAt)}${speed != null ? ` · ${speed.toFixed(1)} kn` : ""}` : undefined;
   const cursorX = scrubAt != null ? x(scrubAt) : undefined;
 
   return (
@@ -281,7 +338,7 @@ function TrackChart({
       aria-valuemin={first}
       aria-valuemax={last}
       aria-valuenow={scrubAt ?? last}
-      aria-valuetext={readout ?? "Now"}
+      aria-valuetext={readout ?? (track.live ? "Now" : momentOn(track, last))}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={release}
@@ -289,7 +346,10 @@ function TrackChart({
       onPointerLeave={(e) => e.pointerType === "mouse" && !pressed.current && onScrub(null)}
       onKeyDown={onKeyDown}
       onBlur={() => onScrub(null)}
-      className="relative mt-2 cursor-crosshair touch-none rounded-md outline-none select-none focus-visible:ring-2 focus-visible:ring-accent"
+      className={cn(
+        "relative mt-2 cursor-crosshair touch-none rounded-md outline-none select-none focus-visible:ring-2 focus-visible:ring-accent",
+        loading && "opacity-50",
+      )}
     >
       <svg width={width} height={HEIGHT} className="block overflow-visible text-accent" aria-hidden>
         <defs>
@@ -306,15 +366,16 @@ function TrackChart({
             </text>
           </g>
         ))}
-        {ticks.map((t, i) => (
+        {ticks.map(({ t, label }) => (
           <text
             key={t}
             x={x(t)}
             y={HEIGHT - 4}
-            textAnchor={i === 0 ? "start" : i === ticks.length - 1 ? "end" : "middle"}
+            // A label at either edge is kept inside the chart rather than centred over it.
+            textAnchor={x(t) - PAD.left < EDGE ? "start" : width - PAD.right - x(t) < EDGE ? "end" : "middle"}
             className="fill-fg-muted text-caption"
           >
-            {utcTime(t)}
+            {label}
           </text>
         ))}
         <path d={area} fill={`url(#${gradient})`} />

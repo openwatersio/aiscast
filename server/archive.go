@@ -19,7 +19,7 @@ import (
 var licenses = map[string]string{
 	"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
 	"station": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
-	"marinecadastre": "us-public-domain",
+	"marinecadastre": "us-public-domain", "dma": "DK-PSI",
 	// contributors were named by transport before station ids; raw hours from then still carry these
 	// sources, and replaying them must license their copies the same way
 	"http": "CC0-1.0", "v1": "CC0-1.0",
@@ -39,6 +39,7 @@ var attributions = map[string]string{
 	"aisstream":    "aisstream.io",
 	// a historical archive: its rows reach tracks, never the stream
 	"marinecadastre": "U.S. Coast Guard Nationwide AIS, via MarineCadastre.gov (NOAA and BOEM).",
+	"dma":            "Danish Maritime Authority.",
 }
 
 // licenseOf resolves a source's license tag: the full source name first, then its prefix (`station:ed25519:...` → `station`).
@@ -79,7 +80,7 @@ type hourFile struct {
 }
 
 // archive writes every reception source-native to hourly gzip files per source, then uploads to R2 when rotated.
-// The normalized stream reuses it with keyFn and bare set: one merged file per hour, envelope-only lines.
+// The access log reuses it with keyFn and bare set: one merged file per hour, one record per line.
 type archive struct {
 	dir     string
 	s3      objectStore                                // nil = keep files local only
@@ -135,9 +136,9 @@ func (a *archive) write(rx Reception) {
 	if a.dir == "" {
 		return
 	}
-	// Block rather than drop: raw and normalized must hold the same receptions for replay to
-	// regenerate the stream, and the writer only touches local disk (uploads run beside it), so a
-	// full queue means the disk has stalled and ingest waits for it.
+	// Block rather than drop: the raw archive must hold every reception ClickHouse does for replay to
+	// rebuild a day, and the writer only touches local disk (uploads run beside it), so a full queue
+	// means the disk has stalled and ingest waits for it.
 	a.ch <- rx
 }
 
@@ -240,9 +241,9 @@ func (a *archive) handle(rx Reception, files map[string]*hourFile) {
 	}
 }
 
-// ioFatal stops the process on an archive write it cannot make. Raw and normalized must hold the same
-// receptions for replay to regenerate the stream, and a full or failing disk would let ingest carry on
-// with one of them short. Stopping takes the stream down, which /health reports, and systemd restarts
+// ioFatal stops the process on an archive write it cannot make. The raw archive must hold every reception
+// ClickHouse does for replay to rebuild a day, and a full or failing disk would let ingest carry on with
+// it short. Stopping takes the stream down, which /health reports, and systemd restarts
 // the process once the disk recovers; files left open are uploaded by the next sweep.
 var ioFatal = func(err error) {
 	if err != nil {
@@ -413,7 +414,7 @@ const archiveGrace = 2 * time.Hour
 //
 // Files inside archiveGrace are uploaded the same way but never deleted. Those are the hours the last
 // process closed at shutdown without uploading, and the sweep at boot sends them within a minute, well
-// before the packager reads the day. If this process reopens it while the upload runs, it goes up again,
+// before anything reads the day. If this process reopens it while the upload runs, it goes up again,
 // complete, when it rotates.
 func (a *archive) sweep() {
 	if a.dir == "" {
@@ -503,7 +504,6 @@ func (a *archive) sweep() {
 func runSweep() {
 	for _, a := range []*archive{
 		newArchive(env("ARCHIVE_DIR", "archive"), s3FromEnv()),
-		newNormArchive(normDir(), s3NormFromEnv()),
 		newAccessArchive(accessDir(), accessStoreFromEnv()),
 	} {
 		a.sweep()

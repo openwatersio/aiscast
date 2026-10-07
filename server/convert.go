@@ -98,7 +98,7 @@ func (c *chConn) convertDays(ctx context.Context, days []time.Time, done func(ti
 		start := time.Now()
 		if !d.Equal(prev.AddDate(0, 0, 1)) {
 			var err error
-			if st.anchors, err = c.anchorsBefore(ctx, d); err != nil {
+			if st.anchors, err = c.anchorsBefore(ctx, d, nil); err != nil {
 				return fmt.Errorf("%s: anchors: %w", d.Format("2006-01-02"), err)
 			}
 			if st.still, err = c.stillBefore(ctx, d); err != nil {
@@ -139,10 +139,10 @@ func (c *chConn) stillBefore(ctx context.Context, day time.Time) (map[convertTx]
 // anchorsBefore is each vessel's anchor at the start of day: where it was last moving, its latest moving row in
 // positions_1m. It looks back a month; a vessel still for longer starts without one, and its first report that
 // day counts as moving, a row a minute more.
-func (c *chConn) anchorsBefore(ctx context.Context, day time.Time) (map[uint32]*anchor, error) {
+func (c *chConn) anchorsBefore(ctx context.Context, day time.Time, archives []string) (map[uint32]*anchor, error) {
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"max_memory_usage": 1_500_000_000, "max_threads": 2}))
 	rows, err := c.conn.Query(ctx, "SELECT mmsi, a.1, a.2 FROM (SELECT mmsi, argMax((lat6, lon6), ts) AS a FROM "+c.db+".positions_1m"+
-		" WHERE cell = 0 AND slot >= ? AND slot < ? GROUP BY mmsi)", day.AddDate(0, 0, -31), day)
+		" WHERE cell = 0 AND slot >= ? AND slot < ? AND NOT has(?, source) GROUP BY mmsi)", day.AddDate(0, 0, -31), day, archives)
 	if err != nil {
 		return nil, err
 	}
@@ -405,6 +405,8 @@ func convertVessel(rows []v1Row, day, end time.Time, st *convertState, next map[
 		pt := trackPoint{mmsi: r.mmsi, ts: r.ts, lat6: r.lat6, lon6: r.lon6, sog10: r.sog10, cog10: r.cog10, heading: r.heading,
 			navStatus: r.navstat, source: r.source, txAt: txAt, txDisc: disc[r.tx], recv: r.recv,
 			station: r.station, dup: !r.accepted, uncorroborated: !r.corroborated, implausible: r.implausible, clockBad: r.clockBad}
+		// stale stays false: these rows came from the lake, which never held a report the fold judged stale, so stale[i]
+		// here marks only dedupe's late copies, which live ingest writes as heard.
 		pt.still = a.still(pt, nil, r.accepted && !stale[i] && !r.implausible && !r.clockBad)
 		if r.accepted {
 			still[r.tx] = pt.still

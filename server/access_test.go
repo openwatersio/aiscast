@@ -214,8 +214,7 @@ func TestAccessLogNeverUsesTheArchiveBucket(t *testing.T) {
 	t.Setenv("R2_ACCESS_KEY_ID", "id")
 	t.Setenv("R2_SECRET_ACCESS_KEY", "secret")
 	t.Setenv("R2_BUCKET", "ais-archive")
-	t.Setenv("NORMALIZED_BUCKET", "ais-normalized")
-	for bucket, want := range map[string]string{"": "", "ais-archive": "", "ais-normalized": "", "ais-access": "ais-access"} {
+	for bucket, want := range map[string]string{"": "", "ais-archive": "", "ais-access": "ais-access"} {
 		t.Setenv("ACCESS_BUCKET", bucket)
 		got := ""
 		if c := accessStoreFromEnv(); c != nil {

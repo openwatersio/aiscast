@@ -1,5 +1,7 @@
 # History and track APIs
 
+History is served from ClickHouse ([clickhouse.md](clickhouse.md)), and the lake and the normalized stream are retired. [Three layers, one endpoint](#three-layers-one-endpoint), [The engine and the lake's place](#the-engine-and-the-lakes-place), [The lake layout](#the-lake-layout), and [Backdating the record from history](#backdating-the-record-from-history) describe that design and no longer apply. The endpoints, metering, opt-out, and the web client's needs still do.
+
 Plan for [#32](https://github.com/openwatersio/aiscast/issues/32), and the server work the web client in [#88](https://github.com/openwatersio/aiscast/pull/88) still needs beyond it. It builds on [#63](https://github.com/openwatersio/aiscast/pull/63): the server writes the normalized stream, and the nightly packager turns closed days into `ais.positions`, `ais.receptions`, `ais.vessels`, and `ais.weather` in R2 Data Catalog.
 
 ## What the numbers say
@@ -144,8 +146,8 @@ Every position inside a box during a window, as a GeoJSON FeatureCollection of p
 The fourth item of #32 splits in two:
 
 - **Seven days** of hourly counts already exist. Every station, every source, and the network counters keep a 168-bucket hourly ring that persists across restarts. `?series=hourly` on `/v1/stats` and `/v1/stations/{id}` serializes the arrays. No new storage.
-- **Longer** series come from a nightly aggregate in the packager: `ais.station_days`, one row per station per day with events, first copies, exclusive events, distinct vessels, and the bbox heard. About 13,000 rows a year. `GET /v1/stations/{id}/history?days=` reads it through the same R2 SQL client, cached for a day.
-- **Coverage tiles** ([#30](https://github.com/openwatersio/aiscast/issues/30)) are a nightly job over `ais.receptions`: H3 cells per zoom tier with sources heard and distinct vessels, written as one PMTiles archive to a public R2 bucket and served through a Cloudflare-proxied hostname, the way the chart tiles are. Tens of megabytes per build. The web client fetches tiles in view. This follows [research/coverage-map-design.md](../research/coverage-map-design.md) and replaces the bounding rectangles.
+- **Longer** series come from ClickHouse rollups per station and hour, as [station-page.md](station-page.md#rollups) plans.
+- **Coverage tiles** ([#30](https://github.com/openwatersio/aiscast/issues/30)) are a nightly job over `ais.receptions`: H3 cells per zoom tier with sources heard and distinct vessels, written as one PMTiles archive to a public R2 bucket and served through a Cloudflare-proxied hostname, the way the chart tiles are. Tens of megabytes per build. The web client fetches tiles in view. It replaces the bounding rectangles.
 
 ## Metering
 
@@ -194,7 +196,7 @@ Each step is one pull request with tests, `openapi.json`, the server README, and
    - The latency spike ran against the backfilled lake; its numbers are in [The lake layout](#the-lake-layout) and [The engine and the lake's place](#the-engine-and-the-lakes-place). The server reads the lake through DuckDB, and the lake moves to Western Europe, sorted by MMSI and time, with `source` on each position.
    - Settled on the test bucket: 32 MMSI buckets and 32,768-row groups. More buckets or larger row groups read slower. Folding closed months into one file per bucket is unmeasured and waits for a need.
    - Still to come: `/v1/history`, when playback work starts.
-5. **Series and coverage.** `?series=hourly`, `ais.station_days`, `GET /v1/stations/{id}/history`, and the coverage tile job.
+5. **Series and coverage.** `?series=hourly`, and the station rollups and coverage of [station-page.md](station-page.md).
 6. **More vessel filters.** `kind`, `class` (A or B), `type` as a category such as cargo, tanker, passenger, fishing, sailing, or pleasure, mapped from the ITU ship type codes, and `flag` as a country code, on `/v1/vessels` and in the MCP search tool. Columns and parameter handling come with step 1, so this step is the category mapping, validation, tests, and the OpenAPI document.
 
 ## What the web client still needs from the server
@@ -207,13 +209,13 @@ What the web client needs next, with what each needs stored. Items that need no 
 | Global name search | `GET /v1/vessels?q=` | index on `vessels.name` | tens of MB |
 | Seven-day charts on station and network pages | `?series=hourly` on `/v1/stats` and `/v1/stations/{id}` | none, the rings exist | 0 |
 | Station names ([#51](https://github.com/openwatersio/aiscast/issues/51)) | `PUT /v1/stations/{id}` signed by the station's token, `name` in the list | SQLite `stations` | negligible |
-| Heard-first per station ([#53](https://github.com/openwatersio/aiscast/issues/53)) | a field in `/v1/stations` | a counter in the existing usage file, or `ais.station_days` for the exact number | 0 |
+| Heard-first per station ([#53](https://github.com/openwatersio/aiscast/issues/53)) | a field in `/v1/stations` | `station_hours` in ClickHouse ([station-page.md](station-page.md#rollups)) | small |
 | A map above the area cap | `GET /v1/vessels/summary?bbox` returning vessels per one-degree cell, read straight from the spatial index the cache already keeps | in memory | 0 |
 | Recent track on the vessel page | `GET /v1/vessels/{mmsi}/track` | SQLite `tracks.db` | 7 to 10 GB |
 | Time range, GPX and GeoJSON export | same endpoint over the lake | `ais.positions` with the bucket partition | 1.5 to 2 GB a day |
 | Playback over a bbox | `GET /v1/history` | `ais.positions` with the `cell` column | same table |
 | Real coverage cells ([#30](https://github.com/openwatersio/aiscast/issues/30)) | PMTiles from a public bucket | nightly over `ais.receptions` | tens of MB per build |
-| Station history beyond seven days | `GET /v1/stations/{id}/history` | `ais.station_days` | 13,000 rows a year |
+| Station history beyond seven days | `/v1/stations/{id}` | `station_hours` in ClickHouse ([station-page.md](station-page.md#rollups)) | stations times hours |
 | `/v1/stations/{id}` scans the vessel map and sorts the station list twice | a station index in the pipeline | none | 0 |
 
 No server work: the deploy of Astro beside the Go binary, the coverage fallback above the area cap, live charts from the stream, the network page's vessel counts and `/health` (both exist), and the station list's source kind, vessels heard, and duplicates (all in `/v1/stations` already).

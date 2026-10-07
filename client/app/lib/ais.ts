@@ -269,20 +269,44 @@ export function mergeTrack(
 export const TRACK_GAP_MS = 30 * 60 * 1000;
 
 /**
+ * The gap for a track thinned to one position per `intervalMs`. The first position in each
+ * interval can sit up to two intervals after the one before while the vessel reports all along,
+ * so only a silence past that and TRACK_GAP_MS means it went unheard.
+ */
+export function trackGap(intervalMs: number): number {
+  return TRACK_GAP_MS + 2 * intervalMs;
+}
+
+/** Whether the vessel went unheard between positions `i - 1` and `i`. */
+export type Unheard = (i: number) => boolean;
+
+/** Unheard across a silence longer than `maxGap`, for positions that carry no breaks of their own. */
+export function silences(times: number[], maxGap = TRACK_GAP_MS): Unheard {
+  return (i) => i > 0 && times[i]! - times[i - 1]! > maxGap;
+}
+
+/**
+ * Unheard along a track the server sent, then the stream's positions after it: the track's own
+ * breaks before position `length`, and from there a silence longer than `gap`, the gap for the
+ * step the track was thinned to, since its last position can sit up to a step before the
+ * vessel's last report.
+ */
+export function trackThenStream(length: number, breaks: ReadonlySet<number> | undefined, times: number[], gap = TRACK_GAP_MS): Unheard {
+  const silence = silences(times, gap);
+  return (i) => (breaks && i < length ? breaks.has(i) : silence(i));
+}
+
+/**
  * Splits a track wherever the vessel went unheard, so the line is drawn only where there is
  * evidence. Joining across a gap invents a course and a speed: one real track here jumps
  * 208 km across 14 hours of silence, which as a single line reads as a passage that was
  * never reported.
  */
-export function splitTrack(
-  coords: Array<[number, number]>,
-  times: number[],
-  maxGap = TRACK_GAP_MS,
-): Array<Array<[number, number]>> {
+export function splitTrack(coords: Array<[number, number]>, unheard: Unheard): Array<Array<[number, number]>> {
   const segments: Array<Array<[number, number]>> = [];
   let current: Array<[number, number]> = [];
   for (let i = 0; i < coords.length; i++) {
-    if (i > 0 && times[i]! - times[i - 1]! > maxGap) {
+    if (unheard(i)) {
       if (current.length > 1) segments.push(current);
       current = [];
     }
@@ -311,18 +335,23 @@ export function indexAt(times: number[], at: number): number {
 
 /**
  * Speed at a moment, between the reports either side. A report's own moment has its speed;
- * inside a gap longer than TRACK_GAP_MS, or that long after the last report, the vessel
- * went unheard and there is none, as the chart's broken line shows.
+ * where the vessel went unheard, or longer than `gap` after the last report, there is none, as
+ * the chart's broken line shows.
  */
-export function speedAt(track: { times: number[]; sog: Array<number | null | undefined> }, at: number): number | undefined {
+export function speedAt(
+  track: { times: number[]; sog: Array<number | null | undefined> },
+  at: number,
+  unheard: Unheard = silences(track.times),
+  gap = TRACK_GAP_MS,
+): number | undefined {
   const i = indexAt(track.times, at);
   if (i < 0) return undefined;
   const a = track.sog[i] ?? undefined;
   const t = track.times[i]!;
   if (a === undefined || at === t) return a;
-  if (i + 1 >= track.times.length) return at - t <= TRACK_GAP_MS ? a : undefined;
+  if (i + 1 >= track.times.length) return at - t <= gap ? a : undefined;
+  if (unheard(i + 1)) return undefined;
   const span = track.times[i + 1]! - t;
-  if (span > TRACK_GAP_MS) return undefined;
   const b = track.sog[i + 1];
   if (b == null || span <= 0) return a;
   return a + (b - a) * ((at - t) / span);
@@ -349,7 +378,7 @@ export function interpolateAt(
   coords: Array<[number, number]>,
   times: number[],
   at: number,
-  maxGap = TRACK_GAP_MS,
+  unheard: Unheard = silences(times),
 ): TrackPoint | undefined {
   if (!coords.length) return undefined;
   const index = indexAt(times, at);
@@ -363,7 +392,7 @@ export function interpolateAt(
   return {
     point: [x1 + (x2 - x1) * fraction, y1 + (y2 - y1) * fraction],
     index,
-    inGap: span > maxGap,
+    inGap: unheard(index + 1),
   };
 }
 
@@ -482,24 +511,75 @@ export function isVolunteer(source: string | undefined): boolean {
   return source != null && VOLUNTEER_KINDS.has(source.split(":")[0]!);
 }
 
-/** What to call a station: its name, else the place nearest its traffic, else its id. */
-export function stationTitle(st: { station: string; name?: string; near?: string }): string {
-  return st.name ?? (st.near ? `Near ${st.near}` : st.station);
+// Feeds are stations named by their upstream's id, which reads as code. BarentsWatch splits into
+// its networks as `barentswatch/terra` and the like, each a station of its own.
+const FEED_NAMES: Record<string, string> = {
+  aishub: "AISHub",
+  aisstream: "aisstream.io",
+  digitraffic: "Digitraffic (Finland)",
+  kystverket: "Kystverket (Norway)",
+  barentswatch: "BarentsWatch (Norway)",
+  "barentswatch/terra": "BarentsWatch coastal",
+  "barentswatch/offshore": "BarentsWatch offshore",
+  "barentswatch/satellite": "BarentsWatch satellite",
+};
+
+/** A feed's name for people, or undefined for an id that is not a known feed. */
+export function feedName(id: string): string | undefined {
+  return FEED_NAMES[id];
+}
+
+/** A station's title, and the end of its id where the title alone could name more than one. */
+export interface StationName {
+  title: string;
+  suffix?: string;
 }
 
 /**
- * Titles for a list of stations, keyed by id. Where two would read the same, each gets its receiver's
+ * What to call a station: its name, else the place nearest its traffic, else the feed it is, else
+ * "Anonymous" and the end of its id. A receiver's full id is a key or a hash that reads as noise.
+ */
+export function stationName(st: { station: string; name?: string; near?: string }): StationName {
+  if (st.name) return { title: st.name };
+  if (st.near) return { title: `Near ${st.near}` };
+  const feed = feedName(st.station);
+  if (feed) return { title: feed };
+  const base = st.station.split("/", 1)[0]!;
+  return isVolunteer(base) ? { title: "Anonymous", suffix: `…${base.slice(-4)}` } : { title: st.station };
+}
+
+/** stationName as one line of text, for where it cannot be styled: "Anonymous …bCro". */
+export function stationTitle(st: { station: string; name?: string; near?: string }): string {
+  const { title, suffix } = stationName(st);
+  return suffix ? `${title} ${suffix}` : title;
+}
+
+/**
+ * Whether a station is sending: live within five minutes, quiet within the hour, offline after.
+ * A satellite feed hears in passes, so it goes quiet between them while working as it should.
+ */
+export type StationStatus = "live" | "quiet" | "offline";
+
+export function stationStatus(lastAgeS: number): StationStatus {
+  if (lastAgeS < 300) return "live";
+  if (lastAgeS < 3600) return "quiet";
+  return "offline";
+}
+
+/**
+ * Names for a list of stations, keyed by id. Where two would read the same, each gets its receiver's
  * tag (`n2k`) or the end of its id, so the list never shows two identical rows.
  */
-export function stationTitles(sts: Array<{ station: string; name?: string; near?: string }>): Map<string, string> {
+export function stationTitles(sts: Array<{ station: string; name?: string; near?: string }>): Map<string, StationName> {
   const count = new Map<string, number>();
   for (const st of sts) count.set(stationTitle(st), (count.get(stationTitle(st)) ?? 0) + 1);
   return new Map(
     sts.map((st) => {
-      const title = stationTitle(st);
-      if (count.get(title)! < 2 || title === st.station) return [st.station, title];
+      const name = stationName(st);
+      if (count.get(stationTitle(st))! < 2 || name.title === st.station) return [st.station, name];
       const [base, tag] = st.station.split("/", 2) as [string, string | undefined];
-      return [st.station, `${title} (${tag ?? `…${base.slice(-4)}`})`];
+      const tell = tag ?? `…${base.slice(-4)}`;
+      return [st.station, { title: name.title, suffix: name.suffix ? `${name.suffix} ${tell}` : tell }];
     }),
   );
 }

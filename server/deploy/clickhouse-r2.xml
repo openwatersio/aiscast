@@ -1,0 +1,56 @@
+<!-- R2 for ClickHouse: the cold volume receptions moves to 30 days after its rows' time, and the bucket the
+     nightly backup writes to. apply.sh installs this as config.d/r2.xml only once /etc/clickhouse-server/r2.env
+     holds the keys, since a disk without them stops ClickHouse starting. Once a table has parts on the r2 disk,
+     this file and its keys must stay. -->
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <!-- A plain s3 disk: its object names are random and their metadata lives under /var/lib/clickhouse,
+                 so only a backup rebuilds the cold data on another box. 26.8's plain_rewritable disk would not
+                 need the local metadata but refuses mutations, which purges and replays need. Uploads to R2 need
+                 the fixed part size in users.d/s3.xml. -->
+            <r2>
+                <type>s3</type>
+                <endpoint from_env="CLICKHOUSE_R2_COLD_URL"/>
+                <access_key_id from_env="CLICKHOUSE_R2_ACCESS_KEY_ID"/>
+                <secret_access_key from_env="CLICKHOUSE_R2_SECRET_ACCESS_KEY"/>
+                <region>auto</region>
+            </r2>
+            <!-- Recent reads of cold parts stay on local disk, so a track past 30 days is not a round trip to R2 per read. -->
+            <r2_cache>
+                <type>cache</type>
+                <disk>r2</disk>
+                <path>/var/lib/clickhouse/disks/r2_cache/</path>
+                <max_size>8Gi</max_size>
+            </r2_cache>
+            <!-- s3_plain writes files under their own names with no local metadata, so a fresh box restores from
+                 the bucket alone. -->
+            <backups>
+                <type>s3_plain</type>
+                <endpoint from_env="CLICKHOUSE_R2_BACKUP_URL"/>
+                <access_key_id from_env="CLICKHOUSE_R2_ACCESS_KEY_ID"/>
+                <secret_access_key from_env="CLICKHOUSE_R2_SECRET_ACCESS_KEY"/>
+                <region>auto</region>
+            </backups>
+        </disks>
+        <policies>
+            <!-- The server moves receptions onto this policy at start (clickhouse.go). A hot volume under 10%
+                 free also moves its largest parts to cold, ClickHouse's default move_factor. -->
+            <tiered>
+                <volumes>
+                    <!-- named default: a table moves to a policy only if it keeps the volumes of its old one -->
+                    <default><disk>default</disk></default>
+                    <cold><disk>r2_cache</disk></cold>
+                </volumes>
+            </tiered>
+        </policies>
+    </storage_configuration>
+    <backups>
+        <allowed_disk>backups</allowed_disk>
+    </backups>
+    <backup_log>
+        <database>system</database>
+        <table>backup_log</table>
+        <ttl>event_date + INTERVAL 90 DAY</ttl>
+    </backup_log>
+</clickhouse>

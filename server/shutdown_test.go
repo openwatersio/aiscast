@@ -6,14 +6,12 @@ import (
 	"time"
 )
 
-// A deploy restarts the server while receptions keep arriving. Each must land in both archives or
-// in neither: otherwise the normalized stream holds events its raw archive lost, and replay can no
-// longer regenerate it across the restart.
-func TestShutdownKeepsArchivesConsistent(t *testing.T) {
-	rawDir, normDir := t.TempDir(), t.TempDir()
-	p := testPipeline(t)
+// A deploy restarts the server while receptions keep arriving. Each must reach both the raw archive and ClickHouse
+// or neither: otherwise ClickHouse holds copies its raw archive lost, and replay can no longer rebuild that day.
+func TestShutdownKeepsArchiveAndRecordConsistent(t *testing.T) {
+	rawDir := t.TempDir()
+	p, written := recordingPipeline(t)
 	p.arch = newArchive(rawDir, nil)
-	p.norm = newNormArchive(normDir, nil)
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 	go func() {
@@ -25,14 +23,34 @@ func TestShutdownKeepsArchivesConsistent(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond) // shut down mid-stream, the way a deploy does
 	p.closeArchives()
+	live := written()
 
-	out := t.TempDir()
-	runReplay([]string{"-archive", rawDir, "-out", out, "-from", "2026-09-01", "-to", "2026-09-02"})
-	rep := diffNorm(loadNorm(normDir), loadNorm(out))
-	if len(rep.live.events) == 0 {
+	rp, replayed := recordingPipeline(t)
+	day := base.Truncate(24 * time.Hour)
+	readers, err := collectReaders(rawDir, day, day.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replayReaders(rp, readers, day.AddDate(0, 0, 1), nil); err != nil {
+		t.Fatal(err)
+	}
+	key := func(pts []trackPoint) map[string]bool {
+		out := map[string]bool{}
+		for _, pt := range pts {
+			out[fmt.Sprint(pt.mmsi, pt.ts.UnixMilli(), pt.recv.UnixMilli())] = true
+		}
+		return out
+	}
+	a, b := key(live), key(replayed())
+	if len(a) == 0 {
 		t.Fatal("the producer never ran")
 	}
-	if !rep.clean() {
-		t.Fatalf("normalized output diverged from its raw archive across shutdown:\n%s", rep.render(3))
+	if len(a) != len(b) {
+		t.Fatalf("live wrote %d copies, the raw archive replays to %d, across a shutdown", len(a), len(b))
+	}
+	for k := range a {
+		if !b[k] {
+			t.Fatalf("live wrote %s, which the raw archive lost", k)
+		}
 	}
 }

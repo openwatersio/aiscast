@@ -28,9 +28,8 @@ The rule: state the server needs to start or to answer live requests stays in SQ
 | Tokens, usage counters, dedupe state | SQLite and files, as now |
 | Receptions, the `positions` view, `positions_1m` | ClickHouse, the source of truth |
 | Weather | ClickHouse, in a later step |
-| Station series, coverage cells | ClickHouse views, in later steps |
-| The normalized archive, every accepted event and copy | R2, a log of live ingest |
-| The public dataset | The lake on R2, written by the packager |
+| Station series, coverage cells | ClickHouse rollups, as [station-page.md](station-page.md#rollups) plans |
+| Every reception as received | R2, the raw archive, which `aiscast replay -clickhouse` rebuilds days of the record from |
 
 Backups, the R2 cold tier, and recovery from losing the box are in [historical-sources.md](historical-sources.md#durability).
 
@@ -135,10 +134,10 @@ Read times include the busiest vessel of a day, about 1,440 rows a day in a roll
 ## After a go
 
 1. **Tracks.** The track endpoint reads ClickHouse. The server stops reading the lake for tracks, and `tracks.db`, which holds the 48-hour track store and the lake cache, goes with it. `positions` answers every range. The web client's 30-day and 12-month ranges ship with this step.
-2. **Station series.** A view counts events, first copies, and distinct vessels per station per hour from receptions, replacing the in-memory 7-day rings for history.
-3. **Coverage cells.** A view per H3 cell per day of sources heard and distinct vessels, using ClickHouse's H3 functions, feeds the coverage tiles.
+2. **Station series.** Rollups of receptions, first copies, and distinct vessels per station per hour and per station and vessel, rebuilt from receptions, as [station-page.md](station-page.md#rollups) plans. The in-memory rings stay for the access tiers.
+3. **Coverage cells.** A rollup per station, H3 cell, and day of distinct vessels, using ClickHouse's H3 functions, feeds the coverage tiles and each station's footprint, as [station-page.md](station-page.md#rollups) plans.
 4. **Area playback.** A projection of `positions` ordered by cell and time answers `/v1/history`.
-5. **The lake's role.** The packager keeps writing positions, receptions, vessels, and weather as the public dataset. `ais.tracks` is dropped, since nothing reads it. The vessel record keeps importing `ais.vessels`.
+5. **No lake.** ClickHouse is the record, replay rebuilds it from the raw archive, and the vessel record imports its history from ClickHouse.
 
 ## Decisions before starting
 

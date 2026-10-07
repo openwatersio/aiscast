@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import { CLASS_COLORS, shipClass } from "../../lib/ais";
+import { CLASS_COLORS, shipClass, type StationName, type StationStatus } from "../../lib/ais";
 import { cn } from "../../lib/cn";
 
 export function List({ children, className }: { children: ReactNode; className?: string }) {
@@ -61,6 +61,41 @@ export function ClassDot({ kind, type }: { kind?: string; type?: number }) {
   const color = CLASS_COLORS[shipClass(kind, type)];
   // The colour is data, not a design token: it is the one inline style components may set.
   return <span className="size-2.5 shrink-0 rounded-full" style={{ background: color }} aria-hidden />;
+}
+
+const STATUS_DOT: Record<StationStatus, { className: string; label: string }> = {
+  live: { className: "bg-positive", label: "Live" },
+  quiet: { className: "bg-caution", label: "Quiet" },
+  offline: { className: "bg-fg-muted", label: "Offline" },
+};
+
+/**
+ * Whether a station is sending, as a dot in the colors of the status chip over the map. In a row it
+ * is centred in the width of an IconBadge so rows with either line up; `inline`, it sits in text.
+ * Hidden from screen readers, which hear a quiet or offline station's age beside it instead.
+ */
+export function StatusDot({ status, inline = false }: { status: StationStatus; inline?: boolean }) {
+  const { className, label } = STATUS_DOT[status];
+  const dot = <span className={cn("shrink-0 rounded-full", inline ? "size-2" : "size-2.5", className)} title={label} aria-hidden />;
+  return inline ? dot : <span className="flex w-9 shrink-0 justify-center">{dot}</span>;
+}
+
+/**
+ * A station's title, with the end of its id smaller and lighter after it: the id tells stations
+ * apart but is not their name. `suffixClassName` sizes it for where the title sits.
+ */
+export function StationTitle({ name, suffixClassName = "text-subhead" }: { name: StationName; suffixClassName?: string }) {
+  return (
+    <>
+      {name.title}
+      {name.suffix && (
+        <>
+          {" "}
+          <span className={cn("ml-0.5 font-normal text-fg-muted", suffixClassName)}>{name.suffix}</span>
+        </>
+      )}
+    </>
+  );
 }
 
 /** A circled icon, for rows that are destinations rather than things. */
