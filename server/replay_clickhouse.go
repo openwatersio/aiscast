@@ -244,7 +244,7 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	// window would otherwise drop although the delete before has removed their rows.
 	insert := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"insert_deduplication_token": fmt.Sprintf("replay-%s-%d", day.Format("2006-01-02"), time.Now().UnixNano())}))
-	if err := c.conn.Exec(insert, "INSERT INTO "+c.db+".receptions SELECT * FROM "+c.db+"."+stage+" WHERE "+where, args...); err != nil {
+	if err := c.copyStaged(insert, stage, where, args...); err != nil {
 		return fmt.Errorf("insert the replayed day, after deleting the stored one; replay it again: %w", err)
 	}
 	// Copies that arrived on day carry stamps on the days beside it too.
@@ -274,6 +274,18 @@ func (c *chConn) rebuildCoverage(ctx context.Context, day time.Time) error {
 	}
 	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".coverage "+chCoverageSelect(c.db+".receptions", chUsable+" AND ts >= ? AND ts < ?"),
 		day, day.AddDate(0, 0, 1))
+}
+
+// copyStaged inserts the staged rows matching where into receptions, by column name rather than position, so a
+// column a migration adds to receptions while a replay runs reads as its default instead of failing the insert
+// after the stored day is deleted.
+func (c *chConn) copyStaged(ctx context.Context, stage, where string, args ...any) error {
+	cols, err := chColumn[string](ctx, c.conn, "SELECT name FROM system.columns WHERE database = ? AND table = ? ORDER BY position", c.db, stage)
+	if err != nil {
+		return fmt.Errorf("the staged columns: %w", err)
+	}
+	list := strings.Join(cols, ", ")
+	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".receptions ("+list+") SELECT "+list+" FROM "+c.db+"."+stage+" WHERE "+where, args...)
 }
 
 // createReplayStaging makes an empty staging table of the run's own and returns its name. An explicit engine keeps receptions' columns but not its TTL
