@@ -53,6 +53,7 @@ type enrichment struct {
 	fd *fdirVessel
 	fc *fccShip
 	tc *tcVessel
+	am *amsaVessel
 	is *isedShip
 }
 
@@ -61,8 +62,8 @@ type enrichment struct {
 // winner by the field's JSON name. The flag states never meet: a vessel flies one flag at a time.
 // An FCC license ranks below PSIX, the vessel registry proper, and above Wikidata for what it documents.
 func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string]sourceRef) {
-	wd, cg, fd, fc, tcv, is := e.wd, e.cg, e.fd, e.fc, e.tc, e.is
-	if wd == nil && cg == nil && fd == nil && fc == nil && tcv == nil && is == nil {
+	wd, cg, fd, fc, tcv, am, is := e.wd, e.cg, e.fd, e.fc, e.tc, e.am, e.is
+	if wd == nil && cg == nil && fd == nil && fc == nil && tcv == nil && am == nil && is == nil {
 		return nil, nil, nil
 	}
 	m := &particulars{}
@@ -135,6 +136,15 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		str("home_port", "tc", tcv.HomePort, &m.HomePort)
 		str("registry", "tc", "Canada", &m.Registry)
 	}
+	if am != nil {
+		str("registered_name", "amsa", am.Name, &m.RegisteredName)
+		str("identification", "amsa", am.Official, &m.Identification)
+		str("status", "amsa", am.Status, &m.Status)
+		num("year_built", "amsa", &am.YearBuilt, &m.YearBuilt)
+		flt("length", "amsa", &am.Length, &m.Length)
+		str("home_port", "amsa", am.HomePort, &m.HomePort)
+		str("registry", "amsa", "Australia", &m.Registry)
+	}
 	if is != nil {
 		// The MMSI registry's answer: thin, but it is the flag state's own name and call sign for the
 		// boat, and for most Canadian small craft the only registered facts any source holds.
@@ -163,6 +173,11 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		str("commons_category", "wikidata", wd.CommonsCategory, &m.CommonsCat)
 		str("image", "wikidata", wd.Image, &m.Image)
 	}
+	if am != nil {
+		// The list's type is free text with uneven spellings, Tug beside Tug Boat, and a use such as
+		// Passenger as often as a kind of ship, so it fills ship_type only when Wikidata has none.
+		str("ship_type", "amsa", am.ShipType, &m.ShipType)
+	}
 	sources := map[string]sourceRef{}
 	if wd != nil {
 		sources["wikidata"] = sourceRef{Credit: "Wikidata", License: wikidataLicense, URL: wd.URL}
@@ -179,6 +194,9 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	}
 	if tcv != nil {
 		sources["tc"] = sourceRef{Credit: "Transport Canada vessel registry", License: tcLicense}
+	}
+	if am != nil {
+		sources["amsa"] = sourceRef{Credit: "© Australian Maritime Safety Authority", License: amsaLicense, URL: amsaSearch(am.IMO)}
 	}
 	if is != nil {
 		sources["ised"] = sourceRef{Credit: "ISED Canadian MMSI registry", License: isedLicense, URL: isedSearchPage}
