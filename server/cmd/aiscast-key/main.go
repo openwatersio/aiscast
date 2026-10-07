@@ -58,7 +58,7 @@ func main() {
 		conns := fs.Int("conns", 0, "max concurrent WebSockets (0 = unlimited)")
 		rate := fs.Int("rate", 0, "max messages per second per connection, excess thinned (0 = unlimited)")
 		area := fs.Float64("area", 0, "max total subscribed bbox area in square degrees (0 = unlimited, -1 = MMSI subscriptions only)")
-		mmsis := fs.Int("mmsis", 0, "max vessels followed by MMSI per subscription (0 = unlimited)")
+		mmsis := fs.Int("mmsis", 0, "max vessels followed by MMSI or IMO per subscription (0 = unlimited)")
 		rpm := fs.Int("rpm", 0, "HTTP requests per minute, counted per sub (0 = unlimited; omit for the per-address default)")
 		var boxes, cidrs multi
 		fs.Var(&boxes, "bbox", "allowed bbox minLat,minLon,maxLat,maxLon (repeatable)")

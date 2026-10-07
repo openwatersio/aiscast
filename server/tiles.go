@@ -41,7 +41,7 @@ const (
 
 // tileParams are the parameters a tile accepts. Anything else is refused, so a typo in a filter fails loudly
 // rather than returning every vessel, and a filter added later never changes an older client's tiles.
-var tileParams = map[string]bool{"mmsi": true, "max_age": true, "key": true}
+var tileParams = map[string]bool{"mmsi": true, "imo": true, "max_age": true, "key": true}
 
 func init() {
 	for k := range vesselFilterParams {
@@ -54,27 +54,28 @@ type tileFilter struct {
 	mmsi map[uint32]bool
 }
 
-func parseTileFilter(vals url.Values, cl *Claims) (*tileFilter, string) {
+// parseTileFilter reads a tile's filters. A refusal comes with its HTTP status.
+func (p *Pipeline) parseTileFilter(vals url.Values, cl *Claims) (*tileFilter, int, string) {
 	for k := range vals {
 		if !tileParams[k] {
-			return nil, "unknown parameter " + k
+			return nil, http.StatusBadRequest, "unknown parameter " + k
 		}
 	}
-	s, msg := parseSub(url.Values{"mmsi": vals["mmsi"]}, cl, false)
+	s, status, msg := p.parseSub(url.Values{"mmsi": vals["mmsi"], "imo": vals["imo"]}, cl, false)
 	if msg != "" {
-		return nil, msg
+		return nil, status, msg
 	}
-	if cl.Area < 0 && len(s.mmsi) == 0 {
-		return nil, "mmsi required for this key"
+	if cl.Area < 0 && s.mmsi == nil {
+		return nil, http.StatusBadRequest, "mmsi required for this key"
 	}
 	rules, msg := parseAgeRules(vals)
 	if msg != "" {
-		return nil, msg
+		return nil, http.StatusBadRequest, msg
 	}
-	return &tileFilter{ageRules: *rules, mmsi: s.mmsi}, ""
+	return &tileFilter{ageRules: *rules, mmsi: s.mmsi}, 0, ""
 }
 
-// match: a tile given mmsi shows only those vessels, and they are named ones.
+// match: a tile given mmsi or imo shows only those vessels, and they are named ones.
 func (f *tileFilter) match(mmsi uint32, v *vessel, now time.Time) bool {
 	return (f.mmsi == nil || f.mmsi[mmsi]) && f.ageRules.match(f.mmsi != nil, v, now)
 }
@@ -101,9 +102,9 @@ func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vals := r.URL.Query()
-	f, msg := parseTileFilter(vals, cl)
+	f, status, msg := p.parseTileFilter(vals, cl)
 	if msg != "" {
-		http.Error(w, msg, http.StatusBadRequest)
+		http.Error(w, msg, status)
 		return
 	}
 	if len(cl.BBox) > 0 && !cl.allowsBox(tileBox(z, x, y)) {
@@ -116,7 +117,11 @@ func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 	b := p.tiles.get(fmt.Sprintf("%d/%d/%d?%s", z, x, y, vals.Encode()), now, func() []byte {
 		return gzipBytes(p.vesselTile(z, x, y, f, now))
 	})
-	writeTile(w, r, b, "public, max-age=10")
+	cache := "public, max-age=10"
+	if vals.Has("imo") { // the gate answers by the caller's token, which a shared cache does not key on
+		cache = "private, max-age=10"
+	}
+	writeTile(w, r, b, cache)
 }
 
 // writeTile answers a gzipped tile. It is gzipped once per build and served as is; Caddy's encoder leaves a
@@ -198,8 +203,8 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 	var recs []record
 	if age, vf := f.rule(f.mmsi != nil); p.store != nil && (age == 0 || age > vesselTTL) {
 		q := recordQuery{boxes: []bbox{box}, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, filter: vf, now: now}
-		if f.mmsi != nil {
-			q.mmsis = slices.Collect(maps.Keys(f.mmsi))
+		if f.mmsi != nil { // non-nil and empty when imo matched no vessel, which matches nothing
+			q.mmsis = append(make([]uint32, 0, len(f.mmsi)), slices.Collect(maps.Keys(f.mmsi))...)
 		}
 		var err error
 		if recs, err = p.tileRecords(q, z, x, y); err != nil {
@@ -451,8 +456,8 @@ func (p *Pipeline) serveTileJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if _, msg := parseTileFilter(r.URL.Query(), cl); msg != "" {
-		http.Error(w, msg, http.StatusBadRequest)
+	if _, status, msg := p.parseTileFilter(r.URL.Query(), cl); msg != "" {
+		http.Error(w, msg, status)
 		return
 	}
 	scheme := "http"

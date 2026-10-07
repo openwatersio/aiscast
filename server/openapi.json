@@ -27,16 +27,17 @@
         "operationId": "getVessels",
         "tags": ["Vessels and stations"],
         "summary": "Vessels",
-        "description": "Vessel positions as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit both. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.\n\nAn area answers with last known positions: every vessel heard in it in the last 30 minutes, and those last heard up to 7 days ago whose last report was stationary, meaning moored, at anchor, aground, under 1 knot, or an aid to navigation or base station. A vessel is usually still where it stopped when its receiver goes offline or it switches AIS off at its berth, while one last heard under way has moved on. `max_age` changes the 7 days and `max_age_moving` the 30 minutes for moving vessels. Past 30 minutes the answer takes at most 500 vessels, newest first, and sets `truncated` when there were more. A vessel named in `mmsi` answers with its last known position however long ago it was heard, moving or not, unless `max_age` or `max_age_moving` is given. The vector tiles answer by the same rules. Every feature carries `seen`, so an old position reads as where the vessel was.\n\n`q` searches instead: vessels whose name starts with it, or whose MMSI does when it is digits, most recently heard first, at most 50. Each result carries `near`, the town or region nearest its position. `around` orders a search nearest first. `bbox`, `mmsi`, and `max_age` narrow a search, and it needs neither. `kind`, `class`, `type`, `min_sog`, and `max_age_moving` filter an area, a list, or a search, as they filter the vector tiles. A search refuses parameters it does not know, so a filter added later never changes an earlier answer.",
+        "description": "Vessel positions as a GeoJSON FeatureCollection of `Point` features. Filter to an area, a list of vessels, or both. The same token, area cap, and MMSI cap apply as to a `/v1/stream` subscription: anonymous requests must filter to at most 100 square degrees or 10 MMSIs, and only tokens without an area claim may omit `bbox`, `mmsi`, and `imo`. Feeder and partner tokens may also name vessels by IMO number in `imo`. Properties AIS marks \"not available\" are left out rather than set to a sentinel, so `cog`, `sog`, `heading`, `nav_status`, `name`, and `type` are present only when known.\n\nAn area answers with last known positions: every vessel heard in it in the last 30 minutes, and those last heard up to 7 days ago whose last report was stationary, meaning moored, at anchor, aground, under 1 knot, or an aid to navigation or base station. A vessel is usually still where it stopped when its receiver goes offline or it switches AIS off at its berth, while one last heard under way has moved on. `max_age` changes the 7 days and `max_age_moving` the 30 minutes for moving vessels. Past 30 minutes the answer takes at most 500 vessels, newest first, and sets `truncated` when there were more. A vessel named in `mmsi` or `imo` answers with its last known position however long ago it was heard, moving or not, unless `max_age` or `max_age_moving` is given. The vector tiles answer by the same rules. Every feature carries `seen`, so an old position reads as where the vessel was.\n\n`q` searches instead: vessels whose name starts with it, or whose MMSI does when it is digits, most recently heard first, at most 50. For feeder and partner tokens, `q` of `IMO 9241061` or `IMO9241061` finds the vessels reporting that IMO number, and a bare seven-digit `q` finds them ahead of its MMSI prefix matches. Each result carries `near`, the town or region nearest its position. `around` orders a search nearest first. `bbox`, `mmsi`, `imo`, and `max_age` narrow a search, and it needs none of them. `kind`, `class`, `type`, `min_sog`, and `max_age_moving` filter an area, a list, or a search, as they filter the vector tiles. A search refuses parameters it does not know, so a filter added later never changes an earlier answer.",
         "security": [{}, { "token": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/bbox" },
           { "$ref": "#/components/parameters/mmsi" },
+          { "$ref": "#/components/parameters/imo" },
           {
             "name": "max_age",
             "in": "query",
             "required": false,
-            "description": "Oldest last report to include: whole seconds, a duration such as `90m` or `24h`, or `all`. Defaults to 7 days for an area and to `all` for vessels named in `mmsi`.",
+            "description": "Oldest last report to include: whole seconds, a duration such as `90m` or `24h`, or `all`. Defaults to 7 days for an area and to `all` for vessels named in `mmsi` or `imo`.",
             "schema": { "type": "string" },
             "example": "24h"
           },
@@ -44,7 +45,7 @@
             "name": "q",
             "in": "query",
             "required": false,
-            "description": "Search: a name prefix, case-insensitive, or an MMSI prefix when all digits. At least 2 characters.",
+            "description": "Search: a name prefix, case-insensitive, or an MMSI prefix when all digits. At least 2 characters. For feeder and partner tokens, `IMO` followed by an IMO number finds that IMO, and a bare seven-digit number finds that IMO first; for other tokens the `IMO` form is a `403`.",
             "schema": { "type": "string", "minLength": 2 },
             "example": "CERUL"
           },
@@ -98,6 +99,7 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/IMOTier" },
           "429": { "$ref": "#/components/responses/RateLimited" },
           "503": {
             "description": "A search on a server running without the vessel record.",
@@ -111,21 +113,22 @@
         "operationId": "getVessel",
         "tags": ["Vessels and stations"],
         "summary": "One vessel",
-        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is the earliest report of the vessel the network holds, from live traffic or its archive. `attribution` carries the credit line for the source of its last message. `properties.particulars` holds the vessel's particulars as registered, merged from the enrichment sources into one vocabulary, with `properties.provenance` naming each field's source and `properties.sources` carrying each source's credit, license, and its page for this vessel.",
+        "description": "One vessel's last known state as a GeoJSON Feature, however long ago it was heard: position, course, speed, status, and the particulars from its static data. `geometry` is `null` for a vessel whose position was never heard. `first_seen` is the earliest report of the vessel the network holds, from live traffic or its archive. `attribution` carries the credit line for the source of its last message. `properties.particulars` holds the vessel's particulars as registered, merged from the enrichment sources into one vocabulary, with `properties.provenance` naming each field's source and `properties.sources` carrying each source's credit, license, and its page for this vessel.\n\nBy IMO number, the answer is the vessel the IMO names, with a `Content-Location` header giving its `/v1/vessels/{mmsi}`. One IMO can be reported by several MMSIs: a ship that changes flag keeps its IMO under a new MMSI, and some vessels send placeholder numbers. The IMO names a vessel when only one MMSI reports it, or only one of them was heard in the last 30 days. Otherwise the answer is a `300` listing the candidates.",
         "security": [{}, { "token": [] }],
         "parameters": [
           {
             "name": "mmsi",
             "in": "path",
             "required": true,
-            "description": "The vessel's MMSI.",
-            "schema": { "type": "integer" },
-            "example": 368168720
+            "description": "The vessel's MMSI, or for feeder and partner tokens `IMO` followed by its IMO number, such as `IMO9241061`, in any case.",
+            "schema": { "type": "string", "pattern": "^([0-9]+|[Ii][Mm][Oo][0-9]{1,7})$" },
+            "example": "368168720"
           }
         ],
         "responses": {
           "200": {
             "description": "The vessel.",
+            "headers": { "Content-Location": { "$ref": "#/components/headers/ContentLocation" } },
             "content": {
               "application/geo+json": {
                 "schema": {
@@ -155,10 +158,12 @@
               }
             }
           },
+          "300": { "$ref": "#/components/responses/IMOCandidates" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/IMOTier" },
           "404": {
-            "description": "No vessel with this MMSI has been heard.",
+            "description": "No vessel with this MMSI, or reporting this IMO, has been heard.",
             "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
           },
           "429": { "$ref": "#/components/responses/RateLimited" }
@@ -170,10 +175,10 @@
         "operationId": "getVesselTrack",
         "tags": ["Vessels and stations"],
         "summary": "Where a vessel has been",
-        "description": "The positions the network heard from one vessel, as a GeoJSON Feature or a GPX 1.1 track. A request covers up to 366 days. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. Without `interval` the track is simplified by shape: the positions that hold its path, at least 15 m off the line through those kept, with `breaks` naming the positions that start a stretch after the vessel went unheard, and a GPX file has a segment per stretch. With `interval`, when more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.",
+        "description": "The positions the network heard from one vessel, as a GeoJSON Feature or a GPX 1.1 track. A request covers up to 366 days. Positions implying an impossible speed for the vessel (a report whose timestamp disagrees with its fix, a broken GPS) are left out of the track; the live stream and archive keep them. The geometry is a `LineString` for two or more positions, a `Point` for one, and `null` for none. Properties hold the range covered and arrays aligned with the coordinates: `times`, `sog`, `cog`, `heading`, and `nav_status`, with `null` where AIS marks a value not available. Without `interval` the track is simplified by shape: the positions that hold its path, at least 15 m off the line through those kept, with `breaks` naming the positions that start a stretch after the vessel went unheard, and a GPX file has a segment per stretch. With `interval`, when more positions match than the limit, the newest are returned and `truncated` is true; page back by moving `to`. `from` and `to` in the answer say what was covered. `attribution` carries the credit line for each source kind in the track, and a GPX file carries them in its metadata description.\n\nBy IMO number, the track is that of the one vessel the IMO names, as on `/v1/vessels/{mmsi}`, with a `Content-Location` header giving its `/v1/vessels/{mmsi}/track`. A ship's track under an earlier MMSI is not joined to it.",
         "security": [{}, { "token": [] }],
         "parameters": [
-          { "name": "mmsi", "in": "path", "required": true, "description": "The vessel's MMSI.", "schema": { "type": "integer" }, "example": 368168720 },
+          { "name": "mmsi", "in": "path", "required": true, "description": "The vessel's MMSI, or for feeder and partner tokens `IMO` followed by its IMO number, such as `IMO9241061`, in any case.", "schema": { "type": "string", "pattern": "^([0-9]+|[Ii][Mm][Oo][0-9]{1,7})$" }, "example": "368168720" },
           { "name": "from", "in": "query", "required": false, "description": "Start, RFC 3339. Defaults to 24 hours before `to`. At most 366 days before `to`.", "schema": { "type": "string", "format": "date-time" } },
           { "name": "to", "in": "query", "required": false, "description": "End, RFC 3339. Defaults to now.", "schema": { "type": "string", "format": "date-time" } },
           { "name": "interval", "in": "query", "required": false, "description": "At most one position per interval, the first in each: whole seconds or a duration such as `5m`, or `0` for every position heard. Anonymous and personal requests whose range starts more than 48 hours ago have the interval rounded up to whole minutes. A range longer than 31 days keeps one position per minute at most, and the answer reports that interval. A vessel sitting still has one position every 30 minutes for each place it sat. Without it, the track is simplified by shape instead. The answer reports the interval used.", "schema": { "type": "string" }, "example": "5m" },
@@ -183,6 +188,7 @@
         "responses": {
           "200": {
             "description": "The track.",
+            "headers": { "Content-Location": { "$ref": "#/components/headers/ContentLocation" } },
             "content": {
               "application/geo+json": {
                 "schema": {
@@ -220,10 +226,12 @@
               "application/gpx+xml": { "schema": { "type": "string" } }
             }
           },
+          "300": { "$ref": "#/components/responses/IMOCandidates" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/IMOTier" },
           "404": {
-            "description": "No vessel with this MMSI has been heard.",
+            "description": "No vessel with this MMSI, or reporting this IMO, has been heard.",
             "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } }, "example": { "error": "unknown vessel" } } }
           },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -243,6 +251,7 @@
         "security": [{}, { "token": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/tileMMSI" },
+          { "$ref": "#/components/parameters/tileIMO" },
           { "$ref": "#/components/parameters/kind" },
           { "$ref": "#/components/parameters/class" },
           { "$ref": "#/components/parameters/type" },
@@ -257,6 +266,7 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/IMOTier" },
           "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
@@ -273,6 +283,7 @@
           { "name": "x", "in": "path", "required": true, "description": "Column, 0 to 2^z−1.", "schema": { "type": "integer", "minimum": 0 } },
           { "name": "y", "in": "path", "required": true, "description": "Row, 0 to 2^z−1, from the north.", "schema": { "type": "integer", "minimum": 0 } },
           { "$ref": "#/components/parameters/tileMMSI" },
+          { "$ref": "#/components/parameters/tileIMO" },
           { "$ref": "#/components/parameters/kind" },
           { "$ref": "#/components/parameters/class" },
           { "$ref": "#/components/parameters/type" },
@@ -287,6 +298,7 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/IMOTier" },
           "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
@@ -692,15 +704,52 @@
         "schema": { "type": "string" },
         "example": "368168720,257090090"
       },
+      "imo": {
+        "name": "imo",
+        "in": "query",
+        "required": false,
+        "description": "Comma-separated IMO numbers, for feeder and partner tokens; other tokens get a `403`. Each names every vessel whose static data reported it, up to 10, most recently heard first. ORed with `bbox` and `mmsi`. An IMO counts once against the same cap as an MMSI. An IMO is a number from 1 to 9999999; the check digit is not required.",
+        "schema": { "type": "string" },
+        "example": "9241061"
+      },
+      "tileIMO": { "name": "imo", "in": "query", "required": false, "description": "Comma-separated IMO numbers, for feeder and partner tokens: only the vessels reporting them, up to 10 for each. The cap on `mmsi` counts them too.", "schema": { "type": "string" }, "example": "9241061" },
       "tileMMSI": { "name": "mmsi", "in": "query", "required": false, "description": "Comma-separated MMSIs: only these vessels. The MMSI cap applies, as on `/v1/vessels`.", "schema": { "type": "string" }, "example": "368168720,257090090" },
       "kind": { "name": "kind", "in": "query", "required": false, "description": "Comma-separated: `vessel`, `aton` (aids to navigation), `base` (base stations), `sar` (search and rescue aircraft).", "schema": { "type": "string" }, "example": "vessel,sar" },
       "class": { "name": "class", "in": "query", "required": false, "description": "`A` or `B`, the transponder class from the position reports. A vessel whose class is not yet known is left out.", "schema": { "type": "string", "enum": ["A", "B"] } },
       "type": { "name": "type", "in": "query", "required": false, "description": "Comma-separated ITU ship and cargo type codes or ranges, such as `70-89` for cargo and tankers or `36,37` for sailing and pleasure craft. For an aid to navigation, the AtoN type. A vessel whose type is not yet known is type 0.", "schema": { "type": "string" }, "example": "70-89" },
       "min_sog": { "name": "min_sog", "in": "query", "required": false, "description": "Only vessels at least this fast, in knots. A vessel with no known speed is left out.", "schema": { "type": "number", "minimum": 0 }, "example": 0.5 },
-      "tileMaxAge": { "name": "max_age", "in": "query", "required": false, "description": "Oldest last report to include: whole seconds, a duration such as `24h`, or `all`. Defaults to 7 days, or to `all` when `mmsi` is given.", "schema": { "type": "string" }, "example": "24h" },
-      "max_age_moving": { "name": "max_age_moving", "in": "query", "required": false, "description": "Oldest last report to include for a vessel whose last report was under way, that is, not stationary as `/v1/vessels` defines it: whole seconds, a duration such as `2h`, or `all`. Defaults to 30 minutes for an area and to `all` for vessels named in `mmsi`.", "schema": { "type": "string" }, "example": "all" }
+      "tileMaxAge": { "name": "max_age", "in": "query", "required": false, "description": "Oldest last report to include: whole seconds, a duration such as `24h`, or `all`. Defaults to 7 days, or to `all` when `mmsi` or `imo` is given.", "schema": { "type": "string" }, "example": "24h" },
+      "max_age_moving": { "name": "max_age_moving", "in": "query", "required": false, "description": "Oldest last report to include for a vessel whose last report was under way, that is, not stationary as `/v1/vessels` defines it: whole seconds, a duration such as `2h`, or `all`. Defaults to 30 minutes for an area and to `all` for vessels named in `mmsi` or `imo`.", "schema": { "type": "string" }, "example": "all" }
+    },
+    "headers": {
+      "ContentLocation": { "description": "Present when the vessel was asked for by IMO: the same answer's address by MMSI, with the request's parameters other than `key`.", "schema": { "type": "string" }, "example": "/v1/vessels/538001234" }
     },
     "responses": {
+      "IMOCandidates": {
+        "description": "The IMO names no one vessel: more than one MMSI reporting it was heard in the last 30 days, or none of several was. The candidates, up to 10 most recently heard first, each with `href`, its address by MMSI.",
+        "content": {
+          "application/geo+json": {
+            "schema": {
+              "allOf": [
+                { "$ref": "#/components/schemas/FeatureCollection" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "features": {
+                      "type": "array",
+                      "items": { "type": "object", "required": ["href"], "properties": { "href": { "type": "string", "description": "This vessel's `/v1/vessels/{mmsi}`, or its track for a track request, with the request's parameters other than `key`." } } }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "IMOTier": {
+        "description": "Lookup by IMO number needs a feeder or partner token, the tiers that get the raw NMEA feed. Every tier sees `imo` in the vessels it gets back. The plain-text body names the tier and links the limits.",
+        "content": { "text/plain": { "schema": { "type": "string" } } }
+      },
       "BadRequest": {
         "description": "Malformed parameter or body. The plain-text body says which.",
         "content": { "text/plain": { "schema": { "type": "string" } } }
@@ -727,7 +776,7 @@
             "description": "Credit lines to display, one per source kind present in the features. The key is a feature's `source` value up to the first `:`. Every credit opens with \"Open Waters AIS (https://openwaters.io/ais/)\"; sources with their own terms add their credit after it.",
             "additionalProperties": { "type": "string" }
           },
-          "truncated": { "type": "boolean", "const": true, "description": "Present when a cap cut the list: a search past 50 matches, or an area past 500 vessels older than 30 minutes." }
+          "truncated": { "type": "boolean", "const": true, "description": "Present when a cap cut the list: a search past 50 matches, an area past 500 vessels older than 30 minutes, or an IMO number reported by more than 10 vessels." }
         }
       },
       "VesselFeature": {
@@ -963,7 +1012,7 @@
           "conns": { "type": "integer", "description": "Concurrent WebSocket cap for this `sub`." },
           "rate": { "type": "integer", "description": "Messages per second per connection; excess is thinned." },
           "area": { "type": "integer", "description": "Total subscribed bounding-box area in square degrees. Negative means MMSI-only subscriptions." },
-          "mmsis": { "type": "integer", "description": "Vessels followed by MMSI per subscription." }
+          "mmsis": { "type": "integer", "description": "Vessels followed by MMSI or IMO per subscription." }
         }
       }
     }

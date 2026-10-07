@@ -941,4 +941,4 @@ const maxBoxes = 256
 // caller's to narrow, not failed as the record's.
 const maxParams = 32766
 
-var errTooManyTerms = errors.New("too many bbox or mmsi for one request")
+var errTooManyTerms = errors.New("too many bbox, mmsi, or imo for one request")
