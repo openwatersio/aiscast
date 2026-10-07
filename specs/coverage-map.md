@@ -26,17 +26,17 @@ Changed:
 - **Days heard is the evidence.** Of the days in the window, how many heard the cell at all. A cell heard on 1 of 7 days fades. A cell heard on all 7 is solid. This measure is easier to explain than a log of message counts, and it survives the AISHub sampling problem.
 - **Vector tiles from the server, not PMTiles on R2.** The research proposed tippecanoe to PMTiles in a bucket. The window's aggregate is a few hundred thousand cells, small enough to hold in the server and tile on demand. That is what `/v1/vessels/tiles` already does. Coverage then lives in the `/v1` API next to everything else, and needs no public bucket, domain, or build step. A map needs only the TileJSON URL.
 - **Presence and density first, redundancy second.** The first map answers the question people actually ask: is there data for this water? Redundancy builds on the same table, since `receptions` holds every copy with the station that heard it.
-- **No per-source dropdown.** A station's own footprint belongs on its station page, drawn as a range outline, which is a later phase.
+- **No per-source dropdown.** A station's own footprint belongs on its station page, from the same tiles with `?station=` ([station-page.md](station-page.md#api)).
 
 ## Phase 1: where there is data
 
 The smallest map that answers "is my area on the feed?", on the network page at `openwaters.io/ais/network`, beside the counts of what the network receives. Both answer what data the network has.
 
-### ClickHouse: `coverage`
+### ClickHouse: `coverage` and `station_coverage`
 
 The map reads `station_coverage`, the same cells keyed by station as well, so the same rows answer the network map and each station's footprint ([station-page.md](station-page.md#rollups)). `coverage` is written beside it for one release, so the previous server keeps its map on rollback, and is then dropped.
 
-One row per (`day`, `res`, `cell`), beside `receptions` in the ClickHouse database the server writes:
+`coverage` has one row per (`day`, `res`, `cell`), beside `receptions` in the ClickHouse database the server writes. `station_coverage` has the same per station as well, with its `source`, and no `stations` column, since the map counts the stations with a row for the cell:
 
 | Column | Type | Meaning |
 | --- | --- | --- |
@@ -47,7 +47,7 @@ One row per (`day`, `res`, `cell`), beside `receptions` in the ClickHouse databa
 
 - **Filled as receptions arrive.** A materialized view bins each batch written to `receptions`, skipping copies marked implausible or with a bad clock: each copy's cell at resolution 6, and the cells that contain it at 5, 4, and 3, so the levels nest exactly. The view sets `geotoh3_argument_order`, since ClickHouse releases have disagreed on whether `geoToH3` takes latitude or longitude first and a view keeps what it was created with.
 - **Counted once.** Distinct sets merge as unions, so every copy of a transmission, and the same copies binned twice, count each vessel once. That makes a backfill over days the view already covers harmless.
-- **Backfilled once.** The view sees only receptions written after it exists, and the receptions loaded from the lake before it are not among them. On first start the server bins the map's window from `receptions` and loads the map, then bins each older day back 13 months in the background, newest first and one day per query so the largest day stays within ClickHouse's memory cap, and records each in `coverage_backfilled`, an empty day too. A restart resumes with the days not yet recorded. Counting days back from today, rather than reading partitions, keeps the backfill independent of how `receptions` is partitioned.
+- **Backfilled once.** The view sees only receptions written after it exists, and the receptions loaded from the lake before it are not among them. On first start the server bins the map's window from `receptions` and loads the map, then bins each older day back 13 months in the background, newest first and one day per query so the largest day stays within ClickHouse's memory cap, and records each in `coverage_backfilled` and `station_coverage_backfilled`, one ledger per table, an empty day too. A restart resumes with the days not yet recorded. Counting days back from today, rather than reading partitions, keeps the backfill independent of how `receptions` is partitioned.
 - **Kept 13 months,** like the 15-minute rollup, so seasonal questions stay answerable.
 - **Every position counts,** whatever its source: live feeds and stations, uncorroborated reports, and historical archives loaded into `receptions`. Coverage is where there is data for a period, not which source supplied it.
 - **Bounded to what it keeps.** The view and the backfill bin only receptions within the 13 months coverage keeps, so a load of older history computes no cells its TTL would delete.

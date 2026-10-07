@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
@@ -259,7 +260,8 @@ func (c *coverageMap) stationData(ctx context.Context, station string, now time.
 	if err := cmp.Or(err1, err2); err != nil {
 		return nil, err
 	}
-	d, err := buildCoverage(first, last, net.days, now, func(each func(covRow) error) error {
+	// Stamped with the network's load, so its tiles are cached for the hour whichever load of the station built them.
+	d, err := buildCoverage(first, last, net.days, time.Unix(0, net.loaded), func(each func(covRow) error) error {
 		return src.stationCoverageCells(ctx, station, first, last, each)
 	})
 	if err != nil {
@@ -517,8 +519,8 @@ func (p *Pipeline) coverageFor(ctx context.Context, station string) (*coverageDa
 	if station == "" {
 		return p.coverage.data(), 0, nil
 	}
-	if len(station) > 256 {
-		return nil, http.StatusBadRequest, errors.New("station id too long")
+	if utf8.RuneCountInString(station) > 256 {
+		return nil, http.StatusBadRequest, errors.New("station id longer than 256 characters")
 	}
 	d, err := p.coverage.stationData(ctx, station, time.Now())
 	if err != nil {
