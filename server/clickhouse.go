@@ -276,6 +276,7 @@ type chConn struct {
 	conn  driver.Conn
 	db    string
 	table string // the table write inserts into: receptions, or a replay's staging table
+	own   string // the table insertOwn writes: station_own when empty, or a replay's staging table
 }
 
 // openClickHouse connects to url, a clickhouse:// DSN, and creates the schema in the database it names, or
@@ -745,7 +746,7 @@ func (p *Pipeline) flushOwn(c *chStore) error {
 
 // insertOwn writes own-ship sightings to station_own.
 func (c *chConn) insertOwn(ctx context.Context, own map[ownKey]time.Time) error {
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".station_own (hour, station, mmsi, last_ts)")
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+"."+cmp.Or(c.own, "station_own")+" (hour, station, mmsi, last_ts)")
 	if err != nil {
 		return err
 	}

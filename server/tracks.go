@@ -343,15 +343,16 @@ func (p *Pipeline) noteReception(pt trackPoint) {
 }
 
 // noteOwn gathers a station's own-ship message for station_own, position or static, keeping the latest per
-// station, hour, and vessel until the next flush.
+// station, hour received, and vessel until the next flush.
 func (p *Pipeline) noteOwn(ev *Event) {
 	if ev.RecvTime.Before(p.replayGate) {
 		return // a replay's lead-in builds state and writes nothing
 	}
-	k := ownKey{ev.Station, ev.Time.Unix() / 3600, ev.Packet.GetHeader().UserID}
-	// Claims count by the hour the message arrived, which the server sets, not the hour it is stamped, which the
-	// sender does: stamps across many hours would otherwise open a fresh allowance for each.
+	// Sightings and claims go by the hour the message arrived, which the server sets, not the hour it is stamped,
+	// which the sender does: stamps across many hours would otherwise open a fresh allowance for each, and a replay,
+	// which takes a day's messages by arrival, replaces exactly the hours it writes.
 	recvHour := ev.RecvTime.Unix() / 3600
+	k := ownKey{ev.Station, recvHour, ev.Packet.GetHeader().UserID}
 	// The allowance is the sender's: a UDP sender is relabeled by each MMSI it claims, so its station would be a new
 	// one for every MMSI and never reach the bound.
 	claimer := cmp.Or(ev.Sender, ev.Station)
