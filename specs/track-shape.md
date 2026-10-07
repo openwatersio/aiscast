@@ -6,7 +6,7 @@ A vessel's track should follow the path it took. Today a track that names no `in
 
 [server/track_api.go](../server/track_api.go) picks a default step with `defaultInterval`: the range divided by the limit, rounded up to a round step from 5 seconds to a day. The read keeps the first position in each step. Anonymous callers get 200 positions, personal tokens 1,000, feeder and above 5,000.
 
-The web client on `main` computes its own step from a budget of 190 positions (950 with a token) and sends it as `interval`. The client in #157 sends no `interval` and leaves the step to the server, so every fix below reaches the web client only once #157 ships.
+The web client on `main` computes its own step from a budget of 190 positions (950 with a token) and sends it as `interval`. The client in #157 sends no `interval` and leaves the step to the server, so the fixes below reach the website once #157 ships; the server change can ship first.
 
 CERULEAN (368168720) on 2026-10-06, anonymous, with no `interval`, as the client in #157 asks:
 
@@ -103,7 +103,7 @@ Go ahead when the minute grid strays more than about 50 m at the 95th percentile
 
 ## Client
 
-On top of #157, [client/app/lib/useTrack.ts](../client/app/lib/useTrack.ts) splits at `breaks` when the answer has them, and falls back to `trackGap(interval)` when it does not. The map's track (`splitTrack` in [client/app/lib/ais.ts](../client/app/lib/ais.ts)) and the chart's speed line in [client/app/components/VesselTrack.tsx](../client/app/components/VesselTrack.tsx), which breaks its own line from `track.gap`, both take the segments from there. The client ships before the server change, because a client without `breaks` support breaks the line at every collapsed stay.
+On top of #157, [client/app/lib/useTrack.ts](../client/app/lib/useTrack.ts) splits at `breaks` when the answer has them, and falls back to `trackGap(interval)` when it does not. The map's track (`splitTrack` in [client/app/lib/ais.ts](../client/app/lib/ais.ts)) and the chart's speed line in [client/app/components/VesselTrack.tsx](../client/app/components/VesselTrack.tsx), which breaks its own line from `track.gap`, both take the segments from there. A client that omits `interval` must support `breaks`, or it breaks the line at every collapsed stay. The web client on `main` always sends its own `interval`, so it keeps getting even steps until #157 ships, and the server change can go first.
 
 ## Docs
 
@@ -111,11 +111,10 @@ The server change updates, in the same pull request: [server/README.md](../serve
 
 ## Order
 
-1. #157, which stops the web client sending its own `interval`.
-2. Client: draw segments from `breaks`, with the fallback.
-3. Server: shape simplification, `breaks`, the new fields, GPX segments, the MCP default, the anonymous limit, and the moving rule. Tests: a synthetic dock-trip-dock track keeps the trip's corners and the dock's two ends; a stop mid-leg survives; a 2-hour silence makes a break and a 25-minute one does not; heartbeats 55 minutes apart in `positions_1m` do not; the tolerance grows only past the limit; a still vessel reporting 0.9 kn within 50 m is still. End to end against ClickHouse: the same, through the endpoint.
-4. Measure on production: CERULEAN and a ferry at 24 hours, 48 hours, 7 days, and 30 days; request time for a year of a ferry; `positions_1m` rows per day.
-5. Promotion by shape: run the measurement above. If it passes, add `keep`, the new table, its fill for past days, and the switch of the track read, then drop `positions_1m` after two weeks.
+1. Server: shape simplification, `breaks`, the new fields, GPX segments, the MCP default, the anonymous limit, and the moving rule. Tests: a synthetic dock-trip-dock track keeps the trip's corners and the dock's two ends; a stop mid-leg survives; a 2-hour silence makes a break and a 25-minute one does not; heartbeats 55 minutes apart in `positions_1m` do not; the tolerance grows only past the limit; a still vessel reporting 0.9 kn within 50 m is still. End to end against ClickHouse: the same, through the endpoint.
+2. #157, which stops the web client sending its own `interval` and draws segments from `breaks`, with the fallback.
+3. Measure on production: CERULEAN and a ferry at 24 hours, 48 hours, 7 days, and 30 days; request time for a year of a ferry; `positions_1m` rows per day.
+4. Promotion by shape: run the measurement above. If it passes, add `keep`, the new table, its fill for past days, and the switch of the track read, then drop `positions_1m` after two weeks.
 
 ## Open questions
 
