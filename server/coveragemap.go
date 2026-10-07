@@ -687,12 +687,18 @@ var chCoverageTables = []struct{ table, ledger, insert string }{
 }
 
 // chBinning bounds a day's binning as rebuildPositions1m bounds its own: grouping by station as well as cell, a
-// busy day's sets spill to disk past the memory cap rather than fail, and a day may take an hour.
-func chBinning(ctx context.Context) context.Context {
+// busy day's sets spill to disk past the memory cap rather than fail, and a day may take an hour. The deadline
+// matches it, since a context's deadline is what lifts the driver's five-minute read timeout for one query.
+func chBinning(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(ctx, chBinningTime)
 	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "max_threads": 2, "max_execution_time": 3600,
-	}))
+		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "max_threads": 2,
+		"max_execution_time": int(chBinningTime.Seconds()),
+	})), cancel
 }
+
+// chBinningTime is how long one day's binning, or the network's read, may run.
+const chBinningTime = time.Hour
 
 // coverageBinning keeps a backfill's day and a rebuild's from running at once in one process: a backfill that read
 // a day before an archive reload deleted from it, and inserted after the reload's rebuild, would put back the cells
@@ -731,7 +737,9 @@ func (c *chConn) coverageBackfill(ctx context.Context, since time.Time) error {
 				continue
 			}
 			coverageBinning.Lock()
-			err := c.conn.Exec(chBinning(ctx), strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1))
+			bctx, cancel := chBinning(ctx)
+			err := c.conn.Exec(bctx, strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1))
+			cancel()
 			coverageBinning.Unlock()
 			if err != nil {
 				return fmt.Errorf("%s %s: %w", t.table, day.Format("2006-01-02"), err)
@@ -788,7 +796,9 @@ func (c *chConn) stationCoverageCells(ctx context.Context, station string, first
 
 // coverageQuery folds days, a query answering each cell's vessels v and stations s for each day, into the window.
 func (c *chConn) coverageQuery(ctx context.Context, days string, each func(covRow) error, args ...any) error {
-	rows, err := c.conn.Query(chBinning(ctx), `WITH h3ToGeoBoundary(cell) AS b
+	ctx, cancel := chBinning(ctx)
+	defer cancel()
+	rows, err := c.conn.Query(ctx, `WITH h3ToGeoBoundary(cell) AS b
 		SELECT res, cell, sum(v), count(), uniqExactMerge(s), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
 		FROM (`+days+`)
 		GROUP BY res, cell

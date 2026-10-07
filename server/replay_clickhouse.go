@@ -298,7 +298,10 @@ func (c *chConn) rebuildCoverage(ctx context.Context, day time.Time) error {
 		if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+"."+t.table+" WHERE day = ?", day); err != nil {
 			return fmt.Errorf("%s: %w", t.table, err)
 		}
-		if err := c.conn.Exec(chBinning(ctx), strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1)); err != nil {
+		bctx, cancel := chBinning(ctx)
+		err := c.conn.Exec(bctx, strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1))
+		cancel()
+		if err != nil {
 			return fmt.Errorf("%s: %w", t.table, err)
 		}
 	}

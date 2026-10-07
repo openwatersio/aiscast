@@ -871,3 +871,13 @@ func TestCoverageStationEmptyLoadIsNotKept(t *testing.T) {
 		t.Errorf("after the rebuild: %d, want the station's cells", code)
 	}
 }
+
+// A day's binning runs past the driver's five-minute read timeout only under a context deadline, which overrides
+// it; without one, a busy day fails at five minutes and its backfill retries it forever.
+func TestCoverageBinningOutlastsTheReadTimeout(t *testing.T) {
+	ctx, cancel := chBinning(context.Background())
+	defer cancel()
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < 30*time.Minute {
+		t.Errorf("binning deadline %v, %v; want one well past the driver's five minutes", deadline, ok)
+	}
+}
