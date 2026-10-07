@@ -39,9 +39,10 @@ func TestPublicFixtures(t *testing.T) {
 			n++
 			types[ev.Type]++
 		}
-		t.Logf("%s: lines=%d events=%d parse_err=%d decode_fail=%d dup=%d types=%v", tc.file, lines, n,
+		invalid := int(p.stats.invalidMMSI.Load()) // GPSD's samples include made-up MMSIs, decoded and then kept off the map
+		t.Logf("%s: lines=%d events=%d invalid_mmsi=%d parse_err=%d decode_fail=%d dup=%d types=%v", tc.file, lines, n, invalid,
 			p.stats.parseErr.Load(), p.stats.decodeFail.Load(), p.stats.dup.Load(), types)
-		if n < tc.minEvents {
+		if n+invalid < tc.minEvents {
 			t.Errorf("%s: events=%d want ≥%d", tc.file, n, tc.minEvents)
 		}
 	}

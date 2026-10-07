@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestStaleEventNotBroadcast(t *testing.T) {
 	sub := p.subscribe()
 	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
 	report := func(lat float64) ais.Packet {
-		return ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 2}, Valid: true,
+		return ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 257000002}, Valid: true,
 			Latitude: ais.FieldLatLonFine(lat), Longitude: 10, Cog: 360, Sog: 102.3, TrueHeading: 511, NavigationalStatus: 15}
 	}
 	p.ingestPacket("kystverket", "kystverket", t0, t0, report(50))
@@ -89,7 +90,7 @@ func posReport(mmsi uint32, lat, lon float64) ais.Packet {
 func TestImplausibleJumpFromAnySource(t *testing.T) {
 	for i, src := range []string{"aishub", "aisstream", "kystverket"} {
 		p := testPipeline(t)
-		mmsi := uint32(3000 + i)
+		mmsi := uint32(257003000 + i)
 		t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
 		p.ingestPacket(src, src, t0, t0, posReport(mmsi, 49.48, 0.13))
 
@@ -130,20 +131,20 @@ func TestNullIslandIsNotAPosition(t *testing.T) {
 	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
 
 	// a vessel already tracked keeps the position it had
-	p.ingestPacket("aisstream", "aisstream", t0, t0, posReport(1, 49.48, 0.13))
-	p.ingestPacket("aisstream", "aisstream", t0.Add(time.Minute), t0.Add(time.Minute), posReport(1, 0, 0))
-	if !posAt(t, p.vessels[1], 49.48, 0.13) {
-		t.Errorf("null island folded into the cache: %+v", p.vessels[1])
+	p.ingestPacket("aisstream", "aisstream", t0, t0, posReport(257000001, 49.48, 0.13))
+	p.ingestPacket("aisstream", "aisstream", t0.Add(time.Minute), t0.Add(time.Minute), posReport(257000001, 0, 0))
+	if !posAt(t, p.vessels[257000001], 49.48, 0.13) {
+		t.Errorf("null island folded into the cache: %+v", p.vessels[257000001])
 	}
 	// a vessel seen only at (0,0) has no position at all, so it never reaches /v1/vessels
-	p.ingestPacket("aishub", "aishub", t0, t0, posReport(2, 0, 0))
-	if v := p.vessels[2]; v.HasPos {
+	p.ingestPacket("aishub", "aishub", t0, t0, posReport(257000002, 0, 0))
+	if v := p.vessels[257000002]; v.HasPos {
 		t.Errorf("vessel known only at (0,0) has a position: lat=%v lon=%v", v.Lat, v.Lon)
 	}
 	// the meridian and the equator on their own are ordinary water: Greenwich is on longitude 0
-	p.ingestPacket("aishub", "aishub", t0, t0, posReport(3, 51.5, 0))
-	if !posAt(t, p.vessels[3], 51.5, 0) {
-		t.Errorf("Greenwich position rejected: %+v", p.vessels[3])
+	p.ingestPacket("aishub", "aishub", t0, t0, posReport(257000003, 51.5, 0))
+	if !posAt(t, p.vessels[257000003], 51.5, 0) {
+		t.Errorf("Greenwich position rejected: %+v", p.vessels[257000003])
 	}
 }
 
@@ -208,5 +209,83 @@ func TestFlagOf(t *testing.T) {
 		if got := flagOf(mmsi); got != want {
 			t.Errorf("flagOf(%d) = %q, want %q", mmsi, got, want)
 		}
+	}
+}
+
+func TestValidMMSI(t *testing.T) {
+	for mmsi, want := range map[uint32]bool{
+		// ships, coast stations, groups, SAR aircraft, handhelds, craft, aids to navigation, SART/MOB/EPIRB
+		257000001: true, 2573104: true, 2190047: true, 25700001: true, 111257005: true, 825701381: true, 982570310: true,
+		992576072: true, 970123456: true, 974018432: true,
+		// unique numbers outside the M.585 formats name one transmitter, so they stay
+		109080372: true, 199000000: true, 900000000: true,
+		// the edges of the MID range in the zero-padded formats
+		2_000_000: true, 7_999_999: true, 20_000_000: true, 79_999_999: true,
+		1_999_999: false, 8_000_000: false, 19_999_999: false, 80_000_000: false, 99_999_999: false,
+		// no room for a MID
+		0: false, 1: false, 2: false, 1111: false, 3638: false, 1234567: false, 12345678: false,
+		// defaults
+		100_000_000: false, 111_111_111: false, 123_456_789: false, 555_555_555: false, 987_654_321: false, 999_999_999: false,
+		// past nine digits, which the 30-bit field allows
+		1_000_000_000: false, 1<<30 - 1: false,
+	} {
+		if got := validMMSI(mmsi); got != want {
+			t.Errorf("validMMSI(%d) = %v, want %v", mmsi, got, want)
+		}
+	}
+}
+
+// A message under an MMSI many transmitters share is counted and kept out of the cache, the record, history,
+// and the stream, while the vessels around it go on as before.
+func TestInvalidMMSIStaysOffTheMap(t *testing.T) {
+	p, written := recordingPipeline(t)
+	st, err := openStore(filepath.Join(t.TempDir(), "aiscast.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.close() })
+	if err := p.attachStore(st); err != nil {
+		t.Fatal(err)
+	}
+	sub := p.subscribe()
+	now := time.Now().Truncate(time.Second)
+	for _, mmsi := range []uint32{0, 123456789, 1234567} {
+		p.ingestPacket("aisstream", "aisstream", now, now, posReport(mmsi, 59.9, 10.7))
+		p.ingestPacket("aisstream", "aisstream", now, now, shipStatic(mmsi, "DATAHUB"))
+	}
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 59.9, 10.7))
+	mustFlush(t, p)
+	if got := p.stats.invalidMMSI.Load(); got != 6 {
+		t.Errorf("invalid MMSI messages counted %d, want 6", got)
+	}
+	if n := len(sub.ch); n != 1 {
+		t.Errorf("%d events streamed, want only the valid vessel's", n)
+	}
+	if n := p.vesselCount(); n != 1 {
+		t.Errorf("cache holds %d vessels, want 1", n)
+	}
+	for _, mmsi := range []uint32{0, 123456789, 1234567} {
+		if _, ok, _ := st.get(mmsi); ok {
+			t.Errorf("record has a row for %d", mmsi)
+		}
+	}
+	for _, pt := range written() {
+		if pt.mmsi != 257000001 {
+			t.Errorf("history got a copy for %d", pt.mmsi)
+		}
+	}
+}
+
+// A UDP sender claiming a default MMSI as its own keeps its address, so senders sharing the default are not
+// merged into one station.
+func TestUDPSenderKeepsItsAddressForADefaultOwnShip(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	now := time.Now()
+	p.Ingest(Reception{Source: "udp:boat", Station: "udp:boat", RecvTime: now, Body: ownSentence(p, posReport(123456789, 41.5, -70.6))})
+	p.Ingest(Reception{Source: "udp:boat", Station: "udp:boat", RecvTime: now, Body: testSentence})
+	ev := <-sub.ch
+	if ev.Source != "udp:boat" || ev.Station != "udp:boat" {
+		t.Errorf("relabeled by a default own-ship MMSI: source %q station %q", ev.Source, ev.Station)
 	}
 }

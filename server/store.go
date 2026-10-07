@@ -336,6 +336,12 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
+	// The fold and the import skip MMSIs validMMSI rejects; this clears the rows a file already holds under them,
+	// a few primary-key lookups each boot.
+	if _, err := db.Exec(invalidMMSIDelete()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	s := &store{db: db, path: path}
 	if s.mirror, err = loadMirror(s); err != nil {
 		db.Close()
@@ -348,6 +354,20 @@ func openStore(path string) (*store, error) {
 const storeConns = 8
 
 func (s *store) close() error { return s.db.Close() }
+
+// invalidMMSIDelete removes the vessels validMMSI rejects, spelled from the same tables.
+func invalidMMSIDelete() string {
+	var or []string
+	for _, r := range invalidMMSIRanges {
+		or = append(or, fmt.Sprintf("mmsi BETWEEN %d AND %d", r[0], r[1]))
+	}
+	defaults := make([]string, 0, len(defaultMMSIs))
+	for m := range defaultMMSIs {
+		defaults = append(defaults, strconv.FormatUint(uint64(m), 10))
+	}
+	or = append(or, "mmsi IN ("+strings.Join(defaults, ", ")+")")
+	return "DELETE FROM vessels WHERE " + strings.Join(or, " OR ")
+}
 
 // bytes is the size of the database and its write-ahead log on disk.
 func (s *store) bytes() int64 {
