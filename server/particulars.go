@@ -61,6 +61,7 @@ type enrichment struct {
 // state outranks Wikidata for registered facts, an empty value never wins, and provenance records the
 // winner by the field's JSON name. The flag states never meet: a vessel flies one flag at a time.
 // An FCC license ranks below PSIX, the vessel registry proper, and above Wikidata for what it documents.
+// AMSA's free-text ship type is the one flag-state field that yields to Wikidata's.
 func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string]sourceRef) {
 	wd, cg, fd, fc, tcv, am, is := e.wd, e.cg, e.fd, e.fc, e.tc, e.am, e.is
 	if wd == nil && cg == nil && fd == nil && fc == nil && tcv == nil && am == nil && is == nil {
