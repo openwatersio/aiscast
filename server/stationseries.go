@@ -88,12 +88,21 @@ type stationCount struct {
 	live, day, unique  int     // vessels within vesselTTL and stationVesselTTL, and of the latter, heard by no other station
 }
 
-// markDirty marks the hours of the receptions where selects, before they are deleted.
-func (c *chConn) markDirty(ctx context.Context, where string, args ...any) error {
-	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_dirty (hour) SELECT DISTINCT toStartOfHour(toDateTime(ts, 'UTC')) FROM "+c.db+".receptions WHERE "+where, args...)
+// dirtyHours is the hours of the receptions where selects, read before they are deleted so markHours can mark them
+// after: a marker written before the delete could be rebuilt, and recorded as built, while the rows still stand.
+func (c *chConn) dirtyHours(ctx context.Context, where string, args ...any) ([]time.Time, error) {
+	return chColumn[time.Time](ctx, c.conn, "SELECT DISTINCT toStartOfHour(toDateTime(ts, 'UTC')) FROM "+c.db+".receptions WHERE "+where, args...)
 }
 
-// markDay marks every hour of a UTC day, for a change to which of its receptions count.
+// markHours marks hours for the station series to rebuild.
+func (c *chConn) markHours(ctx context.Context, hours []time.Time) error {
+	if len(hours) == 0 {
+		return nil
+	}
+	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_dirty (hour) SELECT arrayJoin(?)", hours)
+}
+
+// markDay marks every hour of a UTC day, for a change to which of its receptions count, once the change is made.
 func (c *chConn) markDay(ctx context.Context, day time.Time) error {
 	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_dirty (hour) SELECT toDateTime(?, 'UTC') + INTERVAL number HOUR FROM numbers(24)", day.UTC().Truncate(24*time.Hour))
 }
@@ -111,7 +120,7 @@ func (c *chConn) rebuildStationSeries(ctx context.Context, now time.Time) error 
 	rows, err := c.conn.Query(ctx, `SELECT d.hour, d.m FROM
 		(SELECT hour, max(marked) AS m FROM `+c.db+`.station_dirty WHERE marked < now64(3) - INTERVAL ? SECOND GROUP BY hour) AS d
 		LEFT JOIN (SELECT hour, max(marker) AS b FROM `+c.db+`.station_built GROUP BY hour) AS s ON d.hour = s.hour
-		WHERE d.m > s.b ORDER BY d.hour`, int(stationSeriesSettle.Seconds()))
+		WHERE d.m > ifNull(s.b, toDateTime64(0, 3, 'UTC')) ORDER BY d.hour`, int(stationSeriesSettle.Seconds()))
 	if err != nil {
 		return err
 	}
@@ -209,11 +218,12 @@ func (c *chConn) binHours(ctx context.Context, hours []time.Time, now time.Time)
 	if legacy {
 		where += " AND (tx = 0 OR toDate(ts) NOT IN (SELECT day FROM " + c.db + ".receptions_converted))"
 	}
-	del := chDeleteSync(ctx)
 	// ponytail: a read between an hour's delete and its insert misses the hour, a second or so in each run, which
-	// the minute's cache can hold; versioned rows read by their latest would close it.
+	// the minute's cache can hold, and an insert that fails leaves its hours empty until a later run bins them;
+	// versioned rows read by their latest would close both.
 	bctx, cancel := chBinning(ctx)
 	defer cancel()
+	del := chDeleteSync(bctx)
 	if err := c.conn.Exec(del, "DELETE FROM "+c.db+".station_hours WHERE hour IN ?", hours); err != nil {
 		return fmt.Errorf("station_hours: %w", err)
 	}
@@ -400,10 +410,15 @@ func (p *Pipeline) runStationSeries() {
 // stationRollups is the series' figures, read at most once a minute for every caller.
 type stationRollups struct {
 	mu      sync.Mutex
-	at      time.Time
+	at      time.Time // the last read, failed or not
+	ok      time.Time // the last read that succeeded
 	counts  map[string]stationCount
 	sources map[string][2]int
 }
+
+// stationRollupsStale is how long the last figures stand while reads fail, after which there are none rather than
+// figures frozen through an outage.
+const stationRollupsStale = 10 * time.Minute
 
 // rollups returns the station and source figures, nil without ClickHouse; a failed read keeps the last.
 func (p *Pipeline) rollups(now time.Time) (map[string]stationCount, map[string][2]int) {
@@ -420,7 +435,7 @@ func (p *Pipeline) rollups(now time.Time) (map[string]stationCount, map[string][
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if now.Sub(r.at) < time.Minute {
-		return r.counts, r.sources
+		return r.fresh(now)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -429,8 +444,16 @@ func (p *Pipeline) rollups(now time.Time) (map[string]stationCount, map[string][
 	if err1 != nil || err2 != nil {
 		log.Printf("station series: %v %v", err1, err2)
 		r.at = now // the last figures stand for the minute, rather than every request waiting on a failing read
-		return r.counts, r.sources
+		return r.fresh(now)
 	}
-	r.at, r.counts, r.sources = now, counts, sources
+	r.at, r.ok, r.counts, r.sources = now, now, counts, sources
 	return counts, sources
+}
+
+// fresh is the last figures while they are within stationRollupsStale of their read; the caller holds mu.
+func (r *stationRollups) fresh(now time.Time) (map[string]stationCount, map[string][2]int) {
+	if now.Sub(r.ok) > stationRollupsStale {
+		return nil, nil
+	}
+	return r.counts, r.sources
 }

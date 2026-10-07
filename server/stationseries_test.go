@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 // fakeSeries answers the station series' reads from fixed figures.
@@ -148,14 +150,31 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Errorf("a second rebuild changed the counts: %+v, was %+v", again, counts)
 	}
 	where := "station = 'station:s2' AND mmsi = 3"
-	if err := conn.markDirty(ctx, where); err != nil {
+	dirty, err := conn.dirtyHours(ctx, where)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A rebuild before the delete finds nothing marked, so it cannot record the hour as built with the rows still there.
+	if err := conn.rebuildStationSeries(ctx, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+db+".receptions WHERE "+where); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+	if err := conn.markHours(ctx, dirty); err != nil {
 		t.Fatal(err)
+	}
+	// A late copy for an hour never rebuilt, on a day the backfill has done: under a profile that reads a missing join
+	// row as NULL, its hour still rebuilds.
+	if err := conn.insert(ctx, "late", []trackPoint{at("station:s4", 7, cur.Add(-72*time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	nulls := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"join_use_nulls": 1}))
+	if err := conn.rebuildStationSeries(nulls, now); err != nil {
+		t.Fatal(err)
+	}
+	if counts, _ := conn.stationCounts(ctx, now); counts["station:s4"].receptions != 1 {
+		t.Errorf("a late copy's hour was not rebuilt under join_use_nulls: %+v", counts["station:s4"])
 	}
 	if counts, _ := conn.stationCounts(ctx, now); counts["station:s2"].day != 1 || counts["station:s2"].unique != 0 {
 		t.Errorf("after deleting s2's own vessel: %+v", counts["station:s2"])
@@ -186,5 +205,8 @@ func TestStationRollupsBackOffAfterAFailure(t *testing.T) {
 	p.rollups(now.Add(2*time.Minute + 10*time.Second))
 	if f.reads != 2 || counts["s1"].day != 3 {
 		t.Errorf("%d reads, figures %v; want one failed read, then the last figures for the minute", f.reads, counts)
+	}	// Failing past stationRollupsStale, there are no figures rather than frozen ones.
+	if counts, _ := p.rollups(now.Add(2*time.Minute + stationRollupsStale + time.Second)); counts != nil {
+		t.Errorf("figures %v kept through %v of failed reads", counts, stationRollupsStale)
 	}
 }
