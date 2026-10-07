@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -257,6 +258,15 @@ func TestInvalidMMSIStaysOffTheMap(t *testing.T) {
 	mustFlush(t, p)
 	if got := p.stats.invalidMMSI.Load(); got != 6 {
 		t.Errorf("invalid MMSI messages counted %d, want 6", got)
+	}
+	if got := p.stations.events24h([]string{"aisstream"}, now); got != 6 {
+		t.Errorf("the station that delivered them is credited with %d messages, want 6", got)
+	}
+	// The feeds that skip MMSI 0 while decoding count it the same way.
+	p.barentswatchLine([]byte(`{"type":"Position","messageType":1,"latitude":69.9,"longitude":20.1,"mmsi":0,"msgtime":"`+now.UTC().Format(time.RFC3339)+`","stream":"terra"}`), now)
+	p.aishubSnapshot([]byte(`[[{"MMSI":0,"TIME":"`+fmt.Sprint(now.Unix())+`","LONGITUDE":3022815,"LATITUDE":31476144}]]`), now)
+	if got := p.stats.invalidMMSI.Load(); got != 8 {
+		t.Errorf("invalid MMSI messages counted %d with the feeds' MMSI 0, want 8", got)
 	}
 	if n := len(sub.ch); n != 1 {
 		t.Errorf("%d events streamed, want only the valid vessel's", n)

@@ -307,8 +307,9 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 
 	// A row is known when its vessel and time are believable, and placed when its position is too. A ship's
 	// MMSI begins with a maritime identification digit of 2 to 7; the rest are aids to navigation, base
-	// stations, and aircraft. The defaults in that range are shared by unrelated boats, as live (validMMSI). Latitude 91 and longitude 181 are the not-available values, and (0, 0) a GPS
-	// default rather than a fix. A row stamped outside its file's day is not the archive's to give.
+	// stations, and aircraft. The defaults in that range are kept out, as they are live (validMMSI): many
+	// unrelated boats share each one. Latitude 91 and longitude 181 are the not-available values, and (0, 0)
+	// a GPS default rather than a fix. A row stamped outside its file's day is not the archive's to give.
 	if err := exec("DROP TABLE IF EXISTS " + stage); err != nil {
 		return 0, err
 	}

@@ -409,6 +409,7 @@ func (p *Pipeline) emit(ev *Event) {
 	// the reception.
 	if !validMMSI(ev.Packet.GetHeader().UserID) {
 		p.stats.invalidMMSI.Add(1)
+		p.stations.heard(ev) // the station did deliver it, so its counts and feeder tier include it
 		return
 	}
 	p.delays.observe(ev, time.Now())

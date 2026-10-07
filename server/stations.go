@@ -145,6 +145,16 @@ func (s *stationStats) event(ev *Event) {
 	}
 }
 
+// heard credits a station with a message kept off the map for its MMSI (validMMSI), without the vessel it names.
+func (s *stationStats) heard(ev *Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.get(ev.Station, ev.Source, ev.Time)
+	st.Last = ev.Time
+	st.Events++
+	st.ring.add(ev.Time)
+}
+
 // dup records an event another station delivered first. The station did hear the vessel, so it counts
 // toward the station's vessels: per-station and per-source vessel counts must not depend on who was first.
 func (s *stationStats) dup(ev *Event) {
