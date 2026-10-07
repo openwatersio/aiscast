@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -309,13 +310,6 @@ func (f *fakeHistory) history(context.Context, uint32, time.Time, time.Time, tim
 	return f.points, f.err
 }
 
-func (f *fakeHistory) first(context.Context, uint32, time.Time, time.Time) (time.Time, bool, error) {
-	if len(f.points) == 0 {
-		return time.Time{}, false, f.err
-	}
-	return f.points[0].ts, f.err == nil, f.err
-}
-
 func TestTrackReadsHistoryFromClickHouse(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-3 * 24 * time.Hour).Truncate(time.Hour)
@@ -382,12 +376,6 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 	if got, err := conn.history(context.Background(), 257000001, start, start.Add(2*time.Hour), 10*time.Minute, 1000, time.Now()); err != nil || len(got) != 12 {
 		t.Errorf("thinned in the query: %d rows, %v", len(got), err)
 	}
-	if got, ok, err := conn.first(context.Background(), 257000001, start.Add(-time.Hour), start.Add(time.Hour)); !ok || err != nil || !got.Equal(start) {
-		t.Errorf("first position: %v %v %v", got, ok, err)
-	}
-	if _, ok, err := conn.first(context.Background(), 257000009, start, start.Add(time.Hour)); ok || err != nil {
-		t.Errorf("first position of a vessel with none: %v %v", ok, err)
-	}
 	from := start.Add(-time.Hour).UTC().Format(time.RFC3339)
 	to := start.Add(3 * time.Hour).UTC().Format(time.RFC3339)
 	for _, c := range []struct {
@@ -440,6 +428,42 @@ func TestTrackFromClickHouseEndToEnd(t *testing.T) {
 	// A step under a millisecond keeps every position, as ClickHouse stores them.
 	if tr := getTrack(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to+"&interval=500us"); tr.Properties.Points != 120 || tr.Properties.Interval != 0 {
 		t.Errorf("a sub-millisecond step: %d points", tr.Properties.Points)
+	}
+
+	// Without an interval, three days back reads positions_1m and simplifies it: two hours north at a steady
+	// rate are a straight line, its two ends.
+	var shaped struct {
+		Properties struct {
+			Interval   int64
+			Points     int
+			Simplified bool
+			Breaks     *[]int
+		}
+	}
+	w := get(t, p, "/v1/vessels/257000001/track?from="+from+"&to="+to)
+	if err := json.Unmarshal(w.Body.Bytes(), &shaped); err != nil || !shaped.Properties.Simplified || shaped.Properties.Interval != 60 ||
+		shaped.Properties.Points != 2 || shaped.Properties.Breaks == nil {
+		t.Errorf("a straight line from positions_1m: %s", w.Body)
+	}
+	// In the last 48 hours it reads every position: 10 minutes east, then 10 minutes north, a report every 10 s.
+	recent := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	var turn []trackPoint
+	for i := range 120 {
+		turn = append(turn, trackPoint{mmsi: 257000006, ts: recent.Add(time.Duration(i) * 10 * time.Second),
+			lat6: int32(59.9*600000) + int32(max(i-60, 0))*20, lon6: int32(10.7*600000) + int32(min(i, 60))*40,
+			sog10: 60, cog10: 900, heading: 511, navStatus: 15, source: "kystverket"})
+	}
+	if err := conn.insert(context.Background(), "turn", turn); err != nil {
+		t.Fatal(err)
+	}
+	tr = getTrack(t, p, "/v1/vessels/257000006/track?from="+recent.Add(-time.Hour).UTC().Format(time.RFC3339))
+	var corner bool
+	for _, ts := range tr.Properties.Times {
+		parsed, _ := time.Parse(time.RFC3339, ts)
+		corner = corner || parsed.Equal(turn[60].ts)
+	}
+	if tr.Properties.Points != 3 || tr.Properties.Interval != 0 || !corner {
+		t.Errorf("every position, simplified to the turn's three corners: %d points %v", tr.Properties.Points, tr.Properties.Times)
 	}
 }
 
@@ -827,8 +851,8 @@ func TestAnchorDecidesMoving(t *testing.T) {
 	if !a.still(at(10, 3), seed, true) || !a.set {
 		t.Error("an unset anchor starts at the seed, the vessel's restored position")
 	}
-	if a.still(at(20, 60), nil, true) {
-		t.Error("reported speed over half a knot is moving, however near")
+	if !a.still(at(20, 60), nil, true) {
+		t.Error("reported speed is not movement: a moored vessel's GPS reports 0.6 to 0.9 kn tied up")
 	}
 	// Drifting at 0.3 kn, a report every 10 s, 1.5 m apart: still until the drift adds up past movedM.
 	a = anchor{lat6: seed[0], lon6: seed[1], set: true}

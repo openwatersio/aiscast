@@ -11,7 +11,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -268,7 +267,6 @@ type chWriter interface {
 // chReader reads one vessel's history; tests fake it.
 type chReader interface {
 	history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error)
-	first(ctx context.Context, mmsi uint32, from, to time.Time) (time.Time, bool, error)
 }
 
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
@@ -519,16 +517,6 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 	}
 	slices.Reverse(points)
 	return points, rows.Err()
-}
-
-// first is the time of the vessel's first usable copy between from and to; ok is false when it has none there.
-// It reads receptions on their sort key, so it costs one seek, not the view's grouping.
-func (c *chConn) first(ctx context.Context, mmsi uint32, from, to time.Time) (ts time.Time, ok bool, err error) {
-	err = c.conn.QueryRow(ctx, "SELECT ts FROM "+c.db+".receptions WHERE mmsi = ? AND ts >= ? AND ts <= ? AND "+chUsable+" ORDER BY ts LIMIT 1", mmsi, from, to).Scan(&ts)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ts, false, nil
-	}
-	return ts, err == nil, err
 }
 
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
