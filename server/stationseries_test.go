@@ -205,7 +205,7 @@ func TestStationRollupsBackOffAfterAFailure(t *testing.T) {
 	p.rollups(now.Add(2*time.Minute + 10*time.Second))
 	if f.reads != 2 || counts["s1"].day != 3 {
 		t.Errorf("%d reads, figures %v; want one failed read, then the last figures for the minute", f.reads, counts)
-	}	// Failing past stationRollupsStale, there are no figures rather than frozen ones.
+	} // Failing past stationRollupsStale, there are no figures rather than frozen ones.
 	if counts, _ := p.rollups(now.Add(2*time.Minute + stationRollupsStale + time.Second)); counts != nil {
 		t.Errorf("figures %v kept through %v of failed reads", counts, stationRollupsStale)
 	}
