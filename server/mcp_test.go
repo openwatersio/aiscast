@@ -39,6 +39,9 @@ func mcpSeed(t *testing.T) *Pipeline {
 	p.ingestPacket("digitraffic", "digitraffic", now.Add(-30*time.Second), now.Add(-30*time.Second), pos(230000001, 60.1, 25.0, 4, 90, 0))
 	p.ingestPacket("digitraffic", "digitraffic", now.Add(-29*time.Second), now.Add(-29*time.Second), static(230000001, "HELSINKI TUG", 52))
 	p.ingestPacket("kystverket", "kystverket", now.Add(-3*time.Second), now.Add(-3*time.Second), static(257000003, "GHOST", 37))
+	// The station series' figures, as ClickHouse would have them for what was heard above.
+	p.attachClickHouse(&chStore{w: &fakeCH{}, series: &fakeSeries{counts: map[string]stationCount{"digitraffic": {live: 1, day: 1}},
+		sources: map[string][2]int{"kystverket": {4, 4}, "digitraffic": {1, 1}}}})
 	return p
 }
 

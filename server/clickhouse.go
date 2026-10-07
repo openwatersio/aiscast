@@ -110,6 +110,13 @@ var chMigrations = []string{
 	15: chStationCoverageTable,
 	16: `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.station_coverage_mv TO {db}.station_coverage AS ` + chStationCoverageSelect("{db}.receptions", chUsable),
 	17: `CREATE TABLE IF NOT EXISTS {db}.station_coverage_backfilled (day Date) ENGINE = ReplacingMergeTree ORDER BY day`,
+	// each station's hours and vessels, rebuilt from the hours a view marks (stationseries.go)
+	18: chStationHours,
+	19: chStationVessels,
+	20: chStationDirty,
+	21: chStationDirtyMV,
+	22: chStationBuilt,
+	23: chSeriesLedger,
 }
 
 // chStationOwn keeps, per station, hour, and vessel, the last time the station sent that vessel as its own ship
@@ -306,10 +313,11 @@ type chReader interface {
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
 // /metrics reports about it.
 type chStore struct {
-	w   chWriter
-	r   chReader
-	cov coverageSource // nil leaves the coverage map unavailable
-	own ownWriter      // nil leaves own-ship sightings unwritten
+	w      chWriter
+	r      chReader
+	cov    coverageSource // nil leaves the coverage map unavailable
+	own    ownWriter      // nil leaves own-ship sightings unwritten
+	series stationSeries  // nil leaves the station series unbuilt and its counts empty
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -653,7 +661,7 @@ func (p *Pipeline) runClickHouse(url string) {
 		conn, err := openClickHouse(ctx, url)
 		cancel()
 		if err == nil {
-			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn, own: conn})
+			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn, own: conn, series: conn})
 			log.Printf("clickhouse: writing receptions to %s", conn.db)
 			break
 		}

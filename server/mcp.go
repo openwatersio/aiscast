@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"net/http"
 	"sort"
@@ -861,7 +862,8 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 			return nil, mcpCoverage{}, errors.New("max_age needs the vessel record, which this server is running without")
 		}
 	}
-	rows := p.stations.rows(now)
+	counts, vbs := p.rollups(now)
+	rows := p.stations.rows(now, counts)
 	out := mcpCoverage{Time: now.UTC().Format(time.RFC3339), Stations: mcpStationCounts{Total: len(rows)}}
 
 	age := map[string]int64{}
@@ -874,7 +876,10 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 			age[k] = r.LastAgeS
 		}
 	}
-	vbs := p.stations.vesselsBySource(now)
+	vbs = maps.Clone(vbs)
+	if vbs == nil {
+		vbs = map[string][2]int{}
+	}
 	for _, k := range p.usage.sourceNames(now) {
 		if _, ok := vbs[k]; !ok {
 			vbs[k] = [2]int{}

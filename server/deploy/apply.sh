@@ -70,6 +70,9 @@ rm -rf /var/lib/aiscast/packager /var/lib/aiscast/normalized
 # Tracks read from ClickHouse. Boxes converged before that may still carry the SQLite track store.
 rm -f /var/lib/aiscast/tracks.db /var/lib/aiscast/tracks.db-*
 
+# Station vessel counts read from ClickHouse. Boxes converged before that may still carry the file that kept them.
+rm -f /var/lib/aiscast/station-vessels.json /var/lib/aiscast/station-vessels.json.tmp
+
 # Seed only: secrets live on the box, never in the repo.
 if [ ! -f /etc/aiscast.env ]; then
 	install -m 600 aiscast.env.example /etc/aiscast.env

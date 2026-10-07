@@ -207,6 +207,10 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	if err := conn.loadHistory(ctx, s, stats); err != nil {
 		t.Fatal(err)
 	}
+	// The reload's delete marks the whole day for the station series, not only the hours its rows land in again.
+	if hours, err := chColumn[uint64](ctx, conn.conn, "SELECT uniqExact(hour) FROM "+db+".station_dirty WHERE toDate(hour) = '2026-06-30'"); err != nil || hours[0] != 24 {
+		t.Errorf("the reloaded day's hours marked: %v %v", hours, err)
+	}
 	for _, table := range []string{"coverage", "station_coverage"} {
 		if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+"."+table+" WHERE cell = 1"); err != nil || len(n) != 1 || n[0] != 0 {
 			t.Errorf("%s keeps a cell the reloaded day no longer has: %v %v", table, n, err)

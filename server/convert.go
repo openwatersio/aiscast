@@ -190,6 +190,9 @@ func runRebuildPositions1m(args []string) {
 		if err := c.rebuildPositions1m(ctx, d); err != nil {
 			log.Fatalf("rebuild-positions-1m: %s: %v", d.Format("2006-01-02"), err)
 		}
+		if err := c.markDay(ctx, d); err != nil { // the station series, which the server rebuilds
+			log.Fatalf("rebuild-positions-1m: %s: station series: %v", d.Format("2006-01-02"), err)
+		}
 		if err := c.rebuildCoverage(ctx, d); err != nil {
 			log.Fatalf("rebuild-positions-1m: %s: coverage: %v", d.Format("2006-01-02"), err)
 		}
@@ -335,7 +338,11 @@ func (c *chConn) convertDay(ctx context.Context, day time.Time, st *convertState
 		return written, err
 	}
 	st.still = next
-	return written, c.conn.Exec(ctx, "INSERT INTO "+c.db+".receptions_converted VALUES (?, ?)", day, old)
+	// Recording the day changes which of its rows the series counts, so it is marked for them too.
+	if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".receptions_converted VALUES (?, ?)", day, old); err != nil {
+		return written, err
+	}
+	return written, c.markDay(ctx, day)
 }
 
 // convertVessel converts one vessel's rows, in time order, and returns those in [day, end). A transmission's

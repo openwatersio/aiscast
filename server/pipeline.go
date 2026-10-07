@@ -117,6 +117,7 @@ type Pipeline struct {
 	tc              tcStats                    // the weekly sync of Transport Canada's vessel register (tc.go)
 	ised            isedStats                  // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
 	ch              *chStore                   // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
+	series          stationRollups             // the station series' figures, read at most once a minute (stationseries.go)
 	chMu            sync.Mutex                 // guards chQueue; taken after vmu when both are held
 	chQueue         []trackPoint               // copies received since the last flush to ClickHouse; nil until it connects
 	chOwn           map[ownKey]time.Time       // own-ship sightings since the last flush, the latest per key; nil until it connects
