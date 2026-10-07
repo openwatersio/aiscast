@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -28,15 +29,14 @@ const (
 	chStationVesselDays = 35
 )
 
-// chStationHours keeps, per station and hour, its usable receptions, how many of them were the copy delivered
-// first, and its distinct vessels. It is kept as long as receptions are.
+// chStationHours keeps, per station and hour, its usable receptions and how many of them were the copy delivered
+// first. It is kept as long as receptions are.
 const chStationHours = `CREATE TABLE IF NOT EXISTS {db}.station_hours (
 	hour       DateTime('UTC'),
 	station    LowCardinality(String),
 	source     LowCardinality(String),
 	receptions UInt64,
-	first      UInt64,
-	vessels    AggregateFunction(uniqExact, UInt32)
+	first      UInt64
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(hour)
 ORDER BY (station, hour)`
@@ -57,11 +57,12 @@ TTL hour + INTERVAL ` + fmt.Sprint(chStationVesselDays) + ` DAY DELETE`
 
 // chStationDirty marks the hour of every reception inserted, with when; chStationBuilt records, per hour, the
 // newest marker its last rebuild took in. An hour whose newest settled marker is newer is rebuilt. Markers outlive
-// the copies that trickle in for a day or two after their hour, and the built record outlives the markers.
+// the copies that trickle in for a day or two after their hour, and a server down or failing for up to two weeks;
+// the built record outlives the markers.
 const (
-	chStationDirty   = `CREATE TABLE IF NOT EXISTS {db}.station_dirty (hour DateTime('UTC'), marked DateTime64(3, 'UTC') DEFAULT now64(3)) ENGINE = MergeTree ORDER BY (hour, marked) TTL toDateTime(marked) + INTERVAL 3 DAY DELETE`
+	chStationDirty   = `CREATE TABLE IF NOT EXISTS {db}.station_dirty (hour DateTime('UTC'), marked DateTime64(3, 'UTC') DEFAULT now64(3)) ENGINE = MergeTree ORDER BY (hour, marked) TTL toDateTime(marked) + INTERVAL 14 DAY DELETE`
 	chStationDirtyMV = `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.station_dirty_mv TO {db}.station_dirty AS SELECT DISTINCT toStartOfHour(toDateTime(ts, 'UTC')) AS hour FROM {db}.receptions`
-	chStationBuilt   = `CREATE TABLE IF NOT EXISTS {db}.station_built (hour DateTime('UTC'), marker DateTime64(3, 'UTC')) ENGINE = ReplacingMergeTree(marker) ORDER BY hour TTL toDateTime(marker) + INTERVAL 4 DAY DELETE`
+	chStationBuilt   = `CREATE TABLE IF NOT EXISTS {db}.station_built (hour DateTime('UTC'), marker DateTime64(3, 'UTC')) ENGINE = ReplacingMergeTree(marker) ORDER BY hour TTL toDateTime(marker) + INTERVAL 15 DAY DELETE`
 	chSeriesLedger   = `CREATE TABLE IF NOT EXISTS {db}.station_series_backfilled (day Date) ENGINE = ReplacingMergeTree ORDER BY day`
 )
 
@@ -128,13 +129,17 @@ func (c *chConn) rebuildStationSeries(ctx context.Context, now time.Time) error 
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, marks := range byDay {
+	// Newest day first; a day that fails is logged and left for the next run, so it holds up no other.
+	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return b.Compare(a) })
+	for _, day := range days {
+		marks := byDay[day]
 		hours := make([]time.Time, len(marks))
 		for i, m := range marks {
 			hours[i] = m.hour
 		}
 		if err := c.binHours(ctx, hours, now); err != nil {
-			return err
+			log.Printf("station series: %s: %v", day.Format("2006-01-02"), err)
+			continue
 		}
 		batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".station_built (hour, marker)")
 		if err != nil {
@@ -174,7 +179,8 @@ func (c *chConn) backfillStationSeries(ctx context.Context, now, until time.Time
 			hours[i] = day.Add(time.Duration(i) * time.Hour)
 		}
 		if err := c.binHours(ctx, hours, now); err != nil {
-			return fmt.Errorf("%s: %w", day.Format("2006-01-02"), err)
+			log.Printf("station series: backfill %s: %v", day.Format("2006-01-02"), err) // left for the next run
+			continue
 		}
 		if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_series_backfilled VALUES (?)", day); err != nil {
 			return err
@@ -183,9 +189,17 @@ func (c *chConn) backfillStationSeries(ctx context.Context, now, until time.Time
 	return nil
 }
 
+// binHoursFails, when set by a test, fails the binning of the day it names.
+var binHoursFails func(day time.Time) error
+
 // binHours replaces the rows of hours, all within one UTC day, in both tables with what receptions holds for them.
 func (c *chConn) binHours(ctx context.Context, hours []time.Time, now time.Time) error {
 	slices.SortFunc(hours, func(a, b time.Time) int { return a.Compare(b) })
+	if binHoursFails != nil {
+		if err := binHoursFails(hours[0].UTC().Truncate(24 * time.Hour)); err != nil {
+			return err
+		}
+	}
 	from, to := hours[0], hours[len(hours)-1].Add(time.Hour)
 	where := "ts >= ? AND ts < ? AND toStartOfHour(toDateTime(ts, 'UTC')) IN ? AND " + chUsable
 	legacy, err := c.legacy(ctx)
@@ -196,11 +210,15 @@ func (c *chConn) binHours(ctx context.Context, hours []time.Time, now time.Time)
 		where += " AND (tx = 0 OR toDate(ts) NOT IN (SELECT day FROM " + c.db + ".receptions_converted))"
 	}
 	del := chDeleteSync(ctx)
+	// ponytail: a read between an hour's delete and its insert misses the hour, a second or so in each run, which
+	// the minute's cache can hold; versioned rows read by their latest would close it.
+	bctx, cancel := chBinning(ctx)
+	defer cancel()
 	if err := c.conn.Exec(del, "DELETE FROM "+c.db+".station_hours WHERE hour IN ?", hours); err != nil {
 		return fmt.Errorf("station_hours: %w", err)
 	}
-	if err := c.conn.Exec(ctx, `INSERT INTO `+c.db+`.station_hours (hour, station, source, receptions, first, vessels)
-		SELECT toStartOfHour(toDateTime(ts, 'UTC')) AS hour, `+chStationKey+` AS station, source, count(), countIf(accepted), uniqExactState(mmsi)
+	if err := c.conn.Exec(bctx, `INSERT INTO `+c.db+`.station_hours (hour, station, source, receptions, first)
+		SELECT toStartOfHour(toDateTime(ts, 'UTC')) AS hour, `+chStationKey+` AS station, source, count(), countIf(accepted)
 		FROM `+c.db+`.receptions WHERE `+where+` GROUP BY hour, station, source`, from, to, hours); err != nil {
 		return fmt.Errorf("station_hours: %w", err)
 	}
@@ -210,7 +228,7 @@ func (c *chConn) binHours(ctx context.Context, hours []time.Time, now time.Time)
 	if err := c.conn.Exec(del, "DELETE FROM "+c.db+".station_vessels WHERE hour IN ?", hours); err != nil {
 		return fmt.Errorf("station_vessels: %w", err)
 	}
-	if err := c.conn.Exec(ctx, `INSERT INTO `+c.db+`.station_vessels (hour, station, source, mmsi, receptions, last_ts)
+	if err := c.conn.Exec(bctx, `INSERT INTO `+c.db+`.station_vessels (hour, station, source, mmsi, receptions, last_ts)
 		SELECT toStartOfHour(toDateTime(ts, 'UTC')) AS hour, `+chStationKey+` AS station, source, mmsi, count(), max(ts)
 		FROM `+c.db+`.receptions WHERE `+where+` AND NOT stale GROUP BY hour, station, source, mmsi`, from, to, hours); err != nil {
 		return fmt.Errorf("station_vessels: %w", err)
@@ -410,6 +428,7 @@ func (p *Pipeline) rollups(now time.Time) (map[string]stationCount, map[string][
 	sources, err2 := s.sourceCounts(ctx, now)
 	if err1 != nil || err2 != nil {
 		log.Printf("station series: %v %v", err1, err2)
+		r.at = now // the last figures stand for the minute, rather than every request waiting on a failing read
 		return r.counts, r.sources
 	}
 	r.at, r.counts, r.sources = now, counts, sources

@@ -17,12 +17,13 @@ type fakeSeries struct {
 	own     map[string]map[uint32]int64
 	points  map[string][][2]float64
 	reads   int
+	err     error
 }
 
 func (f *fakeSeries) rebuildStationSeries(context.Context, time.Time) error { return nil }
 func (f *fakeSeries) stationCounts(context.Context, time.Time) (map[string]stationCount, error) {
 	f.reads++
-	return f.counts, nil
+	return f.counts, f.err
 }
 func (f *fakeSeries) sourceCounts(context.Context, time.Time) (map[string][2]int, error) {
 	return f.sources, nil
@@ -94,6 +95,31 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A day that fails holds up neither the other marked days nor the backfill: with today failing, yesterday's hour
+	// still rebuilds, and today's waits for the next run.
+	binHoursFails = func(day time.Time) error {
+		if day.Equal(cur.Truncate(24 * time.Hour)) {
+			return fmt.Errorf("today fails")
+		}
+		return nil
+	}
+	if err := conn.markDay(ctx, cur); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.markDay(ctx, cur.AddDate(0, 0, -1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	binHoursFails = nil
+	built, err := chColumn[uint64](ctx, conn.conn, "SELECT uniqExact(hour) FROM "+db+".station_built FINAL WHERE marker > now64(3) - INTERVAL 1 MINUTE")
+	if err != nil || built[0] != 24 {
+		t.Errorf("hours rebuilt with today failing: %v %v; want yesterday's 24", built, err)
+	}
+	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+		t.Fatal(err)
+	}
 	if s := counts["station:s1"]; s.day != 2 || s.live != 1 || s.unique != 1 || math.Abs(s.uptime-2.0/3) > 1e-9 || !s.first.Equal(cur.Add(-2*time.Hour)) {
 		t.Errorf("s1: %+v; want 2 vessels without its own, 1 live, 1 unique despite the echo, and 2 of 3 hours", s)
 	}
@@ -145,5 +171,20 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	points, err := conn.stationPoints(ctx, cur.AddDate(0, 0, -2))
 	if err != nil || len(points["station:s1"]) != 1 || math.Abs(points["station:s1"][0][0]-59.9) > 0.05 || math.Abs(points["station:s1"][0][1]-10.7) > 0.05 || points["aishub"] != nil {
 		t.Errorf("label points %v, %v; want s1's one cell near Oslo and no feed's", points, err)
+	}
+}
+
+// A failed read keeps the last figures for the minute, rather than every request waiting on ClickHouse again.
+func TestStationRollupsBackOffAfterAFailure(t *testing.T) {
+	p := testPipeline(t)
+	f := &fakeSeries{counts: map[string]stationCount{"s1": {day: 3}}}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, series: f})
+	now := time.Now()
+	p.rollups(now)
+	f.err = fmt.Errorf("clickhouse is down")
+	counts, _ := p.rollups(now.Add(2 * time.Minute))
+	p.rollups(now.Add(2*time.Minute + 10*time.Second))
+	if f.reads != 2 || counts["s1"].day != 3 {
+		t.Errorf("%d reads, figures %v; want one failed read, then the last figures for the minute", f.reads, counts)
 	}
 }
