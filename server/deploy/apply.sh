@@ -35,7 +35,7 @@ apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--forc
 # Caddy compresses /v1/stream, which it sends uncompressed before 2.11.6; 2.11.6 can panic proxying HTTP/2 request bodies.
 caddy_version=$(dpkg-query -W -f='${Version}' caddy)
 if ! dpkg --compare-versions "$caddy_version" ge 2.11.7; then
-	echo "caddy $caddy_version is older than 2.11.7" >&2
+	echo "caddy $caddy_version is older than 2.11.7; check the Caddy apt source in /etc/apt/sources.list.d/caddy-stable.list" >&2
 	exit 1
 fi
 # ClickHouse is installed once and upgraded by hand, so a deploy never changes the database under live data.

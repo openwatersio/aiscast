@@ -72,15 +72,17 @@ jobs:
           echo "::error::events per second stayed at or below 100 for two minutes after the deploy"
           exit 1
       # Caddy, not aiscast, compresses the SSE stream, and Caddy changes only when apply.sh runs. An empty
-      # bbox sends nothing but the welcome frame, so its body arrives in time only if Caddy flushes its
-      # compressor per event. Browsers get zstd and curl gets gzip, so both are checked; curl decodes
-      # only the gzip body, since the runner's curl may lack zstd.
+      # bbox sends the welcome frame and then a keepalive comment every 30 s, so both arrive only if Caddy
+      # flushes its compressor per event. Browsers get zstd and curl gets gzip, so both are checked.
       - name: check the event stream is compressed
         run: |
+          curl -V | grep -qw zstd || { echo "::error::this runner's curl cannot decode zstd"; exit 1; }
+          for enc in gzip zstd; do
+            curl -sS -N --compressed -H "Accept-Encoding: $enc" --max-time 40 -D "$RUNNER_TEMP/sse-$enc.headers" -o "$RUNNER_TEMP/sse-$enc.body" 'https://ais.openwaters.io/v1/stream?bbox=-40,-140,-39,-139' || true &
+          done
+          wait
           for enc in gzip zstd; do
             out="$RUNNER_TEMP/sse-$enc"
-            decode=() && [ "$enc" = gzip ] && decode=(--compressed)
-            curl -sS -N "${decode[@]}" -H "Accept-Encoding: $enc" --max-time 5 -D "$out.headers" -o "$out.body" 'https://ais.openwaters.io/v1/stream?bbox=-40,-140,-39,-139' || true
             cat "$out.headers" 2>/dev/null || true
             if ! grep -Eq '^HTTP/[0-9.]+ 200' "$out.headers" 2>/dev/null; then
               echo "::error::/v1/stream did not answer 200 to Accept-Encoding: $enc"
@@ -90,15 +92,15 @@ jobs:
               echo "::error::/v1/stream answered without $enc"
               exit 1
             fi
-            if [ ! -s "$out.body" ]; then
-              echo "::error::/v1/stream sent no $enc body within 5 s"
+            if ! grep -q '"type":"welcome"' "$out.body"; then
+              echo "::error::/v1/stream sent no $enc welcome frame within 40 s"
+              exit 1
+            fi
+            if ! grep -qx ':' "$out.body"; then
+              echo "::error::/v1/stream sent no $enc keepalive within 40 s"
               exit 1
             fi
           done
-          if ! grep -q '"type":"welcome"' "$RUNNER_TEMP/sse-gzip.body"; then
-            echo "::error::/v1/stream's gzip body held no welcome frame"
-            exit 1
-          fi
 
   # The registry listing follows the deploy so it never advertises a version the server is not
   # serving yet. It is a no-op unless server.json carries a version the registry lacks.
