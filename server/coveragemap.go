@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 const (
@@ -264,19 +266,23 @@ func (c *coverageMap) stationData(ctx context.Context, station string, now time.
 		return nil, err
 	}
 	// Kept only when it can be served again: not when the network has loaded since, nor when it came back empty, as a
-	// listed station's cells do only while a rebuild has deleted the day and not yet binned it, nor when it alone is
-	// past the bound, as a feed's can be once ClickHouse holds more of the window than the network's load did.
-	budget := stationCoverageShare * max(net.size(), 1)
-	if d.empty() || d.size() > budget || c.data() != net {
+	// listed station's cells do only while a rebuild has deleted the day and not yet binned it. A station past the
+	// bound on its own, as a feed's can be once ClickHouse holds more of the window than the network's load did, is
+	// kept alone, so its tiles do not each load it again.
+	if d.empty() {
 		return d, nil
 	}
 	c.stationMu.Lock()
 	defer c.stationMu.Unlock()
+	if c.data() != net {
+		return d, nil
+	}
+	budget := stationCoverageShare * max(net.size(), 1)
 	if c.stations == nil {
 		c.stations = map[string]stationCoverage{}
 	}
-	// ponytail: past the bound, drop others in map order until this one fits; a scan of the held stations per drop,
-	// which are few.
+	// ponytail: past the bound, drop others in map order until this one fits or is alone; a scan of the held stations
+	// per drop, which are few. Two stations each past half the bound take turns.
 	held := func() int {
 		n := d.size()
 		for _, s := range c.stations {
@@ -498,8 +504,9 @@ func (p *Pipeline) serveCoverageTile(w http.ResponseWriter, r *http.Request) {
 	writeTile(w, r, b, "public, max-age=3600")
 }
 
-// errNoStationCoverage answers a station that heard nothing in the window, or that no station is called.
-var errNoStationCoverage = errors.New("this station has no coverage in the window")
+// errNoStationCoverage answers a station that heard nothing in the window, an id no station has, or, for a moment,
+// a station whose days are being rebuilt.
+var errNoStationCoverage = errors.New("no coverage for this station in the window")
 
 // coverageFor is the network's coverage, or one station's when station is set, with the status to answer when
 // there is none.
@@ -567,7 +574,7 @@ func (p *Pipeline) serveCoverageTileJSON(w http.ResponseWriter, r *http.Request)
 		"window":        map[string]any{"from": d.from, "to": d.to, "days": d.days},
 	}
 	if fit != nil {
-		tj["fit"] = fit // the extent to frame the station by, without its few farthest cells
+		tj["fit"] = fit // the extent to frame the station by: each edge the 5th percentile of its cells' from outside in
 	}
 	json.NewEncoder(w).Encode(tj)
 }
@@ -679,6 +686,14 @@ var chCoverageTables = []struct{ table, ledger, insert string }{
 	{"coverage", "coverage_backfilled", "INSERT INTO {db}.coverage " + chCoverageSelect("{db}.receptions", chUsable+" AND ts >= ? AND ts < ?")},
 }
 
+// chBinning bounds a day's binning as rebuildPositions1m bounds its own: grouping by station as well as cell, a
+// busy day's sets spill to disk past the memory cap rather than fail, and a day may take an hour.
+func chBinning(ctx context.Context) context.Context {
+	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "max_threads": 2, "max_execution_time": 3600,
+	}))
+}
+
 // coverageBinning keeps a backfill's day and a rebuild's from running at once in one process: a backfill that read
 // a day before an archive reload deleted from it, and inserted after the reload's rebuild, would put back the cells
 // the reload removed, and its ledger would never bin the day again.
@@ -716,7 +731,7 @@ func (c *chConn) coverageBackfill(ctx context.Context, since time.Time) error {
 				continue
 			}
 			coverageBinning.Lock()
-			err := c.conn.Exec(ctx, strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1))
+			err := c.conn.Exec(chBinning(ctx), strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1))
 			coverageBinning.Unlock()
 			if err != nil {
 				return fmt.Errorf("%s %s: %w", t.table, day.Format("2006-01-02"), err)
@@ -773,7 +788,7 @@ func (c *chConn) stationCoverageCells(ctx context.Context, station string, first
 
 // coverageQuery folds days, a query answering each cell's vessels v and stations s for each day, into the window.
 func (c *chConn) coverageQuery(ctx context.Context, days string, each func(covRow) error, args ...any) error {
-	rows, err := c.conn.Query(ctx, `WITH h3ToGeoBoundary(cell) AS b
+	rows, err := c.conn.Query(chBinning(ctx), `WITH h3ToGeoBoundary(cell) AS b
 		SELECT res, cell, sum(v), count(), uniqExactMerge(s), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
 		FROM (`+days+`)
 		GROUP BY res, cell

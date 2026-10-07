@@ -801,11 +801,11 @@ func TestCoverageStationCaches(t *testing.T) {
 		t.Errorf("%d loads with %d stations held, want a loaded again after b took its room", f.stationLoads, len(p.coverage.stations))
 	}
 	// A station past the bound on its own, as a feed can be when ClickHouse holds more than the network's load, is
-	// served and not kept.
+	// kept alone, so its tiles do not each load it again.
 	get("/v1/coverage/tiles/0/0/0?station=station:big")
-	get("/v1/coverage/tiles/0/0/0?station=station:big")
-	if _, held := p.coverage.stations["station:big"]; held || f.stationLoads != 5 {
-		t.Errorf("a station of 6 cells against a bound of 4: held %v, %d loads", held, f.stationLoads)
+	get("/v1/coverage/tiles/1/1/0?station=station:big")
+	if _, held := p.coverage.stations["station:big"]; !held || len(p.coverage.stations) != 1 || f.stationLoads != 4 {
+		t.Errorf("a station of 6 cells against a bound of 4: held %v with %d others, %d loads", held, len(p.coverage.stations)-1, f.stationLoads)
 	}
 }
 
