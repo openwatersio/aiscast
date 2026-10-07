@@ -1566,3 +1566,129 @@ func TestClickHouseMovesOldReceptionsToTheColdTier(t *testing.T) {
 		t.Errorf("every position reads back, two from R2: %d %v", n, err)
 	}
 }
+
+// A day rebuilt in ranges of vessels holds what rebuilding it whole holds: every vessel lands in exactly one range,
+// the ranges' edges included, and a transmission's copies are grouped together.
+func TestClickHouseRebuildsPositions1mInSlices(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	var pts []trackPoint
+	for v := range 2000 { // neighbouring MMSIs, so some sit on the edges; enough rows that each range reads only its own
+		mmsi := uint32(257000000 + v)
+		for i := range 30 {
+			ts := day.Add(time.Duration((v*7+i*41)%1439) * time.Minute) // every report on the day
+			pt := trackPoint{mmsi: mmsi, ts: ts, lat6: int32((59 + float64(i)/100) * 600000), lon6: int32(10.7 * 600000), sog10: 100,
+				cog10: 3600, heading: 511, navStatus: 0, source: "kystverket", station: "kystverket", txAt: ts, txDisc: 1, recv: ts}
+			late := pt // a later copy of the same transmission from another source
+			late.source, late.station, late.recv, late.dup = "aishub", "aishub", ts.Add(30*time.Second), true
+			pts = append(pts, pt, late)
+		}
+	}
+	if err := conn.insert(ctx, "slices", pts); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := func(slices int) []string {
+		t.Helper()
+		was := rebuildSlices
+		rebuildSlices = slices
+		defer func() { rebuildSlices = was }()
+		if err := conn.rebuildPositions1m(ctx, day); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := chColumn[string](ctx, conn.conn, "SELECT toString((mmsi, slot, cell, ts, lat6, source)) FROM "+db+".positions_1m FINAL ORDER BY mmsi, slot, cell")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	whole, sliced := rebuilt(1), rebuilt(8)
+	if len(whole) == 0 || !slices.Equal(whole, sliced) {
+		t.Fatalf("rebuilt whole: %d rows; in 8 ranges: %d rows, or they differ", len(whole), len(sliced))
+	}
+	// What keeps a large day within memory: each range's query reads only its own share of the day's rows.
+	if err := conn.conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
+		t.Fatal(err)
+	}
+	read, err := chColumn[uint64](ctx, conn.conn, "SELECT read_rows FROM system.query_log WHERE type = 'QueryFinish' AND current_database = currentDatabase()"+
+		" AND startsWith(query, 'INSERT INTO "+db+".positions_1m') ORDER BY event_time_microseconds DESC LIMIT 8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 8 {
+		t.Fatalf("%d range queries logged, want 8", len(read))
+	}
+	for _, n := range read {
+		if n > uint64(len(pts))/2 {
+			t.Errorf("a range read %d of the day's %d rows, as a rebuild of the whole day would", n, len(pts))
+		}
+	}
+}
+
+// A rebuild that stops partway leaves every vessel with rows: the ranges it finished hold their rebuilt rows, and
+// the ones it had not reached still hold what they held before.
+func TestClickHouseRebuildThatStopsKeepsTheRest(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	var pts []trackPoint
+	for v := range 400 {
+		ts := day.Add(time.Duration(v*3) * time.Minute)
+		pts = append(pts, trackPoint{mmsi: uint32(257000000 + v), ts: ts, lat6: int32(59 * 600000), lon6: int32(10.7 * 600000), sog10: 100,
+			cog10: 3600, heading: 511, navStatus: 0, source: "kystverket", station: "kystverket", txAt: ts, txDisc: 1, recv: ts})
+	}
+	if err := conn.insert(ctx, "stops", pts); err != nil { // the live view fills positions_1m with every vessel
+		t.Fatal(err)
+	}
+	stop := errors.New("stopped")
+	rebuiltRange = func(i int) error {
+		if i == 3 {
+			return stop
+		}
+		return nil
+	}
+	defer func() { rebuiltRange = nil }()
+	if err := conn.rebuildPositions1m(ctx, day); !errors.Is(err, stop) {
+		t.Fatalf("the rebuild did not stop where it was told: %v", err)
+	}
+	var vessels uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT uniqExact(mmsi) FROM "+db+".positions_1m FINAL WHERE slot >= ? AND slot < ?", day, day.AddDate(0, 0, 1)).Scan(&vessels); err != nil {
+		t.Fatal(err)
+	}
+	if vessels != 400 {
+		t.Errorf("%d of 400 vessels have rows after a rebuild stopped partway", vessels)
+	}
+}
+
+// The ranges cover every MMSI once, whatever edges the quantiles give: none, repeated, or 0.
+func TestVesselRangesCoverEveryMMSIOnce(t *testing.T) {
+	for _, edges := range [][]uint32{nil, {0, 0, 0}, {257000050, 257000100, 257000150}, {5, 5, 9}, {math.MaxUint32}} {
+		rs := vesselRanges(edges)
+		if rs[0][0] != 0 || rs[len(rs)-1][1] != math.MaxUint32 {
+			t.Errorf("%v: ranges %v do not run from 0 to the largest MMSI", edges, rs)
+		}
+		for i := 1; i < len(rs); i++ {
+			if rs[i][0] != rs[i-1][1]+1 || rs[i][0] > rs[i][1] {
+				t.Errorf("%v: ranges %v leave a gap or overlap at %d", edges, rs, i)
+			}
+		}
+	}
+}
