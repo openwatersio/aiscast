@@ -777,7 +777,8 @@ func TestCoverageStationLoadBlocksNoOne(t *testing.T) {
 func TestCoverageStationCaches(t *testing.T) {
 	row := covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)
 	three := []covRow{row, covRowOf(t, 6, osloRes6, 3, 1, osloRes6Outline), covRowOf(t, 3, beringRes3, 1, 1, beringOutline)}
-	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: []covRow{row}, stations: map[string][]covRow{"station:a": three, "station:b": three}}
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: []covRow{row},
+		stations: map[string][]covRow{"station:a": three, "station:b": three, "station:big": append(slices.Clone(three), three...)}}
 	p := coveragePipeline(t, f)
 	h := httpHandler(p)
 	get := func(path string) {
@@ -798,5 +799,75 @@ func TestCoverageStationCaches(t *testing.T) {
 	get("/v1/coverage/tiles/0/0/0?station=station:a")
 	if f.stationLoads != 3 || len(p.coverage.stations) != 1 {
 		t.Errorf("%d loads with %d stations held, want a loaded again after b took its room", f.stationLoads, len(p.coverage.stations))
+	}
+	// A station past the bound on its own, as a feed can be when ClickHouse holds more than the network's load, is
+	// served and not kept.
+	get("/v1/coverage/tiles/0/0/0?station=station:big")
+	get("/v1/coverage/tiles/0/0/0?station=station:big")
+	if _, held := p.coverage.stations["station:big"]; held || f.stationLoads != 5 {
+		t.Errorf("a station of 6 cells against a bound of 4: held %v, %d loads", held, f.stationLoads)
+	}
+}
+
+// A backfill's day and a rebuild wait for each other, so a backfill that read a day before a reload changed it
+// cannot insert after the reload's rebuild and put its old cells back.
+func TestCoverageBackfillWaitsForARebuild(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Now().UTC().Truncate(24 * time.Hour)
+	for name, run := range map[string]func() error{
+		"backfill": func() error { return conn.coverageBackfill(ctx, day) },
+		"rebuild":  func() error { return conn.rebuildCoverage(ctx, day) },
+	} {
+		coverageBinning.Lock() // as a rebuild or a backfill's day in progress
+		done := make(chan error, 1)
+		go func() { done <- run() }()
+		var err error
+		select {
+		case err = <-done:
+			t.Errorf("%s ran while another held the day", name)
+		case <-time.After(500 * time.Millisecond):
+			coverageBinning.Unlock()
+			err = <-done
+			coverageBinning.Lock()
+		}
+		coverageBinning.Unlock()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if name == "backfill" {
+			conn.exec(ctx, "TRUNCATE TABLE {db}.station_coverage_backfilled", "TRUNCATE TABLE {db}.coverage_backfilled")
+		}
+	}
+}
+
+// A listed station whose load comes back empty, as while a rebuild has deleted its day and not yet binned it,
+// answers 404 that once and is loaded again next time, not held empty until the next network load.
+func TestCoverageStationEmptyLoadIsNotKept(t *testing.T) {
+	row := covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: []covRow{row}, stations: map[string][]covRow{"station:a": {row}}}
+	p := coveragePipeline(t, f)
+	f.stations["station:a"] = nil // the day deleted and not yet binned again, after the network load listed it
+	h := httpHandler(p)
+	get := func() int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/coverage/tiles/0/0/0?station=station:a", nil))
+		return w.Code
+	}
+	if code := get(); code != 404 {
+		t.Fatalf("during the rebuild: %d", code)
+	}
+	f.stations["station:a"] = []covRow{row}
+	if code := get(); code != 200 {
+		t.Errorf("after the rebuild: %d, want the station's cells", code)
 	}
 }

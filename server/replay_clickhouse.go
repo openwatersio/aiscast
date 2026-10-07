@@ -292,6 +292,8 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 // first. coverage is rebuilt as long as it is written, so a server rolled back to reading it never serves
 // coverage a deletion removed.
 func (c *chConn) rebuildCoverage(ctx context.Context, day time.Time) error {
+	coverageBinning.Lock()
+	defer coverageBinning.Unlock()
 	for _, t := range chCoverageTables {
 		if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+"."+t.table+" WHERE day = ?", day); err != nil {
 			return fmt.Errorf("%s: %w", t.table, err)

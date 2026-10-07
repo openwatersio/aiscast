@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -208,6 +207,9 @@ func (c *coverageMap) load(ctx context.Context, src coverageSource, now time.Tim
 	c.mu.Lock()
 	c.d, c.src = d, src
 	c.mu.Unlock()
+	c.stationMu.Lock()
+	clear(c.stations) // read for the window before, which no request is served from again
+	c.stationMu.Unlock()
 	n := 0
 	for _, cells := range d.cells {
 		n += len(cells)
@@ -261,28 +263,32 @@ func (c *coverageMap) stationData(ctx context.Context, station string, now time.
 	if err != nil {
 		return nil, err
 	}
+	// Kept only when it can be served again: not when the network has loaded since, nor when it came back empty, as a
+	// listed station's cells do only while a rebuild has deleted the day and not yet binned it, nor when it alone is
+	// past the bound, as a feed's can be once ClickHouse holds more of the window than the network's load did.
+	budget := stationCoverageShare * max(net.size(), 1)
+	if d.empty() || d.size() > budget || c.data() != net {
+		return d, nil
+	}
 	c.stationMu.Lock()
 	defer c.stationMu.Unlock()
 	if c.stations == nil {
 		c.stations = map[string]stationCoverage{}
 	}
-	// ponytail: past the bound, drop the stations from earlier loads, and failing that any, until this one fits;
-	// a scan of the held stations per drop, which are few.
-	over := func() bool {
-		held := d.size()
+	// ponytail: past the bound, drop others in map order until this one fits; a scan of the held stations per drop,
+	// which are few.
+	held := func() int {
+		n := d.size()
 		for _, s := range c.stations {
-			held += s.d.size()
+			n += s.d.size()
 		}
-		return held > stationCoverageShare*max(net.size(), 1)
+		return n
 	}
-	if over() {
-		maps.DeleteFunc(c.stations, func(_ string, s stationCoverage) bool { return s.net != net.loaded })
-		for k := range c.stations {
-			if !over() {
-				break
-			}
-			delete(c.stations, k)
+	for k := range c.stations {
+		if held() <= budget {
+			break
 		}
+		delete(c.stations, k)
 	}
 	c.stations[station] = stationCoverage{net: net.loaded, d: d}
 	return d, nil
@@ -509,7 +515,10 @@ func (p *Pipeline) coverageFor(ctx context.Context, station string) (*coverageDa
 	}
 	d, err := p.coverage.stationData(ctx, station, time.Now())
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		if ctx.Err() == nil {
+			log.Printf("coverage: %s: %v", station, err)
+		}
+		return nil, http.StatusServiceUnavailable, errors.New("could not load the station's coverage") // not ClickHouse's own words
 	}
 	if d.empty() {
 		return nil, http.StatusNotFound, errNoStationCoverage
@@ -670,6 +679,13 @@ var chCoverageTables = []struct{ table, ledger, insert string }{
 	{"coverage", "coverage_backfilled", "INSERT INTO {db}.coverage " + chCoverageSelect("{db}.receptions", chUsable+" AND ts >= ? AND ts < ?")},
 }
 
+// coverageBinning keeps a backfill's day and a rebuild's from running at once in one process: a backfill that read
+// a day before an archive reload deleted from it, and inserted after the reload's rebuild, would put back the cells
+// the reload removed, and its ledger would never bin the day again.
+// ponytail: replay and rebuild-positions-1m run as commands of their own, which this does not reach, so they are
+// not run while a server's first backfill is still binning.
+var coverageBinning sync.Mutex
+
 // coverageBackfill bins each day from today back to since, no further than chCoverageKeep, that a table's backfill
 // has not yet covered: receptions loaded before its view existed, which never passed through it. It runs newest
 // first so the window fills first, one day and table per query so the largest day stays within ClickHouse's
@@ -699,7 +715,10 @@ func (c *chConn) coverageBackfill(ctx context.Context, since time.Time) error {
 			if done[t.table][day.Format("2006-01-02")] {
 				continue
 			}
-			if err := c.conn.Exec(ctx, strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1)); err != nil {
+			coverageBinning.Lock()
+			err := c.conn.Exec(ctx, strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1))
+			coverageBinning.Unlock()
+			if err != nil {
 				return fmt.Errorf("%s %s: %w", t.table, day.Format("2006-01-02"), err)
 			}
 			if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+"."+t.ledger+" VALUES (?)", day); err != nil {
