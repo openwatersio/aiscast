@@ -726,7 +726,7 @@
     },
     "responses": {
       "IMOCandidates": {
-        "description": "The IMO names no one vessel: more than one MMSI reporting it was heard in the last 30 days, or none of several was. The candidates, up to 10 most recently heard first, each with `href`, its address by MMSI.",
+        "description": "The IMO names no one vessel: more than one MMSI reporting it was heard in the last 30 days, or none of several was. The candidates, up to 10 most recently heard first, each with `href`, its address by MMSI. `truncated` is set when more than 10 report the IMO.",
         "content": {
           "application/geo+json": {
             "schema": {

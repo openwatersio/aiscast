@@ -548,3 +548,21 @@ func TestIMOBetweenFlushes(t *testing.T) {
 func sameIDs(got []uint32, want ...uint32) bool {
 	return slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want)))
 }
+
+// A flush that fails hands its vessels back to the dirty set, and the cache keeps answering for them.
+func TestIMOFailedFlush(t *testing.T) {
+	p := imoScene(t)
+	at := time.Now()
+	p.ingestPacket("kystverket", "kystverket", at, at, posReport(538000011, 59.9, 10.7))
+	p.ingestPacket("kystverket", "kystverket", at, at, staticIMO(538000011, 7777779, "UNWRITTEN"))
+	p.store.db.Close()
+	if err := p.flushRecord(); err == nil {
+		t.Fatal("flush to a closed record succeeded")
+	}
+	if p.flushing != nil {
+		t.Error("a failed flush kept its vessels in flight")
+	}
+	if byIMO, _, err := p.resolveIMOs([]uint32{7777779}); err != nil || len(byIMO[7777779]) != 1 {
+		t.Errorf("after a failed flush: %v %v", byIMO[7777779], err)
+	}
+}

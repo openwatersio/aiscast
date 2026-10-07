@@ -43,7 +43,7 @@ type Claims struct {
 	Conns int      `json:"conns,omitempty"`
 	Rate  int      `json:"rate,omitempty"`  // messages per second per connection; excess is thinned, not disconnected
 	Area  float64  `json:"area,omitempty"`  // max total subscribed bbox area, square degrees; 0 = unlimited, <0 = MMSI-only
-	MMSIs int      `json:"mmsis,omitempty"` // max vessels followed by MMSI or IMO per subscription (0 = unlimited)
+	MMSIs int      `json:"mmsis,omitempty"` // max MMSIs and IMOs per subscription, an IMO following up to maxMMSIsPerIMO vessels (0 = unlimited)
 	RPM   *int     `json:"rpm,omitempty"`   // HTTP requests per minute per sub (nil = per-address default, 0 = unlimited)
 
 	Feeder bool `json:"-"` // earned for this connection: the token's station is feeding (see tiers.go)

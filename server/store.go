@@ -865,20 +865,21 @@ func (p *Pipeline) flushRecord() error {
 	p.vmu.Unlock()
 	start := time.Now()
 	err := p.store.upsert(rows)
-	p.vmu.Lock()
-	p.flushing = nil
-	p.vmu.Unlock()
 	p.store.flushNanos.Add(int64(time.Since(start)))
 	p.store.flushes.Add(1)
+	// One lock for both, so a vessel the flush could not write never leaves the cache's view (resolveIMOs).
+	p.vmu.Lock()
+	p.flushing = nil
 	if err != nil {
 		// Marked again, so the next flush retries: a vessel that never reports again would otherwise keep
 		// a stale row. The retry writes whatever the cache holds by then.
-		p.store.flushFailures.Add(1)
-		p.vmu.Lock()
 		for _, r := range rows {
 			p.dirty[r.mmsi] = struct{}{}
 		}
-		p.vmu.Unlock()
+	}
+	p.vmu.Unlock()
+	if err != nil {
+		p.store.flushFailures.Add(1)
 		return err
 	}
 	p.store.rowsWritten.Add(int64(len(rows)))
