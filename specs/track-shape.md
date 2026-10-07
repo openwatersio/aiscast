@@ -51,7 +51,7 @@ GeoJSON properties gain:
 - `tolerance_m`: the tolerance it used, 15 or more.
 - `breaks`: segment starts, empty when the vessel was heard throughout.
 
-`interval` is the resolution the positions were read at: 0 for the `positions` view, 60 for `positions_1m`, or the grouping step past 31 days. `truncated` keeps its meaning. [server/openapi.json](../server/openapi.json) documents the new fields. The geometry stays a `LineString` (or `Point`, or `null`), so existing clients keep working; they only lose the breaks they derived.
+`interval` is the resolution the positions were read at: 0 for the `positions` view, 60 for `positions_1m`, or the grouping step past the 50,000-row cap. `truncated` says positions were left out: the tolerance rose past 15 m to fit the limit, or the range held more than 50,000 positions and the oldest were not read. [server/openapi.json](../server/openapi.json) documents the new fields. The geometry stays a `LineString` (or `Point`, or `null`), so existing clients keep working; they only lose the breaks they derived.
 
 The MCP `get_vessel_track` tool gets the same default when `interval_minutes` is not given, which retires the query for a vessel's first position that its default step needed. Its schema and description change, so `mcpVersion` and `server.json` move together.
 

@@ -269,7 +269,7 @@ func TestMCPGetVesselTrack(t *testing.T) {
 	var out mcpTrack
 	// Ten hours north at a steady speed is a straight line: simplified, its two ends.
 	if msg := mcpCall(t, cs, "get_vessel_track", map[string]any{"mmsi": 257000001}, &out); msg != "" ||
-		!out.Simplified || len(out.Positions) != 2 || out.ToleranceM == nil || out.Attribution["kystverket"] == "" {
+		!out.Simplified || len(out.Positions) != 2 || out.ToleranceM == nil || out.Breaks == nil || len(*out.Breaks) != 0 || out.Attribution["kystverket"] == "" {
 		t.Errorf("default is simplified by shape: %q %+v", msg, out)
 	}
 	first, _ := time.Parse(time.RFC3339, out.Positions[0].Seen)

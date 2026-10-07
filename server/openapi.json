@@ -205,7 +205,7 @@
                         "simplified": { "type": "boolean", "description": "The track was simplified by shape: no `interval` was asked." },
                         "tolerance_m": { "type": "number", "description": "Present when simplified: every position left out lay within this many meters of where the line through those kept puts the vessel at its time. 15, or more when the limit forced it." },
                         "breaks": { "type": "array", "items": { "type": "integer" }, "description": "Present when simplified, empty when the vessel was heard throughout: the indexes of positions that start a stretch after it went unheard. Draw no line into them." },
-                        "truncated": { "type": "boolean", "description": "Positions were left out to fit `limit`. Simplified, the tolerance rose past 15 m; with `interval`, the newest were kept." },
+                        "truncated": { "type": "boolean", "description": "Positions were left out. Simplified, the tolerance rose past 15 m to fit `limit`, or the range held more than 50,000 positions and the oldest were not read; with `interval`, the newest `limit` were kept." },
                         "times": { "type": "array", "items": { "type": "string", "format": "date-time" } },
                         "sog": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Speed over ground, knots." },
                         "cog": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Course over ground, degrees." },

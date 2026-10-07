@@ -489,9 +489,9 @@ type mcpTrack struct {
 	IntervalS   int64             `json:"interval_s" jsonschema:"at most one position per this many seconds; 0 is every position heard. Simplified, the resolution the positions were read at"`
 	Simplified  bool              `json:"simplified" jsonschema:"true when the track was simplified by shape: the positions that hold its path, not evenly spaced"`
 	ToleranceM  *float64          `json:"tolerance_m,omitempty" jsonschema:"simplified: every position left out lay within this many meters of the line through the ones kept"`
-	Breaks      []int             `json:"breaks,omitempty" jsonschema:"simplified: indexes of positions that start a stretch after the vessel went unheard; draw no line into them"`
+	Breaks      *[]int            `json:"breaks,omitempty" jsonschema:"simplified, always present and empty when the vessel was heard throughout: indexes of positions that start a stretch after it went unheard; draw no line into them"`
 	Positions   []mcpTrackPoint   `json:"positions" jsonschema:"oldest first"`
-	Truncated   bool              `json:"truncated" jsonschema:"true when positions were left out to fit the limit: simplified, the tolerance rose past 15 m; by interval, the newest were kept, so set from later or raise interval_minutes"`
+	Truncated   bool              `json:"truncated" jsonschema:"true when positions were left out: simplified, the tolerance rose past 15 m to fit the limit, or the range held more than 50,000 positions and the oldest were not read; by interval, the newest were kept, so set from later or raise interval_minutes"`
 	Attribution map[string]string `json:"attribution" jsonschema:"credit line per source kind in the positions, to show with the data"`
 }
 
@@ -543,9 +543,9 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	out := mcpTrack{MMSI: in.MMSI, Name: name, From: from.Format(time.RFC3339), To: to.Format(time.RFC3339),
 		IntervalS: int64(interval / time.Second), Positions: []mcpTrackPoint{}, Truncated: s.more, Attribution: map[string]string{},
-		Simplified: s.simplified, Breaks: s.breaks}
+		Simplified: s.simplified}
 	if s.simplified {
-		out.ToleranceM = mcpPtr(math.Round(s.tolerance*10) / 10)
+		out.Breaks, out.ToleranceM = &s.breaks, mcpPtr(math.Round(s.tolerance*10)/10)
 	}
 	for _, pt := range s.points {
 		lat, lon := pt.latLon()
