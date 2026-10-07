@@ -562,6 +562,10 @@ const chInsertTimeout = 30 * time.Second
 // through an outage the batch waits, and the queue behind it buffers.
 const chRefuseFor = 10 * time.Minute
 
+// chOwnInsertTimeout bounds a station_own insert, a few rows, well under chInsertTimeout, so shutdown's flushes
+// still fit the service's stop timeout with the positions first in line.
+const chOwnInsertTimeout = 5 * time.Second
+
 // chRefused is a batch ClickHouse answered with an error, or one the client could not encode: sending it again
 // may well fail the same way.
 type chRefused struct{ error }
@@ -614,13 +618,13 @@ func (p *Pipeline) runClickHouse(url string) {
 func (p *Pipeline) drainClickHouse() error {
 	var ownErr error
 	for range 2 {
-		if err := p.flushClickHouse(); err != nil {
-			// A failed station_own insert must not stop the positions queued behind it from going.
-			if !errors.As(err, new(ownFailed)) {
-				return err
-			}
-			ownErr = err
+		err := p.flushClickHouse()
+		// A failed station_own insert must not stop the positions queued behind it from going, and one the next
+		// attempt wrote is not an error.
+		if err != nil && !errors.As(err, new(ownFailed)) {
+			return err
 		}
+		ownErr = err
 	}
 	return ownErr
 }
@@ -705,7 +709,7 @@ func (p *Pipeline) flushOwn(c *chStore) error {
 	if len(own) == 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), chInsertTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), chOwnInsertTimeout)
 	err := c.own.insertOwn(ctx, own)
 	cancel()
 	// Logged when inserts start failing and when they recover, as the receptions' are.

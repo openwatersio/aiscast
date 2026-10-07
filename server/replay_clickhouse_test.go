@@ -138,6 +138,11 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		}
 		return out
 	}
+	// A claim the day held that the replay no longer makes, as after a fix to who claims what.
+	gone := ownKey{"kystverket", day.Add(10*time.Hour).Unix() / 3600, 999999999}
+	if err := c.insertOwn(ctx, map[ownKey]time.Time{gone: day.Add(10 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
 	before := all()
 	warmup := corroborationWindow + vesselTTL
 	if err := c.replayDay(ctx, dir, day, warmup, true, false); err != nil {
@@ -146,14 +151,14 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if got := all(); len(got) != len(before) {
 		t.Fatalf("a dry run changed receptions: %d rows, was %d", len(got), len(before))
 	}
-	if n := owned(); n != 0 {
-		t.Fatalf("a dry run wrote %d own-ship sightings", n)
+	if n := owned(); n != 1 {
+		t.Fatalf("a dry run changed station_own: %d sightings, was 1", n)
 	}
 	if err := c.replayDay(ctx, dir, day, warmup, false, false); err == nil || !strings.Contains(err.Error(), "-force") {
 		t.Fatalf("six replayed copies against seven stored replaced the day without -force: %v", err)
 	}
-	if n := owned(); n != 0 {
-		t.Fatalf("a refused replay wrote %d own-ship sightings", n)
+	if n := owned(); n != 1 {
+		t.Fatalf("a refused replay changed station_own: %d sightings, was 1", n)
 	}
 	// Replayed twice, as after a fix that needs a second pass: the second replay's identical blocks land too.
 	for range 2 {

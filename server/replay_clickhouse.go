@@ -255,11 +255,6 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if err := c.copyStaged(insert, stage, where, args...); err != nil {
 		return fmt.Errorf("insert the replayed day, after deleting the stored one; replay it again: %w", err)
 	}
-	if len(own) > 0 {
-		if err := (&chConn{conn: c.conn, db: c.db}).insertOwn(ctx, own); err != nil {
-			return fmt.Errorf("station_own: %w", err)
-		}
-	}
 	// Copies that arrived on day carry stamps on the days beside it too.
 	for d := day.AddDate(0, 0, -1); !d.After(day.AddDate(0, 0, 1)); d = d.AddDate(0, 0, 1) {
 		if err := c.rebuildPositions1m(ctx, d); err != nil {
@@ -274,6 +269,16 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		"kept, matched, implausible, now64(3) FROM "+c.db+".history_loads FINAL WHERE complete AND matched > 0 AND day >= ? AND day <= ?",
 		day.AddDate(0, 0, -1), day.AddDate(0, 0, 1)); err != nil {
 		return fmt.Errorf("mark archive days to load again: %w", err)
+	}
+	// Own-ship sightings last, so a failure here leaves the receptions' rollups already rebuilt. The day's are replaced,
+	// as its receptions are: a correction that changes which vessel a station claimed must not leave the old claim.
+	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".station_own WHERE hour >= ? AND hour < ?", day, day.AddDate(0, 0, 1)); err != nil {
+		return fmt.Errorf("station_own: %w", err)
+	}
+	if len(own) > 0 {
+		if err := (&chConn{conn: c.conn, db: c.db}).insertOwn(ctx, own); err != nil {
+			return fmt.Errorf("station_own: %w", err)
+		}
 	}
 	log.Printf("replay: %s: replaced, in %s", day.Format("2006-01-02"), time.Since(started).Round(time.Second))
 	return nil

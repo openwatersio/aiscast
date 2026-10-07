@@ -1742,6 +1742,17 @@ func TestClickHouseRefusesClaimsWithoutScanning(t *testing.T) {
 	}
 }
 
+// An own-ship insert that fails once and succeeds on the drain's second try leaves no error behind.
+func TestClickHouseDrainForgetsAnOwnFailureItRecovered(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{fail: 1}})
+	now := time.Now()
+	p.noteOwn(&Event{Station: "udp:boat", Time: now, RecvTime: now, Packet: posReport(368168720, 59.9, 10.7)})
+	if err := p.drainClickHouse(); err != nil {
+		t.Errorf("the drain wrote everything but reports %v", err)
+	}
+}
+
 // Claims count by the hour the server received a message, so stamping own-ship reports across many hours opens no
 // new allowance.
 func TestClickHouseCountsOwnShipClaimsByArrival(t *testing.T) {
