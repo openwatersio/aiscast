@@ -1720,6 +1720,28 @@ func TestClickHouseClaimsMakeWayForTheNextHour(t *testing.T) {
 	}
 }
 
+// A full map of this hour's claims refuses each further sender with a lookup, not a pass over every claim under
+// the lock the receptions queue shares: thousands of refusals take milliseconds, where a scan apiece would take
+// tens of millions of map steps.
+func TestClickHouseRefusesClaimsWithoutScanning(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	h := time.Now().Truncate(time.Hour)
+	for m := range uint32(maxOwnPending) {
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:%d", m), Time: h, RecvTime: h, Packet: posReport(200000000+m, 59.9, 10.7)})
+	}
+	start := time.Now()
+	for m := range uint32(20000) {
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:late%d", m), Time: h, RecvTime: h, Packet: posReport(300000000+m, 59.9, 10.7)})
+	}
+	if d := time.Since(start); d > 250*time.Millisecond {
+		t.Errorf("20,000 refused senders took %v", d)
+	}
+	if got := p.ch.ownDropped.Load(); got != 20000 {
+		t.Errorf("%d dropped, want 20000", got)
+	}
+}
+
 // Claims count by the hour the server received a message, so stamping own-ship reports across many hours opens no
 // new allowance.
 func TestClickHouseCountsOwnShipClaimsByArrival(t *testing.T) {

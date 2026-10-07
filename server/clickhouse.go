@@ -585,6 +585,7 @@ func (p *Pipeline) attachClickHouse(c *chStore) {
 	p.chQueue = make([]trackPoint, 0, 1024)
 	p.chOwn = map[ownKey]time.Time{}
 	p.chOwnClaimed = map[ownKey]map[uint32]bool{}
+	p.chOwnClaimHours = map[int64]int{}
 	p.chMu.Unlock()
 	p.chOn.Store(true)
 }
@@ -699,11 +700,7 @@ func (p *Pipeline) flushOwn(c *chStore) error {
 		p.chOwn = map[ownKey]time.Time{}
 	}
 	// Claims from before the last hour received no longer bound anything a station sends.
-	for sh := range p.chOwnClaimed {
-		if sh.hour < p.chOwnHW-1 {
-			delete(p.chOwnClaimed, sh)
-		}
-	}
+	p.pruneClaims(p.chOwnHW - 1)
 	p.chMu.Unlock()
 	if len(own) == 0 {
 		return nil

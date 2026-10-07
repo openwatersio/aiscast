@@ -33,7 +33,8 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	}
 	t.Cleanup(func() { c.conn.Exec(context.Background(), "DROP DATABASE "+db); c.conn.Close() })
 
-	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	// A recent day, inside station_own's 35 days, which would drop a fixed date's sightings as it aged past them.
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -3)
 	const mmsi = 257000001
 	enc := testPipeline(t)
 	sentence := func(lat float64) string {

@@ -371,11 +371,7 @@ func (p *Pipeline) noteOwn(ev *Event) {
 	if !known && len(p.chOwnClaimed) >= maxOwnPending {
 		// A full map makes room from earlier hours first: their claims bound nothing arriving now, so a busy hour
 		// never costs the next one its senders.
-		for old := range p.chOwnClaimed {
-			if old.hour < recvHour {
-				delete(p.chOwnClaimed, old)
-			}
-		}
+		p.pruneClaims(recvHour)
 	}
 	if !ok && len(p.chOwn) >= maxOwnPending || !known && len(p.chOwnClaimed) >= maxOwnPending {
 		p.ch.ownDropped.Add(1)
@@ -384,10 +380,32 @@ func (p *Pipeline) noteOwn(ev *Event) {
 	if !known {
 		claimed = map[uint32]bool{}
 		p.chOwnClaimed[sh] = claimed
+		p.chOwnClaimHours[recvHour]++
 	}
 	claimed[k.mmsi] = true
 	if ev.Time.After(last) {
 		p.chOwn[k] = ev.Time
+	}
+}
+
+// pruneClaims drops the claims of hours before the given one; the caller holds chMu. It scans the claims only when
+// chOwnClaimHours says some are that old, so a flood of senders refused within one hour costs a lookup each, not a
+// pass over every claim under the lock the receptions queue shares.
+func (p *Pipeline) pruneClaims(before int64) {
+	stale := false
+	for h := range p.chOwnClaimHours {
+		if h < before {
+			stale = true
+			delete(p.chOwnClaimHours, h)
+		}
+	}
+	if !stale {
+		return
+	}
+	for sh := range p.chOwnClaimed {
+		if sh.hour < before {
+			delete(p.chOwnClaimed, sh)
+		}
 	}
 }
 
