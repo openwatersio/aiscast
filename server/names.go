@@ -207,6 +207,9 @@ func (p *Pipeline) runStationNames() {
 }
 
 func (p *Pipeline) refreshOwn(now time.Time) {
+	if p.stations.ownPending.Load() {
+		return // until the candidates from before the start are back, a station's may be part of them
+	}
 	owns := p.stations.ownShips()
 	type pick struct {
 		id   string

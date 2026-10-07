@@ -21,7 +21,9 @@ import (
 )
 
 // stationSeriesSettle is how old a marker must be to be rebuilt: a younger one may belong to an insert whose rows
-// are not all visible yet. Longer than chInsertTimeout, so no insert still in flight has a marker that old.
+// are not all visible yet. Longer than chInsertTimeout, so no live batch still in flight has a marker that old. A
+// long INSERT ... SELECT, as replay and archive loads run, marks each block as it lands, so an hour rebuilt while it
+// runs is marked again by its later blocks and rebuilt once they settle.
 var stationSeriesSettle = time.Minute
 
 const (
@@ -106,12 +108,17 @@ type stationCount struct {
 }
 
 // withTotals is s with a station's totals ever and its uptime: every hour since the later of the window's start and
-// the station's first counts, and the current one once it has a reception.
+// the station's first counts, and the current one once it has a reception. Without its totals the station's first
+// hour is unknown, so it has no uptime: one back after a week away would otherwise read as up all along.
 func (s stationCount) withTotals(t stationCount, now time.Time) stationCount {
-	if !t.first.IsZero() && t.first.Before(s.first) || s.first.IsZero() {
+	s.totaled = !t.first.IsZero()
+	if !s.totaled {
+		return s
+	}
+	if t.first.Before(s.first) || s.first.IsZero() {
 		s.first = t.first
 	}
-	s.receptions, s.firsts, s.totaled = t.receptions, t.firsts, !t.first.IsZero()
+	s.receptions, s.firsts = t.receptions, t.firsts
 	cur := now.UTC().Truncate(time.Hour)
 	from := cur.Add(-(stationWindow - 1) * time.Hour)
 	if s.first.After(from) {
@@ -280,14 +287,27 @@ func (c *chConn) backfillStationSeries(ctx context.Context, now time.Time) error
 	if err != nil {
 		return err
 	}
-	// The oldest reception's day, from the parts' own bounds on ts, so it reads no rows.
-	oldest, err := chColumn[time.Time](ctx, c.conn, "SELECT toDateTime(toDate(min(ts)), 'UTC') FROM "+c.db+".receptions HAVING count() > 0")
-	if err != nil || len(oldest) == 0 {
+	// The months receptions holds, from its partitions' names, so a stray row stamped years back costs a month of
+	// days, not every day between, and no rows are read to find them.
+	parts, err := chColumn[string](ctx, c.conn, "SELECT DISTINCT partition FROM system.parts WHERE database = ? AND table = 'receptions' AND active", c.db)
+	if err != nil {
 		return err
 	}
+	months := map[string]bool{}
+	oldest := now.UTC()
+	for _, p := range parts {
+		m, err := time.Parse("200601", p)
+		if err != nil {
+			return fmt.Errorf("receptions partition %q is not a month", p)
+		}
+		months[p] = true
+		if m.Before(oldest) {
+			oldest = m
+		}
+	}
 	failed := 0
-	for day := now.UTC().Truncate(24 * time.Hour); !day.Before(oldest[0]); day = day.AddDate(0, 0, -1) {
-		if slices.ContainsFunc(done, day.Equal) {
+	for day := now.UTC().Truncate(24 * time.Hour); !day.Before(oldest); day = day.AddDate(0, 0, -1) {
+		if !months[day.Format("200601")] || slices.ContainsFunc(done, day.Equal) {
 			continue
 		}
 		hours := make([]time.Time, 24)
@@ -321,7 +341,7 @@ func seriesVersion(floor time.Time) string {
 	v := time.Now().UTC().Truncate(time.Millisecond)
 	last := seriesVersions.last
 	if floor.After(last) {
-		last = floor
+		last = floor.UTC() // formatted below in UTC, as ClickHouse reads it, whatever zone the floor came in
 	}
 	if !v.After(last) {
 		v = last.Add(time.Millisecond)
@@ -527,15 +547,17 @@ func (p *Pipeline) runStationSeries() {
 		}
 		time.Sleep(5 * time.Second)
 	}
-	for {
-		cands, err := s.ownCandidates(ctx, time.Now().Add(-ownSettle-time.Hour))
-		if err == nil {
-			p.stations.restoreOwn(cands)
-			break
+	go func() { // own-vessel decisions wait for these, and nothing else does
+		for {
+			cands, err := s.ownCandidates(ctx, time.Now().Add(-ownSettle-time.Hour))
+			if err == nil {
+				p.stations.restoreOwn(cands)
+				return
+			}
+			log.Printf("station series: own candidates: %v", err)
+			time.Sleep(time.Minute)
 		}
-		log.Printf("station series: own candidates: %v", err)
-		time.Sleep(time.Minute)
-	}
+	}()
 	go func() {
 		for {
 			p.refreshRollups(s, time.Now())
@@ -567,8 +589,13 @@ type stationRollups struct {
 	counts   map[string]stationCount
 	sources  map[string][2]int
 	totals   map[string]stationCount // read at most hourly, since it reads all of history
-	totalsAt time.Time
+	totalsAt time.Time               // when the totals were last tried
+	totalsOk time.Time               // when they were last read
 }
+
+// stationTotalsStale is how old the totals may be and still stand: past it, figures that need them, uptime and the
+// counts ever, are left out rather than served frozen.
+const stationTotalsStale = 3 * time.Hour
 
 // stationRollupsStale is how long the last figures stand while reads fail, after which there are none rather than
 // figures frozen through an outage.
@@ -613,6 +640,12 @@ func (p *Pipeline) refreshRollups(s stationSeries, now time.Time) {
 	defer r.mu.Unlock()
 	if due {
 		r.totals, r.totalsAt = totals, totalsAt
+		if totalsAt.Equal(now) {
+			r.totalsOk = now
+		}
+	}
+	if now.Sub(r.totalsOk) > stationTotalsStale {
+		totals = nil
 	}
 	if err1 != nil || err2 != nil {
 		log.Printf("station series: %v %v", err1, err2)

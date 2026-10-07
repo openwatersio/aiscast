@@ -964,6 +964,9 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 	if out.Area != nil {
 		out.Summary += fmt.Sprintf("; %d vessels%s and %d stations in the requested box", out.Area.Vessels, within, len(out.Area.Stations))
 	}
+	if _, srcs := p.rollups(now); srcs == nil {
+		out.Summary += "; per-source vessel counts are unavailable right now, so a source's 0 says nothing about its traffic"
+	}
 	return nil, out, nil
 }
 

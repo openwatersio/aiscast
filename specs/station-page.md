@@ -63,7 +63,7 @@ Rows are position receptions. Static messages do not count toward uptime or mess
 
 - **Nearby-place labels** come from the station's `station_coverage` cells over 7 days, recomputed every 10 minutes. A station gets a label from its cells, not from 5 vessels' last positions.
 - **`vessels`**, the last 30 minutes, and the **per-source counts** in `/v1/stats` and MCP `get_coverage` read `station_vessels` over the last 30 minutes, up to about 7 minutes behind.
-- **Own vessel** detection stays in memory. It is the station's identity, persisted in SQLite, not history. Its candidates, every MMSI the station sent as its own with the time of the last, are read back from the last two hours of `station_own` at start, so the rule that two candidates within an hour mean no own vessel holds across a restart, as the station vessels file holds it now.
+- **Own vessel** detection stays in memory. It is the station's identity, persisted in SQLite, not history. Its candidates, every MMSI the station sent as its own with the time of the last, are read back from the last two hours of `station_own` at start, so the rule that two candidates within an hour mean no own vessel holds across a restart.
 - **Access tiers** keep the in-memory rings, which need the current hour.
 
 The per-station vessel maps, `exclusive`, the station vessels file, and its load and save at start and stop go. The deploy removes the file from the box. `first_seen`, `positions`, and `duplicates` stay in the API, which deployed clients and the OpenAPI schema require: `first_seen` is the station's first hour in `station_hours`, or the live row's own where it has none, as a station sending only static messages does, `positions` its receptions, and `duplicates` its receptions less its first copies.

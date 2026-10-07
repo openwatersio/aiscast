@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,6 +61,7 @@ type stationStats struct {
 	m           map[string]*stationStat
 	restored    map[string]ringState        // rings from the usage file, claimed when a station is heard again after a restart
 	restoredOwn map[string]map[uint32]int64 // own-ship candidates read back from ClickHouse, claimed the same way
+	ownPending  atomic.Bool                 // set while candidates are still to be read back, so no own vessel is decided on part of them
 }
 
 func newStationStats() *stationStats { return &stationStats{m: map[string]*stationStat{}} }
@@ -106,6 +108,7 @@ func (s *stationStats) rings(now time.Time) map[string]ringState {
 func (s *stationStats) restoreOwn(cands map[string]map[uint32]int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.ownPending.Store(false)
 	s.restoredOwn = map[string]map[uint32]int64{}
 	for id, own := range cands {
 		if st := s.m[id]; st != nil {
@@ -238,14 +241,14 @@ func (s *stationStats) rows(now time.Time, counts map[string]stationCount) []sta
 			FirstSeen: st.First.UTC(), LastSeen: st.Last.UTC(), LastAgeS: int64(now.Sub(st.Last).Seconds())}
 		if c, ok := counts[id]; ok {
 			r.Vessels, r.Vessels24, r.Exclusive = c.live, c.day, c.unique
-			if !c.first.IsZero() { // a station with hours in the series; one with only vessel rows has no uptime yet
+			// A station new since the totals' last read, or while they are unavailable, keeps the counts since the start
+			// and has no uptime. positions counts first copies, as the live count does, and duplicates the rest.
+			if c.totaled {
 				r.Uptime = &c.uptime
+				r.Positions, r.Dups = int64(c.firsts), int64(c.receptions-c.firsts)
 				if c.first.Before(r.FirstSeen) {
 					r.FirstSeen = c.first.UTC()
 				}
-			}
-			if c.totaled { // a station new since the totals' last read keeps the counts since the start
-				r.Positions, r.Dups = int64(c.receptions), int64(c.receptions-c.firsts)
 			}
 		}
 		if st.Positions > 0 {

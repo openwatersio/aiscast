@@ -103,8 +103,17 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.insertOwn(ctx, map[ownKey]time.Time{{"station:s1", recent.Unix() / 3600, 9}: recent}); err != nil {
 		t.Fatal(err)
 	}
+	// A copy stamped decades back, as a bad clock gives, costs its own month of days, not every day since.
+	ancient := at("station:s9", 8, time.Date(2001, 1, 15, 0, 0, 0, 0, time.UTC))
+	ancient.clockBad = true
+	if err := conn.insert(ctx, "ancient", []trackPoint{ancient}); err != nil {
+		t.Fatal(err)
+	}
 	if err := conn.backfillStationSeries(ctx, now); err != nil {
 		t.Fatal(err)
+	}
+	if days, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+".station_series_backfilled FINAL"); err != nil || days[0] > 100 {
+		t.Errorf("the backfill binned %v days for receptions in a few months, %v", days, err)
 	}
 	// An older version of an hour, as a rebuild leaves for the moment between its insert and its delete, is not read,
 	// nor a newer one never recorded, as an insert that failed partway leaves.
@@ -138,7 +147,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	binHoursFails = nil
-	built, err := chColumn[uint64](ctx, conn.conn, "SELECT uniqExact(hour) FROM "+db+".station_built FINAL WHERE marker > now64(3) - INTERVAL 1 MINUTE")
+	built, err := chColumn[uint64](ctx, conn.conn, "SELECT uniqExact(hour) FROM "+db+".station_built FINAL WHERE marker > now64(3) - INTERVAL 1 MINUTE AND toDate(hour) = toDate(?)", cur.AddDate(0, 0, -1))
 	if err != nil || built[0] != 24 {
 		t.Errorf("hours rebuilt with today failing: %v %v; want yesterday's 24", built, err)
 	}
@@ -253,6 +262,49 @@ func TestStationRollupsSurviveFailedReads(t *testing.T) {
 	if counts, _ := p.rollups(now.Add(61*time.Second + stationRollupsStale + time.Second)); counts != nil {
 		t.Errorf("figures %v kept through %v of failed reads", counts, stationRollupsStale)
 	}
+	// Totals that keep failing past stationTotalsStale drop out, so uptime and counts ever are not served frozen.
+	q := testPipeline(t)
+	g := &fakeSeries{counts: map[string]stationCount{"s1": {first: now.Truncate(time.Hour), now: true}},
+		totals: map[string]stationCount{"s1": {first: now.Add(-48 * time.Hour).Truncate(time.Hour), receptions: 9, firsts: 9}}}
+	q.refreshRollups(g, now)
+	if c, _ := q.rollups(now); !c["s1"].totaled {
+		t.Fatalf("totals not taken: %+v", c["s1"])
+	}
+	for at := now.Add(time.Hour); !at.After(now.Add(stationTotalsStale + time.Hour)); at = at.Add(time.Hour) {
+		g.totalsErr = fmt.Errorf("timed out")
+		q.refreshRollups(g, at)
+	}
+	if c, _ := q.rollups(now.Add(stationTotalsStale + time.Hour)); c["s1"].totaled {
+		t.Errorf("totals %v old still served: %+v", stationTotalsStale+time.Hour, c["s1"])
+	}
+}
+
+// Versions strictly increase, even within a millisecond and below an existing floor, and a day's binnings run one
+// at a time while other days' run beside them.
+func TestSeriesVersionsAndDayLocks(t *testing.T) {
+	floor := time.Now().Add(time.Hour)
+	a, b := seriesVersion(floor), seriesVersion(time.Time{})
+	if !(a > floor.UTC().Format("2006-01-02 15:04:05.000") && b > a) {
+		t.Errorf("versions %s then %s over floor %v", a, b, floor)
+	}
+	day := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	unlock := lockDay(day)
+	other := make(chan struct{})
+	go func() { lockDay(day.AddDate(0, 0, 1))(); close(other) }()
+	select {
+	case <-other:
+	case <-time.After(time.Second):
+		t.Fatal("another day waited on a held one")
+	}
+	same := make(chan struct{})
+	go func() { lockDay(day)(); close(same) }()
+	select {
+	case <-same:
+		t.Error("one day binned twice at once")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlock()
+	<-same
 }
 
 // seriesCounts is what rollups serves: the window's figures with the totals ever.
