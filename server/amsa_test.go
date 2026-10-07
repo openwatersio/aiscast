@@ -98,13 +98,13 @@ func TestAMSASyncAndServe(t *testing.T) {
 		t.Errorf("a disagreeing name still got the list: %+v", f.Properties.Sources)
 	}
 
-	// The MCP path gates the same way.
+	// The MCP path gates the same way, on the flag and on the name.
 	cs := mcpClient(t, p)
 	var out mcpVessels
-	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{503001234, 316112233}}, &out); msg != "" {
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{503001234, 316112233, 503005678}}, &out); msg != "" {
 		t.Fatal(msg)
 	}
-	if len(out.Vessels) != 2 {
+	if len(out.Vessels) != 3 {
 		t.Fatalf("get_vessels: %+v", out.Vessels)
 	}
 	for _, v := range out.Vessels {
@@ -129,10 +129,21 @@ func TestAMSASyncAndServe(t *testing.T) {
 	}
 }
 
+func TestAMSAMinVessels(t *testing.T) {
+	p := storePipeline(t)
+	defer func(n int) { amsaMinVessels = n }(amsaMinVessels)
+	amsaMinVessels = 2
+	if err := p.store.replaceAMSA(map[uint32]*amsaVessel{9869447: {IMO: 9869447}}, time.Now()); err == nil {
+		t.Error("a first sync under the minimum was stored")
+	}
+}
+
 func TestAMSASheetURL(t *testing.T) {
 	for _, c := range []struct{ page, want string }{
 		// the list's link wins over another spreadsheet, and a relative link resolves against the page
 		{`<a href="/a/fees.xlsx"></a><a href="/files/list-of-registered-ships-01.02.27.xlsx"></a>`, "/files/list-of-registered-ships-01.02.27.xlsx"},
+		// a list of deregistered ships ahead of the list is passed over
+		{`<a href="/files/list-of-deregistered-ships-13.10.26.xlsx"></a><a href="/files/copy-of-list-of-registered-ships-06.10.26.xlsx"></a>`, "/files/copy-of-list-of-registered-ships-06.10.26.xlsx"},
 		// one spreadsheet under a new name is still the list
 		{`<a href="https://cdn.example/register.xlsx?v=1&amp;x=2&#38;y=3"></a>`, "https://cdn.example/register.xlsx?v=1&x=2&y=3"},
 		// a cache-busting query, single quotes, and an upper-case extension

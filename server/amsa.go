@@ -82,7 +82,8 @@ func amsaYear(s string) int {
 }
 
 // amsaSheetURL finds the spreadsheet's link on the list's page. The page has had one; a link naming the
-// list wins over any other, so a second spreadsheet added beside it is not read in its place.
+// list wins over any other, so a second spreadsheet added beside it, such as a list of deregistered
+// ships, is not read in its place.
 func amsaSheetURL(ctx context.Context, page string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, page, nil)
 	if err != nil {
@@ -107,7 +108,7 @@ func amsaSheetURL(ctx context.Context, page string) (string, error) {
 	}
 	link := ""
 	for _, l := range links {
-		if strings.Contains(strings.ToLower(l), "registered-ships") {
+		if strings.Contains(strings.ToLower(l), "list-of-registered-ships") {
 			link = l
 			break
 		}
