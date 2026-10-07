@@ -269,20 +269,44 @@ export function mergeTrack(
 export const TRACK_GAP_MS = 30 * 60 * 1000;
 
 /**
+ * The gap for a track thinned to one position per `intervalMs`. The first position in each
+ * interval can sit up to two intervals after the one before while the vessel reports all along,
+ * so only a silence past that and TRACK_GAP_MS means it went unheard.
+ */
+export function trackGap(intervalMs: number): number {
+  return TRACK_GAP_MS + 2 * intervalMs;
+}
+
+/** Whether the vessel went unheard between positions `i - 1` and `i`. */
+export type Unheard = (i: number) => boolean;
+
+/** Unheard across a silence longer than `maxGap`, for positions that carry no breaks of their own. */
+export function silences(times: number[], maxGap = TRACK_GAP_MS): Unheard {
+  return (i) => i > 0 && times[i]! - times[i - 1]! > maxGap;
+}
+
+/**
+ * Unheard along a track the server sent, then the stream's positions after it: the track's own
+ * breaks before position `length`, and from there a silence longer than `gap`, the gap for the
+ * step the track was thinned to, since its last position can sit up to a step before the
+ * vessel's last report.
+ */
+export function trackThenStream(length: number, breaks: ReadonlySet<number> | undefined, times: number[], gap = TRACK_GAP_MS): Unheard {
+  const silence = silences(times, gap);
+  return (i) => (breaks && i < length ? breaks.has(i) : silence(i));
+}
+
+/**
  * Splits a track wherever the vessel went unheard, so the line is drawn only where there is
  * evidence. Joining across a gap invents a course and a speed: one real track here jumps
  * 208 km across 14 hours of silence, which as a single line reads as a passage that was
  * never reported.
  */
-export function splitTrack(
-  coords: Array<[number, number]>,
-  times: number[],
-  maxGap = TRACK_GAP_MS,
-): Array<Array<[number, number]>> {
+export function splitTrack(coords: Array<[number, number]>, unheard: Unheard): Array<Array<[number, number]>> {
   const segments: Array<Array<[number, number]>> = [];
   let current: Array<[number, number]> = [];
   for (let i = 0; i < coords.length; i++) {
-    if (i > 0 && times[i]! - times[i - 1]! > maxGap) {
+    if (unheard(i)) {
       if (current.length > 1) segments.push(current);
       current = [];
     }
@@ -311,18 +335,23 @@ export function indexAt(times: number[], at: number): number {
 
 /**
  * Speed at a moment, between the reports either side. A report's own moment has its speed;
- * inside a gap longer than TRACK_GAP_MS, or that long after the last report, the vessel
- * went unheard and there is none, as the chart's broken line shows.
+ * where the vessel went unheard, or longer than `gap` after the last report, there is none, as
+ * the chart's broken line shows.
  */
-export function speedAt(track: { times: number[]; sog: Array<number | null | undefined> }, at: number): number | undefined {
+export function speedAt(
+  track: { times: number[]; sog: Array<number | null | undefined> },
+  at: number,
+  unheard: Unheard = silences(track.times),
+  gap = TRACK_GAP_MS,
+): number | undefined {
   const i = indexAt(track.times, at);
   if (i < 0) return undefined;
   const a = track.sog[i] ?? undefined;
   const t = track.times[i]!;
   if (a === undefined || at === t) return a;
-  if (i + 1 >= track.times.length) return at - t <= TRACK_GAP_MS ? a : undefined;
+  if (i + 1 >= track.times.length) return at - t <= gap ? a : undefined;
+  if (unheard(i + 1)) return undefined;
   const span = track.times[i + 1]! - t;
-  if (span > TRACK_GAP_MS) return undefined;
   const b = track.sog[i + 1];
   if (b == null || span <= 0) return a;
   return a + (b - a) * ((at - t) / span);
@@ -349,7 +378,7 @@ export function interpolateAt(
   coords: Array<[number, number]>,
   times: number[],
   at: number,
-  maxGap = TRACK_GAP_MS,
+  unheard: Unheard = silences(times),
 ): TrackPoint | undefined {
   if (!coords.length) return undefined;
   const index = indexAt(times, at);
@@ -363,7 +392,7 @@ export function interpolateAt(
   return {
     point: [x1 + (x2 - x1) * fraction, y1 + (y2 - y1) * fraction],
     index,
-    inGap: span > maxGap,
+    inGap: unheard(index + 1),
   };
 }
 
