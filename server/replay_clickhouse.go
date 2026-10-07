@@ -178,16 +178,24 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	if err := c.seedVessels(ctx, p, day.Add(-warmup), archives); err != nil {
 		return fmt.Errorf("vessels: %w", err)
 	}
-	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}}
+	// Own-ship sightings are staged beside the day and reach station_own only once the day is swapped in, so a dry
+	// run or a replay refused for its share changes nothing.
+	ownStage := stage + "_own"
+	if err := c.exec(ctx, "CREATE TABLE {db}."+ownStage+" AS {db}.station_own"); err != nil {
+		return err
+	}
+	defer c.exec(context.Background(), "DROP TABLE IF EXISTS {db}."+ownStage)
+	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}, own: &chConn{conn: c.conn, db: c.db, own: ownStage}}
 	p.attachClickHouse(staging)
 	var flushNow func() error
 	flush := func() error {
 		// One AISHub record is a snapshot of thousands of vessels, so the queue, not the records read, says when:
 		// at a third of its bound, which leaves room for any one record before a copy could be dropped.
+		// Own-ship sightings have a bound of their own, so either queue filling sends both.
 		p.chMu.Lock()
-		queued := len(p.chQueue)
+		queued, owned := len(p.chQueue), len(p.chOwn)
 		p.chMu.Unlock()
-		if queued < maxPending/3 {
+		if queued < maxPending/3 && owned < maxOwnPending/3 {
 			return nil
 		}
 		return flushNow()
@@ -215,6 +223,10 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	}
 	if d := staging.dropped.Load(); d > 0 {
 		return fmt.Errorf("%d copies dropped from a full queue", d)
+	}
+	// Sightings past a sender's allowance were refused live too; only ones lost to a full map leave the day short.
+	if d := staging.ownDropped.Load(); d > 0 {
+		return fmt.Errorf("%d own-ship sightings dropped from a full map", d)
 	}
 
 	where, args := replayWindow(day, archives)
@@ -261,6 +273,15 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		"kept, matched, implausible, now64(3) FROM "+c.db+".history_loads FINAL WHERE complete AND matched > 0 AND day >= ? AND day <= ?",
 		day.AddDate(0, 0, -1), day.AddDate(0, 0, 1)); err != nil {
 		return fmt.Errorf("mark archive days to load again: %w", err)
+	}
+	// Own-ship sightings last, so a failure here leaves the receptions' rollups already rebuilt. The hours received on
+	// the day are replaced, as its receptions are: a correction that changes which vessel a station claimed must not
+	// leave the old claim. The staged sightings are exactly those hours, since the replay takes messages by arrival.
+	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".station_own WHERE hour >= ? AND hour < ?", day, day.AddDate(0, 0, 1)); err != nil {
+		return fmt.Errorf("station_own: %w", err)
+	}
+	if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_own (hour, station, mmsi, last_ts) SELECT hour, station, mmsi, last_ts FROM "+c.db+"."+ownStage); err != nil {
+		return fmt.Errorf("station_own: %w", err)
 	}
 	log.Printf("replay: %s: replaced, in %s", day.Format("2006-01-02"), time.Since(started).Round(time.Second))
 	return nil

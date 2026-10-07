@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"github.com/BertoldVdb/go-ais"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -32,7 +33,8 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	}
 	t.Cleanup(func() { c.conn.Exec(context.Background(), "DROP DATABASE "+db); c.conn.Close() })
 
-	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	// A recent day, inside station_own's 35 days, which would drop a fixed date's sightings as it aged past them.
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -3)
 	const mmsi = 257000001
 	enc := testPipeline(t)
 	sentence := func(lat float64) string {
@@ -49,6 +51,35 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	add(day.Add(-30*time.Minute), 59.80)
 	for i := range 6 {
 		add(day.Add(10*time.Hour+time.Duration(i)*time.Minute), 59.90+float64(i)/100)
+	}
+	// A boat's own static data, as !AIVDO: an own-ship sighting with no position, so no reception, and nothing a
+	// replay that is compared but not swapped in may write.
+	vdo := func(s string) string {
+		s = strings.Replace(s, "!AIVDM", "!AIVDO", 1)
+		star := strings.LastIndex(s, "*")
+		var sum byte
+		for i := 1; i < star; i++ {
+			sum ^= s[i]
+		}
+		return fmt.Sprintf("%s*%02X", s[:star], sum)
+	}
+	// Five vessels claimed in an hour, one past the allowance: live refused the fifth, and so does the replay,
+	// which is policy, not loss, and must not keep the day from being replaced.
+	for m := range uint32(5) {
+		static := ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 257000009 + m}, Valid: true, Name: "TENDER"}
+		for _, s := range enc.encoder.EncodeSentence(aisnmeaPacket('A', enc.codec.EncodePacket(static))) {
+			at := day.Add(10*time.Hour + 30*time.Second + time.Duration(m)*time.Second)
+			hour := at.Format("2006/01/02/15")
+			lines[hour] = append(lines[hour], at.Format(time.RFC3339Nano)+"\tkystverket\t"+vdo(s))
+		}
+	}
+	owned := func() uint64 {
+		t.Helper()
+		var n uint64
+		if err := c.conn.QueryRow(ctx, "SELECT count() FROM (SELECT DISTINCT station, hour, mmsi FROM "+db+".station_own)").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
 	}
 	for hour, ls := range lines {
 		path := filepath.Join(dir, "NLOD-2.0", "kystverket", hour+".gz")
@@ -107,6 +138,11 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		}
 		return out
 	}
+	// A claim the day held that the replay no longer makes, as after a fix to who claims what.
+	gone := ownKey{"kystverket", day.Add(10*time.Hour).Unix() / 3600, 999999999}
+	if err := c.insertOwn(ctx, map[ownKey]time.Time{gone: day.Add(10 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
 	before := all()
 	warmup := corroborationWindow + vesselTTL
 	if err := c.replayDay(ctx, dir, day, warmup, true, false); err != nil {
@@ -115,14 +151,23 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if got := all(); len(got) != len(before) {
 		t.Fatalf("a dry run changed receptions: %d rows, was %d", len(got), len(before))
 	}
+	if n := owned(); n != 1 {
+		t.Fatalf("a dry run changed station_own: %d sightings, was 1", n)
+	}
 	if err := c.replayDay(ctx, dir, day, warmup, false, false); err == nil || !strings.Contains(err.Error(), "-force") {
 		t.Fatalf("six replayed copies against seven stored replaced the day without -force: %v", err)
+	}
+	if n := owned(); n != 1 {
+		t.Fatalf("a refused replay changed station_own: %d sightings, was 1", n)
 	}
 	// Replayed twice, as after a fix that needs a second pass: the second replay's identical blocks land too.
 	for range 2 {
 		if err := c.replayDay(ctx, dir, day, warmup, false, true); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if n := owned(); n != maxOwnPerStation {
+		t.Errorf("a replay swapped in wrote %d own-ship sightings, want the allowance %d", n, maxOwnPerStation)
 	}
 
 	var network, previous, archived []row

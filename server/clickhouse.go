@@ -103,7 +103,25 @@ var chMigrations = []string{
 	10: `ALTER TABLE {db}.coverage ADD COLUMN IF NOT EXISTS stations AggregateFunction(uniqExact, String)`,
 	11: `ALTER TABLE {db}.coverage_mv MODIFY QUERY ` + chCoverageSelect("{db}.receptions", chUsable),
 	12: `TRUNCATE TABLE {db}.coverage_backfilled`,
+	// a late copy, which the stream and the station counts leave out; rows from before read as false
+	13: `ALTER TABLE {db}.receptions ADD COLUMN IF NOT EXISTS stale Bool DEFAULT false`,
+	14: chStationOwn,
 }
+
+// chStationOwn keeps, per station, hour, and vessel, the last time the station sent that vessel as its own ship
+// (!AIVDO), from position and static messages alike, so a station's counts can leave out the boat it is on.
+// Static messages never reach receptions, so this is the only record of an own ship that only sends those. Max
+// merges the same in any order and any number of times, so a resent batch or a replay writes it again safely.
+// It is kept as long as the per-vessel station counts that read it.
+const chStationOwn = `CREATE TABLE IF NOT EXISTS {db}.station_own (
+	hour    DateTime('UTC'),
+	station LowCardinality(String),
+	mmsi    UInt32,
+	last_ts SimpleAggregateFunction(max, DateTime64(3, 'UTC'))
+) ENGINE = AggregatingMergeTree
+PARTITION BY toYYYYMM(hour)
+ORDER BY (station, hour, mmsi)
+TTL hour + INTERVAL 35 DAY DELETE`
 
 // positions_1m is each vessel's track at one position a minute while it moves, and one every 30 minutes for each
 // place it sits still: a heartbeat that says it was heard there then, on the same 30 minutes that make a vessel
@@ -264,6 +282,18 @@ type chWriter interface {
 	insert(ctx context.Context, token string, points []trackPoint) error
 }
 
+// ownWriter inserts own-ship sightings into station_own; tests fake it.
+type ownWriter interface {
+	insertOwn(ctx context.Context, own map[ownKey]time.Time) error
+}
+
+// ownKey is one station's own vessel in one hour, the grain of station_own.
+type ownKey struct {
+	station string
+	hour    int64 // unix hours
+	mmsi    uint32
+}
+
 // chReader reads one vessel's history; tests fake it.
 type chReader interface {
 	history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error)
@@ -275,6 +305,7 @@ type chStore struct {
 	w   chWriter
 	r   chReader
 	cov coverageSource // nil leaves the coverage map unavailable
+	own ownWriter      // nil leaves own-ship sightings unwritten
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -286,7 +317,10 @@ type chStore struct {
 	// Stale rebuilt copies the fold matched to a recent transmission, and those it kept as late reports of
 	// their own. A late share far above what the sources' delays explain means copies are being served twice.
 	rebuiltMatched, rebuiltLate atomic.Int64
-	failing                     atomic.Bool // the last batch failed; cleared when one is written
+	ownDropped                  atomic.Int64 // own-ship sightings lost past maxOwnPending: memory, not policy
+	ownRefused                  atomic.Int64 // own-ship sightings past a sender's maxOwnPerStation: policy, not loss
+	ownFailing                  atomic.Bool  // the last station_own insert failed; cleared when one is written
+	failing                     atomic.Bool  // the last batch failed; cleared when one is written
 }
 
 // chConn writes positions through a native-protocol connection.
@@ -294,6 +328,7 @@ type chConn struct {
 	conn  driver.Conn
 	db    string
 	table string // the table write inserts into: receptions, or a replay's staging table
+	own   string // the table insertOwn writes: station_own when empty, or a replay's staging table
 }
 
 // openClickHouse connects to url, a clickhouse:// DSN, and creates the schema in the database it names, or
@@ -532,7 +567,7 @@ func (c *chConn) write(ctx context.Context, token string, points []trackPoint, c
 		"insert_deduplication_token":               token,
 		"throw_on_max_partitions_per_insert_block": 0,
 	}))
-	cols := "mmsi, ts, tx_off, tx_disc, recv_delay, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad, moving"
+	cols := "mmsi, ts, tx_off, tx_disc, recv_delay, lat6, lon6, sog10, cog10, heading, navstat, source, station, accepted, corroborated, implausible, clock_bad, moving, stale"
 	if converted {
 		cols += ", recv_ts"
 	}
@@ -553,7 +588,7 @@ func (c *chConn) write(ctx context.Context, token string, points []trackPoint, c
 		}
 		row := []any{pt.mmsi, pt.ts, clampInt32(txAt.Sub(pt.ts).Milliseconds()), disc, clampInt32(delay),
 			pt.lat6, pt.lon6, pt.sog10, pt.cog10, pt.heading, pt.navStatus, pt.source,
-			pt.station, !pt.dup, !pt.uncorroborated, pt.implausible, pt.clockBad, !pt.still}
+			pt.station, !pt.dup, !pt.uncorroborated, pt.implausible, pt.clockBad, !pt.still, pt.stale}
 		if converted {
 			row = append(row, pt.recv)
 		}
@@ -573,6 +608,10 @@ const chInsertTimeout = 30 * time.Second
 // with refusals such as a full memory budget or too many parts. Lost connections and timeouts never count:
 // through an outage the batch waits, and the queue behind it buffers.
 const chRefuseFor = 10 * time.Minute
+
+// chOwnInsertTimeout bounds a station_own insert, a few rows, well under chInsertTimeout, so shutdown's flushes
+// still fit the service's stop timeout with the positions first in line.
+const chOwnInsertTimeout = 5 * time.Second
 
 // chRefused is a batch ClickHouse answered with an error, or one the client could not encode: sending it again
 // may well fail the same way.
@@ -595,6 +634,9 @@ func (p *Pipeline) attachClickHouse(c *chStore) {
 	p.vmu.Unlock()
 	p.chMu.Lock()
 	p.chQueue = make([]trackPoint, 0, 1024)
+	p.chOwn = map[ownKey]time.Time{}
+	p.chOwnClaimed = map[ownKey]map[uint32]bool{}
+	p.chOwnClaimHours = map[int64]int{}
 	p.chMu.Unlock()
 	p.chOn.Store(true)
 }
@@ -607,7 +649,7 @@ func (p *Pipeline) runClickHouse(url string) {
 		conn, err := openClickHouse(ctx, url)
 		cancel()
 		if err == nil {
-			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn})
+			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn, own: conn})
 			log.Printf("clickhouse: writing receptions to %s", conn.db)
 			break
 		}
@@ -621,13 +663,23 @@ func (p *Pipeline) runClickHouse(url string) {
 
 // drainClickHouse sends a failed batch and then the queue behind it, for shutdown.
 func (p *Pipeline) drainClickHouse() error {
+	var ownErr error
 	for range 2 {
-		if err := p.flushClickHouse(); err != nil {
+		err := p.flushClickHouse()
+		// A failed station_own insert must not stop the positions queued behind it from going, and one the next
+		// attempt wrote is not an error.
+		if err != nil && !errors.As(err, new(ownFailed)) {
 			return err
 		}
+		ownErr = err
 	}
-	return nil
+	return ownErr
 }
+
+// ownFailed is a station_own insert that failed while the receptions were written.
+type ownFailed struct{ error }
+
+func (e ownFailed) Unwrap() error { return e.error }
 
 // flushClickHouse writes one batch: the one that failed last time, unchanged and under its token, or else
 // everything queued since. Positions keep queueing behind a failed batch, within the queue's bound.
@@ -640,6 +692,8 @@ func (p *Pipeline) flushClickHouse() error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Own-ship sightings go whatever the receptions do, and their failure is reported once the receptions are written.
+	ownErr := p.flushOwn(c)
 	if c.failed == nil {
 		p.chMu.Lock()
 		points := p.chQueue
@@ -648,7 +702,7 @@ func (p *Pipeline) flushClickHouse() error {
 		}
 		p.chMu.Unlock()
 		if len(points) == 0 {
-			return nil
+			return ownErr
 		}
 		c.failed, c.token, c.refused = points, newDedupeToken(), time.Time{}
 	}
@@ -682,7 +736,69 @@ func (p *Pipeline) flushClickHouse() error {
 	}
 	c.written.Add(int64(len(c.failed)))
 	c.failed = nil
-	return nil
+	return ownErr
+}
+
+// flushOwn writes the own-ship sightings gathered since the last flush. A failed insert puts them back, keeping
+// the later time where one arrived meanwhile, to go with the next; station_own's max makes a resend harmless.
+func (p *Pipeline) flushOwn(c *chStore) error {
+	if c.own == nil {
+		return nil
+	}
+	p.chMu.Lock()
+	own := p.chOwn
+	if len(own) > 0 {
+		p.chOwn = map[ownKey]time.Time{}
+	}
+	// Claims from before the last hour received no longer bound anything a station sends.
+	p.pruneClaims(p.chOwnHW - 1)
+	p.chMu.Unlock()
+	if len(own) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), chOwnInsertTimeout)
+	err := c.own.insertOwn(ctx, own)
+	cancel()
+	// Logged when inserts start failing and when they recover, as the receptions' are.
+	if was := c.ownFailing.Swap(err != nil); was != (err != nil) {
+		if err != nil {
+			log.Printf("clickhouse: station_own: %v; own-ship sightings wait for the next flush", err)
+		} else {
+			log.Printf("clickhouse: station_own writing again")
+		}
+	}
+	if err == nil {
+		return nil
+	}
+	c.failures.Add(1)
+	p.chMu.Lock()
+	for k, t := range own {
+		last, ok := p.chOwn[k]
+		if !ok && len(p.chOwn) >= maxOwnPending {
+			c.ownDropped.Add(1)
+			continue
+		}
+		if t.After(last) {
+			p.chOwn[k] = t
+		}
+	}
+	p.chMu.Unlock()
+	return ownFailed{fmt.Errorf("station_own: %w", err)}
+}
+
+// insertOwn writes own-ship sightings to station_own.
+func (c *chConn) insertOwn(ctx context.Context, own map[ownKey]time.Time) error {
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+"."+cmp.Or(c.own, "station_own")+" (hour, station, mmsi, last_ts)")
+	if err != nil {
+		return err
+	}
+	for k, t := range own {
+		if err := batch.Append(time.Unix(k.hour*3600, 0).UTC(), k.station, k.mmsi, t); err != nil {
+			batch.Abort()
+			return err
+		}
+	}
+	return batch.Send()
 }
 
 func newDedupeToken() string {

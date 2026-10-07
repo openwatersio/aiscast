@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"slices"
@@ -540,6 +541,13 @@ func TestClickHouseQueuesEveryCopy(t *testing.T) {
 	if len(q) != 10 {
 		t.Fatalf("%d copies queued, want 10: %+v", len(q), q)
 	}
+	// The copies the fold judged stale, arriving after a later report, carry the flag, the AISHub copy it matched to
+	// a transmission included: the stream and the station counts left them out, and the station rollups read it.
+	for i, c := range q {
+		if want := i == 3 || i == 4 || i >= 7; c.stale != want {
+			t.Errorf("copy %d (%s) stale %v, want %v", i, c.source, c.stale, want)
+		}
+	}
 	accepted := q[0]
 	if accepted.dup || accepted.txAt.IsZero() || accepted.station != "kystverket" || accepted.recv.IsZero() {
 		t.Errorf("the accepted copy: %+v", accepted)
@@ -725,7 +733,7 @@ func TestClickHouseMigratesInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"positions", "positions_1h", "positions_1h_mv", "positions_1m", "positions_1m_mv", "receptions", "receptions_converted"} {
+	for _, want := range []string{"positions", "positions_1h", "positions_1h_mv", "positions_1m", "positions_1m_mv", "receptions", "receptions_converted", "station_own"} {
 		if !slices.Contains(tables, want) {
 			t.Errorf("no %s: %v", want, tables)
 		}
@@ -1564,6 +1572,337 @@ func TestClickHouseMovesOldReceptionsToTheColdTier(t *testing.T) {
 	var n uint64
 	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = ?, to = ?)", now.AddDate(0, -7, 0), now.Add(time.Hour)).Scan(&n); err != nil || n != 3 {
 		t.Errorf("every position reads back, two from R2: %d %v", n, err)
+	}
+}
+
+// fakeOwn records the own-ship sightings it is handed, and fails the first `fail` inserts.
+type fakeOwn struct {
+	fail    int
+	batches []map[ownKey]time.Time
+}
+
+func (f *fakeOwn) insertOwn(_ context.Context, own map[ownKey]time.Time) error {
+	f.batches = append(f.batches, maps.Clone(own))
+	if f.fail > 0 {
+		f.fail--
+		return errors.New("clickhouse is down")
+	}
+	return nil
+}
+
+// A station's own-ship messages, positions and static data alike, go to station_own as the latest per hour, and a
+// failed insert keeps them for the next flush rather than losing them.
+func TestClickHouseGathersOwnShipSightings(t *testing.T) {
+	p := testPipeline(t)
+	own := &fakeOwn{fail: 1}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: own})
+	now := time.Now().Truncate(time.Hour).Add(10 * time.Minute)
+	const station = "station:ed25519:k"
+	p.Ingest(Reception{Source: station, Station: station, RecvTime: now, Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
+	p.Ingest(Reception{Source: station, Station: station, RecvTime: now.Add(time.Minute), Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
+	p.ingestPacket(station, station, now, now, posReport(366000009, 41.5, -70.6)) // heard, not its own
+	if err := p.flushClickHouse(); err == nil || !strings.Contains(err.Error(), "station_own") {
+		t.Errorf("a failed own-ship insert reads as a successful flush: %v", err)
+	}
+	if len(own.batches) != 1 || len(own.batches[0]) != 1 {
+		t.Fatalf("one sighting per station, hour, and vessel: %+v", own.batches)
+	}
+	var k ownKey
+	var at time.Time
+	for k, at = range own.batches[0] {
+	}
+	if k.station != station || k.hour != now.Unix()/3600 || at.Before(now) {
+		t.Errorf("sighting %+v at %v", k, at)
+	}
+	// The first insert failed, so the next flush sends the same sighting again.
+	p.flushClickHouse()
+	if len(own.batches) != 2 || !maps.Equal(own.batches[0], own.batches[1]) {
+		t.Errorf("a failed insert kept its sightings for the next: %+v", own.batches)
+	}
+	p.flushClickHouse()
+	if len(own.batches) != 2 {
+		t.Errorf("a written sighting is not sent again: %+v", own.batches)
+	}
+}
+
+// A station's own-ship message is evidence of the boat it is on whatever the stream made of it: the copy dedupe
+// matched to a shore receiver's identical payload, and a report the fold judged stale behind a newer one.
+func TestClickHouseKeepsOwnShipEvidenceTheStreamDrops(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	t0 := time.Now().Truncate(time.Hour).Add(5 * time.Minute)
+	const station = "station:ed25519:k"
+	const own = 227006760 // the MMSI in the sentence below
+	// A shore receiver delivers the payload first; the boat's own copy is dedupe's.
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: t0, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	p.Ingest(Reception{Source: station, Station: station, RecvTime: t0.Add(time.Second), Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
+	if _, ok := p.chOwn[ownKey{station, t0.Unix() / 3600, own}]; !ok {
+		t.Errorf("dedupe's own-ship copy left no sighting: %v", p.chOwn)
+	}
+	// Another source reports the vessel later than the boat's own-ship report, which arrives stale.
+	p = testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	p.ingestPacket("kystverket", "kystverket", t0.Add(40*time.Second), t0.Add(40*time.Second), posReport(own, 59.95, 10.7))
+	stale := p.stats.stale.Load()
+	p.Ingest(Reception{Source: station, Station: station, RecvTime: t0.Add(30 * time.Second), Body: `\s:self*55\!AIVDO,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*21`})
+	if p.stats.stale.Load() != stale+1 {
+		t.Fatal("the own-ship report was not stale, so this case tests nothing")
+	}
+	if _, ok := p.chOwn[ownKey{station, t0.Unix() / 3600, own}]; !ok {
+		t.Errorf("a stale own-ship report left no sighting: %v", p.chOwn)
+	}
+}
+
+// ownSentence is pkt as a station's own-ship sentence, !AIVDO, with its checksum.
+func ownSentence(p *Pipeline, pkt ais.Packet) string {
+	s := p.encoder.EncodeSentence(aisnmeaPacket('A', p.codec.EncodePacket(pkt)))[0]
+	s = strings.Replace(s, "!AIVDM", "!AIVDO", 1)
+	star := strings.LastIndex(s, "*")
+	var sum byte
+	for i := 1; i < star; i++ {
+		sum ^= s[i]
+	}
+	return fmt.Sprintf("%s*%02X", s[:star], sum)
+}
+
+// A UDP sender is relabeled by each MMSI it claims as its own, so its allowance follows the sender, not the
+// station it becomes: claiming ten vessels from one address keeps four.
+func TestClickHouseLimitsAUDPSendersOwnShips(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	now := time.Now()
+	for m := range uint32(10) {
+		p.Ingest(Reception{Source: "udp:spam", Station: "udp:spam", RecvTime: now, Body: ownSentence(p, posReport(366000100+m, 41.5, -70.6))})
+	}
+	if n := len(p.chOwn); n != maxOwnPerStation {
+		t.Errorf("%d sightings from one sender claiming 10 vessels, want %d: %v", n, maxOwnPerStation, p.chOwn)
+	}
+}
+
+// A feed's receivers, told apart by TAG path, are stations of their own, each with its own allowance.
+func TestClickHouseGivesEachFeedReceiverItsOwnAllowance(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	now := time.Now()
+	tagged := func(src, s string) string {
+		var sum byte
+		for i := range len(src) {
+			sum ^= src[i]
+		}
+		return fmt.Sprintf("\\%s*%02X\\%s", src, sum, s)
+	}
+	for i, path := range []string{"s:2573010", "s:2573011"} {
+		for m := range uint32(3) {
+			p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now,
+				Body: tagged(path, ownSentence(p, posReport(257000100+uint32(i)*10+m, 59.9, 10.7)))})
+		}
+	}
+	if n := len(p.chOwn); n != 6 {
+		t.Errorf("%d sightings from two receivers claiming three each, want 6: %v", n, p.chOwn)
+	}
+	if r := p.ch.ownRefused.Load(); r != 0 {
+		t.Errorf("%d refused", r)
+	}
+}
+
+// A failed station_own insert during shutdown does not keep the positions queued behind it from being written.
+func TestClickHouseDrainsPositionsPastAnOwnFailure(t *testing.T) {
+	p := testPipeline(t)
+	f := &fakeCH{fail: 1}
+	p.attachClickHouse(&chStore{w: f, own: &fakeOwn{fail: 1 << 30}})
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	ingestAt(p, 257000001, start, 59.90)
+	p.flushClickHouse() // the positions fail, and wait as the batch to resend
+	ingestAt(p, 257000001, start.Add(time.Minute), 59.91)
+	p.noteOwn(&Event{Station: "udp:boat", Time: start, RecvTime: start, Packet: posReport(368168720, 59.9, 10.7)})
+	err := p.drainClickHouse()
+	if err == nil || !strings.Contains(err.Error(), "station_own") {
+		t.Errorf("the own-ship failure is reported: %v", err)
+	}
+	var sent int
+	for _, b := range f.batches[1:] {
+		sent += len(b)
+	}
+	if sent != 2 {
+		t.Errorf("%d positions written after the failure, want both: %v", sent, f.batches)
+	}
+}
+
+// A busy hour's claims make way for the next hour's senders rather than refusing them until a flush prunes them.
+func TestClickHouseClaimsMakeWayForTheNextHour(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	h := time.Now().Truncate(time.Hour)
+	for m := range uint32(maxOwnPending) {
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:%d", m), Time: h, RecvTime: h, Packet: posReport(200000000+m, 59.9, 10.7)})
+	}
+	p.flushClickHouse()
+	next := h.Add(time.Hour)
+	p.noteOwn(&Event{Station: "udp:new", Time: next, RecvTime: next, Packet: posReport(368168720, 59.9, 10.7)})
+	if _, ok := p.chOwn[ownKey{"udp:new", next.Unix() / 3600, 368168720}]; !ok {
+		t.Errorf("a sender in the next hour was refused by the last hour's claims (%d dropped)", p.ch.ownDropped.Load())
+	}
+}
+
+// A full map of this hour's claims refuses each further sender with a lookup, not a pass over every claim under
+// the lock the receptions queue shares: thousands of refusals take milliseconds, where a scan apiece would take
+// tens of millions of map steps.
+func TestClickHouseRefusesClaimsWithoutScanning(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	h := time.Now().Truncate(time.Hour)
+	for m := range uint32(maxOwnPending) {
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:%d", m), Time: h, RecvTime: h, Packet: posReport(200000000+m, 59.9, 10.7)})
+	}
+	start := time.Now()
+	for m := range uint32(20000) {
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:late%d", m), Time: h, RecvTime: h, Packet: posReport(300000000+m, 59.9, 10.7)})
+	}
+	if d := time.Since(start); d > 250*time.Millisecond {
+		t.Errorf("20,000 refused senders took %v", d)
+	}
+	if got := p.ch.ownDropped.Load(); got != 20000 {
+		t.Errorf("%d dropped, want 20000", got)
+	}
+}
+
+// An own-ship insert that fails once and succeeds on the drain's second try leaves no error behind.
+func TestClickHouseDrainForgetsAnOwnFailureItRecovered(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{fail: 1}})
+	now := time.Now()
+	p.noteOwn(&Event{Station: "udp:boat", Time: now, RecvTime: now, Packet: posReport(368168720, 59.9, 10.7)})
+	if err := p.drainClickHouse(); err != nil {
+		t.Errorf("the drain wrote everything but reports %v", err)
+	}
+}
+
+// Claims count by the hour the server received a message, so stamping own-ship reports across many hours opens no
+// new allowance.
+func TestClickHouseCountsOwnShipClaimsByArrival(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	now := time.Now()
+	for m := range uint32(50) {
+		stamp := now.Add(-time.Duration(m) * time.Hour) // a fresh hour for each MMSI
+		p.noteOwn(&Event{Station: "udp:spam", Time: stamp, RecvTime: now, Packet: posReport(200000000+m, 59.9, 10.7)})
+	}
+	if n := len(p.chOwn); n != maxOwnPerStation {
+		t.Errorf("%d sightings from stamps across 50 hours, want %d", n, maxOwnPerStation)
+	}
+}
+
+// One station claiming more vessels as its own than a boat has keeps its first few and cannot crowd out another
+// station's sighting.
+func TestClickHouseBoundsOwnShipsPerStation(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	now := time.Now()
+	for m := range uint32(maxOwnPending + 5) {
+		p.noteOwn(&Event{Station: "udp:spam", Time: now, RecvTime: now, Packet: posReport(200000000+m, 59.9, 10.7)})
+	}
+	p.noteOwn(&Event{Station: "udp:boat", Time: now, RecvTime: now, Packet: posReport(368168720, 59.9, 10.7)})
+	if n := len(p.chOwn); n != maxOwnPerStation+1 {
+		t.Errorf("%d sightings waiting, want %d from the spammer and the boat's own", n, maxOwnPerStation+1)
+	}
+	if _, ok := p.chOwn[ownKey{"udp:boat", now.Unix() / 3600, 368168720}]; !ok {
+		t.Error("another station's own ship was crowded out")
+	}
+	// A flush empties the waiting sightings but not the claims, so the spammer gains no new ones within the hour.
+	p.flushClickHouse()
+	p.noteOwn(&Event{Station: "udp:spam", Time: now, RecvTime: now, Packet: posReport(299999999, 59.9, 10.7)})
+	if len(p.chOwn) != 0 {
+		t.Errorf("a flush reset the station's claims: %v", p.chOwn)
+	}
+}
+
+// Many stations, or an outage, cost sightings past the global bound, counted, not memory; a sighting already
+// waiting still moves to its latest time.
+func TestClickHouseBoundsOwnShipSightings(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{fail: 1 << 30}})
+	now := time.Now()
+	for m := range uint32(maxOwnPending + 5) {
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:%d", m), Time: now, RecvTime: now, Packet: posReport(200000000+m, 59.9, 10.7)})
+	}
+	p.noteOwn(&Event{Station: "udp:0", Time: now.Add(time.Second), RecvTime: now, Packet: posReport(200000000, 59.9, 10.7)})
+	if n := len(p.chOwn); n != maxOwnPending {
+		t.Errorf("%d sightings gathered, want the bound %d", n, maxOwnPending)
+	}
+	p.flushClickHouse() // fails, and puts them back within the bound
+	if n := len(p.chOwn); n != maxOwnPending {
+		t.Errorf("%d sightings waiting, want the bound %d", n, maxOwnPending)
+	}
+	if got := p.chOwn[ownKey{"udp:0", now.Unix() / 3600, 200000000}]; !got.Equal(now.Add(time.Second)) {
+		t.Errorf("a waiting sighting kept its latest time: %v", got)
+	}
+	if d := p.ch.ownDropped.Load(); d != 5 {
+		t.Errorf("%d dropped, want 5", d)
+	}
+	if body := get(t, p, "/metrics").Body.String(); !strings.Contains(body, "aiscast_clickhouse_own_dropped_total{reason=\"full\"} 5\n") {
+		t.Error("dropped sightings reach /metrics")
+	}
+}
+
+// The stale flag reaches receptions, and station_own keeps the latest sighting per station, hour, and vessel
+// however many times it is written.
+func TestClickHouseWritesStaleAndStationOwn(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(context.Background(), strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	ctx := context.Background()
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	late := newTrackPoint(257000001, t0, &vessel{Lat: 59.9, Lon: 10.7, HasPos: true}, "aishub")
+	late.station, late.stale = "aishub", true
+	fresh := newTrackPoint(257000001, t0.Add(time.Minute), &vessel{Lat: 59.91, Lon: 10.7, HasPos: true}, "kystverket")
+	fresh.station = "kystverket"
+	if err := conn.insert(ctx, newDedupeToken(), []trackPoint{late, fresh}); err != nil {
+		t.Fatal(err)
+	}
+	var stale uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT countIf(stale) FROM "+db+".receptions").Scan(&stale); err != nil || stale != 1 {
+		t.Errorf("stale copies written: %d, %v", stale, err)
+	}
+	k := ownKey{"station:ed25519:k", t0.Unix() / 3600, 366000009}
+	for _, at := range []time.Time{t0, t0.Add(2 * time.Minute), t0.Add(time.Minute)} {
+		if err := conn.insertOwn(ctx, map[ownKey]time.Time{k: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows uint64
+	var last time.Time
+	if err := conn.conn.QueryRow(ctx, "SELECT count(), max(last_ts) FROM (SELECT station, hour, mmsi, max(last_ts) AS last_ts FROM "+db+".station_own GROUP BY station, hour, mmsi)").Scan(&rows, &last); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || !last.Equal(t0.Add(2*time.Minute)) {
+		t.Errorf("station_own: %d rows, last %v, want 1 at %v", rows, last, t0.Add(2*time.Minute))
+	}
+}
+
+// A sighting's hour is when it arrived, as a replay takes a day's messages, so one stamped late on a day and
+// received after midnight belongs to the next day's replay and is never deleted by this one's.
+func TestClickHouseKeysOwnShipSightingsByArrival(t *testing.T) {
+	p := testPipeline(t)
+	own := &fakeOwn{}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: own})
+	recv := time.Now().UTC().Truncate(24 * time.Hour).Add(time.Second)
+	stamp := recv.Add(-2 * time.Second)
+	p.noteOwn(&Event{Station: "station:boat", Time: stamp, RecvTime: recv, Packet: posReport(368168720, 59.9, 10.7)})
+	p.flushClickHouse()
+	if len(own.batches) != 1 {
+		t.Fatalf("batches %+v", own.batches)
+	}
+	for k, at := range own.batches[0] {
+		if k.hour != recv.Unix()/3600 || !at.Equal(stamp) {
+			t.Errorf("sighting %+v at %v: want the hour it arrived, %v, and the time it was stamped", k, at, recv.Truncate(time.Hour))
+		}
 	}
 }
 

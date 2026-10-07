@@ -40,7 +40,7 @@ ClickHouse is the source of truth for history: what it holds is the network's hi
 ```
 live writer ────────────────────────────────────────────────┐
 source file → ClickHouse table function → history_stage → loader (Go) ┴→ receptions (local, then R2) ─┬→ positions_1m (accepted copies)
-                                                     │                                                   ├→ coverage, coverage_stations
+                                                     │                                                   ├→ station_coverage
                                                      └→ vessel_statics                                   └→ positions (view)
 ```
 
@@ -178,11 +178,11 @@ The live rule compares each report with the last accepted one. A single SQL stat
 
 Coverage is where the network has data for a period, whatever the source. The `coverage` view from [#170](https://github.com/openwatersio/aiscast/pull/170) fills from `receptions` as rows are inserted, skipping implausible and bad-clock rows, so archive rows count like any other. It counts distinct vessels per cell, so duplicate copies change nothing. DMA's daily load, three days behind, fills in Danish waters for the days it covers. The view already skips positions older than `coverage`'s 13 months, so a backfill of older years computes no cells that `coverage` would then delete.
 
-Per-station work reads aggregates, not `receptions`: a `coverage_stations` table of distinct vessels per resolution, day, cell, and station, filled from `receptions` by a view as `coverage` is. An archive's `station` is the archive itself, and it counts toward redundancy like any other source. A recent week shows mostly the live network. A period the archives cover fills in with them. If raw per-station reads are ever needed, a projection ordered by `(station, ts)` serves them without changing the sort key. Range outlines will need each copy's distance and bearing from its station. Those are two columns added when that work starts, unknown by default.
+Per-station work reads aggregates, not `receptions`: `station_coverage`, distinct vessels per station, resolution, day, and cell, filled from `receptions` by a view ([station-page.md](station-page.md#rollups)). An archive's `station` is the archive itself, and it counts toward redundancy like any other source. A recent week shows mostly the live network. A period the archives cover fills in with them. If raw per-station reads are ever needed, a projection ordered by `(station, ts)` serves them without changing the sort key. Range outlines will need each copy's distance and bearing from its station. Those are two columns added when that work starts, unknown by default.
 
 ### Purging a source
 
-Purging deletes the source's rows from `receptions` and `vessel_statics` with a mutation. The `positions` view then keeps each transmission's next-earliest copy, so a transmission another source also heard is never lost. `positions_1m` and `coverage` keep one row per window or a set per cell, chosen when rows were inserted, and a purge does not move `accepted`. So the days the source touched are rebuilt: `aiscast rebuild-positions-1m -from -to` rebuilds `positions_1m` from each transmission's earliest copy, as the view picks it, and `coverage` is rebuilt per day with `chCoverageSelect`. A copy carries its transmission's verdict on moving, so the rebuilt track keeps its shape. Purges are rare.
+Purging deletes the source's rows from `receptions`, `vessel_statics`, and `statics` with a mutation. The `positions` view then keeps each transmission's next-earliest copy, so a transmission another source also heard is never lost. `positions_1m` and the station rollups keep one row per window or a set per cell, chosen when rows were inserted, and a purge does not move `accepted`. So the days the source touched are rebuilt: `aiscast rebuild-positions-1m -from -to` rebuilds `positions_1m` from each transmission's earliest copy, as the view picks it, and the station rollups rebuild each day the source touched ([station-page.md](station-page.md#rollups)). A copy carries its transmission's verdict on moving, so the rebuilt track keeps its shape. Purges are rare.
 
 ### Durability
 
@@ -248,7 +248,7 @@ Each is one numbered `ADD COLUMN` step, which costs nothing for the rows before 
 
 1. **`msg_type UInt8`**, the AIS message type, 0 when unknown. It tells class A from class B, keeps aids to navigation, base stations, and SAR aircraft out of vessel tracks, and lets privacy rules treat small craft differently. Near 0 bytes a row.
 2. **`utc_second UInt8`**, the time stamp field of position reports, 0 to 59, 60 to 63 for not available. It pins the second a transmission was sent, so copies and archive rows match exactly instead of by position, and it measures each source's stamp skew. About 0.1 byte a row.
-3. **A `statics` table** of name, call sign, IMO, type, dimensions, destination, ETA, and draught, keyed by vessel and time, with a row only when a field changes, from the live writer and archives. It enables port calls, voyages, ETA accuracy, and renames. A few MB a day.
+3. **A `statics` table** of name, call sign, IMO, type, dimensions, destination, ETA, and draught: each distinct state a source sent for a vessel each day, with the first and last time it was heard, from the live writer and archives ([station-page.md](station-page.md#static-data)). It enables port calls, voyages, ETA accuracy, and renames. A few MB a day.
 4. **`rssi Int8`, `snr Int8`, `ppm Int8`, and `channel UInt8`**, from stations that send them in AIS-catcher JSON or NMEA tag blocks, unknown otherwise. Range models, station health, interference. A byte or two on station copies only.
 5. **A `station_positions` table** of each station's position over time. Distance and bearing per copy are computed at read time, so `receptions` gains nothing. It enables range outlines.
 
