@@ -338,11 +338,13 @@ func (c *chConn) convertDay(ctx context.Context, day time.Time, st *convertState
 		return written, err
 	}
 	st.still = next
-	// Recording the day changes which of its rows the series counts, so it is marked for them too.
-	if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".receptions_converted VALUES (?, ?)", day, old); err != nil {
+	// Recording the day changes which of its rows the series counts, so it is marked for them first: a mark that
+	// failed after the record would leave the day recorded and never marked, and the record follows well inside the
+	// minute a marker settles for.
+	if err := c.markDay(ctx, day); err != nil {
 		return written, err
 	}
-	return written, c.markDay(ctx, day)
+	return written, c.conn.Exec(ctx, "INSERT INTO "+c.db+".receptions_converted VALUES (?, ?)", day, old)
 }
 
 // convertVessel converts one vessel's rows, in time order, and returns those in [day, end). A transmission's

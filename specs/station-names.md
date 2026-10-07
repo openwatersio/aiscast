@@ -209,7 +209,7 @@ Revisit when operators ask for outage alerts, or at about 100 named stations. Th
 Server only. No new state beyond the 24-hour maps.
 
 - [x] `Own` flag on `Event`, set for `VDO` sentences in `ingestLine`. Each station records the MMSIs it sent as own, and `exclusive` skips them. Phase 2 leaves them out of the coverage point, and phase 3 builds the own-vessel rules on the same record.
-- [x] 24-hour retention in `sweep`. `vessels` and `vesselsBySource` count only the last `vesselTTL`.
+- [x] 24-hour window. `vessels` and the per-source counts count only the last `vesselTTL`.
 - [x] `exclusive(now)`, grouped by base station id and cached for 60 seconds. `vessels_24h` and `vessels_exclusive_24h` on rows.
 - [x] 24-hour counts survive a restart: they come from ClickHouse's station series ([station-page.md](station-page.md#rollups)).
 - [x] Tests: exclusivity across stations, grouping of `/tag` rows, a duplicate counts as heard, a stale AISHub echo does not remove exclusivity, own vessel excluded, 30-minute `vessels` unchanged.

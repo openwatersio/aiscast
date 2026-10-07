@@ -15,6 +15,7 @@ import (
 // fakeSeries answers the station series' reads from fixed figures.
 type fakeSeries struct {
 	counts  map[string]stationCount
+	totals  map[string]stationCount
 	sources map[string][2]int
 	own     map[string]map[uint32]int64
 	points  map[string][][2]float64
@@ -27,6 +28,9 @@ func (f *fakeSeries) backfillStationSeries(context.Context, time.Time) error { r
 func (f *fakeSeries) stationCounts(context.Context, time.Time) (map[string]stationCount, error) {
 	f.reads++
 	return f.counts, f.err
+}
+func (f *fakeSeries) stationTotals(context.Context) (map[string]stationCount, error) {
+	return f.totals, nil
 }
 func (f *fakeSeries) sourceCounts(context.Context, time.Time) (map[string][2]int, error) {
 	return f.sources, nil
@@ -101,7 +105,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 			cur.Format("2006-01-02 15:04:05")+"', 'station:s1', 'station', 777, 1, now64(3), '2000-01-01 00:00:00')"); err != nil {
 		t.Fatal(err)
 	}
-	counts, err := conn.stationCounts(ctx, now)
+	counts, err := seriesCounts(t, conn, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +158,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.rebuildStationSeries(ctx, now); err != nil {
 		t.Fatal(err)
 	}
-	if again, _ := conn.stationCounts(ctx, now); again["station:s2"] != counts["station:s2"] || again["station:s1"] != counts["station:s1"] {
+	if again, _ := seriesCounts(t, conn, now); again["station:s2"] != counts["station:s2"] || again["station:s1"] != counts["station:s1"] {
 		t.Errorf("a second rebuild changed the counts: %+v, was %+v", again, counts)
 	}
 	where := "station = 'station:s2' AND mmsi = 3"
@@ -181,11 +185,27 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.rebuildStationSeries(nulls, now); err != nil {
 		t.Fatal(err)
 	}
-	if counts, _ := conn.stationCounts(ctx, now); counts["station:s4"].receptions != 1 {
+	if counts, _ := seriesCounts(t, conn, now); counts["station:s4"].receptions != 1 {
 		t.Errorf("a late copy's hour was not rebuilt under join_use_nulls: %+v", counts["station:s4"])
 	}
-	if counts, _ := conn.stationCounts(ctx, now); counts["station:s2"].day != 1 || counts["station:s2"].unique != 0 {
+	if counts, _ := seriesCounts(t, conn, now); counts["station:s2"].day != 1 || counts["station:s2"].unique != 0 {
 		t.Errorf("after deleting s2's own vessel: %+v", counts["station:s2"])
+	}
+
+	// A version from a clock that has since been set back, as after a restart: the next rebuild still supersedes it.
+	h := old.ts.Truncate(time.Hour)
+	if err := conn.exec(ctx, "INSERT INTO {db}.station_hours (hour, station, source, receptions, first, built) VALUES ('"+
+		h.Format("2006-01-02 15:04:05")+"', 'station:s3', 'station', 999, 999, '2099-01-01 00:00:00')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.markHours(ctx, []time.Time{h}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if counts, _ := seriesCounts(t, conn, now); counts["station:s3"].receptions != 1 {
+		t.Errorf("a rebuild after a version from the future: s3 %+v", counts["station:s3"])
 	}
 
 	own, err := conn.ownCandidates(ctx, now.Add(-2*time.Hour))
@@ -217,4 +237,18 @@ func TestStationRollupsBackOffAfterAFailure(t *testing.T) {
 	if counts, _ := p.rollups(now.Add(2*time.Minute + stationRollupsStale + time.Second)); counts != nil {
 		t.Errorf("figures %v kept through %v of failed reads", counts, stationRollupsStale)
 	}
+}
+
+// seriesCounts is what rollups serves: the window's figures with the totals ever.
+func seriesCounts(t *testing.T, conn *chConn, now time.Time) (map[string]stationCount, error) {
+	t.Helper()
+	counts, err := conn.stationCounts(context.Background(), now)
+	if err != nil {
+		return nil, err
+	}
+	totals, err := conn.stationTotals(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return mergeCounts(counts, totals, now), nil
 }

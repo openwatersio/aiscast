@@ -42,8 +42,10 @@ func TestStationRowsTakeTheSeries(t *testing.T) {
 	now := time.Now()
 	p.ingestPacket("s1", "s1", now, now, posReport(366000001, 41.5, -70.6))
 	p.ingestPacket("s2", "s2", now, now, posReport(366000002, 41.5, -70.6))
-	first := now.Add(-48 * time.Hour).Truncate(time.Hour)
-	f := &fakeSeries{counts: map[string]stationCount{"s1": {first: first, receptions: 500, firsts: 450, uptime: 0.75, live: 3, day: 9, unique: 2}}}
+	first := now.Truncate(time.Hour).Add(-47 * time.Hour)
+	// 35 of the 47 hours before this one heard, and this one: 36 of 48
+	f := &fakeSeries{counts: map[string]stationCount{"s1": {first: first, past: 35, now: true, live: 3, day: 9, unique: 2}},
+		totals: map[string]stationCount{"s1": {first: first, receptions: 500, firsts: 450}}}
 	p.attachClickHouse(&chStore{w: &fakeCH{}, series: f})
 	rows := p.stationRows(now)
 	r := rowOf(t, rows, "s1")

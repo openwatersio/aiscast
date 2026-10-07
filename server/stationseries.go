@@ -26,7 +26,7 @@ var stationSeriesSettle = time.Minute
 
 const (
 	stationSeriesEvery  = 5 * time.Minute
-	stationWindow       = 7 * 24          // hours of uptime
+	stationWindow       = 7 * 24 // hours of uptime
 	chStationVesselDays = 35
 )
 
@@ -75,8 +75,10 @@ type stationSeries interface {
 	rebuildStationSeries(ctx context.Context, now time.Time) error
 	// backfillStationSeries bins the days receptions held before the view, newest first, until every one is done.
 	backfillStationSeries(ctx context.Context, now time.Time) error
-	// stationCounts is each station's uptime, vessels, and totals.
+	// stationCounts is each station's hours and vessels in the window.
 	stationCounts(ctx context.Context, now time.Time) (map[string]stationCount, error)
+	// stationTotals is each station's first hour and receptions ever, a read of its whole history.
+	stationTotals(ctx context.Context) (map[string]stationCount, error)
 	// sourceCounts is, per source kind, the vessels its stations heard within vesselTTL and how many no other kind did.
 	sourceCounts(ctx context.Context, now time.Time) (map[string][2]int, error)
 	// ownCandidates is each station's own-ship MMSIs since a time, with the unix seconds of the last.
@@ -87,10 +89,67 @@ type stationSeries interface {
 
 // stationCount is one station's figures from the series.
 type stationCount struct {
-	first              time.Time // its first hour
-	receptions, firsts uint64
-	uptime             float64 // share of the hours since the later of 7 days ago and its first hour with a reception
-	live, day, unique  int     // vessels within vesselTTL and stationVesselTTL, and of the latter, heard by no other station
+	first              time.Time // its first hour: in the window from stationCounts, ever from stationTotals
+	receptions, firsts uint64    // ever, from stationTotals
+	past               int       // hours of the window before the current one with a reception
+	now                bool      // whether the current hour has one
+	uptime             float64   // share of the hours since the later of 7 days ago and its first hour with a reception
+	live, day, unique  int       // vessels within vesselTTL and stationVesselTTL, and of the latter, heard by no other station
+}
+
+// withTotals is s with a station's totals ever and its uptime: every hour since the later of the window's start and
+// the station's first counts, and the current one once it has a reception.
+func (s stationCount) withTotals(t stationCount, now time.Time) stationCount {
+	if !t.first.IsZero() && t.first.Before(s.first) || s.first.IsZero() {
+		s.first = t.first
+	}
+	s.receptions, s.firsts = t.receptions, t.firsts
+	cur := now.UTC().Truncate(time.Hour)
+	from := cur.Add(-(stationWindow - 1) * time.Hour)
+	if s.first.After(from) {
+		from = s.first.UTC()
+	}
+	now1 := 0
+	if s.now {
+		now1 = 1
+	}
+	if hours := int(cur.Sub(from)/time.Hour) + now1; hours > 0 {
+		s.uptime = float64(s.past+now1) / float64(hours)
+	}
+	return s
+}
+
+// mergeCounts adds each station's totals ever to its window's figures, and its uptime; a station heard only before
+// the window has its totals and an uptime of 0.
+func mergeCounts(counts, totals map[string]stationCount, now time.Time) map[string]stationCount {
+	out := make(map[string]stationCount, max(len(counts), len(totals)))
+	for id := range totals {
+		out[id] = stationCount{}
+	}
+	maps.Copy(out, counts)
+	for id, c := range out {
+		out[id] = c.withTotals(totals[id], now)
+	}
+	return out
+}
+
+func (c *chConn) stationTotals(ctx context.Context) (map[string]stationCount, error) {
+	rows, err := c.conn.Query(ctx, `SELECT station, min(hour), sum(receptions), sum(first) FROM `+c.db+`.station_hours
+		WHERE (hour, built) IN (SELECT hour, max(built) FROM `+c.db+`.station_hours GROUP BY hour) GROUP BY station`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]stationCount{}
+	for rows.Next() {
+		var id string
+		var s stationCount
+		if err := rows.Scan(&id, &s.first, &s.receptions, &s.firsts); err != nil {
+			return nil, err
+		}
+		out[id] = s
+	}
+	return out, rows.Err()
 }
 
 // dirtyHours is the hours of the receptions where selects, read before they are deleted so markHours can mark them
@@ -112,7 +171,8 @@ func (c *chConn) markDay(ctx context.Context, day time.Time) error {
 	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_dirty (hour) SELECT toDateTime(?, 'UTC') + INTERVAL number HOUR FROM numbers(24)", day.UTC().Truncate(24*time.Hour))
 }
 
-// stationSeriesRun keeps one rebuild at a time in a process, as the one writer the counts rely on.
+// stationSeriesRun keeps one binning at a time in a process, the job's or a backfill day's: versions are taken
+// before a binning reads, so two at once could give the later read the older version.
 var stationSeriesRun sync.Mutex
 
 func (c *chConn) rebuildStationSeries(ctx context.Context, now time.Time) error {
@@ -194,7 +254,10 @@ func (c *chConn) backfillStationSeries(ctx context.Context, now time.Time) error
 		for i := range hours {
 			hours[i] = day.Add(time.Duration(i) * time.Hour)
 		}
-		if err := c.binHours(ctx, hours, now); err != nil {
+		stationSeriesRun.Lock() // one binning at a time, so a version taken first is never read after a later one
+		err := c.binHours(ctx, hours, now)
+		stationSeriesRun.Unlock()
+		if err != nil {
 			log.Printf("station series: backfill %s: %v", day.Format("2006-01-02"), err) // left for the next pass
 			failed++
 			continue
@@ -210,13 +273,18 @@ func (c *chConn) backfillStationSeries(ctx context.Context, now time.Time) error
 }
 
 // seriesVersion is a rebuild's version, as text to the millisecond, since the driver binds a time to the second and
-// two rebuilds of one hour in a second would otherwise share a version and both be read. Each is later than the last.
-func seriesVersion() string {
+// two rebuilds of one hour in a second would otherwise share a version and both be read. Each is later than the last
+// and than floor, the newest version the hours hold, so a clock set back since never makes a rebuild the older.
+func seriesVersion(floor time.Time) string {
 	seriesVersions.Lock()
 	defer seriesVersions.Unlock()
 	v := time.Now().UTC().Truncate(time.Millisecond)
-	if !v.After(seriesVersions.last) {
-		v = seriesVersions.last.Add(time.Millisecond)
+	last := seriesVersions.last
+	if floor.After(last) {
+		last = floor
+	}
+	if !v.After(last) {
+		v = last.Add(time.Millisecond)
 	}
 	seriesVersions.last = v
 	return v.Format("2006-01-02 15:04:05.000")
@@ -252,7 +320,12 @@ func (c *chConn) binHours(ctx context.Context, hours []time.Time, now time.Time)
 	// An hour whose receptions were all deleted has no new rows, and reads the old until they go.
 	bctx, cancel := chBinning(ctx)
 	defer cancel()
-	built := seriesVersion()
+	floor, err := chColumn[time.Time](ctx, c.conn, "SELECT greatest((SELECT max(built) FROM "+c.db+".station_hours WHERE hour IN ?), "+
+		"(SELECT max(built) FROM "+c.db+".station_vessels WHERE hour IN ?))", hours, hours)
+	if err != nil {
+		return err
+	}
+	built := seriesVersion(floor[0])
 	if err := c.conn.Exec(bctx, `INSERT INTO `+c.db+`.station_hours (hour, station, source, receptions, first, built)
 		SELECT toStartOfHour(toDateTime(ts, 'UTC')) AS hour, `+chStationKey+` AS station, source, count(), countIf(accepted), toDateTime64(?, 3, 'UTC')
 		FROM `+c.db+`.receptions WHERE `+where+` GROUP BY hour, station, source`, built, from, to, hours); err != nil {
@@ -287,9 +360,9 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 	out := map[string]stationCount{}
 	cur := now.UTC().Truncate(time.Hour)
 	start := cur.Add(-(stationWindow - 1) * time.Hour)
-	rows, err := c.conn.Query(ctx, `SELECT station, min(hour), sum(receptions), sum(first), uniqExactIf(hour, hour >= ? AND hour < ?), max(hour = ?)
-		FROM `+c.db+`.station_hours WHERE (hour, built) IN (SELECT hour, max(built) FROM `+c.db+`.station_hours GROUP BY hour)
-		GROUP BY station`, start, cur, cur)
+	rows, err := c.conn.Query(ctx, `SELECT station, min(hour), uniqExactIf(hour, hour < ?), max(hour = ?) FROM `+c.db+`.station_hours
+		WHERE hour >= ? AND (hour, built) IN (SELECT hour, max(built) FROM `+c.db+`.station_hours WHERE hour >= ? GROUP BY hour)
+		GROUP BY station`, cur, cur, start, start)
 	if err != nil {
 		return nil, err
 	}
@@ -297,21 +370,12 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 		var id string
 		var s stationCount
 		var past uint64
-		var now uint8
-		if err := rows.Scan(&id, &s.first, &s.receptions, &s.firsts, &past, &now); err != nil {
+		var heard uint8
+		if err := rows.Scan(&id, &s.first, &past, &heard); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		// Every hour since the later of the window's start and the station's first counts, and the current one once
-		// it has a reception.
-		from := start
-		if s.first.After(from) {
-			from = s.first.UTC()
-		}
-		hours := int(cur.Sub(from)/time.Hour) + int(now)
-		if hours > 0 {
-			s.uptime = float64(int(past)+int(now)) / float64(hours)
-		}
+		s.past, s.now = int(past), heard == 1
 		out[id] = s
 	}
 	rows.Close()
@@ -453,11 +517,13 @@ func (p *Pipeline) runStationSeries() {
 
 // stationRollups is the series' figures, read at most once a minute for every caller.
 type stationRollups struct {
-	mu      sync.Mutex
-	at      time.Time // the last read, failed or not
-	ok      time.Time // the last read that succeeded
-	counts  map[string]stationCount
-	sources map[string][2]int
+	mu       sync.Mutex
+	at       time.Time // the last read, failed or not
+	ok       time.Time // the last read that succeeded
+	counts   map[string]stationCount
+	sources  map[string][2]int
+	totals   map[string]stationCount // read at most hourly, since it reads all of history
+	totalsAt time.Time
 }
 
 // stationRollupsStale is how long the last figures stand while reads fail, after which there are none rather than
@@ -481,10 +547,29 @@ func (p *Pipeline) rollups(now time.Time) (map[string]stationCount, map[string][
 	if now.Sub(r.at) < time.Minute {
 		return r.fresh(now)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	counts, err1 := s.stationCounts(ctx, now)
-	sources, err2 := s.sourceCounts(ctx, now)
+	if now.Sub(r.totalsAt) >= time.Hour {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		totals, err := s.stationTotals(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("station series: totals: %v", err) // the last stand until the next try
+		} else {
+			r.totals = totals
+		}
+		r.totalsAt = now
+	}
+	read := func(f func(context.Context) error) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		return f(ctx)
+	}
+	var counts map[string]stationCount
+	var sources map[string][2]int
+	err1 := read(func(ctx context.Context) (err error) { counts, err = s.stationCounts(ctx, now); return })
+	err2 := read(func(ctx context.Context) (err error) { sources, err = s.sourceCounts(ctx, now); return })
+	if err1 == nil {
+		counts = mergeCounts(counts, r.totals, now)
+	}
 	if err1 != nil || err2 != nil {
 		log.Printf("station series: %v %v", err1, err2)
 		r.at = now // the last figures stand for the minute, rather than every request waiting on a failing read
