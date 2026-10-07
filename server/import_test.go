@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -75,7 +76,22 @@ func TestOpenStoreRemovesInvalidMMSIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	all := []uint32{0, 1234567, 123456789, 1 << 30, 2573104, 25700001, 257000001}
+	// The SQL and validMMSI must agree on every edge of every range and on every default.
+	all := []uint32{1234567, 2573104, 25700001, 257000001, 1 << 30}
+	for _, r := range invalidMMSIRanges {
+		all = append(all, r[0], r[1])
+		if r[0] > 0 {
+			all = append(all, r[0]-1)
+		}
+		if r[1] < math.MaxUint32 {
+			all = append(all, r[1]+1)
+		}
+	}
+	for m := range defaultMMSIs {
+		all = append(all, m, m+1)
+	}
+	slices.Sort(all)
+	all = slices.Compact(all)
 	for _, m := range all {
 		if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, seen, first_seen) VALUES (?, 'X', 1, 1)`, m); err != nil {
 			t.Fatal(err)

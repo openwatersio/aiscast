@@ -165,7 +165,7 @@ func (p *Pipeline) barentswatchLine(line []byte, now time.Time) {
 		shadowCheck("barentswatch", line, bwKnown)
 	}
 	if m.MMSI == 0 {
-		p.stats.invalidMMSI.Add(1)
+		p.stats.parseErr.Add(1)
 		return
 	}
 	var pkt ais.Packet

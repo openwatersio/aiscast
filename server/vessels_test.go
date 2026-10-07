@@ -259,14 +259,24 @@ func TestInvalidMMSIStaysOffTheMap(t *testing.T) {
 	if got := p.stats.invalidMMSI.Load(); got != 6 {
 		t.Errorf("invalid MMSI messages counted %d, want 6", got)
 	}
-	if got := p.stations.events24h([]string{"aisstream"}, now); got != 6 {
-		t.Errorf("the station that delivered them is credited with %d messages, want 6", got)
+	// They skip dedupe, so crediting them would let a station repeat one line into the feeder tier.
+	for range 3 {
+		p.ingestPacket("station:k", "station:k", now, now, posReport(0, 59.9, 10.7))
 	}
-	// The feeds that skip MMSI 0 while decoding count it the same way.
-	p.barentswatchLine([]byte(`{"type":"Position","messageType":1,"latitude":69.9,"longitude":20.1,"mmsi":0,"msgtime":"`+now.UTC().Format(time.RFC3339)+`","stream":"terra"}`), now)
-	p.aishubSnapshot([]byte(`[[{"MMSI":0,"TIME":"`+fmt.Sprint(now.Unix())+`","LONGITUDE":3022815,"LATITUDE":31476144}]]`), now)
-	if got := p.stats.invalidMMSI.Load(); got != 8 {
-		t.Errorf("invalid MMSI messages counted %d with the feeds' MMSI 0, want 8", got)
+	if got := p.stations.events24h([]string{"station:k"}, now); got != 0 {
+		t.Errorf("a station is credited with %d messages under MMSI 0, want 0", got)
+	}
+	// AISHub repeats a row on every snapshot, and the cache that says whether it is news never holds these MMSIs,
+	// so the decoder skips the rows rather than send the same one again each time.
+	before := p.stats.invalidMMSI.Load()
+	for range 2 {
+		snap := `[[{"MMSI":123456789,"TIME":"` + fmt.Sprint(now.Add(-time.Minute).Unix()) + `","LONGITUDE":3022815,"LATITUDE":31476144}]]`
+		if n, err := p.aishubSnapshot([]byte(snap), now); err != nil || n != 0 {
+			t.Errorf("AISHub snapshot with a default MMSI: %d events, %v", n, err)
+		}
+	}
+	if got := p.stats.invalidMMSI.Load(); got != before {
+		t.Errorf("AISHub snapshot rows counted %d times", got-before)
 	}
 	if n := len(sub.ch); n != 1 {
 		t.Errorf("%d events streamed, want only the valid vessel's", n)
