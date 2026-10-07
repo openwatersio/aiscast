@@ -18,7 +18,7 @@
   "tags": [
     { "name": "Authentication", "description": "Create a token over HTTP. Feeder, peer, partner, and admin tokens are issued by the operator." },
     { "name": "Vessels", "description": "Where vessels are and where they have been, for a map or a lookup. No token needed, 120 requests per minute per address. A token can carry its own limit. For continuous updates, use a stream instead of polling." },
-    { "name": "Stations", "description": "The receivers that feed the network and the areas they cover. No token needed." },
+    { "name": "Stations", "description": "The receivers that feed the network and the areas they cover. No token needed, 120 requests per minute per address. A token can carry its own limit." },
     { "name": "Contributing", "description": "Send what your receiver hears. Everything you feed is credited to your station, and 1,000 messages a day earns a personal token the feeder tier." },
     { "name": "Status", "description": "For status pages and monitors. No token needed." }
   ],
