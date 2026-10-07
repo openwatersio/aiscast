@@ -82,5 +82,3 @@ Ingest is small and fan-out is the real load. One 4-vCPU box handles ingest at a
 Kystverket allows one TCP connection per source IP. A second connection makes both reconnect every few seconds, so only one server per public IP may pull it.
 
 Cloudflare cannot terminate the ingest side. Workers and Containers accept no inbound UDP or raw TCP. Spectrum UDP is Enterprise-only. Per-message pricing makes Durable-Object dedupe and fan-out expensive unless heavily batched. Cloudflare is good here for TLS and certificate operations, DDoS protection on the WebSocket path, unbilled proxy bandwidth, and R2 with Data Catalog and R2 SQL for the archive. The origin still sends every byte to Cloudflare, which is why origin egress pricing picks the host.
-
-Deeper background on every claim here is in [research/](../research/).

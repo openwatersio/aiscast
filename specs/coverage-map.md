@@ -2,7 +2,7 @@
 
 Plan for [#30](https://github.com/openwatersio/aiscast/issues/30): one public map of where Open Waters AIS has vessel data for a period, from every source: feeds, stations, and historical archives alike. It answers "is my area on the feed?" before anyone has to ask. It also shows a prospective feeder the water their receiver would add.
 
-The design research is [research/coverage-map-design.md](../research/coverage-map-design.md). A prototype tested it on about a week of the raw archive. It was a Python binner over every source's hourly files and a standalone MapLibre page, and it lives only in git history (`git show 0181f42:analysis/anchorages/coverage.py`). The coverage map is the one visualization that belongs in this repo. The other analyses from the same prototype belong outside it.
+A prototype tested the design on about a week of the raw archive. It was a Python binner over every source's hourly files and a standalone MapLibre page, and it lives only in git history (`git show 0181f42:analysis/anchorages/coverage.py`). The coverage map is the one visualization that belongs in this repo. The other analyses from the same prototype belong outside it.
 
 ## What the prototype established
 
