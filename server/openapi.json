@@ -845,7 +845,7 @@
           "source": { "type": "string" },
           "events": { "$ref": "#/components/schemas/Windows" },
           "duplicates": { "type": "integer", "description": "Position messages another station delivered first, over the station's history, up to an hour behind; since the last restart while `uptime_7d` is null." },
-          "vessels": { "type": "integer", "description": "Distinct MMSIs whose positions the station heard in the last 30 minutes, its own vessel left out. Up to about 7 minutes behind." },
+          "vessels": { "type": "integer", "description": "Distinct MMSIs whose positions the station heard in the last 30 minutes, its own vessel left out. Counts what is binned, up to about 7 minutes behind. 0 without ClickHouse or after 10 minutes of failed reads, when `uptime_7d` is null too." },
           "vessels_24h": { "type": "integer", "description": "Distinct MMSIs whose positions the station heard in the last 24 hours, its own vessel left out. Up to about 7 minutes behind." },
           "vessels_exclusive_24h": { "type": "integer", "description": "Of `vessels_24h`, the vessels no other station heard. A vessel counts whether this station delivered a message first or as a duplicate, and an aggregator's late copy of a report another station already delivered does not count as hearing it." },
           "uptime_7d": { "type": ["number", "null"], "description": "Share of hours with a position reception, from 0 to 1, over the last 7 days or since the station's first hour if later. The current hour counts once it has one. Null without ClickHouse, until the series' hourly totals have the station, while the totals are over 3 hours old, and while ClickHouse has not answered for 10 minutes." },
@@ -854,7 +854,7 @@
           "mmsi": { "type": "integer", "description": "The station's own vessel, from the `!AIVDO` sentences it sends." },
           "near": { "type": "string", "description": "The town or region nearest the traffic the station hears, such as `Santa Monica, CA` or `Munster, Ireland`. Volunteer stations only. Place names from GeoNames, CC BY 4.0." },
           "positions": { "type": "integer", "description": "Position messages the station delivered first, over the station's history, up to an hour behind; since the last restart while `uptime_7d` is null." },
-          "first_seen": { "type": "string", "format": "date-time", "description": "The station's first hour in its history, or when this server first heard it if earlier or not yet in the history." },
+          "first_seen": { "type": "string", "format": "date-time", "description": "The station's first hour in its history, or when this server first heard it if earlier, or while `uptime_7d` is null. During the first backfill the history is partial, so the first hour can read later than it was." },
           "last_seen": { "type": "string", "format": "date-time" },
           "last_age_s": { "type": "integer", "description": "Seconds since the last message." },
           "bbox": {
@@ -939,7 +939,7 @@
               "properties": {
                 "events": { "$ref": "#/components/schemas/Windows" },
                 "last_age_s": { "type": "integer", "description": "Seconds since any member last produced an event." },
-                "vessels": { "type": "integer", "description": "Distinct MMSIs whose positions the source's stations heard in the last 30 minutes, stations' own vessels included. Up to about 7 minutes behind." },
+                "vessels": { "type": "integer", "description": "Distinct MMSIs whose positions the source's stations heard in the last 30 minutes, stations' own vessels included. Counts what is binned, up to about 7 minutes behind. 0 without ClickHouse or after 10 minutes of failed reads, so a 0 alone says nothing about traffic." },
                 "vessels_exclusive": { "type": "integer", "description": "Of those, MMSIs no other source kind heard in that window." },
                 "delay": {
                   "type": "object",

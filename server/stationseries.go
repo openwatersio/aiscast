@@ -625,7 +625,7 @@ func (p *Pipeline) refreshRollups(s stationSeries, now time.Time) {
 	totalsAt := now
 	if due {
 		var fresh map[string]stationCount
-		if err := read(time.Minute, func(ctx context.Context) (err error) { fresh, err = s.stationTotals(ctx); return }); err != nil {
+		if err := read(5*time.Minute, func(ctx context.Context) (err error) { fresh, err = s.stationTotals(ctx); return }); err != nil {
 			log.Printf("station series: totals: %v", err)
 			totalsAt = now.Add(time.Minute - time.Hour) // tried again in a minute
 		} else {

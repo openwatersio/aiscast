@@ -102,6 +102,10 @@ func (s *stationStats) rings(now time.Time) map[string]ringState {
 	return out
 }
 
+// ownPendingMax is how long own vessels wait for their candidates from before the start: past it, ClickHouse is
+// taken to be down, and they are decided on what has arrived since, as without it.
+const ownPendingMax = 10 * time.Minute
+
 // restoreOwn holds own-ship candidates read back at start, for stations to claim when next heard, so the rule that
 // two candidates within ownSettle mean no own vessel holds across a restart. A station already heard takes its
 // own at once.

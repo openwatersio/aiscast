@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/BertoldVdb/go-ais"
 )
 
 func rowOf(t *testing.T, rows []stationRow, id string) stationRow {
@@ -94,6 +96,16 @@ func TestOwnVesselWaitsForRestoredCandidates(t *testing.T) {
 	p.refreshOwn(now)
 	if r := rowOf(t, p.stationRows(now), "station:ed25519:k"); r.MMSI != 0 {
 		t.Fatalf("own vessel decided before the candidates were back: %+v", r)
+	}
+	// A vessel decided before the restart keeps its name meanwhile.
+	p.ingestPacket("aishub", "aishub", now, now, ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: 227006761}, Valid: true, Name: "TENDER"})
+	p.stations.event(&Event{Station: "station:ed25519:z", Source: "station:ed25519:z", Time: now, MMSI: 1})
+	p.names.mu.Lock()
+	p.names.meta("station:ed25519:z").Own = 227006761
+	p.names.mu.Unlock()
+	p.refreshOwn(now)
+	if r := rowOf(t, p.stationRows(now), "station:ed25519:z"); r.Name != "TENDER" {
+		t.Errorf("a vessel decided before the restart lost its name while candidates were pending: %+v", r)
 	}
 	p.stations.restoreOwn(map[string]map[uint32]int64{"station:ed25519:k": {366000002: now.Add(-10 * time.Minute).Unix()}})
 	p.refreshOwn(now)

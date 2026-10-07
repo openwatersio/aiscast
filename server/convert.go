@@ -187,17 +187,26 @@ func runRebuildPositions1m(args []string) {
 	defer c.conn.Close()
 	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
 		start := time.Now()
-		if err := c.rebuildPositions1m(ctx, d); err != nil {
+		if err := c.rebuildDay(ctx, d); err != nil {
 			log.Fatalf("rebuild-positions-1m: %s: %v", d.Format("2006-01-02"), err)
-		}
-		if err := c.markDay(ctx, d); err != nil { // the station series, which the server rebuilds
-			log.Fatalf("rebuild-positions-1m: %s: station series: %v", d.Format("2006-01-02"), err)
-		}
-		if err := c.rebuildCoverage(ctx, d); err != nil {
-			log.Fatalf("rebuild-positions-1m: %s: coverage: %v", d.Format("2006-01-02"), err)
 		}
 		fmt.Printf("%s in %s\n", d.Format("2006-01-02"), time.Since(start).Round(time.Second))
 	}
+}
+
+// rebuildDay rebuilds what a day's receptions feed after a purge or a reload: positions_1m and coverage here, and
+// the station series, which the server rebuilds from the day's marked hours.
+func (c *chConn) rebuildDay(ctx context.Context, d time.Time) error {
+	if err := c.rebuildPositions1m(ctx, d); err != nil {
+		return err
+	}
+	if err := c.markDay(ctx, d); err != nil {
+		return fmt.Errorf("station series: %w", err)
+	}
+	if err := c.rebuildCoverage(ctx, d); err != nil {
+		return fmt.Errorf("coverage: %w", err)
+	}
+	return nil
 }
 
 func runClickHouseCleanup() {

@@ -169,7 +169,9 @@ func main() {
 		go runUDP(p, l)
 	}
 	if url := os.Getenv("CLICKHOUSE_URL"); url != "" {
-		p.stations.ownPending.Store(true) // until runStationSeries reads the candidates back
+		// Until runStationSeries reads the candidates back, or ownPendingMax passes without ClickHouse answering.
+		p.stations.ownPending.Store(true)
+		time.AfterFunc(ownPendingMax, func() { p.stations.ownPending.Store(false) })
 		go p.runClickHouse(url)
 		var sources []historySource
 		if os.Getenv("MARINECADASTRE") != "" {

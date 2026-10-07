@@ -229,6 +229,27 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Errorf("a rebuild after a version from the future: s3 %+v", counts["station:s3"])
 	}
 
+	// A marker younger than the settle time waits for the next run.
+	stationSeriesSettle = time.Hour
+	fresh := cur.AddDate(0, 0, -5)
+	if err := conn.markDay(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	stationSeriesSettle = 0
+	if built, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+".station_built WHERE toDate(hour) = toDate(?)", fresh); err != nil || built[0] != 0 {
+		t.Errorf("a day marked a moment ago was rebuilt: %v %v", built, err)
+	}
+	// rebuild-positions-1m's day marks the day for the series.
+	if err := conn.rebuildDay(ctx, cur.AddDate(0, 0, -6)); err != nil {
+		t.Fatal(err)
+	}
+	if hours, err := chColumn[uint64](ctx, conn.conn, "SELECT uniqExact(hour) FROM "+db+".station_dirty WHERE toDate(hour) = toDate(?)", cur.AddDate(0, 0, -6)); err != nil || hours[0] != 24 {
+		t.Errorf("rebuildDay marked %v hours, %v; want 24", hours, err)
+	}
+
 	own, err := conn.ownCandidates(ctx, now.Add(-2*time.Hour))
 	if err != nil || own["station:s1"][9] != recent.Unix() {
 		t.Errorf("own candidates %v, %v", own, err)

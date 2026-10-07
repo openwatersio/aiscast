@@ -50,7 +50,7 @@ The Signal K plugin sends the boat's own ship as `!AIVDO`. It does this for a li
 
 Every volunteer row (`udp:`, `station:`, `mmsi:`) gets a `near` field naming the place nearest the traffic it hears. Feed and aggregate rows get none. The field is present on named stations too, so a leaderboard can show "Quissett Harbor, near Falmouth, MA". `near` is a separate field rather than a value of `name`, so a script can tell a derived label from a chosen one.
 
-**The point.** The input is the station's 24-hour vessel map from phase 1, not including its own vessel. Each entry in the map keeps the last position the station itself heard for that vessel, so the point describes this station's traffic and needs no lookups. The point is the median latitude and the median longitude of those positions. Medians keep one bad position, or a vessel that has since sailed far away, from moving the point. The station needs at least 5 vessels with positions. Below that it keeps its last label, so a quiet night or a deploy does not blank it.
+**The point.** The input is the station's finest coverage cells over the last 7 days, from `station_coverage`, its own vessel's included. The median of their centers, taken separately for latitude and longitude, is robust to a few stray positions far away, and a station needs at least 5 cells for it to mean anything.
 
 The point describes the traffic, not the antenna. A receiver on a hill above a bay gets the town on the bay. That is the right label for coverage, and it means the label never pins down where the receiver sits.
 
@@ -208,13 +208,13 @@ Server only.
 - [x] 24-hour window. `vessels` and the per-source counts count only the last `vesselTTL`.
 - [x] Unique vessels over the window from `station_vessels`, each station id whole. `vessels_24h` and `vessels_exclusive_24h` on rows.
 - [x] 24-hour counts survive a restart: they come from ClickHouse's station series ([station-page.md](station-page.md#rollups)).
-- [x] Tests: exclusivity across stations, grouping of `/tag` rows, a duplicate counts as heard, a stale AISHub echo does not remove exclusivity, own vessel excluded, 30-minute `vessels` unchanged.
+- [x] Tests: exclusivity across stations, each station id whole, a duplicate counts as heard, a stale AISHub echo does not remove exclusivity, own vessel excluded, 30-minute `vessels` unchanged.
 - [x] [server/openapi.json](../server/openapi.json) and the client `Station` type. The station page gets a "Unique vessels" tile and the stations list can sort by it.
 
 ### Phase 2: coverage labels
 
 - [x] Build script that trims GeoNames `cities5000` and adds region and country names, and the embedded file.
-- [x] Median point from the positions in the 24-hour vessel map, the 5-vessel minimum, and the place rule: largest within 10 km, nearest within 25 km, region within 100 km. Recomputed every 10 minutes.
+- [x] Median point from the station's coverage cells, the 5-cell minimum, and the place rule.
 - [x] A `stations` table in `aiscast.db`, created with the store schema, holding the last label per station. Without a store (`STORE=off`), labels are computed but not kept.
 - [x] `near` on volunteer rows. Tests: median with an outlier, fewer than 5 vessels keeps the old label, each step of the place rule, nothing beyond 100 km, and US and non-US formats.
 - [x] Client: "Near Santa Monica, CA" as the title of an unnamed station, with the id suffix where two titles match. The stations list shows the same.
