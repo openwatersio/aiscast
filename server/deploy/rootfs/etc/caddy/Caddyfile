@@ -28,6 +28,7 @@ ais.openwaters.io {
 	log_append request_id {http.request.uuid}
 	@metrics path /metrics
 	respond @metrics 404
+	# Also compresses /v1/stream's SSE, which needs Caddy 2.11.7+: older ones hold the headers and don't flush per event (caddy#6293)
 	encode zstd gzip
 	reverse_proxy localhost:8080 {
 		header_up X-Request-Id {http.request.uuid}
