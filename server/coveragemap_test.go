@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +75,10 @@ func (f *fakeCoverageSource) coverageCells(_ context.Context, _, _ time.Time, ea
 		}
 	}
 	return nil
+}
+
+func (f *fakeCoverageSource) coverageStations(context.Context, time.Time, time.Time) ([]string, error) {
+	return slices.Collect(maps.Keys(f.stations)), nil
 }
 
 func (f *fakeCoverageSource) stationCoverageCells(_ context.Context, station string, first, last time.Time, each func(covRow) error) error {
@@ -262,8 +268,9 @@ func TestCoverageTiles(t *testing.T) {
 }
 
 // ?station= answers one station's cells over the network's window, with a TileJSON whose tiles carry the station
-// and whose bounds are its cells. A station is loaded once per network load, a station with no cells is 404, and
-// its tiles never come from the network's cache entries or another station's.
+// and whose bounds are its cells. A station is loaded once per network load, a station with no cells is 404
+// without a query, so ids anyone can make up cost nothing, and its tiles never come from the network's cache
+// entries or another station's.
 func TestCoverageStationTiles(t *testing.T) {
 	f := &fakeCoverageSource{
 		days:  []string{"2026-09-23", "2026-09-24", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29"},
@@ -332,20 +339,24 @@ func TestCoverageStationTiles(t *testing.T) {
 			t.Errorf("%s: %d, want 404", path, w.Code)
 		}
 	}
-	if f.stationLoads != 3 {
-		t.Errorf("a station with no cells loaded %d times, want once", f.stationLoads-2)
+	if f.stationLoads != 2 {
+		t.Errorf("a station with no cells loaded %d times, want none", f.stationLoads-2)
 	}
 	if w := get("/v1/coverage/tiles.json?station=" + strings.Repeat("x", 300)); w.Code != 400 {
 		t.Errorf("a 300-byte station: %d, want 400", w.Code)
 	}
 
-	// A network load replaces every station's.
+	// A network load replaces every station's, and the stations it knows.
 	f.stations["station:harbor/east"] = []covRow{covRowOf(t, 3, osloRes3, 30, 2, osloRes3Outline)}
+	f.stations["station:new"] = []covRow{covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)}
 	if err := p.coverage.load(context.Background(), f, time.Date(2026, 9, 30, 4, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 	if v := vessels("/v1/coverage/tiles/0/0/0?station=station:harbor/east", osloRes3); v != 5.0 {
 		t.Errorf("east after a reload: %v vessels a day", v)
+	}
+	if v := vessels("/v1/coverage/tiles/0/0/0?station=station:new", osloRes3); v != 1.0 {
+		t.Errorf("a station new to the reload: %v vessels a day", v)
 	}
 }
 
@@ -467,6 +478,9 @@ func TestCoverageFromClickHouse(t *testing.T) {
 			if r.vessels != want.vessels || r.days != want.days || r.stations != 1 {
 				t.Errorf("%s: %s's Oslo cell is %+v, want %d vessels over %d days", when, station, r, want.vessels, want.days)
 			}
+		}
+		if ids, err := conn.coverageStations(ctx, day1, day2); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"kystverket", "kystverket/2573010", "station:other"}) {
+			t.Errorf("%s: stations %v, %v", when, ids, err)
 		}
 		if err := conn.stationCoverageCells(ctx, "station:wild", day1, day2, func(c covRow) error {
 			t.Errorf("%s: the implausible station has cell %d", when, c.cell)

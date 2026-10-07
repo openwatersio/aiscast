@@ -65,6 +65,7 @@ type coverageData struct {
 	loaded   int64  // when this load was read, in nanoseconds; tiles are cached per load
 	cells    [len(coverageBands)][]covCell
 	index    [len(coverageBands)]map[[2]int][]int32 // tile at the band's first zoom -> cells overlapping it
+	stations map[string]bool                        // the network's: every station with coverage in the window
 }
 
 type coverageMap struct {
@@ -116,6 +117,8 @@ type coverageSource interface {
 	coverageDays(ctx context.Context, first, last time.Time) ([]string, error)
 	// coverageCells hands each cell heard from first to last to each.
 	coverageCells(ctx context.Context, first, last time.Time, each func(covRow) error) error
+	// coverageStations lists the stations with coverage from first to last.
+	coverageStations(ctx context.Context, first, last time.Time) ([]string, error)
 	// stationCoverageCells hands each cell one station heard from first to last to each.
 	stationCoverageCells(ctx context.Context, station string, first, last time.Time, each func(covRow) error) error
 }
@@ -181,6 +184,14 @@ func (c *coverageMap) load(ctx context.Context, src coverageSource, now time.Tim
 	if err != nil {
 		return err
 	}
+	ids, err := src.coverageStations(ctx, first, last)
+	if err != nil {
+		return err
+	}
+	d.stations = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		d.stations[id] = true
+	}
 	c.mu.Lock()
 	c.d, c.src = d, src
 	c.mu.Unlock()
@@ -204,6 +215,9 @@ func (c *coverageMap) stationData(ctx context.Context, station string, now time.
 	}
 	c.stationMu.Lock()
 	defer c.stationMu.Unlock()
+	if !net.stations[station] {
+		return &coverageData{}, nil // heard nothing in the window, or no such station: no query for an id anyone can make up
+	}
 	if s, ok := c.stations[station]; ok && s.net == net.loaded {
 		return s.d, nil
 	}
@@ -442,8 +456,6 @@ func (p *Pipeline) coverageFor(ctx context.Context, station string) (*coverageDa
 	if len(station) > 256 {
 		return nil, http.StatusBadRequest, errors.New("station id too long")
 	}
-	// ponytail: loads run one at a time, so a client asking for many stations queues the rest behind it within
-	// the tile rate limit; check the id against the stations heard if that is ever abused.
 	d, err := p.coverage.stationData(ctx, station, time.Now())
 	if err != nil {
 		return nil, http.StatusServiceUnavailable, err
@@ -527,8 +539,9 @@ TTL day + INTERVAL ` + chCoverageKeep + ` DELETE`
 const chCoverageStation = `if(source IN ('station', 'udp', 'mmsi', 'v1', 'http'), splitByChar('/', station)[1], source)`
 
 // chStreamFoldBefore is when ingest began keeping a volunteer's receptions under its own station whatever
-// stream its TAG block names: the deploy of 2026-10-05 finished at 15:05 UTC. Receptions before it carry the
-// stream as a suffix (station:mmsi:368168720/n2k), which chStationKey folds away.
+// stream its TAG block names: the deploy of 2026-10-05 finished at 15:05 UTC, and the cutoff leaves 25 minutes
+// of margin. Receptions before it carry the stream as a suffix (station:mmsi:368168720/n2k), which chStationKey
+// folds away. It goes by the reception's time, so the rows replay writes for those days fold too.
 const chStreamFoldBefore = "2026-10-05 15:30:00"
 
 // chVolunteerSources are the source kinds a volunteer's receiver sends under, as client/app/lib/ais.ts lists them.
@@ -671,6 +684,10 @@ func (c *chConn) coverageCells(ctx context.Context, first, last time.Time, each 
 	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, uniqExactState(`+chCoverageSources+`) AS s
 		FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND res >= ? AND res <= ? GROUP BY res, cell, day`,
 		each, first, last, uint8(coverageBands[0].res), uint8(coverageBands[len(coverageBands)-1].res))
+}
+
+func (c *chConn) coverageStations(ctx context.Context, first, last time.Time) ([]string, error) {
+	return chColumn[string](ctx, c.conn, "SELECT DISTINCT station FROM "+c.db+".station_coverage WHERE day >= ? AND day <= ?", first, last)
 }
 
 // stationCoverageCells answers coverageCells for the cells one station heard, each counting the one station.
