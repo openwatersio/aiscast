@@ -1542,3 +1542,53 @@ func TestClickHouseMovesOldReceptionsToTheColdTier(t *testing.T) {
 		t.Errorf("every position reads back, two from R2: %d %v", n, err)
 	}
 }
+
+// A day rebuilt in ranges of vessels holds what rebuilding it whole holds: every vessel lands in exactly one range,
+// the ranges' edges included, and a transmission's copies are grouped together.
+func TestClickHouseRebuildsPositions1mInSlices(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	var pts []trackPoint
+	for v := range 200 { // neighbouring MMSIs, so some sit on the edges
+		mmsi := uint32(257000000 + v)
+		for i := range 30 {
+			ts := day.Add(time.Duration(v*7+i*41) * time.Minute)
+			pt := trackPoint{mmsi: mmsi, ts: ts, lat6: int32((59 + float64(i)/100) * 600000), lon6: int32(10.7 * 600000), sog10: 100,
+				cog10: 3600, heading: 511, navStatus: 0, source: "kystverket", station: "kystverket", txAt: ts, txDisc: 1, recv: ts}
+			late := pt // a later copy of the same transmission from another source
+			late.source, late.station, late.recv, late.dup = "aishub", "aishub", ts.Add(30*time.Second), true
+			pts = append(pts, pt, late)
+		}
+	}
+	if err := conn.insert(ctx, "slices", pts); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := func(slices int) []string {
+		t.Helper()
+		was := rebuildSlices
+		rebuildSlices = slices
+		defer func() { rebuildSlices = was }()
+		if err := conn.rebuildPositions1m(ctx, day); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := chColumn[string](ctx, conn.conn, "SELECT toString((mmsi, slot, cell, ts, lat6, source)) FROM "+db+".positions_1m FINAL ORDER BY mmsi, slot, cell")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	whole, sliced := rebuilt(1), rebuilt(8)
+	if len(whole) == 0 || !slices.Equal(whole, sliced) {
+		t.Fatalf("rebuilt whole: %d rows; in 8 ranges: %d rows, or they differ", len(whole), len(sliced))
+	}
+}

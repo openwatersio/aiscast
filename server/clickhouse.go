@@ -178,7 +178,9 @@ func chFirstCopies(legacy bool, where string) string {
 // copy as the positions view does. positions_1m keeps the copy accepted when it was written, and a purge or a
 // reload does not move accepted to the copy left, so either is followed by this for each day it touched. Rows
 // the live writer adds meanwhile are kept: positions_1m keeps the latest row per window, so the two agree. It
-// groups in receptions' order, a vessel at a time, so a day stays within the memory a query may take.
+// rebuilds rebuildSlices ranges of vessels in turn, the ranges splitting the day's rows evenly: grouping a large day
+// whole, such as an archive's 36 M rows, outgrows the memory a load's query may take, and receptions sorts by vessel
+// first, so each range reads only its own rows. A transmission is one vessel's, so its copies never span two.
 func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	end := day.Add(24 * time.Hour)
 	legacy, err := c.legacy(ctx)
@@ -192,14 +194,44 @@ func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "optimize_aggregation_in_order": 1,
 		"max_threads": 2, "max_execution_time": 3600,
 	}))
+	levels := make([]string, 0, rebuildSlices-1)
+	for i := 1; i < rebuildSlices; i++ {
+		levels = append(levels, fmt.Sprint(float64(i)/float64(rebuildSlices)))
+	}
+	edges := []uint32{0}
+	if len(levels) > 0 {
+		var qs []uint32
+		if err := c.conn.QueryRow(ctx, "SELECT arrayMap(x -> if(isNaN(x), 0, toUInt32(x)), quantiles("+strings.Join(levels, ", ")+")(mmsi)) FROM "+c.db+
+			".receptions WHERE ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE", day, end).Scan(&qs); err != nil {
+			return err
+		}
+		for _, e := range qs {
+			if e > edges[len(edges)-1] {
+				edges = append(edges, e)
+			}
+		}
+	}
 	q := `INSERT INTO {db}.positions_1m
 	SELECT mmsi, toDateTime(if(f.9, toStartOfMinute(f.1), toStartOfInterval(f.1, INTERVAL 30 MINUTE)), 'UTC') AS slot,
 	       if(f.9, 0, ` + chCellOf("f.2", "f.3") + `) AS cell,
 	       f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
-	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE") + `)
+	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE AND mmsi >= ? AND mmsi <= ?") + `)
 	WHERE f.1 >= ? AND f.1 < ?`
-	return c.conn.Exec(ctx, strings.ReplaceAll(q, "{db}", c.db), day, end, day, end)
+	q = strings.ReplaceAll(q, "{db}", c.db)
+	for i, lo := range edges {
+		hi := uint32(math.MaxUint32)
+		if i+1 < len(edges) {
+			hi = edges[i+1] - 1
+		}
+		if err := c.conn.Exec(ctx, q, day, end, lo, hi, day, end); err != nil {
+			return err
+		}
+	}
+	return nil
 }
+
+// rebuildSlices is how many ranges of vessels a day of positions_1m is rebuilt in.
+var rebuildSlices = 8
 
 // chWriter inserts a batch of positions under a deduplication token, so ClickHouse skips a batch it already
 // holds; tests fake it.
