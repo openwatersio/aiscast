@@ -368,6 +368,15 @@ func (p *Pipeline) noteOwn(ev *Event) {
 		p.ch.ownRefused.Add(1) // the sender's allowance, which a replay of the same messages refuses again
 		return
 	}
+	if !known && len(p.chOwnClaimed) >= maxOwnPending {
+		// A full map makes room from earlier hours first: their claims bound nothing arriving now, so a busy hour
+		// never costs the next one its senders.
+		for old := range p.chOwnClaimed {
+			if old.hour < recvHour {
+				delete(p.chOwnClaimed, old)
+			}
+		}
+	}
 	if !ok && len(p.chOwn) >= maxOwnPending || !known && len(p.chOwnClaimed) >= maxOwnPending {
 		p.ch.ownDropped.Add(1)
 		return

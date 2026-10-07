@@ -1704,6 +1704,22 @@ func TestClickHouseDrainsPositionsPastAnOwnFailure(t *testing.T) {
 	}
 }
 
+// A busy hour's claims make way for the next hour's senders rather than refusing them until a flush prunes them.
+func TestClickHouseClaimsMakeWayForTheNextHour(t *testing.T) {
+	p := testPipeline(t)
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}})
+	h := time.Now().Truncate(time.Hour)
+	for m := range uint32(maxOwnPending) {
+		p.noteOwn(&Event{Station: fmt.Sprintf("udp:%d", m), Time: h, RecvTime: h, Packet: posReport(200000000+m, 59.9, 10.7)})
+	}
+	p.flushClickHouse()
+	next := h.Add(time.Hour)
+	p.noteOwn(&Event{Station: "udp:new", Time: next, RecvTime: next, Packet: posReport(368168720, 59.9, 10.7)})
+	if _, ok := p.chOwn[ownKey{"udp:new", next.Unix() / 3600, 368168720}]; !ok {
+		t.Errorf("a sender in the next hour was refused by the last hour's claims (%d dropped)", p.ch.ownDropped.Load())
+	}
+}
+
 // Claims count by the hour the server received a message, so stamping own-ship reports across many hours opens no
 // new allowance.
 func TestClickHouseCountsOwnShipClaimsByArrival(t *testing.T) {
