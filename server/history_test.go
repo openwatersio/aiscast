@@ -198,8 +198,19 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	s.list = func(context.Context) ([]historyFile, error) {
 		return []historyFile{{name: "csv2/csv2026/ais-2026-06-30.csv.zst", day: day, size: 101, etag: "0x2"}}, nil
 	}
+	// a cell the earlier load counted that the changed file no longer has, in each coverage table
+	if err := conn.exec(ctx,
+		"INSERT INTO {db}.station_coverage (day, station, res, cell, source, vessels) SELECT toDate('2026-06-30'), 'marinecadastre', 6, 1, 'marinecadastre', uniqExactState(toUInt32(1))",
+		"INSERT INTO {db}.coverage (day, res, cell, vessels, stations) SELECT toDate('2026-06-30'), 6, 1, uniqExactState(toUInt32(1)), uniqExactState('marinecadastre')"); err != nil {
+		t.Fatal(err)
+	}
 	if err := conn.loadHistory(ctx, s, stats); err != nil {
 		t.Fatal(err)
+	}
+	for _, table := range []string{"coverage", "station_coverage"} {
+		if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+"."+table+" WHERE cell = 1"); err != nil || len(n) != 1 || n[0] != 0 {
+			t.Errorf("%s keeps a cell the reloaded day no longer has: %v %v", table, n, err)
+		}
 	}
 	if again := rows(); len(again) != 8 {
 		t.Errorf("a changed file replaces its day rather than adding to it: %d rows", len(again))

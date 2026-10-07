@@ -1,20 +1,24 @@
 package main
 
-// The coverage map: where there are vessel positions, from any source. ClickHouse keeps coverage, the distinct
-// vessels and stations in each H3 cell each day, filled by a materialized view as receptions are written and once from the
-// receptions it already held. The server reads the last coverageDays complete days of it, holds each cell's outline and
-// counts, and serves them as vector tiles: GET /v1/coverage/tiles/{z}/{x}/{y} and its TileJSON,
-// /v1/coverage/tiles.json. The outlines come from ClickHouse's H3 functions in the same query, so the server
+// The coverage map: where there are vessel positions, from any source. ClickHouse keeps station_coverage, the
+// distinct vessels each station heard in each H3 cell each day, filled by a materialized view as receptions are
+// written and once from the receptions it already held. The server reads the last coverageDays complete days of
+// it, merged across stations, holds each cell's outline and counts, and serves them as vector tiles:
+// GET /v1/coverage/tiles/{z}/{x}/{y} and its TileJSON, /v1/coverage/tiles.json. With ?station=, they serve one
+// station's cells, loaded when first asked for. The outlines come from ClickHouse's H3 functions in the same query, so the server
 // has no H3 code of its own. The window moves once a day, so tiles are built once per load and kept.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -67,7 +71,20 @@ type coverageMap struct {
 	mu    sync.RWMutex
 	d     *coverageData // nil until the first load that found a day of coverage
 	tiles tileCache
+
+	src       coverageSource // set by each network load; station loads read through it
+	stationMu sync.Mutex     // one station load at a time, so a burst of requests for one station loads it once
+	stations  map[string]stationCoverage
 }
+
+// stationCoverage is one station's cells, loaded for the network load net names.
+type stationCoverage struct {
+	net int64
+	d   *coverageData
+}
+
+// stationCoverageMax bounds the stations whose cells are kept, so requests for many stations cost loads, not memory.
+const stationCoverageMax = 256
 
 func newCoverageMap() *coverageMap {
 	return &coverageMap{tiles: tileCache{ttl: coverageReload}}
@@ -92,13 +109,15 @@ type covRow struct {
 
 // coverageSource is where coverage comes from: ClickHouse (chConn), or a fake in tests.
 type coverageSource interface {
-	// coverageBackfill fills coverage from the receptions written before its view existed, for each day from
-	// today back to since.
+	// coverageBackfill fills the coverage tables from the receptions written before their views existed, for
+	// each day from today back to since.
 	coverageBackfill(ctx context.Context, since time.Time) error
 	// coverageDays lists the days from first to last that hold coverage, as YYYY-MM-DD.
 	coverageDays(ctx context.Context, first, last time.Time) ([]string, error)
 	// coverageCells hands each cell heard from first to last to each.
 	coverageCells(ctx context.Context, first, last time.Time, each func(covRow) error) error
+	// stationCoverageCells hands each cell one station heard from first to last to each.
+	stationCoverageCells(ctx context.Context, station string, first, last time.Time, each func(covRow) error) error
 }
 
 // runCoverage waits for ClickHouse, backfills the map's window from the receptions it held before, then loads
@@ -142,21 +161,88 @@ func (p *Pipeline) runCoverage() {
 	}
 }
 
-// load reads the coverageDays complete UTC days before now and publishes them. A window with no coverage
-// leaves the map unavailable rather than empty, so a client can tell "not loaded" from "heard nothing".
+// coverageWindow is the coverageDays complete UTC days before now that the map shows.
+func coverageWindow(now time.Time) (first, last time.Time) {
+	last = now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	return last.AddDate(0, 0, 1-coverageDays), last
+}
+
+// load reads the network's coverage for the window and publishes it. A window with no coverage leaves the map
+// unavailable rather than empty, so a client can tell "not loaded" from "heard nothing".
 func (c *coverageMap) load(ctx context.Context, src coverageSource, now time.Time) error {
-	last := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
-	first := last.AddDate(0, 0, 1-coverageDays)
+	first, last := coverageWindow(now)
 	days, err := src.coverageDays(ctx, first, last)
 	if err != nil || len(days) == 0 {
 		return err
 	}
-	d := &coverageData{from: first.Format("2006-01-02"), to: last.Format("2006-01-02"), days: len(days), loaded: now.UnixNano()}
+	d, err := buildCoverage(first, last, len(days), now, func(each func(covRow) error) error {
+		return src.coverageCells(ctx, first, last, each)
+	})
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.d, c.src = d, src
+	c.mu.Unlock()
+	n := 0
+	for _, cells := range d.cells {
+		n += len(cells)
+	}
+	log.Printf("coverage: %d cells, %s to %s (%d days)", n, d.from, d.to, d.days)
+	return nil
+}
+
+// stationData is one station's coverage for the network's window, loaded from ClickHouse the first time it is
+// asked for after each network load and kept until the next, its vessels averaged over the days the network has
+// coverage for, as the network's cells are. A station that heard nothing in the window has an empty one.
+func (c *coverageMap) stationData(ctx context.Context, station string, now time.Time) (*coverageData, error) {
+	c.mu.RLock()
+	src, net := c.src, c.d
+	c.mu.RUnlock()
+	if net == nil {
+		return nil, errNoCoverage
+	}
+	c.stationMu.Lock()
+	defer c.stationMu.Unlock()
+	if s, ok := c.stations[station]; ok && s.net == net.loaded {
+		return s.d, nil
+	}
+	first, err1 := time.Parse("2006-01-02", net.from)
+	last, err2 := time.Parse("2006-01-02", net.to)
+	if err := cmp.Or(err1, err2); err != nil {
+		return nil, err
+	}
+	d, err := buildCoverage(first, last, net.days, now, func(each func(covRow) error) error {
+		return src.stationCoverageCells(ctx, station, first, last, each)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if c.stations == nil {
+		c.stations = map[string]stationCoverage{}
+	}
+	// ponytail: past the bound, drop the stations from earlier loads, and failing that any one.
+	if len(c.stations) >= stationCoverageMax {
+		maps.DeleteFunc(c.stations, func(_ string, s stationCoverage) bool { return s.net != net.loaded })
+		for k := range c.stations {
+			if len(c.stations) < stationCoverageMax {
+				break
+			}
+			delete(c.stations, k)
+		}
+	}
+	c.stations[station] = stationCoverage{net: net.loaded, d: d}
+	return d, nil
+}
+
+// buildCoverage reads cells through fetch into a window's coverage, its vessels averaged over days.
+func buildCoverage(first, last time.Time, days int, now time.Time, fetch func(each func(covRow) error) error) (*coverageData, error) {
+	d := &coverageData{from: first.Format("2006-01-02"), to: last.Format("2006-01-02"), days: days, loaded: now.UnixNano()}
 	res := make(map[int]int, len(coverageBands))
 	for b, band := range coverageBands {
 		res[band.res] = b
 	}
-	err = src.coverageCells(ctx, first, last, func(r covRow) error {
+	err := fetch(func(r covRow) error {
 		b, ok := res[r.res]
 		if !ok {
 			return nil
@@ -165,23 +251,47 @@ func (c *coverageMap) load(ctx context.Context, src coverageSource, now time.Tim
 		if err != nil {
 			return err
 		}
-		cell.vessels, cell.days, cell.stations = float64(r.vessels)/float64(d.days), r.days, r.stations
+		cell.vessels, cell.days, cell.stations = float64(r.vessels)/float64(max(d.days, 1)), r.days, r.stations
 		d.cells[b] = append(d.cells[b], cell)
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	d.buildIndex()
-	c.mu.Lock()
-	c.d = d
-	c.mu.Unlock()
-	n := 0
+	return d, nil
+}
+
+// empty reports whether the window holds no cells.
+func (d *coverageData) empty() bool {
 	for _, cells := range d.cells {
-		n += len(cells)
+		if len(cells) > 0 {
+			return false
+		}
 	}
-	log.Printf("coverage: %d cells, %s to %s (%d days)", n, d.from, d.to, d.days)
-	return nil
+	return true
+}
+
+// bounds is the extent of the cells at the finest resolution as [west, south, east, north], from the middle 90% of
+// their centers on each axis, so a few bad or spoofed positions an ocean away do not stretch it.
+// ponytail: centers sort plainly, so cells either side of the antimeridian give a box the long way round.
+func (d *coverageData) bounds() []float64 {
+	cells := d.cells[len(coverageBands)-1]
+	if len(cells) == 0 {
+		return []float64{-180, -mercatorLat, 180, mercatorLat}
+	}
+	xs, ys := make([]float64, len(cells)), make([]float64, len(cells))
+	for i, c := range cells {
+		xs[i], ys[i] = float64(c.minX+c.maxX)/2, float64(c.minY+c.maxY)/2
+	}
+	slices.Sort(xs)
+	slices.Sort(ys)
+	at := func(v []float64, q float64) float64 { return v[int(math.Round(q*float64(len(v)-1)))] }
+	lon := func(x float64) float64 { return x*360 - 180 }
+	lat := func(y float64) float64 { return math.Atan(math.Sinh(math.Pi*(1-2*y))) * 180 / math.Pi }
+	// The cell's own size around the trimmed centers, so a station of one cell still has a box.
+	pad := float64(cells[0].maxX - cells[0].minX)
+	return []float64{lon(at(xs, 0.05) - pad), lat(at(ys, 0.95) + pad), lon(at(xs, 0.95) + pad), lat(at(ys, 0.05) - pad)}
 }
 
 // covCellFrom projects a cell's outline to world units. A cell that crosses the antimeridian is drawn whole on
@@ -303,20 +413,45 @@ func (p *Pipeline) serveCoverageTile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tile out of range", http.StatusBadRequest)
 		return
 	}
-	var d *coverageData
-	if p.coverage != nil {
-		d = p.coverage.data()
-	}
-	if d == nil {
-		http.Error(w, errNoCoverage.Error(), http.StatusServiceUnavailable)
+	station := r.URL.Query().Get("station")
+	d, status, err := p.coverageFor(r.Context(), station)
+	if err != nil {
+		http.Error(w, err.Error(), status)
 		return
 	}
-	// Keyed by the load, so a reload never serves a tile built from the one before it, even when a day
-	// inside the window was repackaged and the window's dates did not move.
-	b := p.coverage.tiles.get(fmt.Sprintf("%d/%d/%d/%d", d.loaded, z, x, y), time.Now(), func() []byte {
+	// Keyed by the station and the load, so a reload never serves a tile built from the one before it, even when
+	// a day inside the window was repackaged and the window's dates did not move.
+	b := p.coverage.tiles.get(fmt.Sprintf("%s/%d/%d/%d/%d", station, d.loaded, z, x, y), time.Now(), func() []byte {
 		return gzipBytes(d.tile(z, x, y))
 	})
 	writeTile(w, r, b, "public, max-age=3600")
+}
+
+// errNoStationCoverage answers a station that heard nothing in the window, or that no station is called.
+var errNoStationCoverage = errors.New("this station has no coverage in the window")
+
+// coverageFor is the network's coverage, or one station's when station is set, with the status to answer when
+// there is none.
+func (p *Pipeline) coverageFor(ctx context.Context, station string) (*coverageData, int, error) {
+	if p.coverage == nil || p.coverage.data() == nil {
+		return nil, http.StatusServiceUnavailable, errNoCoverage
+	}
+	if station == "" {
+		return p.coverage.data(), 0, nil
+	}
+	if len(station) > 256 {
+		return nil, http.StatusBadRequest, errors.New("station id too long")
+	}
+	// ponytail: loads run one at a time, so a client asking for many stations queues the rest behind it within
+	// the tile rate limit; check the id against the stations heard if that is ever abused.
+	d, err := p.coverage.stationData(ctx, station, time.Now())
+	if err != nil {
+		return nil, http.StatusServiceUnavailable, err
+	}
+	if d.empty() {
+		return nil, http.StatusNotFound, errNoStationCoverage
+	}
+	return d, 0, nil
 }
 
 // coverageFields describes the layer's attributes in TileJSON, as openapi.json does.
@@ -329,31 +464,33 @@ var coverageFields = map[string]string{
 // serveCoverageTileJSON: GET /v1/coverage/tiles.json → TileJSON for the coverage tiles, plus the window they
 // cover.
 func (p *Pipeline) serveCoverageTileJSON(w http.ResponseWriter, r *http.Request) {
-	var d *coverageData
-	if p.coverage != nil {
-		d = p.coverage.data()
-	}
-	if d == nil {
+	station := r.URL.Query().Get("station")
+	d, status, err := p.coverageFor(r.Context(), station)
+	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{"error": errNoCoverage.Error()})
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	scheme := "http"
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
+	name, desc, query, bounds := "Open Waters AIS coverage", "Where there are vessel positions from any source", "", []float64{-180, -mercatorLat, 180, mercatorLat}
+	if station != "" {
+		name, desc, query, bounds = "Open Waters AIS coverage of "+station, "Where "+station+" heard vessel positions", "?station="+url.QueryEscape(station), d.bounds()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	json.NewEncoder(w).Encode(map[string]any{
 		"tilejson":      "3.0.0",
-		"name":          "Open Waters AIS coverage",
-		"description":   fmt.Sprintf("Where there are vessel positions from any source for the %d days ending %s, by H3 cell", coverageDays, d.to),
+		"name":          name,
+		"description":   fmt.Sprintf("%s for the %d days ending %s, by H3 cell", desc, coverageDays, d.to),
 		"attribution":   tileAttribution,
-		"tiles":         []string{scheme + "://" + r.Host + "/v1/coverage/tiles/{z}/{x}/{y}"},
+		"tiles":         []string{scheme + "://" + r.Host + "/v1/coverage/tiles/{z}/{x}/{y}" + query},
 		"minzoom":       0,
 		"maxzoom":       coverageMaxZoom,
-		"bounds":        []float64{-180, -mercatorLat, 180, mercatorLat},
+		"bounds":        bounds,
 		"vector_layers": []map[string]any{{"id": coverageLayer, "fields": coverageFields, "minzoom": 0, "maxzoom": coverageMaxZoom}},
 		"window":        map[string]any{"from": d.from, "to": d.to, "days": d.days},
 	})
@@ -389,12 +526,59 @@ TTL day + INTERVAL ` + chCoverageKeep + ` DELETE`
 // as client/app/lib/ais.ts lists them.
 const chCoverageStation = `if(source IN ('station', 'udp', 'mmsi', 'v1', 'http'), splitByChar('/', station)[1], source)`
 
+// chStreamFoldBefore is when ingest began keeping a volunteer's receptions under its own station whatever
+// stream its TAG block names: the deploy of 2026-10-05 finished at 15:05 UTC. Receptions before it carry the
+// stream as a suffix (station:mmsi:368168720/n2k), which chStationKey folds away.
+const chStreamFoldBefore = "2026-10-05 15:30:00"
+
+// chVolunteerSources are the source kinds a volunteer's receiver sends under, as client/app/lib/ais.ts lists them.
+const chVolunteerSources = "('station', 'udp', 'mmsi', 'v1', 'http')"
+
+// chStationKey is the station a reception counts toward in station_coverage: the station as receptions holds
+// it, a feed's receiver or path included, and for a volunteer's receptions from before chStreamFoldBefore, the
+// part before the first slash, which can merge two stations whose token subjects hold a slash in that period.
+const chStationKey = `if(source IN ` + chVolunteerSources + ` AND ts < toDateTime64('` + chStreamFoldBefore + `', 3, 'UTC'), splitByChar('/', station)[1], station)`
+
+// chStationCoverageTable keeps each day's distinct vessels per cell and station at each resolution the map
+// draws, so the network map merges stations per cell and a station's page reads its own cells. Ordered by day
+// first: the network map reads every resolution of the window, and one station's cells are then a range in
+// each day. Distinct sets merge as unions, as in coverage. A station's source is kept beside it, so the network
+// map counts a feed's receivers and paths as the one source they are.
+var chStationCoverageTable = `CREATE TABLE IF NOT EXISTS {db}.station_coverage (
+	day     Date,
+	station LowCardinality(String),
+	res     UInt8,
+	cell    UInt64,
+	source  LowCardinality(String),
+	vessels AggregateFunction(uniqExact, UInt32)
+) ENGINE = AggregatingMergeTree
+PARTITION BY toYYYYMM(day)
+ORDER BY (day, station, res, cell, source)
+TTL day + INTERVAL ` + chCoverageKeep + ` DELETE`
+
+// chCoverageSources counts a row of station_coverage toward the network's stations: a volunteer's station
+// whole, and a feed or aggregator once by its source, as chCoverageStation does.
+const chCoverageSources = `if(source IN ` + chVolunteerSources + `, station, source)`
+
+// chStationCoverageSelect bins positions from a table into station_coverage rows, as chCoverageSelect bins coverage.
+func chStationCoverageSelect(table, and string) string {
+	return chCoverageBin(table, and, "source, "+chStationKey+" AS station, uniqExactState(mmsi) AS vessels", "station, source")
+}
+
 // chCoverageSelect bins positions from a table into coverage rows, those within chCoverageKeep and matching
 // and, when it is not empty: each position's cell at the finest resolution, and the cells that contain it at
 // the coarser ones, so every resolution nests exactly. The argument order is set here because ClickHouse
 // releases have disagreed on whether geoToH3 takes latitude or longitude first, and a view keeps the order it
 // was created with.
 func chCoverageSelect(table, and string) string {
+	return chCoverageBin(table, and, "uniqExactState(mmsi) AS vessels, uniqExactState("+chCoverageStation+") AS stations", "")
+}
+
+// chCoverageBin is the binning both coverage tables share: cols after day, res, and cell, grouped by those and by.
+func chCoverageBin(table, and, cols, by string) string {
+	if by != "" {
+		by = ", " + by
+	}
 	res := make([]string, len(coverageBands))
 	for i, b := range coverageBands {
 		res[i] = fmt.Sprint(b.res)
@@ -405,50 +589,56 @@ func chCoverageSelect(table, and string) string {
 	}
 	finest := coverageBands[len(coverageBands)-1].res
 	return fmt.Sprintf(`SELECT toDate(ts) AS day, res, h3ToParent(geoToH3(lat6 / 600000, lon6 / 600000, %d), res) AS cell,
-		uniqExactState(mmsi) AS vessels, uniqExactState(%s) AS stations
+		%s
 	FROM %s ARRAY JOIN [%s] AS res %s
-	GROUP BY day, res, cell
-	SETTINGS geotoh3_argument_order = 'lat_lon'`, finest, chCoverageStation, table, strings.Join(res, ", "), where)
+	GROUP BY day, res, cell%s
+	SETTINGS geotoh3_argument_order = 'lat_lon'`, finest, cols, table, strings.Join(res, ", "), where, by)
 }
 
-// coverageBackfill bins each day from today back to since, no further than chCoverageKeep, that the backfill
-// has not yet covered: receptions loaded before the view existed, which never passed through it. It runs newest first so the window fills first, one
-// day per query so the largest day stays within ClickHouse's memory, and records each day as it finishes, an
-// empty one too. Days are counted back from today rather than read from partitions, so it never depends on how
-// receptions is partitioned. A day the view and the backfill both cover counts each vessel once.
+// chCoverageTables are the tables coverageBackfill fills, each with the ledger of the days it has binned and the
+// query that bins one day.
+var chCoverageTables = []struct{ table, ledger, insert string }{
+	{"station_coverage", "station_coverage_backfilled", "INSERT INTO {db}.station_coverage (day, res, cell, source, station, vessels) " + chStationCoverageSelect("{db}.receptions", chUsable+" AND ts >= ? AND ts < ?")},
+	{"coverage", "coverage_backfilled", "INSERT INTO {db}.coverage " + chCoverageSelect("{db}.receptions", chUsable+" AND ts >= ? AND ts < ?")},
+}
+
+// coverageBackfill bins each day from today back to since, no further than chCoverageKeep, that a table's backfill
+// has not yet covered: receptions loaded before its view existed, which never passed through it. It runs newest
+// first so the window fills first, one day and table per query so the largest day stays within ClickHouse's
+// memory, and records each day as it finishes, an empty one too. Days are counted back from today rather than
+// read from partitions, so it never depends on how receptions is partitioned. A day the view and the backfill
+// both cover counts each vessel once.
 func (c *chConn) coverageBackfill(ctx context.Context, since time.Time) error {
-	done := map[string]bool{}
-	rows, err := c.conn.Query(ctx, "SELECT toString(day) FROM "+c.db+".coverage_backfilled FINAL")
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var day string
-		if err := rows.Scan(&day); err != nil {
-			rows.Close()
+	done := map[string]map[string]bool{}
+	for _, t := range chCoverageTables {
+		days, err := chColumn[string](ctx, c.conn, "SELECT toString(day) FROM "+c.db+"."+t.ledger+" FINAL")
+		if err != nil {
 			return err
 		}
-		done[day] = true
+		done[t.table] = map[string]bool{}
+		for _, d := range days {
+			done[t.table][d] = true
+		}
 	}
-	rows.Close()
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	oldest := today.AddDate(0, -chCoverageMonths, 0)
 	if since = since.UTC().Truncate(24 * time.Hour); since.After(oldest) {
 		oldest = since
 	}
-	q := "INSERT INTO " + c.db + ".coverage " + chCoverageSelect(c.db+".receptions", chUsable+" AND ts >= ? AND ts < ?")
 	n := 0
 	for day := today; !day.Before(oldest); day = day.AddDate(0, 0, -1) {
-		if done[day.Format("2006-01-02")] {
-			continue
+		for _, t := range chCoverageTables {
+			if done[t.table][day.Format("2006-01-02")] {
+				continue
+			}
+			if err := c.conn.Exec(ctx, strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1)); err != nil {
+				return fmt.Errorf("%s %s: %w", t.table, day.Format("2006-01-02"), err)
+			}
+			if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+"."+t.ledger+" VALUES (?)", day); err != nil {
+				return err
+			}
+			n++
 		}
-		if err := c.conn.Exec(ctx, q, day, day.AddDate(0, 0, 1)); err != nil {
-			return fmt.Errorf("%s: %w", day.Format("2006-01-02"), err)
-		}
-		if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".coverage_backfilled VALUES (?)", day); err != nil {
-			return err
-		}
-		n++
 	}
 	if n > 0 {
 		log.Printf("coverage: binned %d days of receptions", n)
@@ -457,8 +647,8 @@ func (c *chConn) coverageBackfill(ctx context.Context, since time.Time) error {
 }
 
 func (c *chConn) coverageDays(ctx context.Context, first, last time.Time) ([]string, error) {
-	rows, err := c.conn.Query(ctx, "SELECT DISTINCT toString(day) FROM "+c.db+".coverage WHERE res = ? AND day >= ? AND day <= ? ORDER BY 1",
-		uint8(coverageBands[0].res), first, last)
+	rows, err := c.conn.Query(ctx, "SELECT DISTINCT toString(day) FROM "+c.db+".station_coverage WHERE day >= ? AND day <= ? ORDER BY 1",
+		first, last)
 	if err != nil {
 		return nil, err
 	}
@@ -474,16 +664,29 @@ func (c *chConn) coverageDays(ctx context.Context, first, last time.Time) ([]str
 	return days, rows.Err()
 }
 
-// coverageCells answers each cell's window from each day's distinct vessels and the window's distinct stations,
-// with its outline as (lat, lon) pairs, the order the result setting fixes.
+// coverageCells answers each cell's window from each day's distinct vessels across stations and the window's
+// distinct stations, a feed's counted once by its source, with its outline as (lat, lon) pairs, the order the
+// result setting fixes.
 func (c *chConn) coverageCells(ctx context.Context, first, last time.Time, each func(covRow) error) error {
+	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, uniqExactState(`+chCoverageSources+`) AS s
+		FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND res >= ? AND res <= ? GROUP BY res, cell, day`,
+		each, first, last, uint8(coverageBands[0].res), uint8(coverageBands[len(coverageBands)-1].res))
+}
+
+// stationCoverageCells answers coverageCells for the cells one station heard, each counting the one station.
+func (c *chConn) stationCoverageCells(ctx context.Context, station string, first, last time.Time, each func(covRow) error) error {
+	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, uniqExactState(station) AS s
+		FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND station = ? AND res >= ? AND res <= ? GROUP BY res, cell, day`,
+		each, first, last, station, uint8(coverageBands[0].res), uint8(coverageBands[len(coverageBands)-1].res))
+}
+
+// coverageQuery folds days, a query answering each cell's vessels v and stations s for each day, into the window.
+func (c *chConn) coverageQuery(ctx context.Context, days string, each func(covRow) error, args ...any) error {
 	rows, err := c.conn.Query(ctx, `WITH h3ToGeoBoundary(cell) AS b
 		SELECT res, cell, sum(v), count(), uniqExactMerge(s), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
-		FROM (SELECT res, cell, day, uniqExactMerge(vessels) AS v, uniqExactMergeState(stations) AS s FROM `+c.db+`.coverage
-			WHERE day >= ? AND day <= ? AND res >= ? AND res <= ? GROUP BY res, cell, day)
+		FROM (`+days+`)
 		GROUP BY res, cell
-		SETTINGS h3togeo_lon_lat_result_order = 0`,
-		first, last, uint8(coverageBands[0].res), uint8(coverageBands[len(coverageBands)-1].res))
+		SETTINGS h3togeo_lon_lat_result_order = 0`, args...)
 	if err != nil {
 		return err
 	}

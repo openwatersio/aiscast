@@ -34,7 +34,7 @@ The smallest map that answers "is my area on the feed?", on the network page at 
 
 ### ClickHouse: `coverage`
 
-[station-page.md](station-page.md#rollups) plans `station_coverage`, keyed by station as well, to replace this table, so the same cells answer the network map and each station's footprint.
+The map reads `station_coverage`, the same cells keyed by station as well, so the same rows answer the network map and each station's footprint ([station-page.md](station-page.md#rollups)). `coverage` is written beside it for one release, so the previous server keeps its map on rollback, and is then dropped.
 
 One row per (`day`, `res`, `cell`), beside `receptions` in the ClickHouse database the server writes:
 
