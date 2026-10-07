@@ -801,11 +801,11 @@ func TestCoverageStationCaches(t *testing.T) {
 		t.Errorf("%d loads with %d stations held, want a loaded again after b took its room", f.stationLoads, len(p.coverage.stations))
 	}
 	// A station past the bound on its own, as a feed can be when ClickHouse holds more than the network's load, is
-	// served and not kept.
+	// kept alone, so its tiles do not each load it again.
 	get("/v1/coverage/tiles/0/0/0?station=station:big")
-	get("/v1/coverage/tiles/0/0/0?station=station:big")
-	if _, held := p.coverage.stations["station:big"]; held || f.stationLoads != 5 {
-		t.Errorf("a station of 6 cells against a bound of 4: held %v, %d loads", held, f.stationLoads)
+	get("/v1/coverage/tiles/1/1/0?station=station:big")
+	if _, held := p.coverage.stations["station:big"]; !held || len(p.coverage.stations) != 1 || f.stationLoads != 4 {
+		t.Errorf("a station of 6 cells against a bound of 4: held %v with %d others, %d loads", held, len(p.coverage.stations)-1, f.stationLoads)
 	}
 }
 
@@ -869,5 +869,15 @@ func TestCoverageStationEmptyLoadIsNotKept(t *testing.T) {
 	f.stations["station:a"] = []covRow{row}
 	if code := get(); code != 200 {
 		t.Errorf("after the rebuild: %d, want the station's cells", code)
+	}
+}
+
+// A day's binning runs past the driver's five-minute read timeout only under a context deadline, which overrides
+// it; without one, a busy day fails at five minutes and its backfill retries it forever.
+func TestCoverageBinningOutlastsTheReadTimeout(t *testing.T) {
+	ctx, cancel := chBinning(context.Background())
+	defer cancel()
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < 30*time.Minute {
+		t.Errorf("binning deadline %v, %v; want one well past the driver's five minutes", deadline, ok)
 	}
 }
