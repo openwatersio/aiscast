@@ -306,6 +306,7 @@ func TestCoverageStationTiles(t *testing.T) {
 	var tj struct {
 		Tiles  []string
 		Bounds []float64
+		Fit    []float64
 		Window struct{ From, To string }
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &tj); err != nil || w.Code != 200 {
@@ -314,8 +315,12 @@ func TestCoverageStationTiles(t *testing.T) {
 	if len(tj.Tiles) != 1 || tj.Tiles[0] != "http://ais.example/v1/coverage/tiles/{z}/{x}/{y}?station=station%3Aharbor%2Feast" {
 		t.Errorf("tiles %v", tj.Tiles)
 	}
-	if b := tj.Bounds; len(b) != 4 || b[0] > 10.7 || b[2] < 10.7 || b[1] > 59.9 || b[3] < 59.9 || b[2]-b[0] > 1 || b[3]-b[1] > 1 {
-		t.Errorf("bounds %v, want a box around the Oslo cell", b)
+	// bounds take in the resolution-3 cell drawn at low zooms, and fit only the finest cell
+	if b := tj.Bounds; len(b) != 4 || b[0] > 9.36 || b[2] < 11.35 || b[1] > 59.31 || b[3] < 60.27 {
+		t.Errorf("bounds %v, want the resolution-3 Oslo cell's extent", b)
+	}
+	if b := tj.Fit; len(b) != 4 || b[0] > 10.7 || b[2] < 10.7 || b[1] > 59.9 || b[3] < 59.9 || b[2]-b[0] > 0.2 || b[3]-b[1] > 0.2 {
+		t.Errorf("fit %v, want a box around the resolution-6 Oslo cell", b)
 	}
 	if tj.Window.From != "2026-09-23" || tj.Window.To != "2026-09-29" || f.first.Format("2006-01-02") != "2026-09-23" || f.last.Format("2006-01-02") != "2026-09-29" {
 		t.Errorf("window %+v, asked for %v to %v; want the network's", tj.Window, f.first, f.last)
@@ -669,6 +674,14 @@ func TestStationKey(t *testing.T) {
 			t.Errorf("%s %s at %s: %q, want %q", c.source, c.station, c.ts, got, c.want)
 		}
 	}
+	// The view's own query, where the folded station is aliased to the column it folds and grouped by.
+	row := "(SELECT toUInt32(1) AS mmsi, toDateTime64('" + before + "', 3, 'UTC') AS ts, toInt32(36000000) AS lat6, toInt32(6000000) AS lon6," +
+		" 'station' AS source, 'station:a/n2k' AS station, false AS implausible, false AS clock_bad)"
+	q := chStationCoverageSelect(row, chUsable)
+	got, err := chColumn[string](ctx, conn.conn, "SELECT DISTINCT station FROM ("+q[:strings.LastIndex(q, "SETTINGS")]+") SETTINGS geotoh3_argument_order = 'lat_lon'")
+	if err != nil || !slices.Equal(got, []string{"station:a"}) {
+		t.Errorf("the view bins a stream from before the cutoff as %v, %v; want station:a", got, err)
+	}
 }
 
 // square is a cell outline a hundredth of a degree across at lat, lon, in coverageCells' order.
@@ -680,12 +693,14 @@ func square(lat, lon float64) ([]float64, []float64) {
 // the few farthest.
 func TestCoverageStationBounds(t *testing.T) {
 	var cells []covRow
-	for i := range 20 {
-		lats, lons := square(59.9, 10.5+float64(i)*0.02)
+	for i := range 40 {
+		lats, lons := square(59.9, 10.5+float64(i)*0.01)
 		cells = append(cells, covRow{res: 6, cell: uint64(i + 1), vessels: 1, days: 1, lats: lats, lons: lons})
 	}
 	lats, lons := square(55.7, 12.6) // Copenhagen, once
 	cells = append(cells, covRow{res: 6, cell: 99, vessels: 1, days: 1, lats: lats, lons: lons})
+	// and a cell half a degree wide, the farthest east, which bounds take in whole whatever the others' sizes
+	cells = append(cells, covRow{res: 6, cell: 98, vessels: 1, days: 1, lats: []float64{70.0, 69.9, 69.9, 70.0}, lons: []float64{20.0, 20.0, 20.5, 20.5}})
 	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: cells, stations: map[string][]covRow{"station:roving": cells}}
 	p := coveragePipeline(t, f)
 	w := httptest.NewRecorder()
@@ -694,10 +709,10 @@ func TestCoverageStationBounds(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &tj); err != nil || w.Code != 200 {
 		t.Fatalf("%d %v: %s", w.Code, err, w.Body)
 	}
-	if b := tj.Bounds; len(b) != 4 || b[1] > 55.7 || b[2] < 12.6 || b[0] > 10.5 || b[3] < 59.9 {
+	if b := tj.Bounds; len(b) != 4 || b[1] > 55.7 || b[2] < 20.49 || b[0] > 10.5 || b[3] < 69.99 {
 		t.Errorf("bounds %v leave out a cell the tiles draw", b)
 	}
-	if b := tj.Fit; len(b) != 4 || b[1] < 59 || b[0] > 10.6 || b[2] < 10.8 {
+	if b := tj.Fit; len(b) != 4 || b[1] < 59 || b[0] > 10.6 || b[2] < 10.85 || b[2] > 11 || b[3] > 60 {
 		t.Errorf("fit %v, want the Oslo cells without Copenhagen", b)
 	}
 	w = httptest.NewRecorder()
@@ -754,5 +769,34 @@ func TestCoverageStationLoadBlocksNoOne(t *testing.T) {
 	close(f.release)
 	if code := <-done; code != 200 {
 		t.Errorf("the slow station: %d", code)
+	}
+}
+
+// Stations' tiles are cached apart from the network's, and the cells kept for stations are bounded by size, a
+// multiple of the network's, so a station walked past is loaded again rather than held.
+func TestCoverageStationCaches(t *testing.T) {
+	row := covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)
+	three := []covRow{row, covRowOf(t, 6, osloRes6, 3, 1, osloRes6Outline), covRowOf(t, 3, beringRes3, 1, 1, beringOutline)}
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: []covRow{row}, stations: map[string][]covRow{"station:a": three, "station:b": three}}
+	p := coveragePipeline(t, f)
+	h := httpHandler(p)
+	get := func(path string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 200 {
+			t.Fatalf("%s: %d", path, w.Code)
+		}
+	}
+	get("/v1/coverage/tiles/0/0/0")
+	get("/v1/coverage/tiles/0/0/0?station=station:a")
+	if len(p.coverage.tiles.m) != 1 || len(p.coverage.stationTiles.m) != 1 {
+		t.Errorf("%d network and %d station tiles cached, want one each", len(p.coverage.tiles.m), len(p.coverage.stationTiles.m))
+	}
+	// The network holds 1 cell, so stations may hold 4: b's 3 leave no room for a's.
+	get("/v1/coverage/tiles/0/0/0?station=station:b")
+	get("/v1/coverage/tiles/0/0/0?station=station:a")
+	if f.stationLoads != 3 || len(p.coverage.stations) != 1 {
+		t.Errorf("%d loads with %d stations held, want a loaded again after b took its room", f.stationLoads, len(p.coverage.stations))
 	}
 }

@@ -73,6 +73,8 @@ type coverageMap struct {
 	d     *coverageData // nil until the first load that found a day of coverage
 	tiles tileCache
 
+	stationTiles tileCache
+
 	src       coverageSource // set by each network load; station loads read through it
 	stationMu sync.Mutex     // guards stations, and is never held across a load
 	stations  map[string]stationCoverage
@@ -85,11 +87,21 @@ type stationCoverage struct {
 	d   *coverageData
 }
 
-// stationCoverageMax bounds the stations whose cells are kept, so requests for many stations cost loads, not memory.
-const stationCoverageMax = 256
+// size is the number of cells held, at every resolution.
+func (d *coverageData) size() int {
+	n := 0
+	for _, cells := range d.cells {
+		n += len(cells)
+	}
+	return n
+}
+
+// stationCoverageShare bounds the cells kept for stations, as a multiple of the network's, so requests for many
+// stations cost loads, not memory: a feed's footprint can be most of the network's, and a volunteer's is a sliver.
+const stationCoverageShare = 4
 
 func newCoverageMap() *coverageMap {
-	return &coverageMap{tiles: tileCache{ttl: coverageReload}, loading: make(chan struct{}, 1)}
+	return &coverageMap{tiles: tileCache{ttl: coverageReload}, stationTiles: tileCache{ttl: coverageReload}, loading: make(chan struct{}, 1)}
 }
 
 func (c *coverageMap) data() *coverageData {
@@ -254,11 +266,19 @@ func (c *coverageMap) stationData(ctx context.Context, station string, now time.
 	if c.stations == nil {
 		c.stations = map[string]stationCoverage{}
 	}
-	// ponytail: past the bound, drop the stations from earlier loads, and failing that any one.
-	if len(c.stations) >= stationCoverageMax {
+	// ponytail: past the bound, drop the stations from earlier loads, and failing that any, until this one fits;
+	// a scan of the held stations per drop, which are few.
+	over := func() bool {
+		held := d.size()
+		for _, s := range c.stations {
+			held += s.d.size()
+		}
+		return held > stationCoverageShare*max(net.size(), 1)
+	}
+	if over() {
 		maps.DeleteFunc(c.stations, func(_ string, s stationCoverage) bool { return s.net != net.loaded })
 		for k := range c.stations {
-			if len(c.stations) < stationCoverageMax {
+			if !over() {
 				break
 			}
 			delete(c.stations, k)
@@ -305,27 +325,33 @@ func (d *coverageData) empty() bool {
 	return true
 }
 
-// bounds is the extent of the cells at the finest resolution as [west, south, east, north], from their centers
-// between the trim and 1-trim quantiles on each axis: 0 for every cell, as TileJSON's bounds, past which a map
-// requests no tiles, or 0.05 for a view that a few bad or spoofed positions an ocean away do not stretch.
-// ponytail: centers sort plainly, so cells either side of the antimeridian give a box the long way round.
+// bounds is the extent of the cells as [west, south, east, north]. With trim 0 it takes in every cell drawn at
+// every resolution, as TileJSON's bounds must, since a map requests no tiles past them. With a trim it takes the
+// finest cells' edges between the trim and 1-trim quantiles, a view that a few bad or spoofed positions an ocean
+// away do not stretch.
+// ponytail: edges sort plainly, so cells either side of the antimeridian give a box the long way round.
 func (d *coverageData) bounds(trim float64) []float64 {
 	cells := d.cells[len(coverageBands)-1]
+	if trim == 0 {
+		cells = slices.Concat(d.cells[:]...)
+	}
 	if len(cells) == 0 {
 		return []float64{-180, -mercatorLat, 180, mercatorLat}
 	}
-	xs, ys := make([]float64, len(cells)), make([]float64, len(cells))
-	for i, c := range cells {
-		xs[i], ys[i] = float64(c.minX+c.maxX)/2, float64(c.minY+c.maxY)/2
+	var west, east, north, south []float64
+	for _, c := range cells {
+		west, east = append(west, float64(c.minX)), append(east, float64(c.maxX))
+		north, south = append(north, float64(c.minY)), append(south, float64(c.maxY))
 	}
-	slices.Sort(xs)
-	slices.Sort(ys)
-	at := func(v []float64, q float64) float64 { return v[int(math.Round(q*float64(len(v)-1)))] }
-	lon := func(x float64) float64 { return x*360 - 180 }
-	lat := func(y float64) float64 { return math.Atan(math.Sinh(math.Pi*(1-2*y))) * 180 / math.Pi }
-	// The cell's own size around the trimmed centers, so a station of one cell still has a box.
-	pad := float64(cells[0].maxX - cells[0].minX)
-	return []float64{lon(at(xs, trim) - pad), lat(at(ys, 1-trim) + pad), lon(at(xs, 1-trim) + pad), lat(at(ys, trim) - pad)}
+	at := func(v []float64, q float64) float64 {
+		slices.Sort(v)
+		return v[int(math.Round(q*float64(len(v)-1)))]
+	}
+	lon := func(x float64) float64 { return max(-180, min(180, x*360-180)) }
+	lat := func(y float64) float64 {
+		return max(-mercatorLat, min(mercatorLat, math.Atan(math.Sinh(math.Pi*(1-2*y)))*180/math.Pi))
+	}
+	return []float64{lon(at(west, trim)), lat(at(south, 1-trim)), lon(at(east, 1-trim)), lat(at(north, trim))}
 }
 
 // covCellFrom projects a cell's outline to world units. A cell that crosses the antimeridian is drawn whole on
@@ -455,7 +481,12 @@ func (p *Pipeline) serveCoverageTile(w http.ResponseWriter, r *http.Request) {
 	}
 	// Keyed by the station and the load, so a reload never serves a tile built from the one before it, even when
 	// a day inside the window was repackaged and the window's dates did not move.
-	b := p.coverage.tiles.get(fmt.Sprintf("%s/%d/%d/%d/%d", station, d.loaded, z, x, y), time.Now(), func() []byte {
+	// A station's tiles have a cache of their own, so a walk through many stations never clears the network's.
+	cache := &p.coverage.tiles
+	if station != "" {
+		cache = &p.coverage.stationTiles
+	}
+	b := cache.get(fmt.Sprintf("%s/%d/%d/%d/%d", station, d.loaded, z, x, y), time.Now(), func() []byte {
 		return gzipBytes(d.tile(z, x, y))
 	})
 	writeTile(w, r, b, "public, max-age=3600")
