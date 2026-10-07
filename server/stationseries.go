@@ -3,9 +3,11 @@ package main
 // Station series: what each station heard each hour, in station_hours, and which vessels, in station_vessels, from
 // which the station list's uptime and vessel counts, /v1/stats' per-source counts, and MCP's coverage read. Both
 // hold counts, which would double if a reception were binned twice, so they are rebuilt rather than appended to:
-// a view marks the hour of every reception inserted in station_dirty, whichever path inserts it, and the one job
-// in the server deletes each marked hour from both and bins it again from receptions. Paths that delete from
-// receptions mark the hours they delete. A backfill bins every day receptions held before the view, newest first.
+// a view marks the hour of every reception inserted in station_dirty, whichever path inserts it, and a job in the
+// server bins each marked hour again from receptions as a new version, then deletes the hour's older versions;
+// reads take each hour's newest, so an hour is never read empty or twice while it is rebuilt. Paths that delete
+// from receptions mark the hours they delete. A backfill of its own bins every day receptions held before the
+// view, newest first.
 
 import (
 	"context"
@@ -24,7 +26,6 @@ var stationSeriesSettle = time.Minute
 
 const (
 	stationSeriesEvery  = 5 * time.Minute
-	stationSeriesSpend  = 2 * time.Minute // backfill per run, so the marked hours never wait long behind it
 	stationWindow       = 7 * 24          // hours of uptime
 	chStationVesselDays = 35
 )
@@ -36,7 +37,8 @@ const chStationHours = `CREATE TABLE IF NOT EXISTS {db}.station_hours (
 	station    LowCardinality(String),
 	source     LowCardinality(String),
 	receptions UInt64,
-	first      UInt64
+	first      UInt64,
+	built      DateTime64(3, 'UTC') -- the rebuild that wrote the row; reads take each hour's newest
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(hour)
 ORDER BY (station, hour)`
@@ -49,7 +51,8 @@ var chStationVessels = `CREATE TABLE IF NOT EXISTS {db}.station_vessels (
 	source     LowCardinality(String),
 	mmsi       UInt32,
 	receptions UInt32,
-	last_ts    DateTime64(3, 'UTC')
+	last_ts    DateTime64(3, 'UTC'),
+	built      DateTime64(3, 'UTC') -- the rebuild that wrote the row; reads take each hour's newest
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(hour)
 ORDER BY (station, hour, mmsi)
@@ -68,8 +71,10 @@ const (
 
 // stationSeries is the job and the reads over station_hours and station_vessels.
 type stationSeries interface {
-	// rebuildStationSeries rebuilds the marked hours, then backfills older days for up to stationSeriesSpend.
+	// rebuildStationSeries rebuilds the marked hours.
 	rebuildStationSeries(ctx context.Context, now time.Time) error
+	// backfillStationSeries bins the days receptions held before the view, newest first, until every one is done.
+	backfillStationSeries(ctx context.Context, now time.Time) error
 	// stationCounts is each station's uptime, vessels, and totals.
 	stationCounts(ctx context.Context, now time.Time) (map[string]stationCount, error)
 	// sourceCounts is, per source kind, the vessels its stations heard within vesselTTL and how many no other kind did.
@@ -164,12 +169,13 @@ func (c *chConn) rebuildStationSeries(ctx context.Context, now time.Time) error 
 			return err
 		}
 	}
-	return c.backfillStationSeries(ctx, now, time.Now().Add(stationSeriesSpend))
+	return nil
 }
 
-// backfillStationSeries bins whole days the series has not, newest first from today, until until: the days
-// receptions held before the view marked them. Its ledger records each day as it finishes.
-func (c *chConn) backfillStationSeries(ctx context.Context, now, until time.Time) error {
+// backfillStationSeries bins whole days the series has not, newest first from today: the days receptions held
+// before the view marked them. Its ledger records each day as it finishes, and a day that fails is left for the
+// next pass. It runs beside the marked hours' rebuild, which versions make safe.
+func (c *chConn) backfillStationSeries(ctx context.Context, now time.Time) error {
 	done, err := chColumn[time.Time](ctx, c.conn, "SELECT toDateTime(day, 'UTC') FROM "+c.db+".station_series_backfilled FINAL")
 	if err != nil {
 		return err
@@ -179,7 +185,8 @@ func (c *chConn) backfillStationSeries(ctx context.Context, now, until time.Time
 	if err != nil || len(oldest) == 0 {
 		return err
 	}
-	for day := now.UTC().Truncate(24 * time.Hour); !day.Before(oldest[0]) && time.Now().Before(until); day = day.AddDate(0, 0, -1) {
+	failed := 0
+	for day := now.UTC().Truncate(24 * time.Hour); !day.Before(oldest[0]); day = day.AddDate(0, 0, -1) {
 		if slices.ContainsFunc(done, day.Equal) {
 			continue
 		}
@@ -188,14 +195,36 @@ func (c *chConn) backfillStationSeries(ctx context.Context, now, until time.Time
 			hours[i] = day.Add(time.Duration(i) * time.Hour)
 		}
 		if err := c.binHours(ctx, hours, now); err != nil {
-			log.Printf("station series: backfill %s: %v", day.Format("2006-01-02"), err) // left for the next run
+			log.Printf("station series: backfill %s: %v", day.Format("2006-01-02"), err) // left for the next pass
+			failed++
 			continue
 		}
 		if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_series_backfilled VALUES (?)", day); err != nil {
 			return err
 		}
 	}
+	if failed > 0 {
+		return fmt.Errorf("%d days failed", failed)
+	}
 	return nil
+}
+
+// seriesVersion is a rebuild's version, as text to the millisecond, since the driver binds a time to the second and
+// two rebuilds of one hour in a second would otherwise share a version and both be read. Each is later than the last.
+func seriesVersion() string {
+	seriesVersions.Lock()
+	defer seriesVersions.Unlock()
+	v := time.Now().UTC().Truncate(time.Millisecond)
+	if !v.After(seriesVersions.last) {
+		v = seriesVersions.last.Add(time.Millisecond)
+	}
+	seriesVersions.last = v
+	return v.Format("2006-01-02 15:04:05.000")
+}
+
+var seriesVersions struct {
+	sync.Mutex
+	last time.Time
 }
 
 // binHoursFails, when set by a test, fails the binning of the day it names.
@@ -218,33 +247,37 @@ func (c *chConn) binHours(ctx context.Context, hours []time.Time, now time.Time)
 	if legacy {
 		where += " AND (tx = 0 OR toDate(ts) NOT IN (SELECT day FROM " + c.db + ".receptions_converted))"
 	}
-	// ponytail: a read between an hour's delete and its insert misses the hour, a second or so in each run, which
-	// the minute's cache can hold, and an insert that fails leaves its hours empty until a later run bins them;
-	// versioned rows read by their latest would close both.
+	// Each table gets the hours' new version, then loses their older ones: a read takes each hour's newest version,
+	// so it sees the old rows or the new, never neither or both, and an insert that fails leaves the old in place.
+	// An hour whose receptions were all deleted has no new rows, and reads the old until they go.
 	bctx, cancel := chBinning(ctx)
 	defer cancel()
-	del := chDeleteSync(bctx)
-	if err := c.conn.Exec(del, "DELETE FROM "+c.db+".station_hours WHERE hour IN ?", hours); err != nil {
+	built := seriesVersion()
+	if err := c.conn.Exec(bctx, `INSERT INTO `+c.db+`.station_hours (hour, station, source, receptions, first, built)
+		SELECT toStartOfHour(toDateTime(ts, 'UTC')) AS hour, `+chStationKey+` AS station, source, count(), countIf(accepted), toDateTime64(?, 3, 'UTC')
+		FROM `+c.db+`.receptions WHERE `+where+` GROUP BY hour, station, source`, built, from, to, hours); err != nil {
 		return fmt.Errorf("station_hours: %w", err)
 	}
-	if err := c.conn.Exec(bctx, `INSERT INTO `+c.db+`.station_hours (hour, station, source, receptions, first)
-		SELECT toStartOfHour(toDateTime(ts, 'UTC')) AS hour, `+chStationKey+` AS station, source, count(), countIf(accepted)
-		FROM `+c.db+`.receptions WHERE `+where+` GROUP BY hour, station, source`, from, to, hours); err != nil {
+	del := chDeleteSync(bctx)
+	if err := c.conn.Exec(del, "DELETE FROM "+c.db+".station_hours WHERE hour IN ? AND built < toDateTime64(?, 3, 'UTC')", hours, built); err != nil {
 		return fmt.Errorf("station_hours: %w", err)
 	}
 	if to.Before(now.AddDate(0, 0, -chStationVesselDays)) {
 		return nil // past what station_vessels keeps
 	}
-	if err := c.conn.Exec(del, "DELETE FROM "+c.db+".station_vessels WHERE hour IN ?", hours); err != nil {
+	if err := c.conn.Exec(bctx, `INSERT INTO `+c.db+`.station_vessels (hour, station, source, mmsi, receptions, last_ts, built)
+		SELECT toStartOfHour(toDateTime(ts, 'UTC')) AS hour, `+chStationKey+` AS station, source, mmsi, count(), max(ts), toDateTime64(?, 3, 'UTC')
+		FROM `+c.db+`.receptions WHERE `+where+` AND NOT stale GROUP BY hour, station, source, mmsi`, built, from, to, hours); err != nil {
 		return fmt.Errorf("station_vessels: %w", err)
 	}
-	if err := c.conn.Exec(bctx, `INSERT INTO `+c.db+`.station_vessels (hour, station, source, mmsi, receptions, last_ts)
-		SELECT toStartOfHour(toDateTime(ts, 'UTC')) AS hour, `+chStationKey+` AS station, source, mmsi, count(), max(ts)
-		FROM `+c.db+`.receptions WHERE `+where+` AND NOT stale GROUP BY hour, station, source, mmsi`, from, to, hours); err != nil {
+	if err := c.conn.Exec(del, "DELETE FROM "+c.db+".station_vessels WHERE hour IN ? AND built < toDateTime64(?, 3, 'UTC')", hours, built); err != nil {
 		return fmt.Errorf("station_vessels: %w", err)
 	}
 	return nil
 }
+
+// chNewest keeps, from station_vessels rows, each hour's newest version, for hours from the next argument on.
+const chNewest = `(hour, built) IN (SELECT hour, max(built) FROM {db}.station_vessels WHERE hour >= toStartOfHour(?) GROUP BY hour)`
 
 // chOwnIn leaves out, from station_vessels rows, each vessel a station sent as its own ship within a window starting
 // at the query's first two arguments: a boat hearing itself is not reception, and every row of it goes.
@@ -255,7 +288,8 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 	cur := now.UTC().Truncate(time.Hour)
 	start := cur.Add(-(stationWindow - 1) * time.Hour)
 	rows, err := c.conn.Query(ctx, `SELECT station, min(hour), sum(receptions), sum(first), uniqExactIf(hour, hour >= ? AND hour < ?), max(hour = ?)
-		FROM `+c.db+`.station_hours GROUP BY station`, start, cur, cur)
+		FROM `+c.db+`.station_hours WHERE (hour, built) IN (SELECT hour, max(built) FROM `+c.db+`.station_hours GROUP BY hour)
+		GROUP BY station`, start, cur, cur)
 	if err != nil {
 		return nil, err
 	}
@@ -288,8 +322,8 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 	rows, err = c.conn.Query(ctx, strings.ReplaceAll(`SELECT station, countIf(last > ?), count(), countIf(hearers = 1) FROM (
 			SELECT station, last, count() OVER (PARTITION BY mmsi) AS hearers FROM (
 				SELECT station, mmsi, max(last_ts) AS last FROM {db}.station_vessels
-				WHERE hour >= toStartOfHour(?) AND last_ts > ? AND `+chOwnIn+` GROUP BY station, mmsi))
-		GROUP BY station`, "{db}", c.db), live, day, day, day, day)
+				WHERE hour >= toStartOfHour(?) AND last_ts > ? AND `+chNewest+` AND `+chOwnIn+` GROUP BY station, mmsi))
+		GROUP BY station`, "{db}", c.db), live, day, day, day, day, day)
 	if err != nil {
 		return nil, err
 	}
@@ -311,8 +345,8 @@ func (c *chConn) sourceCounts(ctx context.Context, now time.Time) (map[string][2
 	since := now.Add(-vesselTTL)
 	rows, err := c.conn.Query(ctx, `SELECT source, count(), countIf(kinds = 1) FROM (
 			SELECT source, count() OVER (PARTITION BY mmsi) AS kinds FROM (
-				SELECT DISTINCT source, mmsi FROM `+c.db+`.station_vessels WHERE hour >= toStartOfHour(?) AND last_ts > ?))
-		GROUP BY source`, since, since)
+				SELECT DISTINCT source, mmsi FROM `+strings.ReplaceAll(`{db}.station_vessels WHERE hour >= toStartOfHour(?) AND last_ts > ? AND `+chNewest, "{db}", c.db)+`))
+		GROUP BY source`, since, since, since)
 	if err != nil {
 		return nil, err
 	}
@@ -374,8 +408,8 @@ func (c *chConn) stationPoints(ctx context.Context, since time.Time) (map[string
 	return out, rows.Err()
 }
 
-// runStationSeries waits for ClickHouse, seeds own-vessel candidates from station_own, then rebuilds the series
-// every stationSeriesEvery.
+// runStationSeries waits for ClickHouse, seeds own-vessel candidates from station_own, then backfills the series
+// once in the background and rebuilds its marked hours every stationSeriesEvery.
 func (p *Pipeline) runStationSeries() {
 	ctx := context.Background()
 	var s stationSeries
@@ -399,6 +433,16 @@ func (p *Pipeline) runStationSeries() {
 		log.Printf("station series: own candidates: %v", err)
 		time.Sleep(time.Minute)
 	}
+	go func() {
+		for {
+			err := s.backfillStationSeries(ctx, time.Now())
+			if err == nil {
+				return
+			}
+			log.Printf("station series: backfill: %v", err)
+			time.Sleep(stationSeriesEvery)
+		}
+	}()
 	for {
 		if err := s.rebuildStationSeries(ctx, time.Now()); err != nil {
 			log.Printf("station series: %v", err)

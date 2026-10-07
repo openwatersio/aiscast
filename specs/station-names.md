@@ -42,11 +42,7 @@ The Signal K plugin sends the boat's own ship as `!AIVDO`. It does this for a li
 
 **Window: 24 hours.** A 30-minute snapshot changes with the time of day and with ferry schedules, so it is a poor number for a leaderboard that is read once a month. 24 hours matches `events.last_24h`. 7 days would need about twice the memory, because the network hears about 177,000 vessels in 7 days and about 96,000 in 24 hours. That window can come later if the digest wants it.
 
-**Where it is computed.** In [server/stations.go](../server/stations.go):
-
-- `sweep` keeps each station's vessel map for 24 hours instead of `vesselTTL`. `vessels` keeps its 30-minute meaning by counting only entries newer than `vesselTTL`. `vesselsBySource` filters the same way, so `/v1/stats` does not change.
-- A new `exclusive(now)` runs the `vesselsBySource` loop keyed by base station id. It skips each station's own MMSIs, recorded from its `VDO` sentences. `vessels` still counts them. The result is cached for 60 seconds, because the loop touches every entry and `/v1/stations` is public.
-- `rows` adds `vessels_24h` and `vessels_exclusive_24h`.
+**Where it is computed.** From ClickHouse's station series, `station_vessels` read over the window ([server/stationseries.go](../server/stationseries.go), [station-page.md](station-page.md#rollups)). A vessel the station sent as its own is left out, and a stale copy is never binned.
 
 Sizing: on 2026-09-30, per-source sets summed to about 72,000 vessels in 30 minutes, with AISHub at 44,000 and aisstream at 23,000. 24-hour sets should be roughly double that, about 150,000 map entries or 10 MB. `vessels_bench_test.go` should measure it before this merges.
 
@@ -215,7 +211,7 @@ Server only. No new state beyond the 24-hour maps.
 - [x] `Own` flag on `Event`, set for `VDO` sentences in `ingestLine`. Each station records the MMSIs it sent as own, and `exclusive` skips them. Phase 2 leaves them out of the coverage point, and phase 3 builds the own-vessel rules on the same record.
 - [x] 24-hour retention in `sweep`. `vessels` and `vesselsBySource` count only the last `vesselTTL`.
 - [x] `exclusive(now)`, grouped by base station id and cached for 60 seconds. `vessels_24h` and `vessels_exclusive_24h` on rows.
-- [x] 24-hour maps saved at shutdown and restored at start (`STATION_VESSELS`, `station-vessels.json`).
+- [x] 24-hour counts survive a restart: they come from ClickHouse's station series ([station-page.md](station-page.md#rollups)).
 - [x] Tests: exclusivity across stations, grouping of `/tag` rows, a duplicate counts as heard, a stale AISHub echo does not remove exclusivity, own vessel excluded, 30-minute `vessels` unchanged.
 - [x] Benchmark memory with production-like set sizes. Measured: 9.5 MB for 150,000 entries, and 7 ms for an uncached count.
 - [x] [server/openapi.json](../server/openapi.json) and the client `Station` type. The station page gets a "Unique vessels" tile and the stations list can sort by it.

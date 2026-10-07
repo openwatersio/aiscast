@@ -22,7 +22,8 @@ type fakeSeries struct {
 	err     error
 }
 
-func (f *fakeSeries) rebuildStationSeries(context.Context, time.Time) error { return nil }
+func (f *fakeSeries) rebuildStationSeries(context.Context, time.Time) error  { return nil }
+func (f *fakeSeries) backfillStationSeries(context.Context, time.Time) error { return nil }
 func (f *fakeSeries) stationCounts(context.Context, time.Time) (map[string]stationCount, error) {
 	f.reads++
 	return f.counts, f.err
@@ -90,7 +91,14 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.insertOwn(ctx, map[ownKey]time.Time{{"station:s1", recent.Unix() / 3600, 9}: recent}); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+	if err := conn.backfillStationSeries(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	// An older version of an hour, as a rebuild leaves for the moment between its insert and its delete, is not read.
+	if err := conn.exec(ctx, "INSERT INTO {db}.station_hours (hour, station, source, receptions, first, built) VALUES ('"+
+		cur.Format("2006-01-02 15:04:05")+"', 'station:s1', 'station', 1000, 1000, '2000-01-01 00:00:00')",
+		"INSERT INTO {db}.station_vessels (hour, station, source, mmsi, receptions, last_ts, built) VALUES ('"+
+			cur.Format("2006-01-02 15:04:05")+"', 'station:s1', 'station', 777, 1, now64(3), '2000-01-01 00:00:00')"); err != nil {
 		t.Fatal(err)
 	}
 	counts, err := conn.stationCounts(ctx, now)
