@@ -32,6 +32,12 @@ echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=$(dpkg --pr
 apt-get update -q
 # confold: rootfs/ owns config files such as /etc/alloy/config.alloy, so a package upgrade must not stop to ask.
 apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy curl fail2ban jq unattended-upgrades
+# Caddy compresses /v1/stream, and before 2.11.6 it sends that stream uncompressed (Caddyfile, encode).
+caddy_version=$(dpkg-query -W -f='${Version}' caddy)
+if ! dpkg --compare-versions "$caddy_version" ge 2.11.6; then
+	echo "caddy $caddy_version is older than 2.11.6, which /v1/stream compression needs" >&2
+	exit 1
+fi
 # ClickHouse is installed once and upgraded by hand, so a deploy never changes the database under live data.
 if ! command -v clickhouse-server >/dev/null; then
 	apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold clickhouse-client clickhouse-server

@@ -72,18 +72,31 @@ jobs:
           echo "::error::events per second stayed at or below 100 for two minutes after the deploy"
           exit 1
       # Caddy, not aiscast, compresses the SSE stream, and Caddy changes only when apply.sh runs. An empty
-      # bbox sends nothing but the welcome frame, so it arrives in time only if Caddy flushes its
-      # compressor per event; on Caddy before 2.11.6 it arrives without an encoding.
+      # bbox sends nothing but the welcome frame, so its body arrives in time only if Caddy flushes its
+      # compressor per event. Browsers get zstd and curl gets gzip, so both are checked; curl decodes
+      # only the gzip body, since the runner's curl may lack zstd.
       - name: check the event stream is compressed
         run: |
-          body=$(curl -sS -N --compressed -H 'Accept-Encoding: gzip' --max-time 5 -D "$RUNNER_TEMP/sse-headers" 'https://ais.openwaters.io/v1/stream?bbox=-40,-140,-39,-139') || true
-          cat "$RUNNER_TEMP/sse-headers"
-          if ! grep -qi '^content-encoding: gzip' "$RUNNER_TEMP/sse-headers"; then
-            echo "::error::/v1/stream answered without gzip"
-            exit 1
-          fi
-          if ! grep -q '"type":"welcome"' <<<"$body"; then
-            echo "::error::/v1/stream sent no welcome frame within 5 s"
+          for enc in gzip zstd; do
+            out="$RUNNER_TEMP/sse-$enc"
+            decode=() && [ "$enc" = gzip ] && decode=(--compressed)
+            curl -sS -N "${decode[@]}" -H "Accept-Encoding: $enc" --max-time 5 -D "$out.headers" -o "$out.body" 'https://ais.openwaters.io/v1/stream?bbox=-40,-140,-39,-139' || true
+            cat "$out.headers" 2>/dev/null || true
+            if ! grep -Eq '^HTTP/[0-9.]+ 200' "$out.headers" 2>/dev/null; then
+              echo "::error::/v1/stream did not answer 200 to Accept-Encoding: $enc"
+              exit 1
+            fi
+            if ! grep -qi "^content-encoding: $enc" "$out.headers"; then
+              echo "::error::/v1/stream answered without $enc"
+              exit 1
+            fi
+            if [ ! -s "$out.body" ]; then
+              echo "::error::/v1/stream sent no $enc body within 5 s"
+              exit 1
+            fi
+          done
+          if ! grep -q '"type":"welcome"' "$RUNNER_TEMP/sse-gzip.body"; then
+            echo "::error::/v1/stream's gzip body held no welcome frame"
             exit 1
           fi
 
