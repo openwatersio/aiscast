@@ -128,6 +128,14 @@ func TestSimplifySpreadsShortBurstsOverTheRange(t *testing.T) {
 	if len(s.breaks) != 9 {
 		t.Errorf("each kept position follows a silence: %v", s.breaks)
 	}
+	// Counts that do not divide evenly still pick distinct positions: more ends than the limit makes every step
+	// between picks more than one.
+	s7 := simplify(points, 30*time.Minute, 7)
+	for k := 1; k < len(s7.points); k++ {
+		if !s7.points[k].ts.After(s7.points[k-1].ts) {
+			t.Errorf("a position picked twice: %v", s7.points)
+		}
+	}
 	if s := simplify(nil, 30*time.Minute, 10); len(s.points) != 0 || s.breaks == nil {
 		t.Errorf("no positions: %+v", s)
 	}
