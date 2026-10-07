@@ -485,3 +485,38 @@ func TestReplaySeedsWhatLiveHeldBeforeTheLeadIn(t *testing.T) {
 		t.Errorf("as live judged them, off Sicily is plausible and off Gibraltar is not: implausible %v and %v", sicily, gibraltar)
 	}
 }
+
+// A replay staged before a migration adds a column to receptions still copies its day in: by name, the new column
+// takes its default, where by position the insert would fail with the stored day already deleted.
+func TestReplayCopiesStagingByName(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	c, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.conn.Exec(context.Background(), "DROP DATABASE "+db); c.conn.Close() })
+	stage, err := c.createReplayStaging(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	pt := trackPoint{mmsi: 257000001, ts: ts, lat6: 1, lon6: 1, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "kystverket", station: "kystverket", txAt: ts, recv: ts}
+	if err := (&chConn{conn: c.conn, db: db, table: stage}).insert(ctx, "staged", []trackPoint{pt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.conn.Exec(ctx, "ALTER TABLE "+db+".receptions ADD COLUMN added_meanwhile Bool DEFAULT false"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.copyStaged(ctx, stage, "mmsi = ?", uint32(257000001)); err != nil {
+		t.Fatalf("a column added meanwhile failed the copy: %v", err)
+	}
+	var n uint64
+	if err := c.conn.QueryRow(ctx, "SELECT count() FROM "+db+".receptions").Scan(&n); err != nil || n != 1 {
+		t.Errorf("%d rows copied, %v", n, err)
+	}
+}
