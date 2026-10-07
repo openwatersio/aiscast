@@ -117,6 +117,7 @@ var chMigrations = []string{
 	21: chStationDirtyMV,
 	22: chStationBuilt,
 	23: chSeriesLedger,
+	24: chStationVersions,
 }
 
 // chStationOwn keeps, per station, hour, and vessel, the last time the station sent that vessel as its own ship

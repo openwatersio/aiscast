@@ -776,7 +776,7 @@ type mcpCoverageIn struct {
 type mcpSource struct {
 	Kind             string    `json:"kind"`
 	Description      string    `json:"description,omitempty"`
-	Vessels          int       `json:"vessels" jsonschema:"distinct vessels heard from this source in the last 30 minutes"`
+	Vessels          int       `json:"vessels" jsonschema:"distinct vessels whose positions this source's stations heard in the last 30 minutes, up to about 7 minutes behind"`
 	VesselsExclusive int       `json:"vessels_exclusive" jsonschema:"of those, heard by no other source"`
 	Events24h        int64     `json:"events_24h"`
 	LastAgeS         int64     `json:"last_age_s" jsonschema:"seconds since the source last delivered a message"`
@@ -793,7 +793,7 @@ type mcpDelay struct {
 type mcpStation struct {
 	Station   string  `json:"station"`
 	Source    string  `json:"source"`
-	Vessels   int     `json:"vessels" jsonschema:"distinct vessels heard in the last 30 minutes"`
+	Vessels   int     `json:"vessels" jsonschema:"distinct vessels whose positions the station heard in the last 30 minutes, its own left out, up to about 7 minutes behind"`
 	Events24h int64   `json:"events_24h"`
 	LastAgeS  int64   `json:"last_age_s"`
 	BBox      *mcpBox `json:"bbox,omitempty" jsonschema:"extent of the positions this station has heard"`

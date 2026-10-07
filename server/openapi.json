@@ -849,7 +849,7 @@
           "vessels_24h": { "type": "integer", "description": "Distinct MMSIs whose positions the station heard in the last 24 hours, its own vessel left out. Up to about 7 minutes behind." },
           "vessels_exclusive_24h": { "type": "integer", "description": "Of `vessels_24h`, the vessels no other station heard. A vessel counts whether this station delivered a message first or as a duplicate, and an aggregator's late copy of a report another station already delivered does not count as hearing it." },
           "uptime_7d": { "type": ["number", "null"], "description": "Share of hours with a position reception, from 0 to 1, over the last 7 days or since the station's first hour if later. The current hour counts once it has one. Null until the station series has the station, and while ClickHouse has not answered for 10 minutes, when the series-backed counts fall back too." },
-          "name": { "type": "string", "description": "What to call the station: the name its operator chose when minting its token, else the name of the boat it is on. Absent when it has neither, or when moderation has locked it. Rows that share a station id before `/` share a name." },
+          "name": { "type": "string", "description": "What to call the station: the name its operator chose when minting its token, else the name of the boat it is on. Absent when it has neither, or when moderation has locked it." },
           "name_from": { "type": "string", "enum": ["operator", "vessel"], "description": "Where `name` came from." },
           "mmsi": { "type": "integer", "description": "The station's own vessel, from the `!AIVDO` sentences it sends." },
           "near": { "type": "string", "description": "The town or region nearest the traffic the station hears, such as `Santa Monica, CA` or `Munster, Ireland`. Volunteer stations only. Place names from GeoNames, CC BY 4.0." },
@@ -939,7 +939,7 @@
               "properties": {
                 "events": { "$ref": "#/components/schemas/Windows" },
                 "last_age_s": { "type": "integer", "description": "Seconds since any member last produced an event." },
-                "vessels": { "type": "integer", "description": "Distinct MMSIs heard in the last 30 minutes." },
+                "vessels": { "type": "integer", "description": "Distinct MMSIs whose positions the source's stations heard in the last 30 minutes, stations' own vessels included. Up to about 7 minutes behind." },
                 "vessels_exclusive": { "type": "integer", "description": "Of those, MMSIs no other source kind heard in that window." },
                 "delay": {
                   "type": "object",

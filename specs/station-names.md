@@ -4,8 +4,8 @@ Plan for [#51](https://github.com/openwatersio/aiscast/issues/51) (let a station
 
 ## Decisions
 
-1. **Heard-first is unique vessels: those no other station heard in the last 24 hours.** New fields `vessels_24h` and `vessels_exclusive_24h` on every `/v1/stations` row. It is computed in `stations.go` with the same set logic `/v1/stats` uses for `vessels_exclusive`, keyed by station instead of by source kind. This ships first because it needs no new state.
-2. **Every volunteer station gets a coverage label, `near`.** It names the place nearest the median position of the vessels the station heard in the last 24 hours: the largest town of at least 5,000 people within 10 km, otherwise the nearest such town within 25 km, otherwise the region, such as "Munster, Ireland". Place names come from GeoNames `cities5000`, embedded in the server. A station with no other name shows as "Near Santa Monica, CA". This labels every receiving station at once with nothing for operators to do. It replaces a typed place label, so there is no free-text location to moderate.
+1. **Heard-first is unique vessels: those no other station heard in the last 24 hours.** New fields `vessels_24h` and `vessels_exclusive_24h` on every `/v1/stations` row. It is computed from ClickHouse's station series ([station-page.md](station-page.md#rollups)).
+2. **Every volunteer station gets a coverage label, `near`.** It names the place nearest the median of the station's finest coverage cells over the last 7 days: the largest town of at least 5,000 people within 10 km, otherwise the nearest such town within 25 km, otherwise the region, such as "Munster, Ireland". Place names come from GeoNames `cities5000`, embedded in the server. A station with no other name shows as "Near Santa Monica, CA". This labels every receiving station at once with nothing for operators to do. It replaces a typed place label, so there is no free-text location to moderate.
 3. **A station that sends `!AIVDO` is named after its own vessel by default.** The own MMSI comes from `!AIVDO` sentences, for token stations as well as UDP stations. The name comes from the vessel record. If two different MMSIs arrive within an hour, the station gets no automatic name. An operator-set name always wins.
 4. **Operators name the station when they generate its token.** `POST /v1/keys` takes an optional `name`. A request with a name must be signed by the device key. The server stores the name by station, not in the token, so renaming means generating again, and the token already in the receiver's config keeps working. The token page gets a name field beside the generate button. The signature is needed because `/v1/keys` does not check possession of the key today, and the key is in the public station id, so anyone could otherwise name any station.
 5. **UDP stations are named through a bound address.** A mint with both `name` and `bind_ip` also names the UDP station of the requester's address. UDP stations that send `!AIVDO` get the vessel name without doing anything.
@@ -33,20 +33,16 @@ The Signal K plugin sends the boat's own ship as `!AIVDO`. It does this for a li
 
 ## Heard-first count (#53)
 
-**What counts.** A vessel counts for a station when the station delivered an accepted event or a duplicate for that MMSI. This is the same rule `vessels` uses today, so a station that is always beaten to a message by a faster feed still gets credit for hearing the vessel. A vessel is exclusive to a station when no other station heard it in the window. "Other station" means every other row in `/v1/stations`, including feeds and aggregates, because the question is whether anyone else in the network hears it. Rows that share a base id (the part before `/`) count as one station, so `/n2k` and `/self` rows do not compete with their own base row.
+**What counts.** A vessel counts for a station when the station delivered a usable position reception for that MMSI, first or as a duplicate, so a station that is always beaten to a message by a faster feed still gets credit for hearing it.
 
 **What does not count.**
 
 - The station's own vessel. Own-ship `!AIVDO` is not reception, and a boat in a remote anchorage would otherwise always add one exclusive vessel. The event gets an `Own` flag in `ingestLine`, set when the sentence is `VDO`.
-- Stale events. They never reach `stationStats.event` today. This matters for AISHub: the server feeds volunteer receptions to AISHub and polls AISHub back, so a volunteer's vessel can return as an AISHub row. That row is older than the volunteer's own copy, so it is stale and does not take the vessel's exclusivity away. A test must pin this, including the case where the AISHub row has the same second as the original.
+- Stale copies. They are never binned into `station_vessels`. This matters for AISHub: the server feeds volunteer receptions to AISHub and polls AISHub back, so a volunteer's vessel can return as an AISHub row, older than the volunteer's own copy.
 
-**Window: 24 hours.** A 30-minute snapshot changes with the time of day and with ferry schedules, so it is a poor number for a leaderboard that is read once a month. 24 hours matches `events.last_24h`. 7 days would need about twice the memory, because the network hears about 177,000 vessels in 7 days and about 96,000 in 24 hours. That window can come later if the digest wants it.
+**Window: 24 hours.** A 30-minute snapshot changes with the time of day and with ferry schedules, so it is a poor number for a leaderboard that is read once a month. 24 hours matches `events.last_24h`. A 7-day window reads the same table over a longer span, if the digest wants it.
 
 **Where it is computed.** From ClickHouse's station series, `station_vessels` read over the window ([server/stationseries.go](../server/stationseries.go), [station-page.md](station-page.md#rollups)). A vessel the station sent as its own is left out, and a stale copy is never binned.
-
-Sizing: on 2026-09-30, per-source sets summed to about 72,000 vessels in 30 minutes, with AISHub at 44,000 and aisstream at 23,000. 24-hour sets should be roughly double that, about 150,000 map entries or 10 MB. `vessels_bench_test.go` should measure it before this merges.
-
-The 24-hour maps are written at shutdown, beside the usage file, and restored at start. A deploy is a clean shutdown, so a deploy loses nothing. A crash rebuilds the sets over 24 hours. Writing them every minute with the usage file would be about 3 MB a minute for no gain.
 
 **Name in the API.** The fields are `vessels_24h` and `vessels_exclusive_24h`. The issue calls this "heard first", but the station page already uses "Heard first elsewhere" for `duplicates`, which is a message race. The client labels the new number "Unique vessels".
 
@@ -206,14 +202,13 @@ Revisit when operators ask for outage alerts, or at about 100 named stations. Th
 
 ### Phase 1: heard-first count
 
-Server only. No new state beyond the 24-hour maps.
+Server only.
 
 - [x] `Own` flag on `Event`, set for `VDO` sentences in `ingestLine`. Each station records the MMSIs it sent as own, and `exclusive` skips them. Phase 2 leaves them out of the coverage point, and phase 3 builds the own-vessel rules on the same record.
 - [x] 24-hour window. `vessels` and the per-source counts count only the last `vesselTTL`.
-- [x] `exclusive(now)`, grouped by base station id and cached for 60 seconds. `vessels_24h` and `vessels_exclusive_24h` on rows.
+- [x] Unique vessels over the window from `station_vessels`, each station id whole. `vessels_24h` and `vessels_exclusive_24h` on rows.
 - [x] 24-hour counts survive a restart: they come from ClickHouse's station series ([station-page.md](station-page.md#rollups)).
 - [x] Tests: exclusivity across stations, grouping of `/tag` rows, a duplicate counts as heard, a stale AISHub echo does not remove exclusivity, own vessel excluded, 30-minute `vessels` unchanged.
-- [x] Benchmark memory with production-like set sizes. Measured: 9.5 MB for 150,000 entries, and 7 ms for an uncached count.
 - [x] [server/openapi.json](../server/openapi.json) and the client `Station` type. The station page gets a "Unique vessels" tile and the stations list can sort by it.
 
 ### Phase 2: coverage labels

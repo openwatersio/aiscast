@@ -237,10 +237,15 @@ func (s *stationStats) rows(now time.Time, counts map[string]stationCount) []sta
 		r := stationRow{Station: id, Source: st.Source, Events: st.ring.windows(now), Dups: st.Dups, Positions: st.Positions,
 			FirstSeen: st.First.UTC(), LastSeen: st.Last.UTC(), LastAgeS: int64(now.Sub(st.Last).Seconds())}
 		if c, ok := counts[id]; ok {
-			r.Vessels, r.Vessels24, r.Exclusive, r.Uptime = c.live, c.day, c.unique, &c.uptime
-			r.Positions, r.Dups = int64(c.receptions), int64(c.receptions-c.firsts)
-			if c.first.Before(r.FirstSeen) {
-				r.FirstSeen = c.first.UTC()
+			r.Vessels, r.Vessels24, r.Exclusive = c.live, c.day, c.unique
+			if !c.first.IsZero() { // a station with hours in the series; one with only vessel rows has no uptime yet
+				r.Uptime = &c.uptime
+				if c.first.Before(r.FirstSeen) {
+					r.FirstSeen = c.first.UTC()
+				}
+			}
+			if c.totaled { // a station new since the totals' last read keeps the counts since the start
+				r.Positions, r.Dups = int64(c.receptions), int64(c.receptions-c.firsts)
 			}
 		}
 		if st.Positions > 0 {

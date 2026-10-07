@@ -47,6 +47,7 @@ func TestStationRowsTakeTheSeries(t *testing.T) {
 	f := &fakeSeries{counts: map[string]stationCount{"s1": {first: first, past: 35, now: true, live: 3, day: 9, unique: 2}},
 		totals: map[string]stationCount{"s1": {first: first, receptions: 500, firsts: 450}}}
 	p.attachClickHouse(&chStore{w: &fakeCH{}, series: f})
+	p.refreshRollups(f, now)
 	rows := p.stationRows(now)
 	r := rowOf(t, rows, "s1")
 	if r.Vessels != 3 || r.Vessels24 != 9 || r.Exclusive != 2 || r.Uptime == nil || *r.Uptime != 0.75 || r.Positions != 500 || r.Dups != 50 || !r.FirstSeen.Equal(first) {
@@ -55,9 +56,14 @@ func TestStationRowsTakeTheSeries(t *testing.T) {
 	if r := rowOf(t, rows, "s2"); r.Uptime != nil || r.Vessels24 != 0 || r.Positions != 1 {
 		t.Errorf("s2 without the series: %+v", r)
 	}
-	p.stationRows(now.Add(30 * time.Second))
 	if f.reads != 1 {
-		t.Errorf("the series read %d times in a minute, want once", f.reads)
+		t.Errorf("serving the list read the series: %d reads", f.reads)
+	}
+	// A station new since the totals' last read keeps its counts since the start, rather than reading 0.
+	f.counts["s2"] = stationCount{first: now.Truncate(time.Hour), now: true, day: 1}
+	p.refreshRollups(f, now.Add(time.Minute))
+	if r := rowOf(t, p.stationRows(now.Add(time.Minute)), "s2"); r.Positions != 1 || r.Uptime == nil || *r.Uptime != 1 {
+		t.Errorf("s2 heard since the totals: %+v", r)
 	}
 }
 

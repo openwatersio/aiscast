@@ -21,6 +21,9 @@ type fakeSeries struct {
 	points  map[string][][2]float64
 	reads   int
 	err     error
+	// totals' reads, and the error the next one returns
+	totalsReads int
+	totalsErr   error
 }
 
 func (f *fakeSeries) rebuildStationSeries(context.Context, time.Time) error  { return nil }
@@ -30,6 +33,11 @@ func (f *fakeSeries) stationCounts(context.Context, time.Time) (map[string]stati
 	return f.counts, f.err
 }
 func (f *fakeSeries) stationTotals(context.Context) (map[string]stationCount, error) {
+	f.totalsReads++
+	if err := f.totalsErr; err != nil {
+		f.totalsErr = nil
+		return nil, err
+	}
 	return f.totals, nil
 }
 func (f *fakeSeries) sourceCounts(context.Context, time.Time) (map[string][2]int, error) {
@@ -80,7 +88,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	// The receptions were written before the series existed, as on a database at step 17: its tables and view
 	// come with the upgrade, and the backfill bins what came before.
 	if err := conn.exec(ctx, "DROP VIEW {db}.station_dirty_mv", "DROP TABLE {db}.station_dirty", "DROP TABLE {db}.station_hours",
-		"DROP TABLE {db}.station_vessels", "DROP TABLE {db}.station_built", "DROP TABLE {db}.station_series_backfilled",
+		"DROP TABLE {db}.station_vessels", "DROP TABLE {db}.station_built", "DROP TABLE {db}.station_series_backfilled", "DROP TABLE {db}.station_versions",
 		"ALTER TABLE {db}.schema_migrations DELETE WHERE version > 17 SETTINGS mutations_sync = 2"); err != nil {
 		t.Fatal(err)
 	}
@@ -98,11 +106,14 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.backfillStationSeries(ctx, now); err != nil {
 		t.Fatal(err)
 	}
-	// An older version of an hour, as a rebuild leaves for the moment between its insert and its delete, is not read.
+	// An older version of an hour, as a rebuild leaves for the moment between its insert and its delete, is not read,
+	// nor a newer one never recorded, as an insert that failed partway leaves.
 	if err := conn.exec(ctx, "INSERT INTO {db}.station_hours (hour, station, source, receptions, first, built) VALUES ('"+
 		cur.Format("2006-01-02 15:04:05")+"', 'station:s1', 'station', 1000, 1000, '2000-01-01 00:00:00')",
 		"INSERT INTO {db}.station_vessels (hour, station, source, mmsi, receptions, last_ts, built) VALUES ('"+
-			cur.Format("2006-01-02 15:04:05")+"', 'station:s1', 'station', 777, 1, now64(3), '2000-01-01 00:00:00')"); err != nil {
+			cur.Format("2006-01-02 15:04:05")+"', 'station:s1', 'station', 777, 1, now64(3), '2000-01-01 00:00:00')",
+		"INSERT INTO {db}.station_hours (hour, station, source, receptions, first, built) VALUES ('"+
+			cur.Format("2006-01-02 15:04:05")+"', 'station:s1', 'station', 5000, 5000, '2098-01-01 00:00:00')"); err != nil {
 		t.Fatal(err)
 	}
 	counts, err := seriesCounts(t, conn, now)
@@ -195,7 +206,8 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	// A version from a clock that has since been set back, as after a restart: the next rebuild still supersedes it.
 	h := old.ts.Truncate(time.Hour)
 	if err := conn.exec(ctx, "INSERT INTO {db}.station_hours (hour, station, source, receptions, first, built) VALUES ('"+
-		h.Format("2006-01-02 15:04:05")+"', 'station:s3', 'station', 999, 999, '2099-01-01 00:00:00')"); err != nil {
+		h.Format("2006-01-02 15:04:05")+"', 'station:s3', 'station', 999, 999, '2099-01-01 00:00:00')",
+		"INSERT INTO {db}.station_versions VALUES ('"+h.Format("2006-01-02 15:04:05")+"', '2099-01-01 00:00:00')"); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.markHours(ctx, []time.Time{h}); err != nil {
@@ -221,20 +233,24 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	}
 }
 
-// A failed read keeps the last figures for the minute, rather than every request waiting on ClickHouse again.
-func TestStationRollupsBackOffAfterAFailure(t *testing.T) {
+// A failed read keeps the last figures, until stationRollupsStale has passed with none succeeding; a failed read of
+// the totals is tried again a minute later rather than an hour.
+func TestStationRollupsSurviveFailedReads(t *testing.T) {
 	p := testPipeline(t)
-	f := &fakeSeries{counts: map[string]stationCount{"s1": {day: 3}}}
-	p.attachClickHouse(&chStore{w: &fakeCH{}, series: f})
+	f := &fakeSeries{counts: map[string]stationCount{"s1": {day: 3}}, totalsErr: fmt.Errorf("timed out")}
 	now := time.Now()
-	p.rollups(now)
+	p.refreshRollups(f, now)
+	p.refreshRollups(f, now.Add(30*time.Second))
+	p.refreshRollups(f, now.Add(61*time.Second))
+	if f.totalsReads != 2 {
+		t.Errorf("%d reads of the totals, want the failed one and another a minute later", f.totalsReads)
+	}
 	f.err = fmt.Errorf("clickhouse is down")
-	counts, _ := p.rollups(now.Add(2 * time.Minute))
-	p.rollups(now.Add(2*time.Minute + 10*time.Second))
-	if f.reads != 2 || counts["s1"].day != 3 {
-		t.Errorf("%d reads, figures %v; want one failed read, then the last figures for the minute", f.reads, counts)
-	} // Failing past stationRollupsStale, there are no figures rather than frozen ones.
-	if counts, _ := p.rollups(now.Add(2*time.Minute + stationRollupsStale + time.Second)); counts != nil {
+	p.refreshRollups(f, now.Add(2*time.Minute))
+	if counts, _ := p.rollups(now.Add(2 * time.Minute)); counts["s1"].day != 3 {
+		t.Errorf("figures %v after a failed read, want the last", counts)
+	}
+	if counts, _ := p.rollups(now.Add(61*time.Second + stationRollupsStale + time.Second)); counts != nil {
 		t.Errorf("figures %v kept through %v of failed reads", counts, stationRollupsStale)
 	}
 }
