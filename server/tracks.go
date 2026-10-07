@@ -82,18 +82,16 @@ type anchor struct {
 	set        bool
 }
 
-// still reports whether pt is a vessel sitting still, for positions_1m: not reporting more than half a knot,
-// and within movedM of the anchor. Reported speed counts when there is one, since a vessel underway says so
-// before it has gone 50 m; about 0.3% of reports carry none, from a transmitter whose GPS gives it no speed,
-// and distance alone decides those. An anchor not yet set starts at seed, the vessel's last known position, such
-// as the one the vessel cache restores at start; with neither, pt is moving, so a voyage is never hidden. A
-// moving pt becomes the anchor when advance is set, which it is only for a report that enters positions_1m.
+// still reports whether pt is a vessel sitting still, for positions_1m: within movedM of the anchor. Distance
+// alone decides, not reported speed: a moored vessel's GPS can report 0.6 to 0.9 kn for days while it sits
+// within a few meters, and a vessel leaving at 3 kn passes movedM in about 30 seconds. An anchor not yet set starts at seed, the vessel's last known position, such as
+// the one the vessel cache restores at start; with neither, pt is moving, so a voyage is never hidden. A moving
+// pt becomes the anchor when advance is set, which it is only for a report that enters positions_1m.
 func (a *anchor) still(pt trackPoint, seed *[2]int32, advance bool) bool {
 	if !a.set && seed != nil {
 		a.lat6, a.lon6, a.set = seed[0], seed[1], true
 	}
-	moving := !a.set || pt.sog10 != 1023 && pt.sog10 > 5 ||
-		nm(float64(a.lat6)/600000, float64(a.lon6)/600000, float64(pt.lat6)/600000, float64(pt.lon6)/600000)*1852 > movedM
+	moving := !a.set || nm(float64(a.lat6)/600000, float64(a.lon6)/600000, float64(pt.lat6)/600000, float64(pt.lon6)/600000)*1852 > movedM
 	if moving && advance {
 		a.lat6, a.lon6, a.set = pt.lat6, pt.lon6, true
 	}

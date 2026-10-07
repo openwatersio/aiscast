@@ -147,7 +147,7 @@ The fourth item of #32 splits in two:
 
 - **Seven days** of hourly counts already exist. Every station, every source, and the network counters keep a 168-bucket hourly ring that persists across restarts. `?series=hourly` on `/v1/stats` and `/v1/stations/{id}` serializes the arrays. No new storage.
 - **Longer** series come from ClickHouse rollups per station and hour, as [station-page.md](station-page.md#rollups) plans.
-- **Coverage tiles** ([#30](https://github.com/openwatersio/aiscast/issues/30)) are a nightly job over `ais.receptions`: H3 cells per zoom tier with sources heard and distinct vessels, written as one PMTiles archive to a public R2 bucket and served through a Cloudflare-proxied hostname, the way the chart tiles are. Tens of megabytes per build. The web client fetches tiles in view. This follows [research/coverage-map-design.md](../research/coverage-map-design.md) and replaces the bounding rectangles.
+- **Coverage tiles** ([#30](https://github.com/openwatersio/aiscast/issues/30)) are a nightly job over `ais.receptions`: H3 cells per zoom tier with sources heard and distinct vessels, written as one PMTiles archive to a public R2 bucket and served through a Cloudflare-proxied hostname, the way the chart tiles are. Tens of megabytes per build. The web client fetches tiles in view. It replaces the bounding rectangles.
 
 ## Metering
 

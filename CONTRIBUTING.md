@@ -7,7 +7,6 @@
 - [pages/](pages/): what GitHub Pages serves at `openwatersio.github.io/aiscast`, where the first viewer lived: pages that redirect its old links to `openwaters.io/ais/`.
 - [signalk-plugin/](signalk-plugin/): `signalk-aiscast`, the Signal K plugin (TypeScript, vitest). `npm install && npm test` runs it against a fake aiscast; `npm run build` emits `dist/`. Published to npm by `release.yml` on a `signalk-plugin-v*` tag.
 - [docs/](docs/): [architecture.md](docs/architecture.md) is how data flows and why; read it before proposing a change to that. [policy.md](docs/policy.md) covers per-source licensing, privacy, and funding; [limits.md](docs/limits.md) the access tiers.
-- [research/](research/): the research behind every claim in the docs.
 
 ## Running locally
 

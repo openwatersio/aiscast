@@ -11,7 +11,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -200,28 +199,86 @@ func chFirstCopies(legacy bool, where string) string {
 // copy as the positions view does. positions_1m keeps the copy accepted when it was written, and a purge or a
 // reload does not move accepted to the copy left, so either is followed by this for each day it touched. Rows
 // the live writer adds meanwhile are kept: positions_1m keeps the latest row per window, so the two agree. It
-// groups in receptions' order, a vessel at a time, so a day stays within the memory a query may take.
+// rebuilds rebuildSlices ranges of vessels in turn, the ranges splitting the day's rows evenly: grouping a large day
+// whole, such as an archive's 36 M rows, outgrows the memory a load's query may take, and receptions sorts by vessel
+// first, so each range reads only its own rows. A transmission is one vessel's, so its copies never span two.
+// ponytail: one vessel's rows always fall in one range, so a day where a single MMSI floods most of the rows still
+// groups them in one query; split a vessel's day by time if that ever happens.
 func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	end := day.Add(24 * time.Hour)
 	legacy, err := c.legacy(ctx)
 	if err != nil {
 		return err
 	}
-	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ?", day, end); err != nil {
-		return err
-	}
+	deletes := chDeleteSync(ctx)
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "optimize_aggregation_in_order": 1,
 		"max_threads": 2, "max_execution_time": 3600,
 	}))
+	var levels []string
+	for i := 1; i < rebuildSlices; i++ {
+		levels = append(levels, fmt.Sprint(float64(i)/float64(rebuildSlices)))
+	}
+	var qs []uint32
+	if len(levels) > 0 {
+		if err := c.conn.QueryRow(ctx, "SELECT arrayMap(x -> if(isNaN(x), 0, toUInt32(x)), quantiles("+strings.Join(levels, ", ")+")(mmsi)) FROM "+c.db+
+			".receptions WHERE ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE", day, end).Scan(&qs); err != nil {
+			return err
+		}
+	}
 	q := `INSERT INTO {db}.positions_1m
 	SELECT mmsi, toDateTime(if(f.9, toStartOfMinute(f.1), toStartOfInterval(f.1, INTERVAL 30 MINUTE)), 'UTC') AS slot,
 	       if(f.9, 0, ` + chCellOf("f.2", "f.3") + `) AS cell,
 	       f.1 AS ts, f.2 AS lat6, f.3 AS lon6, f.4 AS sog10, f.5 AS cog10, f.6 AS heading, f.7 AS navstat, f.8 AS source
-	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE") + `)
+	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE AND mmsi >= ? AND mmsi <= ?") + `)
 	WHERE f.1 >= ? AND f.1 < ?`
-	return c.conn.Exec(ctx, strings.ReplaceAll(q, "{db}", c.db), day, end, day, end)
+	q = strings.ReplaceAll(q, "{db}", c.db)
+	// Each range is deleted just before it is rebuilt, so a rebuild that stops partway leaves the ranges it had not
+	// reached with the rows they held. Only the range in progress can be left empty, by a stop between its delete
+	// and its insert, until the day is rebuilt again.
+	for i, rg := range vesselRanges(qs) {
+		if err := c.conn.Exec(deletes, "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND mmsi >= ? AND mmsi <= ?",
+			day, end, rg[0], rg[1]); err != nil {
+			return err
+		}
+		if err := c.conn.Exec(ctx, q, day, end, rg[0], rg[1], day, end); err != nil {
+			return err
+		}
+		if rebuiltRange != nil {
+			if err := rebuiltRange(i); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
+
+// rebuiltRange, when set, is called after each range a rebuild finishes; tests use it to stop a rebuild partway.
+var rebuiltRange func(i int) error
+
+// vesselRanges turns ascending MMSI edges into inclusive ranges that cover every MMSI exactly once: the first from
+// 0, each next one starting where the last ended, the last to the largest. An edge that repeats or is 0 adds no
+// range, so a day with few vessels, or none, has fewer ranges.
+func vesselRanges(edges []uint32) [][2]uint32 {
+	starts := []uint32{0}
+	for _, e := range edges {
+		if e > starts[len(starts)-1] {
+			starts = append(starts, e)
+		}
+	}
+	out := make([][2]uint32, len(starts))
+	for i, lo := range starts {
+		hi := uint32(math.MaxUint32)
+		if i+1 < len(starts) {
+			hi = starts[i+1] - 1
+		}
+		out[i] = [2]uint32{lo, hi}
+	}
+	return out
+}
+
+// rebuildSlices is how many ranges of vessels a day of positions_1m is rebuilt in; 1 or less rebuilds it whole.
+var rebuildSlices = 8
 
 // chWriter inserts a batch of positions under a deduplication token, so ClickHouse skips a batch it already
 // holds; tests fake it.
@@ -244,7 +301,6 @@ type ownKey struct {
 // chReader reads one vessel's history; tests fake it.
 type chReader interface {
 	history(ctx context.Context, mmsi uint32, from, to time.Time, step time.Duration, limit int, now time.Time) ([]trackPoint, error)
-	first(ctx context.Context, mmsi uint32, from, to time.Time) (time.Time, bool, error)
 }
 
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
@@ -500,16 +556,6 @@ func (c *chConn) history(ctx context.Context, mmsi uint32, from, to time.Time, s
 	}
 	slices.Reverse(points)
 	return points, rows.Err()
-}
-
-// first is the time of the vessel's first usable copy between from and to; ok is false when it has none there.
-// It reads receptions on their sort key, so it costs one seek, not the view's grouping.
-func (c *chConn) first(ctx context.Context, mmsi uint32, from, to time.Time) (ts time.Time, ok bool, err error) {
-	err = c.conn.QueryRow(ctx, "SELECT ts FROM "+c.db+".receptions WHERE mmsi = ? AND ts >= ? AND ts <= ? AND "+chUsable+" ORDER BY ts LIMIT 1", mmsi, from, to).Scan(&ts)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ts, false, nil
-	}
-	return ts, err == nil, err
 }
 
 func (c *chConn) insert(ctx context.Context, token string, points []trackPoint) error {
