@@ -55,6 +55,8 @@ type enrichment struct {
 	tc *tcVessel
 	am *amsaVessel
 	is *isedShip
+
+	callsign string // the call sign the vessel's AIS reports
 }
 
 // mergeParticulars folds the sources into the served document. Per field, deterministically: a flag
@@ -87,6 +89,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	if cg != nil {
 		str("registered_name", "uscg", cg.Name, &m.RegisteredName)
 		str("identification", "uscg", cg.Identification, &m.Identification)
+		str("callsign", "uscg", cg.callsign, &m.CallSign)
 		str("service", "uscg", cg.Service, &m.Service)
 		str("status", "uscg", cg.Status, &m.Status)
 		num("year_built", "uscg", &cg.YearBuilt, &m.YearBuilt)
@@ -109,6 +112,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	if fd != nil {
 		str("registered_name", "fiskeridir", fd.Name, &m.RegisteredName)
 		str("identification", "fiskeridir", fd.Registration, &m.Identification)
+		str("callsign", "fiskeridir", fd.CallSign, &m.CallSign)
 		num("year_built", "fiskeridir", &fd.YearBuilt, &m.YearBuilt)
 		flt("length", "fiskeridir", &fd.Length, &m.Length)
 		flt("beam", "fiskeridir", &fd.Beam, &m.Beam)
@@ -121,6 +125,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	if fc != nil {
 		str("registered_name", "fcc", fc.Name, &m.RegisteredName)
 		str("identification", "fcc", fc.Official, &m.Identification)
+		str("callsign", "fcc", fc.CallSign, &m.CallSign)
 		// A ship station license is a US license, so the match is itself the registry fact.
 		str("registry", "fcc", "United States", &m.Registry)
 	}
@@ -165,6 +170,11 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		flt("draught", "wikidata", &wd.Draught, &m.Draught)
 		str("registry", "wikidata", wd.Registry, &m.Registry)
 		str("home_port", "wikidata", wd.HomePort, &m.HomePort)
+		// The call sign on an item is often one the ship gave up with an earlier flag: 70 of 231 heard ships
+		// in an October 2026 sample. Nothing on the item tells those apart, so it serves only to confirm AIS.
+		if wd.CallSign == wikidataCallSign(e.callsign) {
+			str("callsign", "wikidata", wd.CallSign, &m.CallSign)
+		}
 		str("owner", "wikidata", wd.Owner, &m.Owner)
 		str("operator", "wikidata", wd.Operator, &m.Operator)
 		if len(wd.FormerNames) > 0 {

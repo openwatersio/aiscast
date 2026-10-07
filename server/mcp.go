@@ -513,7 +513,7 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 	am := p.amsaOf(auIMOs...)
 	is := p.isedOf(caMMSIs...)
 	for i, r := range out.Vessels {
-		e := enrichment{wd: wd[r.IMO], cg: cg[r.MMSI], fd: fd[r.MMSI], fc: fc[r.MMSI]}
+		e := enrichment{wd: wd[r.IMO], cg: cg[r.MMSI], fd: fd[r.MMSI], fc: fc[r.MMSI], callsign: r.CallSign}
 		if flagOf(r.MMSI) == "CA" {
 			if tcv := tc[r.IMO]; tcv != nil && namesAgree(r.Name, tcv.Name) {
 				e.tc = tcv

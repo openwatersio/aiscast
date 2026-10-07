@@ -1,10 +1,10 @@
 package main
 
 // Vessel particulars from Wikidata, found by IMO number (P458): type, builder, year built, tonnage,
-// registered dimensions, registry and home port, owner and operator, former names, and links to the ship's
-// Wikipedia article and its photos on Commons. A bot import gave most IMO-registered ships an item, and
-// Wikidata is CC0, so the particulars are served without a credit line. The photos the links lead to carry
-// their own licenses.
+// registered dimensions, registry, home port and call sign, owner and operator, former names, and links to
+// the ship's Wikipedia article and its photos on Commons. A bot import gave most IMO-registered ships an
+// item, and Wikidata is CC0, so the particulars are served without a credit line. The photos the links lead
+// to carry their own licenses.
 //
 // Once a week a sync reads every item with an IMO from the Wikidata Query Service and replaces the wikidata
 // table in the vessel record. Requests read that table and never Wikidata. One query per field keeps each
@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 const (
@@ -64,6 +65,7 @@ type wikidataShip struct {
 	Draught         float64  `json:"draught,omitempty" jsonschema:"design draught, metres; AIS reports the draught on the current voyage"`
 	Registry        string   `json:"registry,omitempty" jsonschema:"country of registry, in English"`
 	HomePort        string   `json:"home_port,omitempty" jsonschema:"port of registry"`
+	CallSign        string   `json:"callsign,omitempty" jsonschema:"call sign as registered"`
 	Owner           string   `json:"owner,omitempty"`
 	Operator        string   `json:"operator,omitempty"`
 	FormerNames     []string `json:"former_names,omitempty" jsonschema:"names the vessel has carried before, oldest first"`
@@ -109,6 +111,7 @@ type wikidataItem struct {
 	owner       wikidataRef
 	operator    wikidataRef
 	formerNames []formerName
+	callSign    callSigns
 }
 
 // wikidataRef is a property whose value is another item, named later by its label.
@@ -132,6 +135,59 @@ func (r *wikidataRef) take(b wikidataBinding) {
 	if r.qid == 0 || (r.ended && !ended) || (r.ended == ended && qid < r.qid) {
 		*r = wikidataRef{qid, ended}
 	}
+}
+
+// callSigns keeps the call sign an item has in force, or none when it has several: a ship that changes
+// flag gets a new call sign, the old one often stays on the item without an end time, and nothing says
+// which is current. In October 2026, 88 of 33,000 items had more than one.
+type callSigns struct {
+	v       string
+	several bool
+}
+
+// take keeps a value that cleans to a call sign and has no end time (P582).
+func (c *callSigns) take(b wikidataBinding) {
+	cs := wikidataCallSign(b.V.Value)
+	if cs == "" || b.End.Value != "" || cs == c.v {
+		return
+	}
+	if c.v != "" {
+		c.several = true
+	}
+	c.v = cs
+}
+
+func (c callSigns) value() string {
+	if c.several {
+		return ""
+	}
+	return c.v
+}
+
+// wikidataCallSign is a call sign as written on an item, in capitals and without the spaces, hyphens,
+// and dots some items have, or "" for a value that cannot be a ship's call sign: four to seven letters and
+// digits, with a letter in the two-character ITU prefix.
+func wikidataCallSign(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || r == '-' || r == '.' {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) < 4 || len(s) > 7 {
+		return ""
+	}
+	// ASCII before capitals: ToUpper makes a dotless ı an I.
+	for _, r := range s {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return ""
+		}
+	}
+	s = strings.ToUpper(s)
+	if !strings.ContainsAny(s[:2], "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+		return ""
+	}
+	return s
 }
 
 // wikidataQueries run in order; the first finds the items and their IMOs, and each after it adds one field.
@@ -176,6 +232,8 @@ var wikidataQueries = []struct {
 		func(it *wikidataItem, b wikidataBinding) { it.registry.take(b) }},
 	{"home_port", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P532 ?s . ?s a wikibase:BestRank; ps:P532 ?v . OPTIONAL { ?s pq:P582 ?end } }`,
 		func(it *wikidataItem, b wikidataBinding) { it.homePort.take(b) }},
+	{"callsign", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P2317 ?s . ?s a wikibase:BestRank; ps:P2317 ?v . OPTIONAL { ?s pq:P582 ?end } }`,
+		func(it *wikidataItem, b wikidataBinding) { it.callSign.take(b) }},
 	{"owner", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P127 ?s . ?s a wikibase:BestRank; ps:P127 ?v . OPTIONAL { ?s pq:P582 ?end } }`,
 		func(it *wikidataItem, b wikidataBinding) { it.owner.take(b) }},
 	{"operator", `SELECT ?item ?v ?end WHERE { ?item wdt:P458 []; p:P137 ?s . ?s a wikibase:BestRank; ps:P137 ?v . OPTIONAL { ?s pq:P582 ?end } }`,
@@ -346,6 +404,7 @@ func fetchWikidata(ctx context.Context, endpoint string) (map[uint32]*wikidataSh
 		s.ID = "Q" + strconv.Itoa(it.qid)
 		s.Builder, s.Registry, s.ShipType = labels[it.builder.qid], labels[it.registry.qid], labels[it.shipType.qid]
 		s.HomePort, s.Owner, s.Operator = labels[it.homePort.qid], labels[it.owner.qid], labels[it.operator.qid]
+		s.CallSign = it.callSign.value()
 		sort.SliceStable(it.formerNames, func(i, j int) bool { return it.formerNames[i].end < it.formerNames[j].end })
 		seen := map[string]bool{}
 		for _, n := range it.formerNames {
@@ -390,14 +449,16 @@ func sparql(ctx context.Context, endpoint, query string) ([]wikidataBinding, err
 
 // wikidataFields names what wikidataCounts and wikidataCountSQL count, in their order.
 var wikidataFields = [...]string{"ships", "builder", "year_built", "gross_tonnage", "deadweight", "length", "beam", "registry",
-	"former_names", "ship_type", "yard_number", "draught", "home_port", "owner", "operator", "wikipedia", "commons_category", "image"}
+	"former_names", "ship_type", "yard_number", "draught", "home_port", "owner", "operator", "wikipedia", "commons_category", "image",
+	"callsign"}
 
 const wikidataCountSQL = `SELECT count(*), coalesce(sum(builder != ''), 0), coalesce(sum(year_built > 0), 0),
 	coalesce(sum(gross_tonnage > 0), 0), coalesce(sum(deadweight > 0), 0), coalesce(sum(length > 0), 0),
 	coalesce(sum(beam > 0), 0), coalesce(sum(registry != ''), 0), coalesce(sum(former_names != ''), 0),
 	coalesce(sum(ship_type != ''), 0), coalesce(sum(yard_number != ''), 0), coalesce(sum(draught > 0), 0),
 	coalesce(sum(home_port != ''), 0), coalesce(sum(owner != ''), 0), coalesce(sum(operator != ''), 0),
-	coalesce(sum(wikipedia != ''), 0), coalesce(sum(commons_category != ''), 0), coalesce(sum(image != ''), 0) FROM wikidata`
+	coalesce(sum(wikipedia != ''), 0), coalesce(sum(commons_category != ''), 0), coalesce(sum(image != ''), 0),
+	coalesce(sum(callsign != ''), 0) FROM wikidata`
 
 // wikidataCounts is the ships in a sync and how many have each field.
 func wikidataCounts(ships map[uint32]*wikidataShip) (n [len(wikidataFields)]int) {
@@ -405,7 +466,7 @@ func wikidataCounts(ships map[uint32]*wikidataShip) (n [len(wikidataFields)]int)
 		for i, set := range [...]bool{true, w.Builder != "", w.YearBuilt > 0, w.GrossTonnage > 0, w.Deadweight > 0,
 			w.Length > 0, w.Beam > 0, w.Registry != "", len(w.FormerNames) > 0, w.ShipType != "", w.YardNumber != "",
 			w.Draught > 0, w.HomePort != "", w.Owner != "", w.Operator != "", w.Wikipedia != "", w.CommonsCategory != "",
-			w.Image != ""} {
+			w.Image != "", w.CallSign != ""} {
 			if set {
 				n[i]++
 			}
@@ -459,7 +520,7 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 			names = string(b)
 		}
 		if _, err := st.Exec(imo, w.ID, w.Builder, w.YearBuilt, w.GrossTonnage, w.Deadweight, w.Length, w.Beam, w.Registry, names,
-			w.ShipType, w.YardNumber, w.Draught, w.HomePort, w.Owner, w.Operator, w.Wikipedia, w.CommonsCategory, w.Image); err != nil {
+			w.ShipType, w.YardNumber, w.Draught, w.HomePort, w.Owner, w.Operator, w.Wikipedia, w.CommonsCategory, w.Image, w.CallSign); err != nil {
 			return err
 		}
 	}
@@ -471,7 +532,7 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 }
 
 const wikidataCols = `imo, qid, builder, year_built, gross_tonnage, deadweight, length, beam, registry, former_names,
-	ship_type, yard_number, draught, home_port, owner, operator, wikipedia, commons_category, image`
+	ship_type, yard_number, draught, home_port, owner, operator, wikipedia, commons_category, image, callsign`
 
 // wikidataShips is the stored particulars for each IMO that has them.
 func (s *store) wikidataShips(imos []uint32) (map[uint32]*wikidataShip, error) {
@@ -493,7 +554,7 @@ func (s *store) wikidataShips(imos []uint32) (map[uint32]*wikidataShip, error) {
 		var names string
 		w := &wikidataShip{License: wikidataLicense}
 		if err := rows.Scan(&imo, &w.ID, &w.Builder, &w.YearBuilt, &w.GrossTonnage, &w.Deadweight, &w.Length, &w.Beam, &w.Registry, &names,
-			&w.ShipType, &w.YardNumber, &w.Draught, &w.HomePort, &w.Owner, &w.Operator, &w.Wikipedia, &w.CommonsCategory, &w.Image); err != nil {
+			&w.ShipType, &w.YardNumber, &w.Draught, &w.HomePort, &w.Owner, &w.Operator, &w.Wikipedia, &w.CommonsCategory, &w.Image, &w.CallSign); err != nil {
 			return nil, err
 		}
 		w.URL = "https://www.wikidata.org/wiki/" + w.ID
