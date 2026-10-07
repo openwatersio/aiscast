@@ -1610,6 +1610,50 @@ func TestClickHouseRebuildsPositions1mInSlices(t *testing.T) {
 	}
 }
 
+// A rebuild that stops partway leaves every vessel with rows: the ranges it finished hold their rebuilt rows, and
+// the ones it had not reached still hold what they held before.
+func TestClickHouseRebuildThatStopsKeepsTheRest(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	var pts []trackPoint
+	for v := range 400 {
+		ts := day.Add(time.Duration(v*3) * time.Minute)
+		pts = append(pts, trackPoint{mmsi: uint32(257000000 + v), ts: ts, lat6: int32(59 * 600000), lon6: int32(10.7 * 600000), sog10: 100,
+			cog10: 3600, heading: 511, navStatus: 0, source: "kystverket", station: "kystverket", txAt: ts, txDisc: 1, recv: ts})
+	}
+	if err := conn.insert(ctx, "stops", pts); err != nil { // the live view fills positions_1m with every vessel
+		t.Fatal(err)
+	}
+	stop := errors.New("stopped")
+	rebuiltRange = func(i int) error {
+		if i == 3 {
+			return stop
+		}
+		return nil
+	}
+	defer func() { rebuiltRange = nil }()
+	if err := conn.rebuildPositions1m(ctx, day); !errors.Is(err, stop) {
+		t.Fatalf("the rebuild did not stop where it was told: %v", err)
+	}
+	var vessels uint64
+	if err := conn.conn.QueryRow(ctx, "SELECT uniqExact(mmsi) FROM "+db+".positions_1m FINAL WHERE slot >= ? AND slot < ?", day, day.AddDate(0, 0, 1)).Scan(&vessels); err != nil {
+		t.Fatal(err)
+	}
+	if vessels != 400 {
+		t.Errorf("%d of 400 vessels have rows after a rebuild stopped partway", vessels)
+	}
+}
+
 // The ranges cover every MMSI once, whatever edges the quantiles give: none, repeated, or 0.
 func TestVesselRangesCoverEveryMMSIOnce(t *testing.T) {
 	for _, edges := range [][]uint32{nil, {0, 0, 0}, {257000050, 257000100, 257000150}, {5, 5, 9}, {math.MaxUint32}} {

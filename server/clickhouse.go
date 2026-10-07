@@ -181,15 +181,15 @@ func chFirstCopies(legacy bool, where string) string {
 // rebuilds rebuildSlices ranges of vessels in turn, the ranges splitting the day's rows evenly: grouping a large day
 // whole, such as an archive's 36 M rows, outgrows the memory a load's query may take, and receptions sorts by vessel
 // first, so each range reads only its own rows. A transmission is one vessel's, so its copies never span two.
+// ponytail: one vessel's rows always fall in one range, so a day where a single MMSI floods most of the rows still
+// groups them in one query; split a vessel's day by time if that ever happens.
 func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	end := day.Add(24 * time.Hour)
 	legacy, err := c.legacy(ctx)
 	if err != nil {
 		return err
 	}
-	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ?", day, end); err != nil {
-		return err
-	}
+	deletes := chDeleteSync(ctx)
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_memory_usage": 1_500_000_000, "max_bytes_before_external_group_by": 700_000_000, "optimize_aggregation_in_order": 1,
 		"max_threads": 2, "max_execution_time": 3600,
@@ -212,13 +212,27 @@ func (c *chConn) rebuildPositions1m(ctx context.Context, day time.Time) error {
 	FROM (` + chFirstCopies(legacy, "ts >= ? - INTERVAL 5 MINUTE AND ts < ? + INTERVAL 5 MINUTE AND mmsi >= ? AND mmsi <= ?") + `)
 	WHERE f.1 >= ? AND f.1 < ?`
 	q = strings.ReplaceAll(q, "{db}", c.db)
-	for _, rg := range vesselRanges(qs) {
+	// Each range is deleted just before it is rebuilt, so a rebuild that stops partway leaves the ranges it had not
+	// reached with the rows they held, never with none.
+	for i, rg := range vesselRanges(qs) {
+		if err := c.conn.Exec(deletes, "DELETE FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND mmsi >= ? AND mmsi <= ?",
+			day, end, rg[0], rg[1]); err != nil {
+			return err
+		}
 		if err := c.conn.Exec(ctx, q, day, end, rg[0], rg[1], day, end); err != nil {
 			return err
+		}
+		if rebuiltRange != nil {
+			if err := rebuiltRange(i); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
+
+// rebuiltRange, when set, is called after each range a rebuild finishes; tests use it to stop a rebuild partway.
+var rebuiltRange func(i int) error
 
 // vesselRanges turns ascending MMSI edges into inclusive ranges that cover every MMSI exactly once: the first from
 // 0, each next one starting where the last ended, the last to the largest. An edge that repeats or is 0 adds no
