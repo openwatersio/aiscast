@@ -469,7 +469,11 @@ func (p *Pipeline) serveTileJSON(w http.ResponseWriter, r *http.Request) {
 		u += "?" + r.URL.RawQuery
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=300")
+	if r.URL.Query().Has("imo") { // as the tiles: the gate answers by the caller's token
+		w.Header().Set("Cache-Control", "private, max-age=300")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"tilejson":      "3.0.0",
 		"name":          "Open Waters AIS vessels",

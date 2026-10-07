@@ -708,7 +708,7 @@
         "name": "imo",
         "in": "query",
         "required": false,
-        "description": "Comma-separated IMO numbers, for feeder and partner tokens; other tokens get a `403`. Each names every vessel whose static data reported it, up to 10, most recently heard first. ORed with `bbox` and `mmsi`. An IMO counts once against the same cap as an MMSI. An IMO is a number from 1 to 9999999; the check digit is not required.",
+        "description": "Comma-separated IMO numbers, for feeder and partner tokens; other tokens get a `403`. Each names every vessel whose static data reported it, up to 10, most recently heard first. ORed with `bbox` and `mmsi`. An IMO counts once against the same cap as an MMSI. An IMO is one to seven digits, not 0; the check digit is not required. Every `imo` parameter counts, and an empty one is a `400`.",
         "schema": { "type": "string" },
         "example": "9241061"
       },

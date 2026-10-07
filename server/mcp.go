@@ -380,14 +380,19 @@ func mcpCheckBoxes(cl *Claims, boxes []bbox) error {
 	return errors.New(msg)
 }
 
-func mcpCheckMMSIs(cl *Claims, n int) error {
+func mcpCheckMMSIs(cl *Claims, mmsis, imos int) error {
+	n := mmsis + imos
 	if n == 0 {
 		return errors.New("give at least one mmsi or imo")
 	}
 	if cl.allowsMMSIs(n) {
 		return nil
 	}
-	msg := fmt.Sprintf("%d MMSIs and IMO numbers requested; this key allows %d per call. Split the list", n, cl.MMSIs)
+	what := "MMSIs"
+	if imos > 0 {
+		what = "MMSIs and IMO numbers"
+	}
+	msg := fmt.Sprintf("%d %s requested; this key allows %d per call. Split the list", n, what, cl.MMSIs)
 	if cl.Role == "anonymous" {
 		msg += fmt.Sprintf(", or send a free token from %s as an Authorization: Bearer header for %d", mcpTokenURL, personalMMSIs)
 	}
@@ -426,7 +431,7 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 			imos = append(imos, n)
 		}
 	}
-	if err := mcpCheckMMSIs(cl, len(want)+len(imos)); err != nil {
+	if err := mcpCheckMMSIs(cl, len(want), len(imos)); err != nil {
 		return nil, mcpVessels{}, err
 	}
 	byIMO, cut, err := p.resolveIMOs(imos)

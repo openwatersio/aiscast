@@ -40,11 +40,13 @@ func imoGate(cl *Claims) error {
 
 const imoRange = "imo must be a number from 1 to 9999999"
 
-// parseIMO reads one IMO number. The check digit is not required: the API serves IMOs as vessels broadcast
-// them, so a client must be able to look up any number it was given. 0 is "not available" on the wire.
+// parseIMO reads one IMO number, one to seven digits. The check digit is not required: the API serves IMOs as
+// vessels broadcast them, so a client can look up any number in that range it was given. 0 is "not available"
+// on the wire.
 func parseIMO(s string) (uint32, bool) {
-	n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 32)
-	return uint32(n), err == nil && n >= 1 && n <= 9_999_999
+	s = strings.TrimSpace(s)
+	n, err := strconv.ParseUint(s, 10, 32)
+	return uint32(n), err == nil && len(s) <= 7 && n >= 1
 }
 
 // parseIMOs reads imo=<imo>,<imo>,...
@@ -77,17 +79,37 @@ func (p *Pipeline) resolveIMOs(imos []uint32) (_ map[uint32][]record, cut bool, 
 	if len(imos) == 0 {
 		return out, false, nil
 	}
+	want := map[uint32]bool{}
+	for _, n := range imos {
+		want[n] = true
+	}
 	var recs []record
 	if p.store != nil {
 		var err error
 		if recs, err = p.store.find(recordQuery{imos: imos}); err != nil {
 			return nil, false, err
 		}
-	} else {
-		want := map[uint32]bool{}
-		for _, n := range imos {
-			want[n] = true
+		// The record runs up to a flush behind the cache, so the cache answers for the vessels folded since:
+		// a first static report is found at once, and a changed IMO answers for the new number. A vessel back
+		// from the sweep has not resent its IMO yet, and the record answers for it.
+		p.vmu.RLock()
+		cached := func(mmsi uint32) *vessel {
+			if _, ok := p.dirty[mmsi]; !ok {
+				return nil
+			}
+			if v := p.vessels[mmsi]; v != nil && v.IMO != 0 {
+				return v
+			}
+			return nil
 		}
+		recs = slices.DeleteFunc(recs, func(r record) bool { return cached(r.mmsi) != nil })
+		for mmsi := range p.dirty {
+			if v := cached(mmsi); v != nil && want[v.IMO] {
+				recs = append(recs, record{mmsi: mmsi, v: v.state()})
+			}
+		}
+		p.vmu.RUnlock()
+	} else {
 		p.vmu.RLock()
 		for mmsi, v := range p.vessels {
 			if v.IMO != 0 && want[v.IMO] {
@@ -95,13 +117,13 @@ func (p *Pipeline) resolveIMOs(imos []uint32) (_ map[uint32][]record, cut bool, 
 			}
 		}
 		p.vmu.RUnlock()
-		slices.SortFunc(recs, func(a, b record) int {
-			if c := b.v.Seen.Compare(a.v.Seen); c != 0 {
-				return c
-			}
-			return cmp.Compare(a.mmsi, b.mmsi)
-		})
 	}
+	slices.SortFunc(recs, func(a, b record) int {
+		if c := b.v.Seen.Compare(a.v.Seen); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.mmsi, b.mmsi)
+	})
 	for _, r := range recs {
 		if len(out[r.v.IMO]) < maxMMSIsPerIMO {
 			out[r.v.IMO] = append(out[r.v.IMO], r)

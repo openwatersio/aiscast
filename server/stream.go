@@ -744,11 +744,14 @@ func (p *Pipeline) parseSub(vals url.Values, cl *Claims, needFilter bool) (*v1Su
 		}
 	}
 	var imos []uint32
-	if q := vals.Get("imo"); q != "" {
-		var msg string
-		if imos, msg = parseIMOs(q); msg != "" {
+	for _, q := range vals["imo"] { // every value, and an empty one refused: a dropped imo would widen the answer
+		ids, msg := parseIMOs(q)
+		if msg != "" {
 			return bad(msg)
 		}
+		imos = append(imos, ids...)
+	}
+	if len(imos) > 0 {
 		if err := imoGate(cl); err != nil {
 			return nil, http.StatusForbidden, err.Error()
 		}

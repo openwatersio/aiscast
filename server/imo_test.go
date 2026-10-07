@@ -167,7 +167,7 @@ func TestIMOResolution(t *testing.T) {
 		t.Errorf("the prefix is case-insensitive: %d", w.Code)
 	}
 	// a list answers with both
-	if fc := getFC(t, p, "/v1/vessels?imo=9241061"); !slices.Equal(ids(fc), []uint32{538000001, 257000001}) || fc.Truncated {
+	if fc := getFC(t, p, "/v1/vessels?imo=9241061"); !sameIDs(ids(fc), 538000001, 257000001) || fc.Truncated { // a list has no order
 		t.Errorf("reflagged list: %v", ids(fc))
 	}
 
@@ -192,11 +192,18 @@ func TestIMOResolution(t *testing.T) {
 		t.Errorf("placeholder track: %d %s", w.Code, w.Body)
 	}
 	fc := getFC(t, p, "/v1/vessels?imo=1234567")
-	if len(fc.Features) != maxMMSIsPerIMO || fc.Features[0].ID != 230000111 || !fc.Truncated {
+	if len(fc.Features) != maxMMSIsPerIMO || !slices.Contains(ids(fc), 230000111) || slices.Contains(ids(fc), 230000100) || !fc.Truncated {
 		t.Errorf("placeholder list: %v %v", ids(fc), fc.Truncated)
 	}
 	if fc := getFC(t, p, "/v1/vessels?q=IMO1234567"); len(fc.Features) != maxMMSIsPerIMO || !fc.Truncated {
 		t.Errorf("placeholder search: %v %v", ids(fc), fc.Truncated)
+	}
+	if fc := getFC(t, p, "/v1/vessels?q=PLACEHOLDER&imo=1234567"); len(fc.Features) != maxMMSIsPerIMO || !fc.Truncated {
+		t.Errorf("search narrowed by a placeholder: %v %v", ids(fc), fc.Truncated)
+	}
+	// every imo value counts, as one list
+	if fc := getFC(t, p, "/v1/vessels?imo=9241061&imo=1234567"); len(fc.Features) != 2+maxMMSIsPerIMO {
+		t.Errorf("repeated imo parameter: %v", ids(fc))
 	}
 
 	// an IMO no vessel reports
@@ -210,7 +217,8 @@ func TestIMOResolution(t *testing.T) {
 	}
 
 	// 0 is "not available" on the wire, and an IMO has at most seven digits
-	for _, target := range []string{"/v1/vessels/IMO0", "/v1/vessels/IMO12345678", "/v1/vessels/IMO", "/v1/vessels?imo=0", "/v1/vessels?imo=9241061,x", "/v1/vessels/tiles/0/0/0?imo=0"} {
+	for _, target := range []string{"/v1/vessels/IMO0", "/v1/vessels/IMO12345678", "/v1/vessels/IMO", "/v1/vessels?imo=0", "/v1/vessels?imo=9241061,x", "/v1/vessels/tiles/0/0/0?imo=0",
+		"/v1/vessels/IMO00009241061", "/v1/vessels?imo=00001234567", "/v1/vessels?imo=&imo=9241061", "/v1/vessels/tiles/0/0/0?imo=&imo=9241061"} {
 		if w := get(t, p, target); w.Code != 400 {
 			t.Errorf("%s: %d %s", target, w.Code, w.Body)
 		}
@@ -246,7 +254,7 @@ func TestIMOResolution(t *testing.T) {
 	}
 
 	// tiles.json keeps its own route beside /v1/vessels/IMO<n>
-	if w := get(t, p, "/v1/vessels/tiles.json?imo=9241061"); w.Code != 200 || !strings.Contains(w.Body.String(), `"tilejson"`) {
+	if w := get(t, p, "/v1/vessels/tiles.json?imo=9241061"); w.Code != 200 || !strings.Contains(w.Body.String(), `"tilejson"`) || w.Header().Get("Cache-Control") != "private, max-age=300" {
 		t.Errorf("tiles.json: %d %s", w.Code, w.Body)
 	}
 }
@@ -302,6 +310,14 @@ func TestIMOCountsAgainstTheMMSICap(t *testing.T) {
 	// a list caps each IMO at ten
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"imo": []uint32{1234567}}, &out); msg != "" || len(out.Vessels) != maxMMSIsPerIMO || out.Vessels[0].MMSI != 230000111 || !out.Truncated {
 		t.Errorf("mcp placeholder: %q %+v", msg, out)
+	}
+	// a key that follows vessels only by list may name them by IMO, even an IMO that matches nothing
+	kid, priv := testIssuer(t, p) // new keys: the tokens above stop verifying
+	fleet, _ := signToken(priv, Claims{Kid: kid, Sub: "fleet2", Role: "partner", Area: -1, Exp: time.Now().Add(time.Hour).Unix()})
+	for _, imo := range []string{"9241061", "7654321"} {
+		if w := get(t, p, withKey("/v1/vessels/tiles/0/0/0?imo="+imo, fleet)); w.Code != 200 {
+			t.Errorf("list-only key, tile by imo %s: %d %s", imo, w.Code, w.Body)
+		}
 	}
 }
 
@@ -464,7 +480,47 @@ func TestIMOResolverPaths(t *testing.T) {
 	heardIMO(p, 257000001, 9241061, "OLD FLAG", 20*time.Minute)
 	heardIMO(p, 538000001, 9241061, "NEW FLAG", time.Minute)
 	check("cache", p)
-	if fc := getFC(t, p, "/v1/vessels?imo=9241061"); !slices.Equal(ids(fc), want) {
+	if fc := getFC(t, p, "/v1/vessels?imo=9241061"); !sameIDs(ids(fc), want...) {
 		t.Errorf("cache list: %v", ids(fc))
 	}
+}
+
+// The record runs a flush behind the cache, and the vessels folded since answer from the cache.
+func TestIMOBetweenFlushes(t *testing.T) {
+	p := imoScene(t)
+	at := time.Now()
+	p.ingestPacket("kystverket", "kystverket", at, at, posReport(538000009, 59.9, 10.7))
+	p.ingestPacket("kystverket", "kystverket", at, at, staticIMO(538000009, 7777777, "FIRST HEARD"))
+	p.ingestPacket("kystverket", "kystverket", at, at, staticIMO(230000100, 9241061, "NOW REFLAGGED")) // was 1234567
+	byIMO, _, err := p.resolveIMOs([]uint32{7777777, 9241061, 1234567})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byIMO[7777777]) != 1 || byIMO[7777777][0].mmsi != 538000009 {
+		t.Errorf("first static report: %v", byIMO[7777777])
+	}
+	if len(byIMO[9241061]) != 3 || slices.ContainsFunc(byIMO[1234567], func(r record) bool { return r.mmsi == 230000100 }) {
+		t.Errorf("changed imo: %d for 9241061, %d for 1234567", len(byIMO[9241061]), len(byIMO[1234567]))
+	}
+	if w := get(t, p, "/v1/vessels/IMO7777777"); w.Code != 200 {
+		t.Errorf("by path before the flush: %d %s", w.Code, w.Body)
+	}
+	cs := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, &Claims{Sub: "f", Role: "feeder"}))
+	var out mcpVessels
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"imo": []uint32{7777777}}, &out); msg != "" || len(out.Vessels) != 1 || len(out.UnknownIMO) != 0 {
+		t.Errorf("get_vessels before the flush: %q %+v", msg, out)
+	}
+
+	// a vessel back from the sweep has not resent its IMO, and the record still answers for it
+	mustFlush(t, p)
+	forget(p)
+	at = time.Now()
+	p.ingestPacket("kystverket", "kystverket", at, at, posReport(538000001, 59.9, 10.7))
+	if byIMO, _, _ := p.resolveIMOs([]uint32{9241061}); !slices.ContainsFunc(byIMO[9241061], func(r record) bool { return r.mmsi == 538000001 }) {
+		t.Errorf("returning vessel lost its imo: %v", byIMO[9241061])
+	}
+}
+
+func sameIDs(got []uint32, want ...uint32) bool {
+	return slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want)))
 }

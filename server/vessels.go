@@ -795,7 +795,7 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 		}
 		return hits[i].seen.After(hits[j].seen)
 	})
-	truncated := imoCut || len(hits) > searchLimit
+	truncated := imoCut || s.cut || len(hits) > searchLimit
 	if len(hits) > searchLimit {
 		hits = hits[:searchLimit]
 	}
