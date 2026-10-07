@@ -326,7 +326,7 @@
             }
           },
           "429": { "$ref": "#/components/responses/RateLimited" },
-          "400": { "description": "`station` is longer than 256 bytes. The body is JSON with an `error`." },
+          "400": { "description": "`station` is longer than 256 characters. The body is JSON with an `error`." },
           "404": { "description": "The station heard nothing in the window or no station has that id, or briefly while the station's days are rebuilt. The body is JSON with an `error`." },
           "503": { "description": "The server has no coverage loaded: it runs without ClickHouse, or ClickHouse has no coverage for the window yet. With `station`, also when loading the station's cells failed." }
         }

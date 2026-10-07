@@ -807,6 +807,12 @@ func TestCoverageStationCaches(t *testing.T) {
 	if _, held := p.coverage.stations["station:big"]; !held || len(p.coverage.stations) != 1 || f.stationLoads != 4 {
 		t.Errorf("a station of 6 cells against a bound of 4: held %v with %d others, %d loads", held, len(p.coverage.stations)-1, f.stationLoads)
 	}
+	// a, dropped for big, loads again and finds its tile already built for this network load.
+	tiles := len(p.coverage.stationTiles.m)
+	get("/v1/coverage/tiles/0/0/0?station=station:a")
+	if f.stationLoads != 5 || len(p.coverage.stationTiles.m) != tiles {
+		t.Errorf("a reloaded station built its tile again: %d loads, %d tiles cached, was %d", f.stationLoads, len(p.coverage.stationTiles.m), tiles)
+	}
 }
 
 // A backfill's day and a rebuild wait for each other, so a backfill that read a day before a reload changed it
