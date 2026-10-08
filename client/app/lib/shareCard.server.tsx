@@ -167,7 +167,7 @@ export function stationCardId(pathname: string): string | undefined {
 const n = (v: number) => v.toLocaleString("en-US");
 
 /** What a station's card says: its title, what it is and where, and its last 24 hours. */
-export function stationCardProps(st: Station): ShareCardProps {
+export function stationCardProps(st: Station, counted = true): ShareCardProps {
   const title = stationTitle(st);
   let subtitle = isVolunteer(st.source) ? "Volunteer receiver" : "Data feed";
   if (st.near && title !== `Near ${st.near}`) subtitle += ` near ${st.near}`;
@@ -175,25 +175,25 @@ export function stationCardProps(st: Station): ShareCardProps {
     title,
     subtitle,
     period: "Last 24 hours",
-    stats: [
-      { value: n(st.vessels_24h ?? st.vessels), label: "vessels" },
-      { value: n(st.vessels_exclusive_24h ?? 0), label: "unique vessels" },
-    ],
+    // Without the vessel counts, its messages, which are always counted.
+    stats: counted
+      ? [
+          { value: n(st.vessels_24h ?? st.vessels), label: "vessels" },
+          { value: n(st.vessels_exclusive_24h ?? 0), label: "unique vessels" },
+        ]
+      : [{ value: compact.format(st.events.last_24h), label: "messages" }],
   };
 }
 
 /**
- * The station list as a station card can trust it, or undefined while its counts are missing: for the
- * minutes after the server starts, and while it cannot read them from ClickHouse, every station's
- * 24-hour counts read 0. A card drawn then would show 0 vessels for the hour it is kept, and longer in
- * the copies link previews keep. No network that heard messages heard no vessels, so that list is
- * answered as an outage, which is not kept.
+ * Whether the station list carries its stations' vessel counts. A server without ClickHouse has none,
+ * and one just started, or unable to read ClickHouse, has none yet: every station's counts read 0. No
+ * network that heard messages heard no vessels, so then the cards leave the counts out rather than
+ * show 0 vessels for the hour they are kept, and longer in the copies link previews keep.
  */
-function loaded(stations: Station[] | undefined): Station[] | undefined {
-  if (!stations) return undefined;
+export function countsKnown(stations: Station[]): boolean {
   const heard = stations.some((s) => s.events.last_24h > 0);
-  const counted = stations.some((s) => (s.vessels_24h ?? s.vessels) > 0);
-  return heard && !counted ? undefined : stations;
+  return !heard || stations.some((s) => (s.vessels_24h ?? s.vessels) > 0);
 }
 
 /**
@@ -205,11 +205,11 @@ export async function stationCard(auth: ApiAuth, id: string): Promise<Response> 
   // A receiver's tagged path is the receiver, as its page redirects.
   const receiver = volunteerReceiver(id);
   if (receiver) return new Response(null, { status: 301, headers: { Location: `/ais${stationCardPath(receiver)}` } });
-  const stations = loaded(await getStations(auth));
+  const stations = await getStations(auth);
   if (!stations) return unavailable();
   const st = stations.find((s) => s.station === id);
   if (!st) return new Response("Not found", { status: 404 });
-  return shareCard(stationCardProps(st));
+  return shareCard(stationCardProps(st, countsKnown(stations)));
 }
 
 /** The vessel a card path names, `/ais/vessels/<mmsi>.png`, or undefined for any other path. */
@@ -274,10 +274,10 @@ export function networkCardProps(stats: Stats, stations: Station[]): ShareCardPr
 }
 
 export async function networkCard(auth: ApiAuth): Promise<Response> {
-  // Its numbers come from the stats and the stations' last messages, not their vessel counts, so it
-  // draws whether or not those are loaded.
+  // Its numbers come from the stats and the stations' last messages, not their vessel counts. An empty
+  // list, as in the seconds after the server starts, is answered as an outage, which is not kept.
   const [stats, stations] = await Promise.all([getStats(auth), getStations(auth)]);
-  if (!stats || !stations) return unavailable();
+  if (!stats || !stations?.length) return unavailable();
   return shareCard(networkCardProps(stats, stations));
 }
 
@@ -295,14 +295,15 @@ export function stationsCardProps(stations: Station[]): ShareCardProps {
     stats: [
       { value: n(heard.length - volunteers), label: "feeds" },
       { value: n(volunteers), label: "stations" },
-      { value: n(heard.reduce((sum, s) => sum + (s.vessels_exclusive_24h ?? 0), 0)), label: "vessels" },
+      ...(countsKnown(stations) ? [{ value: n(heard.reduce((sum, s) => sum + (s.vessels_exclusive_24h ?? 0), 0)), label: "vessels" }] : []),
     ],
   };
 }
 
 export async function stationsCard(auth: ApiAuth): Promise<Response> {
-  const stations = loaded(await getStations(auth));
-  if (!stations) return unavailable();
+  const stations = await getStations(auth);
+  // An empty list, as in the seconds after the server starts, is answered as an outage, which is not kept.
+  if (!stations?.length) return unavailable();
   return shareCard(stationsCardProps(stations));
 }
 
