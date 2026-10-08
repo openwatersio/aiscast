@@ -2,6 +2,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useRef, useState } from "react";
 import type { Photo } from "../../lib/media";
 import { cn } from "../../lib/cn";
+import { Credit } from "./Credit";
 
 // A scrim over the photo that reads on any of them, light or dark, in either theme.
 const PILL = "pointer-events-auto rounded-full bg-black/55 px-2.5 py-1 text-caption text-white backdrop-blur-sm";
@@ -68,8 +69,7 @@ export function PhotoCarousel({
         </>
       )}
       <div className="pointer-events-none absolute inset-x-2 bottom-2 flex items-end justify-between gap-2">
-        <p className={cn(PILL, "min-w-0 truncate [&_a]:text-white [&_a]:no-underline [&_a:hover]:underline")}>
-          ©{" "}
+        <Credit>
           <a href={current.page} target="_blank" rel="noopener">
             {current.artist}
           </a>{" "}
@@ -81,7 +81,7 @@ export function PhotoCarousel({
           ) : (
             current.license
           )}
-        </p>
+        </Credit>
         {shown.length > 1 && (
           <p className={cn(PILL, "shrink-0 tabular-nums")} aria-label={`Photo ${index + 1} of ${shown.length}`}>
             {Math.min(index, shown.length - 1) + 1} / {shown.length}

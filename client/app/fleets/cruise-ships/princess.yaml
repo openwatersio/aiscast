@@ -1,0 +1,57 @@
+title: Princess Cruises
+summary: "Princess Cruises was founded in 1965 by Stanley McDonald, is based in Santa Clarita and is part of Carnival Corporation. Its 12 ships range from Grand Princess (1998) to Discovery Princess (2022)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q745700
+sections:
+  - title: Royal class
+    vessels:
+      - name: Discovery Princess
+        mmsi: 310812000
+        imo: 9837468
+        subtitle: "330 m · in service 2022"
+      - name: Majestic Princess
+        mmsi: 310865000
+        imo: 9614141
+        subtitle: "330 m · in service 2017"
+      - name: Regal Princess
+        mmsi: 310674000
+        imo: 9584724
+        subtitle: "330 m · in service 2014"
+      - name: Royal Princess
+        mmsi: 310661000
+        imo: 9584712
+        subtitle: "330 m · in service 2013"
+  - title: Other ships
+    vessels:
+      - name: Enchanted Princess
+        mmsi: 310791000
+        imo: 9807126
+        subtitle: "330 m · in service 2021"
+      - name: Sky Princess
+        mmsi: 310780000
+        imo: 9802396
+        subtitle: "330 m · in service 2019"
+      - name: Ruby Princess
+        mmsi: 310567000
+        imo: 9378462
+        subtitle: "288 m · in service 2008"
+      - name: Emerald Princess
+        mmsi: 310531000
+        imo: 9333151
+        subtitle: "289 m · in service 2007"
+      - name: Diamond Princess
+        mmsi: 310866000
+        imo: 9228198
+        subtitle: "288 m · in service 2004"
+      - name: Island Princess
+        mmsi: 310384000
+        imo: 9230402
+        subtitle: "294 m · in service 2003"
+      - name: Coral Princess
+        mmsi: 310376000
+        imo: 9229659
+        subtitle: "294 m · in service 2002"
+      - name: Grand Princess
+        mmsi: 310327000
+        imo: 9104005
+        subtitle: "290 m · in service 1998"

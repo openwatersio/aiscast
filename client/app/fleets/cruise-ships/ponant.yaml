@@ -1,0 +1,25 @@
+title: Ponant
+summary: "Ponant was founded in 1987 by Jean-Emmanuel Sauvée, is based in Marseille and is part of Groupe Artémis. Its 5 ships range from Le Ponant (1991) to Le Commandant Charcot (2021)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q2990078
+vessels:
+  - name: Le Commandant Charcot
+    mmsi: 578001700
+    imo: 9846249
+    subtitle: "151 m · in service 2021"
+  - name: Le Lyrial
+    mmsi: 578000800
+    imo: 9704130
+    subtitle: "142 m · in service 2015"
+  - name: "Le Soléal"
+    mmsi: 578000200
+    imo: 9641675
+    subtitle: "142 m · in service 2013"
+  - name: "Le Boréal"
+    mmsi: 578000500
+    imo: 9502506
+    subtitle: "142 m · in service 2010"
+  - name: Le Ponant
+    mmsi: 227186000
+    imo: 8914219
+    subtitle: "84 m · in service 1991"

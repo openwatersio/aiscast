@@ -55,6 +55,13 @@ test("a vessel the network has never heard is a 404 that asks not to be indexed"
   await expect(page.getByText("The network has never heard this vessel.")).toBeVisible();
 });
 
+test("a fleet that does not exist is a 404 in the app, asking not to be indexed", async ({ page }) => {
+  const res = await page.goto("/ais/fleets/nope");
+  expect(res?.status()).toBe(404);
+  await expect(page.getByText("There is nothing at this address.")).toBeVisible();
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", /noindex/);
+});
+
 test("an address that is not a vessel is a 404", async ({ page }) => {
   const res = await page.goto("/ais/vessels/not-a-vessel");
   expect(res?.status()).toBe(404);
@@ -134,11 +141,19 @@ test("a page kept at the edge carries no visitor's location but the current one'
   expect(await tags()).toBe(first);
 });
 
-test("old map and station links redirect to where those pages are now", async ({ request }) => {
+test("old map, station and explore links redirect to where those pages are now", async ({ request }) => {
   const redirects = {
     "/ais/map": "/ais/vessels",
     "/ais/map?station=digitraffic": "/ais/vessels?station=digitraffic",
     "/ais/vessels?station=digitraffic": "/ais/stations/digitraffic",
+    "/ais/explore": "/ais/fleets",
+    "/ais/explore/youtube": "/ais/fleets/youtube",
+    "/ais/explore/youtube/sailors": "/ais/fleets/youtube/sailors",
+    "/ais/explore/youtube/cruisers": "/ais/fleets/youtube/cruisers",
+    "/ais/explore/tech-yachts": "/ais/fleets/tech-billionaires",
+    "/ais/explore/youtube/sailors/": "/ais/fleets/youtube/sailors",
+    // A name every object has is not a fleet.
+    "/ais/explore/constructor": "/ais/fleets",
   };
   for (const [from, to] of Object.entries(redirects)) {
     const res = await request.get(from, { maxRedirects: 0 });
