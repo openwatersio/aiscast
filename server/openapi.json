@@ -838,13 +838,13 @@
       },
       "Particulars": {
         "type": "object",
-        "description": "Particulars as registered, merged from the enrichment sources into one vocabulary. Present on `/v1/vessels/{mmsi}` when a source knows the vessel: Wikidata by the IMO from its static data, when the IMO has a valid check digit and an item; the US Coast Guard's PSIX for a US-flag vessel whose call sign and name both match a vessel it lists; the Norwegian Directorate of Fisheries' fishing vessel register (NLOD 2.0), matched the same way for a Norwegian vessel; the FCC's ship station licenses, keyed by the MMSI itself for a US vessel; Transport Canada's vessel register (Open Government Licence - Canada), by IMO for a CA-flag vessel; and ISED's Canadian MMSI registry, asked on demand for heard CA-flag vessels. Merging is per field: a flag state outranks Wikidata for registered facts, an empty value never wins, and `provenance` beside this object names each field's source. Registered dimensions can differ from the ones AIS reports. Every field is present only when a source has it.",
+        "description": "Particulars as registered, merged from the enrichment sources into one vocabulary. Present on `/v1/vessels/{mmsi}` when a source knows the vessel: Wikidata by the IMO from its static data, when the IMO has a valid check digit and an item; the US Coast Guard's PSIX for a US-flag vessel whose call sign and name both match a vessel it lists; the Norwegian Directorate of Fisheries' fishing vessel register (NLOD 2.0), matched the same way for a Norwegian vessel; the FCC's ship station licenses, keyed by the MMSI itself for a US vessel; Transport Canada's vessel register (Open Government Licence - Canada), by IMO for a CA-flag vessel; AMSA's list of registered Australian ships (CC BY 4.0), by IMO for an AU-flag vessel; and ISED's Canadian MMSI registry, asked on demand for heard CA-flag vessels. Merging is per field: a flag state outranks Wikidata for registered facts, except that AMSA's free-text ship type yields to Wikidata's; an empty value never wins; and `provenance` beside this object names each field's source. Registered dimensions can differ from the ones AIS reports. Every field is present only when a source has it.",
         "properties": {
           "registered_name": { "type": "string", "description": "Name as documented with the flag state, which can differ from the AIS name." },
           "identification": { "type": "string", "description": "The flag state's number for the vessel: the official number of a documented vessel, else its state registration." },
           "service": { "type": "string", "description": "Flag-state service type, such as `Towing Vessel`, `Passenger (Inspected)`, `Commercial Fishing Vessel`, or `Recreational`." },
           "callsign": { "type": "string", "description": "Call sign as registered. The `callsign` in the vessel's properties is the one AIS reports." },
-          "status": { "type": "string", "description": "Flag-state status, such as `Active` or `Laid Up`." },
+          "status": { "type": "string", "description": "Flag-state status, such as `Active`, `Laid Up`, or `Provisional`." },
           "ship_type": { "type": "string", "description": "Kind of ship, such as `bulk carrier`, `container ship`, `oil tanker`, or `ferry`." },
           "builder": { "type": "string", "description": "Shipyard or builder." },
           "yard_number": { "type": "string", "description": "The builder's hull number." },
@@ -869,7 +869,7 @@
       },
       "SourceRef": {
         "type": "object",
-        "description": "One enrichment source's credit: how to name it and where its record of this vessel is. `sources` maps each contributing source's key, such as `wikidata`, `uscg`, `fiskeridir`, `fcc`, `tc`, or `ised`, to one of these, and `provenance` maps each `particulars` field to a key of `sources`.",
+        "description": "One enrichment source's credit: how to name it and where its record of this vessel is. `sources` maps each contributing source's key, such as `wikidata`, `uscg`, `fiskeridir`, `fcc`, `tc`, `amsa`, or `ised`, to one of these, and `provenance` maps each `particulars` field to a key of `sources`.",
         "required": ["credit", "license"],
         "properties": {
           "credit": { "type": "string", "description": "Display credit for the source.", "example": "Wikidata" },

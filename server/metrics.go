@@ -343,6 +343,16 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 			metricHead(w, "aiscast_tc_last_success_timestamp_seconds", "gauge", "when the register was last synced")
 			fmt.Fprintf(w, "aiscast_tc_last_success_timestamp_seconds %d\n", t)
 		}
+		metricHead(w, "aiscast_amsa_syncs_total", "counter", "weekly syncs of AMSA's list of registered ships")
+		fmt.Fprintf(w, "aiscast_amsa_syncs_total %d\n", p.amsa.runs.Load())
+		metricHead(w, "aiscast_amsa_sync_failures_total", "counter", "list syncs that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_amsa_sync_failures_total %d\n", p.amsa.failures.Load())
+		metricHead(w, "aiscast_amsa_vessels", "gauge", "registered Australian vessels with an IMO stored")
+		fmt.Fprintf(w, "aiscast_amsa_vessels %d\n", p.amsa.vessels.Load())
+		if t := p.amsa.lastSuccess.Load(); p.amsa.enabled.Load() && t > 0 {
+			metricHead(w, "aiscast_amsa_last_success_timestamp_seconds", "gauge", "when the list was last synced")
+			fmt.Fprintf(w, "aiscast_amsa_last_success_timestamp_seconds %d\n", t)
+		}
 		metricHead(w, "aiscast_ised_checked_total", "counter", "Canadian vessels asked about in ISED's MMSI registry")
 		fmt.Fprintf(w, "aiscast_ised_checked_total %d\n", p.ised.checked.Load())
 		metricHead(w, "aiscast_ised_check_failures_total", "counter", "registry asks that failed; the vessel waits for the next round")

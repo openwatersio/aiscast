@@ -876,14 +876,19 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	}
 	e := enrichment{wd: p.wikidataOf(cur.IMO)[cur.IMO], cg: p.uscgOf(key)[mmsi],
 		fd: p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc: fc}
-	// The Canadian register speaks for CA-flag vessels; an IMO another flag carries may have left it,
-	// and the names must agree, as the other registries require, so a mistyped or copied IMO in AIS
-	// static data never serves another registered ship's facts.
+	// The Canadian and Australian registers speak for their own flag's vessels; an IMO another flag
+	// carries may have left the register, and the names must agree, as the other registries require, so
+	// a mistyped or copied IMO in AIS static data never serves another registered ship's facts.
 	if flagOf(mmsi) == "CA" {
 		if tcv := p.tcOf(cur.IMO)[cur.IMO]; tcv != nil && namesAgree(cur.Name, tcv.Name) {
 			e.tc = tcv
 		}
 		e.is = p.isedOf(mmsi)[mmsi]
+	}
+	if flagOf(mmsi) == "AU" {
+		if am := p.amsaOf(cur.IMO)[cur.IMO]; am != nil && namesAgree(cur.Name, am.Name) {
+			e.am = am
+		}
 	}
 	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources = mergeParticulars(e)
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never

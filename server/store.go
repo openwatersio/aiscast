@@ -148,6 +148,17 @@ CREATE TABLE IF NOT EXISTS tc (
 	depth         REAL    NOT NULL DEFAULT 0,
 	home_port     TEXT    NOT NULL DEFAULT ''
 );
+-- Australian vessels with an IMO from AMSA's list of registered ships, replaced weekly (amsa.go)
+CREATE TABLE IF NOT EXISTS amsa (
+	imo        INTEGER PRIMARY KEY,
+	official   TEXT    NOT NULL DEFAULT '',
+	name       TEXT    NOT NULL DEFAULT '',
+	ship_type  TEXT    NOT NULL DEFAULT '',
+	status     TEXT    NOT NULL DEFAULT '', -- Registered or Provisional
+	year_built INTEGER NOT NULL DEFAULT 0,  -- year of completion
+	length     REAL    NOT NULL DEFAULT 0,  -- metres
+	home_port  TEXT    NOT NULL DEFAULT ''
+);
 -- active FCC ship station licenses with an MMSI, replaced weekly from the ULS bulk files (fcc.go)
 CREATE TABLE IF NOT EXISTS fcc (
 	mmsi     INTEGER PRIMARY KEY,

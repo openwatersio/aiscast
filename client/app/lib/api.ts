@@ -81,8 +81,8 @@ export interface VesselProps {
 
 /**
  * The vessel as registered, merged per field from the enrichment sources: a flag state outranks
- * Wikidata, an empty value never wins. Dimensions are in meters, deadweight in tonnes. Every field
- * is present only when a source has it.
+ * Wikidata, except for AMSA's free-text ship type, and an empty value never wins. Dimensions are
+ * in meters, deadweight in tonnes. Every field is present only when a source has it.
  */
 export interface VesselParticulars {
   /** Name as documented with the flag state, which can differ from the AIS name. */
