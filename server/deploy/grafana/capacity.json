@@ -555,7 +555,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "Memory",
-      "description": "Resident memory. The aiscast alerts fire at 4 GB and 8 GB.",
+      "description": "Resident memory, and the memory ClickHouse tracks against its 4 GiB limit. The aiscast alerts fire at 4 GB and 8 GB, the host alerts below 2 GiB and 1 GiB available.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -584,6 +584,15 @@
           "refId": "B",
           "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
           "legendFormat": "box in use"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "ClickHouseMetrics_MemoryTracking",
+          "legendFormat": "clickhouse tracked"
         }
       ],
       "fieldConfig": {

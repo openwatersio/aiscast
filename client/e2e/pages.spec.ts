@@ -57,15 +57,30 @@ test("an address that is not a vessel is a 404", async ({ page }) => {
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
 });
 
-test("a station page renders the station, with its id in the head", async ({ page }) => {
+test("a station page renders the station, with its id in the head", async ({ page, request }) => {
   const res = await page.goto("/ais/stations/digitraffic");
   expect(res?.status()).toBe(200);
   await expect(page).toHaveTitle("Digitraffic (Finland) receiving station | Open Waters AIS");
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://openwaters.io/ais/stations/digitraffic");
   await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /^AIS receiving station Digitraffic \(Finland\): [\d,]+ messages in 24 hours/);
   await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://openwaters.io/ais/stations/digitraffic.png");
+  const card = await request.get("/ais/stations/digitraffic.png");
+  expect(card.status()).toBe(200);
+  expect(card.headers()["content-type"]).toBe("image/png");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Digitraffic (Finland)");
   await expect(page.getByRole("link", { name: /MMSI \d+/ }).first()).toBeVisible();
+});
+
+test("station cards asked for at once each render whole", async ({ request }) => {
+  // Spellings of one station miss the edge cache together, so each is a render of its own.
+  const cards = await Promise.all(["digitraffic", "%64igitraffic", "digi%74raffic"].map((id) => request.get(`/ais/stations/${id}.png`)));
+  for (const card of cards) {
+    expect(card.status()).toBe(200);
+    const png = await card.body();
+    expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+  }
 });
 
 test("a station the network has not heard is a 404 that asks not to be indexed", async ({ page }) => {

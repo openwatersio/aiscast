@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
@@ -138,9 +139,9 @@ func (n *stationNames) write(ids []string) error {
 	return errors.Join(errs...)
 }
 
-// decorate fills a row's name fields from its base station.
+// decorate fills a row's name fields from its station's.
 func (n *stationNames) decorate(r *stationRow) {
-	id := baseStation(r.Station)
+	id := r.Station
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	m := n.m[id]
@@ -206,7 +207,12 @@ func (p *Pipeline) runStationNames() {
 }
 
 func (p *Pipeline) refreshOwn(now time.Time) {
+	// Until the candidates from before the start are back, a station's may be only part of them, so nothing is
+	// decided; the vessels already decided keep their names.
 	owns := p.stations.ownShips()
+	if p.stations.ownPending.Load() {
+		owns = nil
+	}
 	type pick struct {
 		id   string
 		mmsi uint32
@@ -243,11 +249,38 @@ func (p *Pipeline) refreshOwn(now time.Time) {
 	n.mu.Unlock()
 }
 
+// refreshLabels labels each volunteer station by the place nearest the median of its finest coverage cells over
+// the coverage map's window, its own ship's included as every position it heard is, for those with at least
+// labelMinPoints cells.
 func (p *Pipeline) refreshLabels(now time.Time) {
-	points := p.stations.coveragePoints(now)
+	p.vmu.RLock()
+	var s stationSeries
+	if p.ch != nil {
+		s = p.ch.series
+	}
+	p.vmu.RUnlock()
+	if s == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	first, last := coverageWindow(now) // the coverage map's complete days, today's partial one left out
+	points, err := s.stationPoints(ctx, first, last)
+	if err != nil {
+		log.Printf("station labels: %v", err)
+		return
+	}
 	labels := make(map[string]string, len(points))
-	for id, pt := range points {
-		labels[id] = nearLabel(pt[0], pt[1])
+	for id, pts := range points {
+		if len(pts) < labelMinPoints {
+			continue
+		}
+		lats, lons := make([]float64, len(pts)), make([]float64, len(pts))
+		for i, pt := range pts {
+			lats[i], lons[i] = pt[0], pt[1]
+		}
+		lat, lon := medianPoint(lats, lons)
+		labels[id] = nearLabel(lat, lon)
 	}
 	n := p.names
 	n.mu.Lock()

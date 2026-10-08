@@ -65,6 +65,11 @@ func main() {
 		fs.Var(&cidrs, "cidr", "allowed source CIDR or IP (repeatable)")
 		fs.Parse(os.Args[2:])
 		sb, err := base64.RawURLEncoding.DecodeString(*seed)
+		if strings.HasSuffix(strings.ToLower(*sub), ".png") {
+			// The server refuses it: the web client serves station cards at a station's address plus ".png".
+			fmt.Fprintln(os.Stderr, "-sub may not end in .png")
+			os.Exit(2)
+		}
 		if err != nil || len(sb) != ed25519.SeedSize || *kid == "" || *sub == "" || *role == "" {
 			fmt.Fprintln(os.Stderr, "need -seed, -kid, -sub, -role")
 			os.Exit(2)

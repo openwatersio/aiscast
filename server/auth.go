@@ -137,7 +137,14 @@ func (c *Claims) allowsIP(ip string) bool {
 	return false
 }
 
-var validSub = regexp.MustCompile(`^[A-Za-z0-9_.:=/+-]{1,128}$`).MatchString
+var subShape = regexp.MustCompile(`^[A-Za-z0-9_.:=/+-]{1,128}$`).MatchString
+
+// validSub is a subject a token may carry. None ends in ".png": the web client serves a station's
+// share card at its page's address with ".png" added (client/app/lib/shareCard.server.tsx), so a
+// station named that way would lose its page to another station's card.
+func validSub(s string) bool {
+	return subShape(s) && !strings.HasSuffix(strings.ToLower(s), ".png")
+}
 
 func signToken(priv ed25519.PrivateKey, c Claims) (string, error) {
 	if !validSub(c.Sub) || c.Role == "" {

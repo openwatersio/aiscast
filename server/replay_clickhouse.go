@@ -249,8 +249,16 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		return fmt.Errorf("the replay has %.1f%% of the stored copies, under %.0f%%; check the raw hours, or pass -force", 100*share, 100*replayShare)
 	}
 
+	// The hours the delete empties are marked for the station series once it is done; the replayed rows mark their own.
+	dirty, err := c.dirtyHours(ctx, where, args...)
+	if err != nil {
+		return fmt.Errorf("the stored day's hours: %w", err)
+	}
 	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".receptions WHERE "+where, args...); err != nil {
 		return fmt.Errorf("delete the stored day: %w", err)
+	}
+	if err := c.markHours(ctx, dirty); err != nil {
+		return fmt.Errorf("mark the stored day's hours: %w", err)
 	}
 	// A token of this run's own: replaying a day again inserts the same blocks, which receptions' deduplication
 	// window would otherwise drop although the delete before has removed their rows.
