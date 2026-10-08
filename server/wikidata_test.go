@@ -1,11 +1,13 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -66,19 +68,20 @@ func fakeWDQS(t *testing.T, fail *atomic.Bool) (url string, queries *atomic.Int6
 
 var wantWikidata = map[uint32]*wikidataShip{
 	9404314: {ID: "Q1052819", ShipType: "cruise ship", Builder: "Meyer Werft", YardNumber: "677", YearBuilt: 2010, GrossTonnage: 121878,
-		Deadweight: 9500, Length: 317.2, Beam: 36.8, Draught: 8.62, Registry: "Malta", HomePort: "Valletta", Operator: "Celebrity Cruises",
+		Deadweight: 9500, Length: 317.2, Beam: 36.8, Draught: 8.62, Registry: "Malta", HomePort: "Valletta", CallSign: "9HXC9",
+		Operator:        "Celebrity Cruises",
 		Wikipedia:       "https://en.wikipedia.org/wiki/Celebrity_Eclipse",
 		CommonsCategory: "https://commons.wikimedia.org/wiki/Category:Celebrity_Eclipse_%28ship%2C_2010%29",
 		Image:           "https://commons.wikimedia.org/wiki/File:Celebrity_Eclipse_leaving_Southampton.jpg"},
 	// Q2109568 and Q83569204 both carry IMO 9208617; the lower QID wins.
 	9208617: {ID: "Q2109568", Builder: "Fincantieri", YardNumber: "6065", YearBuilt: 2001, GrossTonnage: 59925, Length: 215.45, Beam: 31.88,
-		Draught: 6.05, Registry: "Netherlands", HomePort: "Rotterdam", Wikipedia: "https://en.wikipedia.org/wiki/Pride_of_Rotterdam",
+		Draught: 6.05, Registry: "Netherlands", HomePort: "Rotterdam", CallSign: "PBAJ", Wikipedia: "https://en.wikipedia.org/wiki/Pride_of_Rotterdam",
 		CommonsCategory: "https://commons.wikimedia.org/wiki/Category:IMO_9208617", Image: "https://commons.wikimedia.org/wiki/File:PrideofRotterdam.png"},
 	5358206: {ID: "Q52296707", Builder: "Jansen-Werft", YardNumber: "38", YearBuilt: 1958, Length: 53.01, Registry: "Honduras",
 		FormerNames: []string{"Thekla", "Heimar", "Delice", "Valery"}, CommonsCategory: "https://commons.wikimedia.org/wiki/Category:IMO_5358206"},
 	// Two operators are in force; the lower QID wins.
 	9192363: {ID: "Q488014", ShipType: "cruise ship", Builder: "Fincantieri", YardNumber: "6051", YearBuilt: 2002, GrossTonnage: 108977,
-		Length: 289.51, Beam: 36, Draught: 8.45, Registry: "Bermuda", HomePort: "London", Owner: "Carnival Corporation", Operator: "Princess Cruises",
+		Length: 289.51, Beam: 36, Draught: 8.45, Registry: "Bermuda", HomePort: "London", CallSign: "ZCDD6", Owner: "Carnival Corporation", Operator: "Princess Cruises",
 		Wikipedia:       "https://en.wikipedia.org/wiki/Carnival_Encounter",
 		CommonsCategory: "https://commons.wikimedia.org/wiki/Category:IMO_9192363",
 		Image:           "https://commons.wikimedia.org/wiki/File:Star_Princess_Tendering.jpg"},
@@ -225,7 +228,9 @@ func TestVesselWikidata(t *testing.T) {
 	}
 	now := time.Now()
 	p.ingestPacket("kystverket", "kystverket", now, now, posReport(256000001, 59.9, 10.7))
-	p.ingestPacket("kystverket", "kystverket", now, now, staticIMO(256000001, 9404314, "CELEBRITY ECLIPSE"))
+	eclipse := staticIMO(256000001, 9404314, "CELEBRITY ECLIPSE").(ais.ShipStaticData)
+	eclipse.CallSign = "9HXC9"
+	p.ingestPacket("kystverket", "kystverket", now, now, eclipse)
 	p.ingestPacket("kystverket", "kystverket", now, now, staticIMO(257000002, 1234567, "NO ITEM"))
 	// 9404315 fails the check digit, so it is never looked up.
 	p.ingestPacket("kystverket", "kystverket", now, now, staticIMO(257000003, 9404315, "MISTYPED"))
@@ -246,14 +251,15 @@ func TestVesselWikidata(t *testing.T) {
 	}
 	want := &particulars{ShipType: "cruise ship", Builder: "Meyer Werft", YardNumber: "677", YearBuilt: 2010,
 		GrossTonnage: 121878, Deadweight: 9500, Length: 317.2, Beam: 36.8, Draught: 8.62,
-		Registry: "Malta", HomePort: "Valletta", Operator: "Celebrity Cruises",
+		Registry: "Malta", HomePort: "Valletta", CallSign: "9HXC9", Operator: "Celebrity Cruises",
 		Wikipedia:  "https://en.wikipedia.org/wiki/Celebrity_Eclipse",
 		CommonsCat: "https://commons.wikimedia.org/wiki/Category:Celebrity_Eclipse_%28ship%2C_2010%29",
 		Image:      "https://commons.wikimedia.org/wiki/File:Celebrity_Eclipse_leaving_Southampton.jpg"}
 	if !reflect.DeepEqual(m, want) {
 		t.Errorf("particulars: %+v, want %+v", m, want)
 	}
-	if f.Properties.Provenance["builder"] != "wikidata" || f.Properties.Provenance["length"] != "wikidata" {
+	if f.Properties.Provenance["builder"] != "wikidata" || f.Properties.Provenance["length"] != "wikidata" ||
+		f.Properties.Provenance["callsign"] != "wikidata" {
 		t.Errorf("provenance: %v", f.Properties.Provenance)
 	}
 	if s := f.Properties.Sources["wikidata"]; s.Credit != "Wikidata" || s.License != "CC0-1.0" || s.URL != "https://www.wikidata.org/wiki/Q1052819" {
@@ -279,7 +285,8 @@ func TestVesselWikidata(t *testing.T) {
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{256000001, 257000002}}, &out); msg != "" {
 		t.Fatal(msg)
 	}
-	if len(out.Vessels) != 2 || out.Vessels[0].Particulars == nil || out.Vessels[0].Particulars.Builder != "Meyer Werft" || out.Vessels[1].Particulars != nil {
+	if len(out.Vessels) != 2 || out.Vessels[0].Particulars == nil || out.Vessels[0].Particulars.Builder != "Meyer Werft" ||
+		out.Vessels[0].Particulars.CallSign != "9HXC9" || out.Vessels[1].Particulars != nil {
 		t.Errorf("get_vessels: %+v", out.Vessels)
 	}
 }
@@ -295,6 +302,100 @@ func TestWikidataRefInForce(t *testing.T) {
 	r.take(row("Q783", ""))
 	if r.qid != 233 || r.ended {
 		t.Errorf("took %+v, want the lowest registry in force, Q233", r)
+	}
+}
+
+func TestWikidataCallSign(t *testing.T) {
+	// Values as items carry them, from a sync in October 2026.
+	for in, want := range map[string]string{"9HXC9": "9HXC9", "WDE-4789": "WDE4789", "H 3 T X": "H3TX", "P.C.Z.I": "PCZI",
+		"lazq7": "LAZQ7", "OU\u00a07322": "OU7322", "D3": "", "027": "", "1234": "", "V3UX2^2": "", "600...": "",
+		"India-Charlie-India-Whiskey": "", "Kaldesignal:\u00a0LAEL8": "", "\u017fABC": "", "LAZ\u0131": ""} {
+		if got := wikidataCallSign(in); got != want {
+			t.Errorf("wikidataCallSign(%q) = %q, want %q", in, got, want)
+		}
+	}
+	row := func(v, end string) wikidataBinding {
+		return wikidataBinding{V: sparqlTerm{Value: v}, End: sparqlTerm{Value: end}}
+	}
+	for _, c := range []struct {
+		name string
+		rows []wikidataBinding
+		want string
+	}{
+		{"one", []wikidataBinding{row("9HXC9", "")}, "9HXC9"},
+		{"a junk value beside the call sign", []wikidataBinding{row("D3", ""), row("3AYC", "")}, "3AYC"},
+		{"the same call sign twice", []wikidataBinding{row("WDE4789", ""), row("WDE-4789", "")}, "WDE4789"},
+		{"a former one ended", []wikidataBinding{row("PBAJ", "2015-01-01T00:00:00Z"), row("9HA5634", "")}, "9HA5634"},
+		{"only former ones", []wikidataBinding{row("PBAJ", "2015-01-01T00:00:00Z")}, ""},
+		{"two in force", []wikidataBinding{row("C6CB6", ""), row("C6CB2", "")}, ""},
+		{"two in force and one repeated", []wikidataBinding{row("C6CB6", ""), row("C6CB2", ""), row("C6CB6", "")}, ""},
+	} {
+		var cs callSigns
+		for _, r := range c.rows {
+			cs.take(r)
+		}
+		if got := cs.value(); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A record from before the call sign column gains it, and while it has no call signs its sync stamp is
+// cleared so the next hourly check fills them rather than waiting out the week.
+func TestOpenStoreAddsWikidataCallSign(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.Replace(storeSchema, "\timage            TEXT    NOT NULL DEFAULT '',\n\tcallsign         TEXT    NOT NULL DEFAULT ''",
+		"\timage            TEXT    NOT NULL DEFAULT ''", 1)
+	if schema == storeSchema {
+		t.Fatal("the schema has no wikidata callsign column to leave out")
+	}
+	for _, q := range []string{schema, `INSERT INTO wikidata (imo, qid, builder) VALUES (9404314, 'Q1052819', 'Meyer Werft')`,
+		`INSERT INTO meta (key, value) VALUES ('wikidata_sync', '2026-10-01T00:00:00Z')`} {
+		if _, err := old.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old.Close()
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last, _ := st.meta("wikidata_sync"); last != "" {
+		t.Errorf("sync stamp kept: %q", last)
+	}
+	got, err := st.wikidataShips([]uint32{9404314})
+	if err != nil || got[9404314] == nil || got[9404314].Builder != "Meyer Werft" || got[9404314].CallSign != "" {
+		t.Fatalf("row from the older build: %v %+v", err, got[9404314])
+	}
+	if err := st.replaceWikidata(wantWikidata, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	// A file with call signs keeps its stamp.
+	st, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last, _ := st.meta("wikidata_sync"); last == "" {
+		t.Error("a current file's sync stamp was cleared")
+	}
+	// An older build, rolled back to, syncs and leaves every call sign empty; rolling forward fills them
+	// within the hour.
+	if _, err := st.db.Exec(`UPDATE wikidata SET callsign = ''`); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	st, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	if last, _ := st.meta("wikidata_sync"); last != "" {
+		t.Errorf("sync stamp kept after a rollback emptied the call signs: %q", last)
 	}
 }
 

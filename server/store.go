@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS wikidata (
 	operator         TEXT    NOT NULL DEFAULT '',
 	wikipedia        TEXT    NOT NULL DEFAULT '', -- URLs
 	commons_category TEXT    NOT NULL DEFAULT '',
-	image            TEXT    NOT NULL DEFAULT ''
+	image            TEXT    NOT NULL DEFAULT '',
+	callsign         TEXT    NOT NULL DEFAULT ''
 );
 -- US-flag vessels with a call sign or an official number from the Coast Guard's PSIX, listed weekly, with
 -- dimensions and tonnage read for the vessels AIS matches to them (uscg.go)
@@ -279,6 +280,19 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	} else if !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// A file from before the Wikidata call sign gains the column. While its ships have no call signs, which
+	// is also what a sync by an older build leaves, the sync stamp is cleared so the next hourly check fills
+	// them rather than waiting out the week.
+	if _, err := db.Exec("ALTER TABLE wikidata ADD COLUMN callsign TEXT NOT NULL DEFAULT ''"); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if _, err := db.Exec(`DELETE FROM meta WHERE key = 'wikidata_sync' AND EXISTS (SELECT 1 FROM wikidata)
+		AND NOT EXISTS (SELECT 1 FROM wikidata WHERE callsign != '')`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

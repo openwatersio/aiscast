@@ -22,6 +22,8 @@ Go 1.27 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the author
 ## Changes
 
 - Open a pull request against `main`. CI runs gofmt, vet, tests, a linux build, and the web client's browser tests on every push and PR; a merge to `main` deploys aiscast to `ais-server-1` and, through Cloudflare Workers Builds, the web client.
+- A plan that takes more than one PR starts as an issue with one checkbox per expected PR. Each PR says `Part of #N`, and only the last PR to merge says `Closes #N`, so GitHub doesn't close the issue early.
+- Keep the issue's checkboxes current. When a PR opens, link it from its checkbox. When it merges, check the box. The last PR's merge closes the issue, so check its box at the same time.
 - `/v0/stream` is frozen to aisstream.io's wire format; anything new goes under `/v1`. Additive changes to `/v1` are fine; breaking ones need a note in [docs/architecture.md](docs/architecture.md#the-v0-compatibility-contract). `/mcp` is the one exception, because MCP versions itself and clients expect that path; a change to a tool or its schema bumps `mcpVersion` and `server.json` together.
 - Every source gets its own `source` value, license tag in the archive path, and env flag, and stays out of the health gate unless it is an open-licensed feed we commit to.
 - Comments explain why, not what; durable docs describe the current state, not history.
