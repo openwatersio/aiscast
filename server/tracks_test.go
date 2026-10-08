@@ -429,3 +429,24 @@ func TestTrackGPXHasASegmentPerStretch(t *testing.T) {
 		t.Errorf("two stretches either side of the 3 h 40 min silence: %d segments\n%s", n, w.Body)
 	}
 }
+
+// History ClickHouse holds under an MMSI the fold keeps out is several boats' positions as one track, so it
+// is never served, by shape or by interval.
+func TestTrackOfAnInvalidMMSIIsUnknown(t *testing.T) {
+	p, ch := trackPipeline(t)
+	at := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for _, m := range []uint32{123456789, 257000001} {
+		ch.insert(context.Background(), "", []trackPoint{
+			newTrackPoint(m, at, &vessel{Lat: 59.9, Lon: 10.7, Heading: 511, NavStatus: 15, Sog: 102.3, Cog: 360}, "aisstream"),
+			newTrackPoint(m, at.Add(time.Minute), &vessel{Lat: -31.9, Lon: 115.8, Heading: 511, NavStatus: 15, Sog: 102.3, Cog: 360}, "aisstream"),
+		})
+	}
+	for _, q := range []string{"", "?interval=60s"} {
+		if w := get(t, p, "/v1/vessels/123456789/track"+q); w.Code != 404 {
+			t.Errorf("track%s for a default MMSI: %d %s", q, w.Code, w.Body)
+		}
+		if tr := getTrack(t, p, "/v1/vessels/257000001/track"+q); tr.Properties.Points == 0 {
+			t.Errorf("track%s for a valid MMSI has no points", q)
+		}
+	}
+}

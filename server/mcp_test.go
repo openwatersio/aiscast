@@ -148,7 +148,11 @@ func TestMCPGetVessels(t *testing.T) {
 	if v.Flag != "NO" || v.IMO != 9319466 || v.CallSign != "LAJB7" || v.Destination != "NOOSL" || v.ETA != "09-19 06:00" || v.Draught == nil || *v.Draught != 5.2 || v.Length == nil || *v.Length != 150 || *v.Beam != 22 {
 		t.Errorf("particulars: %+v", v)
 	}
-	// by IMO, mixed with an MMSI, unknowns listed per identifier
+	// by IMO, for a tier mayRaw admits, mixed with an MMSI, unknowns listed per identifier
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"imo": []uint32{9319466}}, &out); msg != errIMOTier.Error() {
+		t.Errorf("anonymous by imo: %q", msg)
+	}
+	cs = mcpClientCtx(t, mcpSeed(t), context.WithValue(context.Background(), mcpClaimsKey{}, &Claims{Sub: "f", Role: "feeder", MMSIs: feederMMSIs}))
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{230000001}, "imo": []uint32{9319466, 1234567}}, &out); msg != "" ||
 		len(out.Vessels) != 2 || out.Vessels[0].MMSI != 230000001 || out.Vessels[1].IMO != 9319466 || len(out.UnknownIMO) != 1 || out.UnknownIMO[0] != 1234567 || len(out.Unknown) != 0 {
 		t.Errorf("by imo: %q %+v", msg, out)
@@ -159,10 +163,11 @@ func TestMCPGetVessels(t *testing.T) {
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{}, &out); !strings.Contains(msg, "mmsi or imo") {
 		t.Errorf("nothing asked: %q", msg)
 	}
-	// an IMO of 0 is "not available" on the wire and can match no vessel, even beside a vessel that has none
-	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{230000001}, "imo": []uint32{0}}, &out); msg != "" || len(out.Vessels) != 1 || len(out.UnknownIMO) != 1 || out.UnknownIMO[0] != 0 {
+	// an IMO of 0 is "not available" on the wire, so asking for it is a mistake
+	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"mmsi": []uint32{230000001}, "imo": []uint32{0}}, &out); msg != imoRange {
 		t.Errorf("imo zero: %q %+v", msg, out)
 	}
+	cs = mcpClient(t, mcpSeed(t))
 	// anonymous: 10 per call, and the refusal says how to get more
 	var many []uint32
 	for i := range 11 {

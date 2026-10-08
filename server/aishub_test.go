@@ -229,7 +229,7 @@ func TestFeedableExcludesPublicSources(t *testing.T) {
 func TestSelfReportedOwnShipIsSynthesized(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
-	p.Ingest(Reception{Source: "station:ed25519:k", Station: "station:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDO,1,1,,A,B1mg=5@3wh<?d@8TIb3Q3wv00000,0*39`})
+	p.Ingest(Reception{Source: "station:ed25519:k", Station: "station:ed25519:k", RecvTime: time.Now(), Body: `\s:self*55\!AIVDO,1,1,,A,B3m62@@3wh<?d@8TIb3Q3wv00000,0*10`})
 	ev := <-sub.ch
 	if !ev.Synthesized || ev.Station != "station:ed25519:k" {
 		t.Errorf("synthesized=%v station=%q", ev.Synthesized, ev.Station)
