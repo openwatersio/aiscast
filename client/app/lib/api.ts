@@ -1,4 +1,5 @@
 import { data } from "react-router";
+import { mmsiSegment } from "./ais";
 
 // The aiscast API this app is a client of. The Worker fetches from it to render a page, and
 // the browser fetches from it directly after that, so in-app navigation never waits on the
@@ -220,7 +221,7 @@ export async function orUnavailable<T>(answer: Promise<T>): Promise<T> {
  * position the network has never heard, and an unknown MMSI is a 404.
  */
 export async function getVessel(auth: ApiAuth, mmsi: number): Promise<VesselFeature | undefined> {
-  return get<VesselFeature>(auth, `/v1/vessels/${mmsi}`);
+  return get<VesselFeature>(auth, `/v1/vessels/${mmsiSegment(mmsi)}`);
 }
 
 /**
@@ -264,7 +265,7 @@ export function trackPath(mmsi: number, q: { from?: number; to?: number; format?
   if (q.from != null) params.set("from", new Date(q.from).toISOString());
   if (q.to != null) params.set("to", new Date(q.to).toISOString());
   if (q.format) params.set("format", q.format);
-  return `/v1/vessels/${mmsi}/track?${params}`;
+  return `/v1/vessels/${mmsiSegment(mmsi)}/track?${params}`;
 }
 
 /** Where a vessel has been. The server thins the range to fit the token's limit. */

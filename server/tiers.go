@@ -16,7 +16,7 @@ const (
 	personalConns, personalRate, personalArea = 2, 50, 400.0 // self-minted, no expiry
 	feederConns, feederRate                   = 5, 200       // earned: personal token whose station is feeding; area unlimited
 	feederMinEvents24h                        = 1000         // events credited to the token's stations in the last 24 h
-	anonMMSIs, personalMMSIs, feederMMSIs     = 10, 50, 200  // vessels that may be followed by MMSI per subscription
+	anonMMSIs, personalMMSIs, feederMMSIs     = 10, 50, 200  // vessels that may be followed by MMSI or IMO per subscription
 	addrMaxStreams                            = 32           // concurrent streams per address across all tokens; roomy for a shared egress (CGNAT, marina wifi)
 	httpPerMinute, keysPerMinute              = 120, 10      // per address
 	tilesPerMinute                            = 600          // per address: a map view is ~20 tiles, refreshed every 10–30 s

@@ -10,7 +10,7 @@ This is a beta. There is no SLA. Coverage is uneven. The terms for re-serving so
 
 **Native API** ([full reference](https://openwaters.io/api/ais/)).
 
-- `wss://ais.openwaters.io/v1/stream`: send `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon]]}` or `{"type":"subscribe","mmsi":[368168720]}` (or both). You receive one JSON event per decoded AIS message. Each event carries its source, station, receive time, raw sentence, and the decoded fields. Add `"snapshot":true` to get the last known messages for every vessel already tracked in the subscription first, then live traffic. Subscribing needs no token.
+- `wss://ais.openwaters.io/v1/stream`: send `{"type":"subscribe","bbox":[[minLat,minLon,maxLat,maxLon]]}` or `{"type":"subscribe","mmsi":[368168720]}` (or both). Feeder and partner tokens can also follow vessels by IMO number with `"imo":[9241061]`. You receive one JSON event per decoded AIS message. Each event carries its source, station, receive time, raw sentence, and the decoded fields. Add `"snapshot":true` to get the last known messages for every vessel already tracked in the subscription first, then live traffic. Subscribing needs no token.
 - `GET https://ais.openwaters.io/v1/vessels?bbox=minLat,minLon,maxLat,maxLon` (or `?mmsi=a,b,c`): GeoJSON of every vessel currently in view. Each vessel carries its last position, name, type, course, speed, heading, flag, and when and from where aiscast last heard it, plus IMO number, call sign, destination, ETA, draught, length, beam, and the AIS antenna's distances to bow, stern, port, and starboard once its static data has been heard. No token.
 - `GET https://ais.openwaters.io/v1/stations`: every source aiscast is hearing, with message counts and age.
 
