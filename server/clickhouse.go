@@ -118,6 +118,9 @@ var chMigrations = []string{
 	22: chStationBuilt,
 	23: chSeriesLedger,
 	24: chStationVersions,
+	// each source's static states per vessel and day (statics.go)
+	25: chStatics,
+	26: chStaticsSeeded,
 }
 
 // chStationOwn keeps, per station, hour, and vessel, the last time the station sent that vessel as its own ship
@@ -314,11 +317,12 @@ type chReader interface {
 // chStore is the attached ClickHouse: the writer, the reader, the batch waiting to be sent again, and what
 // /metrics reports about it.
 type chStore struct {
-	w      chWriter
-	r      chReader
-	cov    coverageSource // nil leaves the coverage map unavailable
-	own    ownWriter      // nil leaves own-ship sightings unwritten
-	series stationSeries  // nil leaves the station series unbuilt and its counts empty
+	w       chWriter
+	r       chReader
+	cov     coverageSource // nil leaves the coverage map unavailable
+	own     ownWriter      // nil leaves own-ship sightings unwritten
+	series  stationSeries  // nil leaves the station series unbuilt and its counts empty
+	statics staticsWriter  // nil leaves static states unwritten, as a replay's staging does
 
 	mu      sync.Mutex // one flush at a time, so a resend never races the batch it repeats
 	failed  []trackPoint
@@ -333,6 +337,8 @@ type chStore struct {
 	ownDropped                  atomic.Int64 // own-ship sightings lost past maxOwnPending: memory, not policy
 	ownRefused                  atomic.Int64 // own-ship sightings past a sender's maxOwnPerStation: policy, not loss
 	ownFailing                  atomic.Bool  // the last station_own insert failed; cleared when one is written
+	staticsDropped              atomic.Int64 // static states lost past maxStaticsPending
+	staticsFailing              atomic.Bool  // the last statics insert failed; cleared when one is written
 	failing                     atomic.Bool  // the last batch failed; cleared when one is written
 }
 
@@ -650,6 +656,10 @@ func (p *Pipeline) attachClickHouse(c *chStore) {
 	p.chOwn = map[ownKey]time.Time{}
 	p.chOwnClaimed = map[ownKey]map[uint32]bool{}
 	p.chOwnClaimHours = map[int64]int{}
+	p.chStatics = nil
+	if c != nil && c.statics != nil {
+		p.chStatics = map[staticKey]staticTimes{}
+	}
 	p.chMu.Unlock()
 	p.chOn.Store(true)
 }
@@ -662,7 +672,7 @@ func (p *Pipeline) runClickHouse(url string) {
 		conn, err := openClickHouse(ctx, url)
 		cancel()
 		if err == nil {
-			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn, own: conn, series: conn})
+			p.attachClickHouse(&chStore{w: conn, r: conn, cov: conn, own: conn, series: conn, statics: conn})
 			log.Printf("clickhouse: writing receptions to %s", conn.db)
 			break
 		}
@@ -679,9 +689,9 @@ func (p *Pipeline) drainClickHouse() error {
 	var ownErr error
 	for range 2 {
 		err := p.flushClickHouse()
-		// A failed station_own insert must not stop the positions queued behind it from going, and one the next
+		// A failed station_own or statics insert must not stop the positions queued behind it from going, and one the next
 		// attempt wrote is not an error.
-		if err != nil && !errors.As(err, new(ownFailed)) {
+		if err != nil && !errors.As(err, new(sideFailed)) {
 			return err
 		}
 		ownErr = err
@@ -689,10 +699,10 @@ func (p *Pipeline) drainClickHouse() error {
 	return ownErr
 }
 
-// ownFailed is a station_own insert that failed while the receptions were written.
-type ownFailed struct{ error }
+// sideFailed is a station_own or statics insert that failed while the receptions were written.
+type sideFailed struct{ error }
 
-func (e ownFailed) Unwrap() error { return e.error }
+func (e sideFailed) Unwrap() error { return e.error }
 
 // flushClickHouse writes one batch: the one that failed last time, unchanged and under its token, or else
 // everything queued since. Positions keep queueing behind a failed batch, within the queue's bound.
@@ -706,7 +716,7 @@ func (p *Pipeline) flushClickHouse() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Own-ship sightings go whatever the receptions do, and their failure is reported once the receptions are written.
-	ownErr := p.flushOwn(c)
+	ownErr := errors.Join(p.flushOwn(c), p.flushStatics(c))
 	if c.failed == nil {
 		p.chMu.Lock()
 		points := p.chQueue
@@ -796,7 +806,7 @@ func (p *Pipeline) flushOwn(c *chStore) error {
 		}
 	}
 	p.chMu.Unlock()
-	return ownFailed{fmt.Errorf("station_own: %w", err)}
+	return sideFailed{fmt.Errorf("station_own: %w", err)}
 }
 
 // insertOwn writes own-ship sightings to station_own.

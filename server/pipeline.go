@@ -125,6 +125,7 @@ type Pipeline struct {
 	chOwn           map[ownKey]time.Time       // own-ship sightings since the last flush, the latest per key; nil until it connects
 	chOwnClaimed    map[ownKey]map[uint32]bool // the vessels each station claimed as its own each hour it received them, keyed without mmsi, for maxOwnPerStation
 	chOwnClaimHours map[int64]int              // how many claims chOwnClaimed holds for each hour, so pruning knows whether there is anything to scan for
+	chStatics       map[staticKey]staticTimes  // static states since the last flush, first and last heard; nil until ClickHouse connects or without a statics writer
 	chOwnHW         int64                      // the latest hour an own-ship message was received in, which claims older than its last hour are pruned against
 	chOn            atomic.Bool                // ClickHouse is attached, so copies are worth building
 	history         *historyStats              // historical archives loaded into ClickHouse (history.go); nil unless a source is on
@@ -414,6 +415,7 @@ func (p *Pipeline) emit(ev *Event) {
 		p.stats.invalidMMSI.Add(1)
 		return
 	}
+	p.noteStatic(ev) // every copy, each under its source, whatever dedupe and the fold make of it
 	p.delays.observe(ev, time.Now())
 	key := string(ev.Payload) + string(ev.Channel)
 	p.mu.Lock()

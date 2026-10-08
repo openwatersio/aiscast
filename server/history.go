@@ -333,6 +333,10 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 		if err := exec("DELETE FROM "+db+".receptions WHERE source = ? AND ts >= toDateTime64(?, 3, 'UTC') AND ts < toDateTime64(?, 3, 'UTC') + INTERVAL 1 DAY", s.name, day, day); err != nil {
 			return 0, fmt.Errorf("delete the earlier load: %w", err)
 		}
+		// A corrected file can drop a state that merging would otherwise keep.
+		if err := exec("DELETE FROM "+db+".statics WHERE source = ? AND day = toDate(?)", s.name, day); err != nil {
+			return 0, fmt.Errorf("delete the earlier load's statics: %w", err)
+		}
 		if err := c.markDay(ctx, f.day); err != nil { // the station series, as the reload changed the day's receptions
 			return 0, fmt.Errorf("mark the earlier load's hours: %w", err)
 		}
@@ -349,6 +353,15 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 		       argMaxStateIf(draught10, ts, draught10 != 0), argMaxStateIf(destination, ts, destination != '')
 		FROM `+stage+` WHERE known GROUP BY mmsi`, s.name); err != nil {
 		return 0, fmt.Errorf("insert statics: %w", err)
+	}
+	// Each distinct static state the file gives a vessel, as statics keeps every source's. Archive rows carry
+	// length and beam, not the antenna's offsets, so those are 0, and no ETA.
+	if err := exec(`INSERT INTO `+db+`.statics (mmsi, day, source, message, name, callsign, imo, ship_type,
+			to_bow, to_stern, to_port, to_starboard, draught10, destination, eta, first_ts, last_ts)
+		SELECT mmsi, toDate(ts) AS d, ?, 'archive', name, callsign, imo, ship_type, 0, 0, 0, 0, draught10, destination, '', min(ts), max(ts)
+		FROM `+stage+` WHERE known AND (name != '' OR callsign != '' OR imo != 0 OR ship_type != 0 OR draught10 != 0 OR destination != '')
+		GROUP BY mmsi, d, name, callsign, imo, ship_type, draught10, destination`, s.name); err != nil {
+		return 0, fmt.Errorf("insert static states: %w", err)
 	}
 
 	// A day loaded before left rows in positions_1m and coverage that its delete did not reach.
