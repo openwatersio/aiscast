@@ -72,6 +72,17 @@ test("a station page renders the station, with its id in the head", async ({ pag
   await expect(page.getByRole("link", { name: /MMSI \d+/ }).first()).toBeVisible();
 });
 
+test("station cards asked for at once each render whole", async ({ request }) => {
+  // Spellings of one station miss the edge cache together, so each is a render of its own.
+  const cards = await Promise.all(["digitraffic", "%64igitraffic", "digi%74raffic"].map((id) => request.get(`/ais/stations/${id}.png`)));
+  for (const card of cards) {
+    expect(card.status()).toBe(200);
+    const png = await card.body();
+    expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+  }
+});
+
 test("a station the network has not heard is a 404 that asks not to be indexed", async ({ page }) => {
   const res = await page.goto("/ais/stations/nowhere/0");
   expect(res?.status()).toBe(404);
