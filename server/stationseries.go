@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -66,7 +67,7 @@ TTL hour + INTERVAL ` + fmt.Sprint(chStationVesselDays) + ` DAY DELETE`
 // the built record outlives the markers.
 const (
 	chStationDirty   = `CREATE TABLE IF NOT EXISTS {db}.station_dirty (hour DateTime('UTC'), marked DateTime64(3, 'UTC') DEFAULT now64(3)) ENGINE = MergeTree ORDER BY (hour, marked) TTL toDateTime(marked) + INTERVAL 14 DAY DELETE`
-	chStationDirtyMV = `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.station_dirty_mv TO {db}.station_dirty AS SELECT DISTINCT toStartOfHour(toDateTime(ts, 'UTC')) AS hour FROM {db}.receptions`
+	chStationDirtyMV = `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.station_dirty_mv TO {db}.station_dirty AS SELECT DISTINCT toStartOfHour(toDateTime(ts, 'UTC')) AS hour FROM {db}.receptions WHERE ` + chUsable
 	chStationBuilt   = `CREATE TABLE IF NOT EXISTS {db}.station_built (hour DateTime('UTC'), marker DateTime64(3, 'UTC')) ENGINE = ReplacingMergeTree(marker) ORDER BY hour TTL toDateTime(marker) + INTERVAL 15 DAY DELETE`
 	chSeriesLedger   = `CREATE TABLE IF NOT EXISTS {db}.station_series_backfilled (day Date) ENGINE = ReplacingMergeTree ORDER BY day`
 	// chStationVersions records each hour's versions once both tables hold them whole: an INSERT ... SELECT commits
@@ -237,23 +238,26 @@ func (c *chConn) rebuildStationSeries(ctx context.Context, now time.Time) error 
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// Newest day first; a day that fails is logged and left for the next run, so it holds up no other.
+	// Today and yesterday, where live receptions land, rebuild in this run, newest first. Older marked days, from
+	// late copies, replays, and reloads, go to one worker of their own, so a slow one never holds today back. A day
+	// that fails is logged and left for the next run.
 	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return b.Compare(a) })
+	recent := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	var older []time.Time
 	for _, day := range days {
-		marks := byDay[day]
-		hours := make([]time.Time, len(marks))
-		for i, m := range marks {
-			hours[i] = m.hour
+		if day.Before(recent) {
+			older = append(older, day)
+			continue
 		}
-		unlock := lockDay(day)
-		err := c.binHours(ctx, hours, now)
-		unlock()
-		if err == nil {
-			err = c.recordBuilt(ctx, marks)
-		}
-		if err != nil {
-			log.Printf("station series: %s: %v", day.Format("2006-01-02"), err) // left for the next run
-		}
+		c.rebuildMarkedDay(ctx, day, byDay[day], now)
+	}
+	if len(older) > 0 && olderSeries.CompareAndSwap(false, true) {
+		go func() {
+			defer olderSeries.Store(false)
+			for _, day := range older {
+				c.rebuildMarkedDay(ctx, day, byDay[day], now)
+			}
+		}()
 	}
 	return nil
 }
@@ -262,6 +266,36 @@ func (c *chConn) rebuildStationSeries(ctx context.Context, now time.Time) error 
 type mark struct {
 	hour   time.Time
 	marker time.Time
+}
+
+// olderSeries is set while the worker for older marked days runs, so there is one at a time.
+var olderSeries atomic.Bool
+
+// rebuildMarkedDay rebuilds one day's marked hours, a run of consecutive hours per binning so each reads only the
+// receptions of its own span, and records the markers it took in. A run that fails is logged and left marked.
+func (c *chConn) rebuildMarkedDay(ctx context.Context, day time.Time, marks []mark, now time.Time) {
+	slices.SortFunc(marks, func(a, b mark) int { return a.hour.Compare(b.hour) })
+	unlock := lockDay(day)
+	defer unlock()
+	for start := 0; start < len(marks); {
+		end := start + 1
+		for end < len(marks) && marks[end].hour.Equal(marks[end-1].hour.Add(time.Hour)) {
+			end++
+		}
+		run := marks[start:end]
+		hours := make([]time.Time, len(run))
+		for i, m := range run {
+			hours[i] = m.hour
+		}
+		err := c.binHours(ctx, hours, now)
+		if err == nil {
+			err = c.recordBuilt(ctx, run)
+		}
+		if err != nil {
+			log.Printf("station series: %s: %v", run[0].hour.Format("2006-01-02 15:04"), err) // left for the next run
+		}
+		start = end
+	}
 }
 
 // recordBuilt records the markers a rebuild took in.

@@ -109,6 +109,10 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.insert(ctx, "ancient", []trackPoint{ancient}); err != nil {
 		t.Fatal(err)
 	}
+	// and marks nothing, since no unusable copy changes the counts
+	if marks, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+".station_dirty WHERE toYear(hour) = 2001"); err != nil || marks[0] != 0 {
+		t.Errorf("a bad-clock copy marked %v hours, %v", marks, err)
+	}
 	if err := conn.backfillStationSeries(ctx, now); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +147,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.markDay(ctx, cur.AddDate(0, 0, -1)); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+	if err := rebuildAll(ctx, conn, now); err != nil {
 		t.Fatal(err)
 	}
 	binHoursFails = nil
@@ -151,7 +155,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err != nil || built[0] != 24 {
 		t.Errorf("hours rebuilt with today failing: %v %v; want yesterday's 24", built, err)
 	}
-	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+	if err := rebuildAll(ctx, conn, now); err != nil {
 		t.Fatal(err)
 	}
 	if s := counts["station:s1"]; s.day != 2 || s.live != 1 || s.unique != 1 || math.Abs(s.uptime-2.0/3) > 1e-9 || !s.first.Equal(cur.Add(-2*time.Hour)) {
@@ -175,7 +179,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.markDay(ctx, cur); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+	if err := rebuildAll(ctx, conn, now); err != nil {
 		t.Fatal(err)
 	}
 	if again, _ := seriesCounts(t, conn, now); again["station:s2"] != counts["station:s2"] || again["station:s1"] != counts["station:s1"] {
@@ -187,7 +191,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A rebuild before the delete finds nothing marked, so it cannot record the hour as built with the rows still there.
-	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+	if err := rebuildAll(ctx, conn, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+db+".receptions WHERE "+where); err != nil {
@@ -202,7 +206,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	nulls := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"join_use_nulls": 1}))
-	if err := conn.rebuildStationSeries(nulls, now); err != nil {
+	if err := rebuildAll(nulls, conn, now); err != nil {
 		t.Fatal(err)
 	}
 	if counts, _ := seriesCounts(t, conn, now); counts["station:s4"].receptions != 1 {
@@ -222,12 +226,43 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.markHours(ctx, []time.Time{h}); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+	if err := rebuildAll(ctx, conn, now); err != nil {
 		t.Fatal(err)
 	}
 	if counts, _ := seriesCounts(t, conn, now); counts["station:s3"].receptions != 1 {
 		t.Errorf("a rebuild after a version from the future: s3 %+v", counts["station:s3"])
 	}
+
+	// An older day that is slow to bin, as a late copy's can be, does not hold today back: the run returns with
+	// today rebuilt while the older day's worker still waits.
+	release := make(chan struct{})
+	binHoursFails = func(day time.Time) error {
+		if day.Before(cur.AddDate(0, 0, -1).Truncate(24 * time.Hour)) {
+			<-release
+		}
+		return nil
+	}
+	if err := conn.markDay(ctx, cur.AddDate(0, 0, -4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.markDay(ctx, cur); err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan error, 1)
+	go func() { ran <- conn.rebuildStationSeries(ctx, now) }()
+	select {
+	case err := <-ran:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("today waited for an older day")
+	}
+	close(release)
+	for olderSeries.Load() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	binHoursFails = nil
 
 	// A marker younger than the settle time waits for the next run.
 	stationSeriesSettle = time.Hour
@@ -235,7 +270,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.markDay(ctx, fresh); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.rebuildStationSeries(ctx, now); err != nil {
+	if err := rebuildAll(ctx, conn, now); err != nil {
 		t.Fatal(err)
 	}
 	stationSeriesSettle = 0
@@ -340,4 +375,13 @@ func seriesCounts(t *testing.T, conn *chConn, now time.Time) (map[string]station
 		return nil, err
 	}
 	return mergeCounts(counts, totals, now), nil
+}
+
+// rebuildAll rebuilds the marked hours and waits for the worker that takes the older days.
+func rebuildAll(ctx context.Context, conn *chConn, now time.Time) error {
+	err := conn.rebuildStationSeries(ctx, now)
+	for olderSeries.Load() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return err
 }
