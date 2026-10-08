@@ -32,11 +32,12 @@ export interface ShareCardProps {
 const COLORS = { panel: "#071421", label: "#60a5fa", title: "#ffffff", subtitle: "#cbd5e1", muted: "#94a3b8" };
 
 /**
- * The title's height at most: two lines, so a third, which only a name of the widest letters needs,
- * is cut off rather than run into the numbers. Not lineClamp, which with balanced wrapping cuts a
+ * The title's and subtitle's heights at most: two lines each, so a third, which only the longest
+ * names and places need, is cut off rather than run into the numbers. Not lineClamp, which with balanced wrapping cuts a
  * title that fits.
  */
 const TITLE_MAX = Math.ceil(78 * 1.08 * 2);
+const SUBTITLE_MAX = Math.ceil(34 * 1.3 * 2);
 
 /** The text column's width: the card's, less its margins, so a title fits on one line. */
 const TEXT = 1060;
@@ -66,7 +67,7 @@ export function ShareCard({ title, subtitle, period, stats }: ShareCardProps) {
           {title}
         </div>
         {subtitle && (
-          <div style={{ display: "block", marginTop: 20, color: COLORS.subtitle, fontSize: 34, lineHeight: 1.3, textWrap: "balance" }}>{subtitle}</div>
+          <div style={{ display: "block", marginTop: 20, color: COLORS.subtitle, fontSize: 34, lineHeight: 1.3, maxHeight: SUBTITLE_MAX, overflow: "hidden", textWrap: "balance" }}>{subtitle}</div>
         )}
         <div style={{ display: "flex", flexDirection: "column", marginTop: "auto" }}>
           {period && (
@@ -186,17 +187,29 @@ export function stationCardProps(st: Station): ShareCardProps {
  * station comes from the list, a few KB, rather than its own answer, which carries every vessel it
  * last heard: 18 MB for AISHub.
  */
+/**
+ * The station list as cards can trust it, or undefined while its counts are unloaded. For the minutes
+ * after the server starts, every station's 24-hour counts read 0, and a card drawn then would show
+ * 0 vessels for the hour it is kept, and longer in the copies link previews keep. No network that
+ * heard messages heard no vessels, so that list is answered as an outage, which is not kept.
+ */
+function loaded(stations: Station[] | undefined): Station[] | undefined {
+  if (!stations) return undefined;
+  const heard = stations.some((s) => s.events.last_24h > 0);
+  const counted = stations.some((s) => (s.vessels_24h ?? s.vessels) > 0);
+  return heard && !counted ? undefined : stations;
+}
+
 export async function stationCard(auth: ApiAuth, id: string): Promise<Response> {
   // A receiver's tagged path is the receiver, as its page redirects.
   const receiver = volunteerReceiver(id);
   if (receiver) return new Response(null, { status: 301, headers: { Location: `/ais${stationCardPath(receiver)}` } });
-  const stations = await getStations(auth);
+  const stations = loaded(await getStations(auth));
   if (!stations) return unavailable();
   const st = stations.find((s) => s.station === id);
   if (!st) return new Response("Not found", { status: 404 });
   return shareCard(stationCardProps(st));
 }
-
 
 /** The vessel a card path names, `/ais/vessels/<mmsi>.png`, or undefined for any other path. */
 export function vesselCardMmsi(pathname: string): number | undefined {
@@ -260,7 +273,8 @@ export function networkCardProps(stats: Stats, stations: Station[]): ShareCardPr
 }
 
 export async function networkCard(auth: ApiAuth): Promise<Response> {
-  const [stats, stations] = await Promise.all([getStats(auth), getStations(auth)]);
+  const [stats, all] = await Promise.all([getStats(auth), getStations(auth)]);
+  const stations = loaded(all);
   if (!stats || !stations) return unavailable();
   return shareCard(networkCardProps(stats, stations));
 }
@@ -285,7 +299,7 @@ export function stationsCardProps(stations: Station[]): ShareCardProps {
 }
 
 export async function stationsCard(auth: ApiAuth): Promise<Response> {
-  const stations = await getStations(auth);
+  const stations = loaded(await getStations(auth));
   if (!stations) return unavailable();
   return shareCard(stationsCardProps(stations));
 }

@@ -29,6 +29,7 @@ vi.mock("workers-og", () => ({
 import { stationCardPath } from "./ais";
 import { getStation, type Station, type Stats, type VesselProps } from "./api";
 import {
+  networkCard,
   networkCardProps,
   RENDER_WAIT_MS,
   serveCard,
@@ -36,6 +37,7 @@ import {
   stationCard,
   stationCardId,
   stationCardProps,
+  stationsCard,
   stationsCardProps,
   vesselCard,
   vesselCardMmsi,
@@ -347,5 +349,29 @@ describe("the Worker's other cards", () => {
     expect((await ask(e, "/ais/stations.png")!).status).toBe(200);
     await e.settle();
     expect([...e.store.keys()].sort()).toEqual(["https://openwaters.io/ais/network.png", "https://openwaters.io/ais/stations.png"]);
+  });
+});
+
+describe("cards drawn from the station list", () => {
+  const auth = { api: "https://api.test" };
+  const answer = (list: Station[]) =>
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url.endsWith("/v1/stats") ? { vessels: { last_24h: 9 }, events: { last_24h: 9 } } : list)));
+  // Just after the server starts: messages counted, every vessel count still 0.
+  const unloaded = [
+    station({ station: "digitraffic", source: "digitraffic", events: { last_24h: 5000, last_7d: 5000 }, vessels: 0, vessels_24h: 0 }),
+    station({ station: "station:a", source: "station:a", events: { last_24h: 40, last_7d: 40 }, vessels: 0, vessels_24h: 0 }),
+  ];
+
+  it("are an outage, which is not kept, while the list's counts are unloaded", async () => {
+    answer(unloaded);
+    expect((await stationsCard(auth)).status).toBe(503);
+    expect((await networkCard(auth)).status).toBe(503);
+    expect((await stationCard(auth, "station:a")).status).toBe(503);
+  });
+
+  it("draw a station that hears only its own vessel once the rest are counted", async () => {
+    answer([unloaded[0]!, { ...unloaded[0]!, station: "aishub", source: "aishub", vessels_24h: 900 }, unloaded[1]!]);
+    expect((await stationCard(auth, "station:a")).status).toBe(200);
+    expect((await stationsCard(auth)).status).toBe(200);
   });
 });
