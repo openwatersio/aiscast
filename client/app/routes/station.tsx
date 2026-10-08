@@ -17,6 +17,7 @@ import {
   isVolunteer,
   shipClass,
   shortAge,
+  stationCardPath,
   stationStatus,
   stationName,
   stationTitle,
@@ -65,6 +66,8 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
       : `AIS receiving station ${id}.`,
     path: st ? `/stations/${id}` : undefined,
     noindex: !st,
+    // Drawn by the Worker (lib/shareCard.server.tsx).
+    ...(st ? { image: `${SITE}${stationCardPath(id)}` } : {}),
   });
 }
 

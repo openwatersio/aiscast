@@ -49,7 +49,7 @@ Every credential is an Ed25519-signed claims token, `ak1.<claims>.<sig>`. You mi
 
 Claims:
 
-- `sub`: station id, partner, or device key.
+- `sub`: station id, partner, or device key. It never ends in `.png`, since the web client serves a station's share card at its page's address plus `.png`; the server refuses such a token, and `aiscast-key` refuses to mint one.
 - `role`: `personal` subscribes and publishes as the device key with small limits, `feeder` publishes, `peer` publishes and subscribes, `partner` subscribes, `admin` does all.
 - `exp`.
 - optional `bbox`: subscriptions must fit inside it.

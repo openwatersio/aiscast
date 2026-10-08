@@ -1,6 +1,7 @@
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { serverEnv } from "../app/lib/context";
-import { edgeCached, isSharedPage, pageCacheKey } from "../app/lib/edge.server";
+import { edgeCached, isSharedPage, notGetOrHead, pageCacheKey } from "../app/lib/edge.server";
+import { serveStationCard } from "../app/lib/shareCard.server";
 import { isSitemap, sitemap } from "../app/lib/sitemap.server";
 import { visitorMeta } from "../app/lib/visitor";
 import { REPORT_PATH } from "../app/lib/report";
@@ -63,14 +64,13 @@ export default {
     };
 
     if (isSitemap(url.pathname)) {
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
-      }
       // Keyed without the query, which changes nothing in a sitemap and would otherwise let
       // anyone make the Worker read the whole record again.
       const key = `${url.origin}${url.pathname}`;
-      return edgeCached(cache, key, SITEMAP_TTLS, waitUntil, () => sitemap(url.pathname, auth));
+      return notGetOrHead(request) ?? edgeCached(cache, key, SITEMAP_TTLS, waitUntil, () => sitemap(url.pathname, auth));
     }
+    const card = serveStationCard(request, url, auth, cache, waitUntil);
+    if (card) return card;
     if (!isSharedPage(request, url)) return withVisitor(await render(), request);
 
     const key = pageCacheKey(url, request.headers.get("cookie"));

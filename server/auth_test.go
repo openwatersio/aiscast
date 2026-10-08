@@ -696,3 +696,25 @@ func TestFeederSurvivesRestart(t *testing.T) {
 		t.Error("unknown station earned the feeder tier")
 	}
 }
+
+// No subject ends in ".png", since the web client serves a station's card at its page's address plus
+// ".png": station:harbor.png would lose its page to station:harbor's card.
+func TestSubjectNeverEndsInPNG(t *testing.T) {
+	for sub, want := range map[string]bool{"station-1": true, "ed25519:abc": true, "harbor.png.x": true, "harbor.png": false, "harbor.PNG": false, "a/b.png": false} {
+		if got := validSub(sub); got != want {
+			t.Errorf("validSub(%q) = %v, want %v", sub, got, want)
+		}
+	}
+	kid, priv := testIssuer(t, testPipeline(t))
+	if _, err := signToken(priv, Claims{Kid: kid, Sub: "harbor.png", Role: "feeder"}); err == nil {
+		t.Error("signed a token for harbor.png")
+	}
+	// A token signed elsewhere, as aiscast-key signs, is refused when it is used.
+	body, _ := json.Marshal(Claims{Kid: kid, Sub: "harbor.png", Role: "feeder"})
+	b64 := base64.RawURLEncoding.EncodeToString(body)
+	tok := tokenPrefix + b64 + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, []byte(tokenPrefix+b64)))
+	v := &verifier{keys: map[string]ed25519.PublicKey{kid: priv.Public().(ed25519.PublicKey)}}
+	if _, err := v.verify(tok, time.Now()); err == nil {
+		t.Error("accepted a token for harbor.png")
+	}
+}
