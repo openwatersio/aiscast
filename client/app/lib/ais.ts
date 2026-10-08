@@ -569,8 +569,8 @@ export function stationDescription(
   title: string,
   st: { vessels: number; vessels_24h?: number; events: { last_24h: number }; last_age_s: number },
 ): string {
-  const n = (v: number) => v.toLocaleString("en-US");
-  return `AIS receiving station ${title}: ${n(st.vessels_24h ?? st.vessels)} vessels and ${n(st.events.last_24h)} messages in 24 hours, last message ${formatAge(st.last_age_s)}.`;
+  const count = (v: number, one: string) => `${v.toLocaleString("en-US")} ${v === 1 ? one : `${one}s`}`;
+  return `AIS receiving station ${title}: ${count(st.vessels_24h ?? st.vessels, "vessel")} and ${count(st.events.last_24h, "message")} in 24 hours, last message ${formatAge(st.last_age_s)}.`;
 }
 
 /** stationName as one line of text, for where it cannot be styled: "Anonymous …bCro". */

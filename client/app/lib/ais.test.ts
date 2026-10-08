@@ -578,6 +578,10 @@ describe("stationDescription", () => {
     );
   });
 
+  it("counts one vessel or message in the singular", () => {
+    expect(stationDescription("x", { ...st, vessels_24h: 1, events: { last_24h: 1 } })).toContain(": 1 vessel and 1 message in 24 hours");
+  });
+
   it("falls back to the 30-minute count from a server without the 24-hour one", () => {
     expect(stationDescription("x", { ...st, vessels_24h: undefined })).toContain(": 225 vessels and");
   });
