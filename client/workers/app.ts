@@ -1,6 +1,7 @@
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { serverEnv } from "../app/lib/context";
 import { edgeCached, isSharedPage, pageCacheKey } from "../app/lib/edge.server";
+import { stationCard, stationCardId } from "../app/lib/shareCard.server";
 import { isSitemap, sitemap } from "../app/lib/sitemap.server";
 import { visitorMeta } from "../app/lib/visitor";
 import { REPORT_PATH } from "../app/lib/report";
@@ -45,6 +46,13 @@ const PAGE_TTLS = { 200: 60 };
  * A page past the last is kept briefly, as the next one may be listed soon.
  */
 const SITEMAP_TTLS = { 200: 3600, 404: 300 };
+/** A card's numbers cover 24 hours, so an hour old is fresh enough for a link preview. */
+const CARD_TTLS = { 200: 3600, 301: 3600, 404: 300 };
+
+const notGet = (request: Request) =>
+  request.method !== "GET" && request.method !== "HEAD"
+    ? new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } })
+    : undefined;
 
 export default {
   async fetch(request, env, ctx) {
@@ -62,14 +70,15 @@ export default {
       return handler(request, context);
     };
 
+    // Sitemaps and cards are keyed without the query, which changes neither and would otherwise
+    // let anyone make the Worker read the whole record, or draw a card, again.
+    const bare = `${url.origin}${url.pathname}`;
     if (isSitemap(url.pathname)) {
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
-      }
-      // Keyed without the query, which changes nothing in a sitemap and would otherwise let
-      // anyone make the Worker read the whole record again.
-      const key = `${url.origin}${url.pathname}`;
-      return edgeCached(cache, key, SITEMAP_TTLS, waitUntil, () => sitemap(url.pathname, auth));
+      return notGet(request) ?? edgeCached(cache, bare, SITEMAP_TTLS, waitUntil, () => sitemap(url.pathname, auth));
+    }
+    const card = stationCardId(url.pathname);
+    if (card != null) {
+      return notGet(request) ?? edgeCached(cache, bare, CARD_TTLS, waitUntil, () => stationCard(auth, card));
     }
     if (!isSharedPage(request, url)) return withVisitor(await render(), request);
 

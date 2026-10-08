@@ -57,13 +57,17 @@ test("an address that is not a vessel is a 404", async ({ page }) => {
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
 });
 
-test("a station page renders the station, with its id in the head", async ({ page }) => {
+test("a station page renders the station, with its id in the head", async ({ page, request }) => {
   const res = await page.goto("/ais/stations/digitraffic");
   expect(res?.status()).toBe(200);
   await expect(page).toHaveTitle("Digitraffic (Finland) receiving station | Open Waters AIS");
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://openwaters.io/ais/stations/digitraffic");
   await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /^AIS receiving station Digitraffic \(Finland\): [\d,]+ messages in 24 hours/);
   await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://openwaters.io/ais/stations/digitraffic.png");
+  const card = await request.get("/ais/stations/digitraffic.png");
+  expect(card.status()).toBe(200);
+  expect(card.headers()["content-type"]).toBe("image/png");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Digitraffic (Finland)");
   await expect(page.getByRole("link", { name: /MMSI \d+/ }).first()).toBeVisible();
 });
