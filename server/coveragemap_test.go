@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -42,10 +44,14 @@ func covRowOf(t *testing.T, res int, cell uint64, vessels uint64, days int, s st
 
 // fakeCoverageSource holds coverage for some days and answers the window the map asks for.
 type fakeCoverageSource struct {
-	days        []string // days with coverage
-	cells       []covRow
-	backfills   int
-	first, last time.Time // the window last asked for
+	days         []string // days with coverage
+	cells        []covRow
+	stations     map[string][]covRow // each station's cells
+	stationLoads int
+	loading      chan string   // when set, each station load sends its station here
+	release      chan struct{} // when set, each station load waits for it
+	backfills    int
+	first, last  time.Time // the window last asked for
 }
 
 func (f *fakeCoverageSource) coverageBackfill(context.Context, time.Time) error {
@@ -66,6 +72,25 @@ func (f *fakeCoverageSource) coverageDays(_ context.Context, first, last time.Ti
 
 func (f *fakeCoverageSource) coverageCells(_ context.Context, _, _ time.Time, each func(covRow) error) error {
 	for _, r := range f.cells {
+		if err := each(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *fakeCoverageSource) coverageStations(context.Context, time.Time, time.Time) ([]string, error) {
+	return slices.Collect(maps.Keys(f.stations)), nil
+}
+
+func (f *fakeCoverageSource) stationCoverageCells(_ context.Context, station string, first, last time.Time, each func(covRow) error) error {
+	f.stationLoads++
+	f.first, f.last = first, last
+	if f.loading != nil {
+		f.loading <- station
+		<-f.release
+	}
+	for _, r := range f.stations[station] {
 		if err := each(r); err != nil {
 			return err
 		}
@@ -248,10 +273,108 @@ func TestCoverageTiles(t *testing.T) {
 	}
 }
 
+// ?station= answers one station's cells over the network's window, with a TileJSON whose tiles carry the station
+// and whose bounds are its cells. A station is loaded once per network load, a station with no cells is 404
+// without a query, so ids anyone can make up cost nothing, and its tiles never come from the network's cache
+// entries or another station's.
+func TestCoverageStationTiles(t *testing.T) {
+	f := &fakeCoverageSource{
+		days:  []string{"2026-09-23", "2026-09-24", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29"},
+		cells: []covRow{covRowOf(t, 3, osloRes3, 60, 6, osloRes3Outline), covRowOf(t, 6, osloRes6, 12, 3, osloRes6Outline)},
+		stations: map[string][]covRow{
+			"station:harbor/east": {covRowOf(t, 3, osloRes3, 6, 2, osloRes3Outline), covRowOf(t, 6, osloRes6, 3, 2, osloRes6Outline)},
+			"station:harbor/west": {covRowOf(t, 3, osloRes3, 12, 2, osloRes3Outline)},
+		},
+	}
+	p := coveragePipeline(t, f)
+	h := httpHandler(p)
+	get := func(path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		return w
+	}
+	vessels := func(path string, cell uint64) any {
+		t.Helper()
+		w := get(path)
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+		return decodeCoverageTile(t, w.Body.Bytes())[cell].props["vessels"]
+	}
+
+	w := get("http://ais.example/v1/coverage/tiles.json?station=station:harbor/east")
+	var tj struct {
+		Tiles  []string
+		Bounds []float64
+		Fit    []float64
+		Window struct{ From, To string }
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &tj); err != nil || w.Code != 200 {
+		t.Fatalf("%d %v: %s", w.Code, err, w.Body)
+	}
+	if len(tj.Tiles) != 1 || tj.Tiles[0] != "http://ais.example/v1/coverage/tiles/{z}/{x}/{y}?station=station%3Aharbor%2Feast" {
+		t.Errorf("tiles %v", tj.Tiles)
+	}
+	// bounds take in the resolution-3 cell drawn at low zooms, and fit only the finest cell
+	if b := tj.Bounds; len(b) != 4 || b[0] > 9.36 || b[2] < 11.35 || b[1] > 59.31 || b[3] < 60.27 {
+		t.Errorf("bounds %v, want the resolution-3 Oslo cell's extent", b)
+	}
+	if b := tj.Fit; len(b) != 4 || b[0] > 10.7 || b[2] < 10.7 || b[1] > 59.9 || b[3] < 59.9 || b[2]-b[0] > 0.2 || b[3]-b[1] > 0.2 {
+		t.Errorf("fit %v, want a box around the resolution-6 Oslo cell", b)
+	}
+	if tj.Window.From != "2026-09-23" || tj.Window.To != "2026-09-29" || f.first.Format("2006-01-02") != "2026-09-23" || f.last.Format("2006-01-02") != "2026-09-29" {
+		t.Errorf("window %+v, asked for %v to %v; want the network's", tj.Window, f.first, f.last)
+	}
+
+	// The network's tile first, then each station's at the same address: each its own, averaged over the
+	// network's 6 days.
+	if v := vessels("/v1/coverage/tiles/0/0/0", osloRes3); v != 10.0 {
+		t.Errorf("network: %v vessels a day", v)
+	}
+	if v := vessels("/v1/coverage/tiles/0/0/0?station=station:harbor/east", osloRes3); v != 1.0 {
+		t.Errorf("east: %v vessels a day", v)
+	}
+	if v := vessels("/v1/coverage/tiles/0/0/0?station=station%3Aharbor%2Fwest", osloRes3); v != 2.0 {
+		t.Errorf("west: %v vessels a day", v)
+	}
+	x, y := tileOf(59.9, 10.7, 9)
+	if v := vessels(fmt.Sprintf("/v1/coverage/tiles/9/%d/%d?station=station:harbor/east", x, y), osloRes6); v != 0.5 {
+		t.Errorf("east at z9: %v vessels a day", v)
+	}
+	if f.stationLoads != 2 {
+		t.Errorf("%d station loads for 2 stations", f.stationLoads)
+	}
+
+	for _, path := range []string{"/v1/coverage/tiles.json?station=station:nobody", "/v1/coverage/tiles/0/0/0?station=station:nobody"} {
+		if w := get(path); w.Code != 404 {
+			t.Errorf("%s: %d, want 404", path, w.Code)
+		}
+	}
+	if f.stationLoads != 2 {
+		t.Errorf("a station with no cells loaded %d times, want none", f.stationLoads-2)
+	}
+	if w := get("/v1/coverage/tiles.json?station=" + strings.Repeat("x", 300)); w.Code != 400 {
+		t.Errorf("a 300-byte station: %d, want 400", w.Code)
+	}
+
+	// A network load replaces every station's, and the stations it knows.
+	f.stations["station:harbor/east"] = []covRow{covRowOf(t, 3, osloRes3, 30, 2, osloRes3Outline)}
+	f.stations["station:new"] = []covRow{covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)}
+	if err := p.coverage.load(context.Background(), f, time.Date(2026, 9, 30, 4, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if v := vessels("/v1/coverage/tiles/0/0/0?station=station:harbor/east", osloRes3); v != 5.0 {
+		t.Errorf("east after a reload: %v vessels a day", v)
+	}
+	if v := vessels("/v1/coverage/tiles/0/0/0?station=station:new", osloRes3); v != 1.0 {
+		t.Errorf("a station new to the reload: %v vessels a day", v)
+	}
+}
+
 func TestCoverageUnavailable(t *testing.T) {
 	check := func(name string, p *Pipeline) {
 		t.Helper()
-		for _, path := range []string{"/v1/coverage/tiles.json", "/v1/coverage/tiles/0/0/0"} {
+		for _, path := range []string{"/v1/coverage/tiles.json", "/v1/coverage/tiles/0/0/0", "/v1/coverage/tiles.json?station=station:a", "/v1/coverage/tiles/0/0/0?station=station:a"} {
 			w := httptest.NewRecorder()
 			httpHandler(p).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 			if w.Code != 503 {
@@ -289,9 +412,10 @@ func TestCoverageCellKeepsAntimeridianCellsWhole(t *testing.T) {
 }
 
 // TestCoverageFromClickHouse runs against a real server named by CLICKHOUSE_TEST_URL, in a database of its own
-// that it drops afterward: the view fills coverage as receptions are written, counting each vessel once
-// however many copies arrive and skipping implausible copies and those older than coverage keeps, a backfill over the same days counts nothing twice, and a day the backfill has done it never
-// bins again.
+// that it drops afterward: the views fill station_coverage and coverage as receptions are written, counting each
+// vessel once however many copies arrive and skipping implausible copies and those older than coverage keeps, a
+// backfill over the same days counts nothing twice, and a day the backfill has done it never bins again. The
+// network's cells merge stations, counting a feed's receivers as its one source, and a station's are its own.
 func TestCoverageFromClickHouse(t *testing.T) {
 	url := os.Getenv("CLICKHOUSE_TEST_URL")
 	if url == "" {
@@ -313,21 +437,17 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	}
 	// Two vessels on the first day, one of them twice, and one of them again on the second. The second vessel's
 	// transmission also arrives as a later copy from another station, which adds a station but no vessel, and
-	// from another receiver of the same feed and another stream of that station, which add neither. A copy
-	// the fold judged implausible, far from the others, from a third station, adds no cell and no station.
+	// from another receiver of the same feed, which adds neither. A copy the fold judged implausible, far from
+	// the others, from a third station, adds no cell and no station.
 	first := at(2, day1.Add(3*time.Hour))
 	first.txAt, first.txDisc = first.ts, 7
 	again := first
 	again.source, again.station, again.recv, again.dup = "station", "station:other", first.ts.Add(2*time.Second), true
-	// and from another of the first feed's receivers, which is the same source, and from another stream of
-	// the other station, which is the same station
 	path := first
 	path.station, path.recv, path.dup = "kystverket/2573010", first.ts.Add(time.Second), true
-	stream := again
-	stream.station, stream.recv = "station:other/n2k", first.ts.Add(3*time.Second)
 	wild := at(5, day1.Add(4*time.Hour))
 	wild.lat6, wild.lon6, wild.implausible, wild.station = int32(10*600000), int32(10*600000), true, "station:wild"
-	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, path, stream, wild, at(1, day2.Add(time.Hour))}
+	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, path, wild, at(1, day2.Add(time.Hour))}
 	if err := conn.insert(ctx, "coverage", batch); err != nil {
 		t.Fatal(err)
 	}
@@ -356,6 +476,35 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		if len(got) != len(coverageBands) {
 			t.Errorf("%s: %d cells, want one per resolution", when, len(got))
 		}
+		for station, want := range map[string]covRow{"kystverket": {vessels: 3, days: 2}, "kystverket/2573010": {vessels: 1, days: 1}, "station:other": {vessels: 1, days: 1}} {
+			var r covRow
+			if err := conn.stationCoverageCells(ctx, station, day1, day2, func(c covRow) error {
+				if c.cell == osloRes6 {
+					r = c
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if r.vessels != want.vessels || r.days != want.days || r.stations != 1 {
+				t.Errorf("%s: %s's Oslo cell is %+v, want %d vessels over %d days", when, station, r, want.vessels, want.days)
+			}
+		}
+		if ids, err := conn.coverageStations(ctx, day1, day2); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"kystverket", "kystverket/2573010", "station:other"}) {
+			t.Errorf("%s: stations %v, %v", when, ids, err)
+		}
+		if err := conn.stationCoverageCells(ctx, "station:wild", day1, day2, func(c covRow) error {
+			t.Errorf("%s: the implausible station has cell %d", when, c.cell)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// coverage is written as well, so a server rolled back to reading it still has the map.
+		var vessels, stations uint64
+		if err := conn.conn.QueryRow(ctx, "SELECT uniqExactMerge(vessels), uniqExactMerge(stations) FROM "+db+".coverage WHERE res = 6 AND cell = ? AND day = ?",
+			osloRes6, day1).Scan(&vessels, &stations); err != nil || vessels != 2 || stations != 2 {
+			t.Errorf("%s: coverage holds %d vessels from %d stations on the first day, %v; want 2 from 2", when, vessels, stations, err)
+		}
 		if _, err := covCellFrom(oslo.cell, oslo.lats, oslo.lons); err != nil || len(oslo.lats) != 6 || math.Abs(oslo.lats[0]-59.9) > 0.1 || math.Abs(oslo.lons[0]-10.7) > 0.2 {
 			t.Errorf("%s: outline %v %v: %v", when, oslo.lats, oslo.lons, err)
 		}
@@ -381,7 +530,7 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	check("after a backfill over the same days")
 
 	// With coverage emptied, a second backfill finds both days done and leaves it empty.
-	if err := conn.conn.Exec(ctx, "TRUNCATE TABLE "+db+".coverage"); err != nil {
+	if err := conn.exec(ctx, "TRUNCATE TABLE {db}.coverage", "TRUNCATE TABLE {db}.station_coverage"); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.coverageBackfill(ctx, time.Time{}); err != nil {
@@ -393,7 +542,7 @@ func TestCoverageFromClickHouse(t *testing.T) {
 
 	// With the record cleared too, a backfill since the second day bins only it, as the map's window is binned
 	// before the rest, and a backfill of everything then adds the first.
-	if err := conn.conn.Exec(ctx, "TRUNCATE TABLE "+db+".coverage_backfilled"); err != nil {
+	if err := conn.exec(ctx, "TRUNCATE TABLE {db}.coverage_backfilled", "TRUNCATE TABLE {db}.station_coverage_backfilled"); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.coverageBackfill(ctx, day2); err != nil {
@@ -408,9 +557,10 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	check("after the rest is backfilled")
 }
 
-// A database at step 9 has coverage without stations and a view that does not fill them. Steps 10 to 12 add the
-// column, point the view at it, and clear the backfill's record, so the backfill bins the old days again with
-// their stations and new receptions arrive with theirs.
+// A database at step 9 has coverage without stations and a view that does not fill them, and no
+// station_coverage. Steps 10 to 12 add the column, point the view at it, and clear the backfill's record, so the
+// backfill bins the old days again with their stations and new receptions arrive with theirs. Steps 15 to 17 add
+// station_coverage, which the backfill bins from the same receptions and the network map then reads.
 func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	url := os.Getenv("CLICKHOUSE_TEST_URL")
 	if url == "" {
@@ -433,6 +583,9 @@ func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	if err := conn.exec(ctx,
 		"DROP VIEW {db}.coverage_mv",
 		"DROP TABLE {db}.coverage",
+		"DROP VIEW {db}.station_coverage_mv",
+		"DROP TABLE {db}.station_coverage",
+		"DROP TABLE {db}.station_coverage_backfilled",
 		step9Table,
 		"CREATE MATERIALIZED VIEW {db}.coverage_mv TO {db}.coverage AS "+step9Select,
 		"ALTER TABLE {db}.schema_migrations DELETE WHERE version > 9 SETTINGS mutations_sync = 2",
@@ -452,18 +605,24 @@ func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	if err := conn.exec(ctx, "INSERT INTO {db}.coverage_backfilled VALUES ('"+day.Format("2006-01-02")+"')"); err != nil {
 		t.Fatal(err)
 	}
-	oslo := func() covRow {
+	// coverage, read as a server rolled back to it does, and the network map's cells from station_coverage
+	oslo := func() (coverage, network covRow) {
 		t.Helper()
-		var got covRow
+		var stations uint64
+		if err := conn.conn.QueryRow(ctx, "SELECT uniqExactMerge(vessels), uniqExactMerge(stations) FROM "+db+".coverage WHERE res = 6 AND cell = ? AND day = ?",
+			osloRes6, day).Scan(&coverage.vessels, &stations); err != nil {
+			t.Fatal(err)
+		}
+		coverage.stations = int(stations)
 		if err := conn.coverageCells(ctx, day, day, func(r covRow) error {
 			if r.cell == osloRes6 {
-				got = r
+				network = r
 			}
 			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		return got
+		return coverage, network
 	}
 
 	conn.conn.Close()
@@ -473,13 +632,258 @@ func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	if err := conn.coverageBackfill(ctx, day); err != nil {
 		t.Fatal(err)
 	}
-	if r := oslo(); r.vessels != 2 || r.stations != 2 {
-		t.Errorf("after steps 10 to 12 and the backfill Oslo is %+v, want 2 vessels from 2 stations", r)
+	if c, n := oslo(); c.vessels != 2 || c.stations != 2 || n.vessels != 2 || n.stations != 2 {
+		t.Errorf("after steps 10 to 17 and the backfill Oslo is %+v in coverage and %+v on the map, want 2 vessels from 2 stations", c, n)
 	}
 	if err := conn.insert(ctx, "new", []trackPoint{at(3, "udp", "udp:b", day.Add(3*time.Hour))}); err != nil {
 		t.Fatal(err)
 	}
-	if r := oslo(); r.vessels != 3 || r.stations != 3 {
-		t.Errorf("after a reception from a third station Oslo is %+v, want 3 vessels from 3 stations", r)
+	if c, n := oslo(); c.vessels != 3 || c.stations != 3 || n.vessels != 3 || n.stations != 3 {
+		t.Errorf("after a reception from a third station Oslo is %+v in coverage and %+v on the map, want 3 vessels from 3 stations", c, n)
+	}
+}
+
+// chStationKey keeps a station whole, a slash in a token's subject or a feed's receiver included, and folds a
+// volunteer's TAG stream away only from receptions written before ingest kept them under the receiver.
+func TestStationKey(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.conn.Close()
+	before, after := "2026-10-05 15:29:59.999", "2026-10-05 15:30:00.000"
+	for _, c := range []struct{ source, station, ts, want string }{
+		{"station", "station:mmsi:368168720/n2k", before, "station:mmsi:368168720"},
+		{"udp", "udp:1.2.3.4/ch", before, "udp:1.2.3.4"},
+		{"station", "station:harbor/east", after, "station:harbor/east"},
+		{"station", "station:harbor", before, "station:harbor"},
+		{"kystverket", "kystverket/2573010", before, "kystverket/2573010"},
+		{"barentswatch", "barentswatch/terra", after, "barentswatch/terra"},
+	} {
+		var got string
+		if err := conn.conn.QueryRow(ctx, "SELECT "+chStationKey+" FROM (SELECT ? AS source, ? AS station, toDateTime64(?, 3, 'UTC') AS ts)",
+			c.source, c.station, c.ts).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Errorf("%s %s at %s: %q, want %q", c.source, c.station, c.ts, got, c.want)
+		}
+	}
+	// The view's own query, where the folded station is aliased to the column it folds and grouped by.
+	row := "(SELECT toUInt32(1) AS mmsi, toDateTime64('" + before + "', 3, 'UTC') AS ts, toInt32(36000000) AS lat6, toInt32(6000000) AS lon6," +
+		" 'station' AS source, 'station:a/n2k' AS station, false AS implausible, false AS clock_bad)"
+	q := chStationCoverageSelect(row, chUsable)
+	got, err := chColumn[string](ctx, conn.conn, "SELECT DISTINCT station FROM ("+q[:strings.LastIndex(q, "SETTINGS")]+") SETTINGS geotoh3_argument_order = 'lat_lon'")
+	if err != nil || !slices.Equal(got, []string{"station:a"}) {
+		t.Errorf("the view bins a stream from before the cutoff as %v, %v; want station:a", got, err)
+	}
+}
+
+// square is a cell outline a hundredth of a degree across at lat, lon, in coverageCells' order.
+func square(lat, lon float64) ([]float64, []float64) {
+	return []float64{lat, lat - 0.01, lat - 0.01, lat}, []float64{lon, lon, lon + 0.01, lon + 0.01}
+}
+
+// A station's TileJSON bounds take in every cell, since a map requests no tiles past them, and its fit leaves out
+// the few farthest.
+func TestCoverageStationBounds(t *testing.T) {
+	var cells []covRow
+	for i := range 40 {
+		lats, lons := square(59.9, 10.5+float64(i)*0.01)
+		cells = append(cells, covRow{res: 6, cell: uint64(i + 1), vessels: 1, days: 1, lats: lats, lons: lons})
+	}
+	lats, lons := square(55.7, 12.6) // Copenhagen, once
+	cells = append(cells, covRow{res: 6, cell: 99, vessels: 1, days: 1, lats: lats, lons: lons})
+	// and a cell half a degree wide, the farthest east, which bounds take in whole whatever the others' sizes
+	cells = append(cells, covRow{res: 6, cell: 98, vessels: 1, days: 1, lats: []float64{70.0, 69.9, 69.9, 70.0}, lons: []float64{20.0, 20.0, 20.5, 20.5}})
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: cells, stations: map[string][]covRow{"station:roving": cells}}
+	p := coveragePipeline(t, f)
+	w := httptest.NewRecorder()
+	httpHandler(p).ServeHTTP(w, httptest.NewRequest("GET", "/v1/coverage/tiles.json?station=station:roving", nil))
+	var tj struct{ Bounds, Fit []float64 }
+	if err := json.Unmarshal(w.Body.Bytes(), &tj); err != nil || w.Code != 200 {
+		t.Fatalf("%d %v: %s", w.Code, err, w.Body)
+	}
+	if b := tj.Bounds; len(b) != 4 || b[1] > 55.7 || b[2] < 20.49 || b[0] > 10.5 || b[3] < 69.99 {
+		t.Errorf("bounds %v leave out a cell the tiles draw", b)
+	}
+	if b := tj.Fit; len(b) != 4 || b[1] < 59 || b[0] > 10.6 || b[2] < 10.85 || b[2] > 11 || b[3] > 60 {
+		t.Errorf("fit %v, want the Oslo cells without Copenhagen", b)
+	}
+	w = httptest.NewRecorder()
+	httpHandler(p).ServeHTTP(w, httptest.NewRequest("GET", "/v1/coverage/tiles.json", nil))
+	if strings.Contains(w.Body.String(), `"fit"`) {
+		t.Errorf("the network's TileJSON has a fit: %s", w.Body)
+	}
+}
+
+// One station's load, however slow, leaves stations already loaded and ids no station has answering, and a
+// request waiting behind it gives up when its client does.
+func TestCoverageStationLoadBlocksNoOne(t *testing.T) {
+	row := covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: []covRow{row},
+		stations: map[string][]covRow{"station:a": {row}, "station:slow": {row}, "station:next": {row}}}
+	p := coveragePipeline(t, f)
+	h := httpHandler(p)
+	get := func(ctx context.Context, station string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/coverage/tiles/0/0/0?station="+station, nil).WithContext(ctx))
+		return w.Code
+	}
+	if code := get(context.Background(), "station:a"); code != 200 {
+		t.Fatalf("station:a: %d", code)
+	}
+	f.loading, f.release = make(chan string), make(chan struct{})
+	done := make(chan int)
+	go func() { done <- get(context.Background(), "station:slow") }()
+	<-f.loading // the slow load has started and holds the loader
+	answered := make(chan [2]int)
+	go func() {
+		answered <- [2]int{get(context.Background(), "station:a"), get(context.Background(), "station:nobody")}
+	}()
+	select {
+	case codes := <-answered:
+		if codes != [2]int{200, 404} {
+			t.Errorf("cached and unknown stations answered %v, want 200 and 404", codes)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cached or unknown station waited on another station's load")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	waited := make(chan int)
+	go func() { waited <- get(ctx, "station:next") }()
+	cancel()
+	select {
+	case code := <-waited:
+		if code == 200 {
+			t.Errorf("a request its client gave up on loaded anyway")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a request waiting for the loader kept waiting after its client left")
+	}
+	close(f.release)
+	if code := <-done; code != 200 {
+		t.Errorf("the slow station: %d", code)
+	}
+}
+
+// Stations' tiles are cached apart from the network's, and the cells kept for stations are bounded by size, a
+// multiple of the network's, so a station walked past is loaded again rather than held.
+func TestCoverageStationCaches(t *testing.T) {
+	row := covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)
+	three := []covRow{row, covRowOf(t, 6, osloRes6, 3, 1, osloRes6Outline), covRowOf(t, 3, beringRes3, 1, 1, beringOutline)}
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: []covRow{row},
+		stations: map[string][]covRow{"station:a": three, "station:b": three, "station:big": append(slices.Clone(three), three...)}}
+	p := coveragePipeline(t, f)
+	h := httpHandler(p)
+	get := func(path string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 200 {
+			t.Fatalf("%s: %d", path, w.Code)
+		}
+	}
+	get("/v1/coverage/tiles/0/0/0")
+	get("/v1/coverage/tiles/0/0/0?station=station:a")
+	if len(p.coverage.tiles.m) != 1 || len(p.coverage.stationTiles.m) != 1 {
+		t.Errorf("%d network and %d station tiles cached, want one each", len(p.coverage.tiles.m), len(p.coverage.stationTiles.m))
+	}
+	// The network holds 1 cell, so stations may hold 4: b's 3 leave no room for a's.
+	get("/v1/coverage/tiles/0/0/0?station=station:b")
+	get("/v1/coverage/tiles/0/0/0?station=station:a")
+	if f.stationLoads != 3 || len(p.coverage.stations) != 1 {
+		t.Errorf("%d loads with %d stations held, want a loaded again after b took its room", f.stationLoads, len(p.coverage.stations))
+	}
+	// A station past the bound on its own, as a feed can be when ClickHouse holds more than the network's load, is
+	// kept alone, so its tiles do not each load it again.
+	get("/v1/coverage/tiles/0/0/0?station=station:big")
+	get("/v1/coverage/tiles/1/1/0?station=station:big")
+	if _, held := p.coverage.stations["station:big"]; !held || len(p.coverage.stations) != 1 || f.stationLoads != 4 {
+		t.Errorf("a station of 6 cells against a bound of 4: held %v with %d others, %d loads", held, len(p.coverage.stations)-1, f.stationLoads)
+	}
+	// a, dropped for big, loads again and finds its tile already built for this network load.
+	tiles := len(p.coverage.stationTiles.m)
+	get("/v1/coverage/tiles/0/0/0?station=station:a")
+	if f.stationLoads != 5 || len(p.coverage.stationTiles.m) != tiles {
+		t.Errorf("a reloaded station built its tile again: %d loads, %d tiles cached, was %d", f.stationLoads, len(p.coverage.stationTiles.m), tiles)
+	}
+}
+
+// A backfill's day and a rebuild wait for each other, so a backfill that read a day before a reload changed it
+// cannot insert after the reload's rebuild and put its old cells back.
+func TestCoverageBackfillWaitsForARebuild(t *testing.T) {
+	url := os.Getenv("CLICKHOUSE_TEST_URL")
+	if url == "" {
+		t.Skip("CLICKHOUSE_TEST_URL is not set")
+	}
+	ctx := context.Background()
+	db := fmt.Sprintf("aiscast_test_%d", time.Now().UnixNano())
+	conn, err := openClickHouse(ctx, strings.TrimRight(url, "/")+"/"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.conn.Exec(context.Background(), "DROP DATABASE "+db); conn.conn.Close() })
+	day := time.Now().UTC().Truncate(24 * time.Hour)
+	for name, run := range map[string]func() error{
+		"backfill": func() error { return conn.coverageBackfill(ctx, day) },
+		"rebuild":  func() error { return conn.rebuildCoverage(ctx, day) },
+	} {
+		coverageBinning.Lock() // as a rebuild or a backfill's day in progress
+		done := make(chan error, 1)
+		go func() { done <- run() }()
+		var err error
+		select {
+		case err = <-done:
+			t.Errorf("%s ran while another held the day", name)
+		case <-time.After(500 * time.Millisecond):
+			coverageBinning.Unlock()
+			err = <-done
+			coverageBinning.Lock()
+		}
+		coverageBinning.Unlock()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if name == "backfill" {
+			conn.exec(ctx, "TRUNCATE TABLE {db}.station_coverage_backfilled", "TRUNCATE TABLE {db}.coverage_backfilled")
+		}
+	}
+}
+
+// A listed station whose load comes back empty, as while a rebuild has deleted its day and not yet binned it,
+// answers 404 that once and is loaded again next time, not held empty until the next network load.
+func TestCoverageStationEmptyLoadIsNotKept(t *testing.T) {
+	row := covRowOf(t, 3, osloRes3, 6, 1, osloRes3Outline)
+	f := &fakeCoverageSource{days: []string{"2026-09-29"}, cells: []covRow{row}, stations: map[string][]covRow{"station:a": {row}}}
+	p := coveragePipeline(t, f)
+	f.stations["station:a"] = nil // the day deleted and not yet binned again, after the network load listed it
+	h := httpHandler(p)
+	get := func() int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/coverage/tiles/0/0/0?station=station:a", nil))
+		return w.Code
+	}
+	if code := get(); code != 404 {
+		t.Fatalf("during the rebuild: %d", code)
+	}
+	f.stations["station:a"] = []covRow{row}
+	if code := get(); code != 200 {
+		t.Errorf("after the rebuild: %d, want the station's cells", code)
+	}
+}
+
+// A day's binning runs past the driver's five-minute read timeout only under a context deadline, which overrides
+// it; without one, a busy day fails at five minutes and its backfill retries it forever.
+func TestCoverageBinningOutlastsTheReadTimeout(t *testing.T) {
+	ctx, cancel := chBinning(context.Background())
+	defer cancel()
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < 30*time.Minute {
+		t.Errorf("binning deadline %v, %v; want one well past the driver's five minutes", deadline, ok)
 	}
 }
