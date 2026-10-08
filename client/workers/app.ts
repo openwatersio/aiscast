@@ -1,6 +1,7 @@
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { serverEnv } from "../app/lib/context";
 import { edgeCached, isSharedPage, pageCacheKey } from "../app/lib/edge.server";
+import { stationCardPath } from "../app/lib/ais";
 import { stationCard, stationCardId } from "../app/lib/shareCard.server";
 import { isSitemap, sitemap } from "../app/lib/sitemap.server";
 import { visitorMeta } from "../app/lib/visitor";
@@ -78,7 +79,9 @@ export default {
     }
     const card = stationCardId(url.pathname);
     if (card != null) {
-      return notGet(request) ?? edgeCached(cache, bare, CARD_TTLS, waitUntil, () => stationCard(auth, card));
+      // Keyed by the id, so every spelling of one station's path shares one card.
+      const key = `${url.origin}/ais${stationCardPath(card)}`;
+      return notGet(request) ?? edgeCached(cache, key, CARD_TTLS, waitUntil, () => stationCard(auth, card));
     }
     if (!isSharedPage(request, url)) return withVisitor(await render(), request);
 

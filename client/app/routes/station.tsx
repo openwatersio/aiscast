@@ -17,6 +17,7 @@ import {
   isVolunteer,
   shipClass,
   shortAge,
+  stationCardPath,
   stationStatus,
   stationName,
   stationTitle,
@@ -66,7 +67,7 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
     path: st ? `/stations/${id}` : undefined,
     noindex: !st,
     // Drawn by the Worker (lib/shareCard.server.tsx).
-    ...(st ? { image: `${SITE}/stations/${id.split("/").map(encodeURIComponent).join("/")}.png` } : {}),
+    ...(st ? { image: `${SITE}${stationCardPath(id)}` } : {}),
   });
 }
 

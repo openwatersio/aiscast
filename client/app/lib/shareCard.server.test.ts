@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// workers-og answers at once and renders into the body. This one fails partway, as a render can.
+vi.mock("workers-og", () => ({
+  ImageResponse: class extends Response {
+    constructor() {
+      super(new ReadableStream({ pull: (c) => c.error(new Error("render failed")) }), { headers: { "content-type": "image/png" } });
+    }
+  },
+}));
+import { stationCardPath } from "./ais";
 import type { Station } from "./api";
-import { stationCard, stationCardId, stationCardProps } from "./shareCard.server";
+import { shareCard, stationCard, stationCardId, stationCardProps } from "./shareCard.server";
 
 const station = (over: Partial<Station>): Station => ({
   station: "station:abc",
@@ -58,5 +68,23 @@ describe("station cards", () => {
     const res = await stationCard({ api: "https://api.test" }, "station:mmsi:368168720/n2k");
     expect(res.status).toBe(301);
     expect(res.headers.get("location")).toBe("/ais/stations/station:mmsi:368168720.png");
+  });
+  it("share one path, and one cache entry, whatever spelling of the id asked for it", () => {
+    for (const path of ["/ais/stations/digitraffic.png", "/ais/stations/%64igitraffic.png"]) {
+      expect(stationCardPath(stationCardId(path)!)).toBe("/stations/digitraffic.png");
+    }
+    expect(stationCardPath("station:ed25519:a/b c")).toBe("/stations/station%3Aed25519%3Aa/b%20c.png");
+  });
+
+  it("never ask the API for a path that leaves the station's", async () => {
+    const fetch = vi.fn(async () => Response.json({}));
+    vi.stubGlobal("fetch", fetch);
+    const id = stationCardId("/ais/stations/..%2F..%2Fv1%2Fvessels.png")!;
+    expect(id).toBe("../../v1/vessels");
+    expect((await stationCard({ api: "https://api.test" }, id)).status).toBe(404);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("fail when the render fails, rather than answer 200 with a broken image", async () => {
+    await expect(shareCard({ title: "Harbor Light", stats: [] })).rejects.toThrow("render failed");
   });
 });

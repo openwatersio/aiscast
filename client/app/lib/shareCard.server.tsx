@@ -88,14 +88,18 @@ const FONTS = [
 /**
  * The card as a 1200×630 PNG. The renderer and its wasm load only when a card is asked for. workers-og
  * initializes its wasm on every render and logs "Already initialized" past the first, which is harmless.
+ *
+ * workers-og answers 200 at once and renders into the body, so a render that fails would go out as a
+ * 200 with a broken image, which crawlers keep. The card is read whole first, so a failure throws.
  */
 export async function shareCard(props: ShareCardProps): Promise<Response> {
   const { ImageResponse } = await import("workers-og");
-  return new ImageResponse(<ShareCard {...props} />, {
+  const rendering = new ImageResponse(<ShareCard {...props} />, {
     width: 1200,
     height: 630,
     fonts: FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const })),
   });
+  return new Response(await rendering.arrayBuffer(), { headers: { "content-type": "image/png" } });
 }
 
 /** `/ais/stations/<id>.png`, a station's card, answers with the id; any other path with undefined. */
