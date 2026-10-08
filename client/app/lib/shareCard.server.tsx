@@ -3,8 +3,9 @@ import interBoldExt from "@fontsource/inter/files/inter-latin-ext-700-normal.wof
 import interRegular from "@fontsource/inter/files/inter-latin-400-normal.woff?inline";
 import interRegularExt from "@fontsource/inter/files/inter-latin-ext-400-normal.woff?inline";
 import shareMap from "../assets/share-map.jpg?inline";
-import { isVolunteer, stationTitle, volunteerReceiver } from "./ais";
-import { ApiUnavailable, getStation, type ApiAuth, type Station } from "./api";
+import { isVolunteer, stationCardPath, stationTitle, volunteerReceiver } from "./ais";
+import { getStations, type ApiAuth, type Station } from "./api";
+import { edgeCached, notGetOrHead } from "./edge.server";
 
 /**
  * The image a shared link unfurls with, in the layout of the network's own card: a title, a line
@@ -86,20 +87,32 @@ const FONTS = [
 ] as const;
 
 /**
+ * Renders run one at a time in an isolate. workers-og sets up its wasm on every render, checking
+ * whether it already has only after an await, so two renders at once can race that setup.
+ */
+let rendering: Promise<unknown> = Promise.resolve();
+
+/** workers-og, imported once an isolate first draws a card. */
+let renderer: Promise<typeof import("workers-og")> | undefined;
+
+/**
  * The card as a 1200×630 PNG. The renderer and its wasm load only when a card is asked for. workers-og
- * initializes its wasm on every render and logs "Already initialized" past the first, which is harmless.
+ * logs "Already initialized" on every render past the first, which is harmless.
  *
  * workers-og answers 200 at once and renders into the body, so a render that fails would go out as a
  * 200 with a broken image, which crawlers keep. The card is read whole first, so a failure throws.
  */
 export async function shareCard(props: ShareCardProps): Promise<Response> {
-  const { ImageResponse } = await import("workers-og");
-  const rendering = new ImageResponse(<ShareCard {...props} />, {
-    width: 1200,
-    height: 630,
-    fonts: FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const })),
-  });
-  return new Response(await rendering.arrayBuffer(), { headers: { "content-type": "image/png" } });
+  const { ImageResponse } = await (renderer ??= import("workers-og"));
+  const png = rendering.then(() =>
+    new ImageResponse(<ShareCard {...props} />, {
+      width: 1200,
+      height: 630,
+      fonts: FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const })),
+    }).arrayBuffer(),
+  );
+  rendering = png.catch(() => undefined);
+  return new Response(await png, { headers: { "content-type": "image/png" } });
 }
 
 /** `/ais/stations/<id>.png`, a station's card, answers with the id; any other path with undefined. */
@@ -131,18 +144,39 @@ export function stationCardProps(st: Station): ShareCardProps {
   };
 }
 
-/** The station's card, a 404 for a station the API does not know, or a 503 when it cannot say. */
+/**
+ * The station's card, a 404 for a station the API does not know, or a 503 when it cannot say. The
+ * station comes from the list, a few KB, rather than its own answer, which carries every vessel it
+ * last heard: 18 MB for AISHub.
+ */
 export async function stationCard(auth: ApiAuth, id: string): Promise<Response> {
   // A receiver's tagged path is the receiver, as its page redirects.
   const receiver = volunteerReceiver(id);
   if (receiver) return new Response(null, { status: 301, headers: { Location: `/ais/stations/${receiver}.png` } });
-  let found;
-  try {
-    found = await getStation(auth, id);
-  } catch (e) {
-    if (e instanceof ApiUnavailable) return new Response("The AIS API is unavailable", { status: 503, headers: { "retry-after": "60" } });
-    throw e;
-  }
-  if (!found) return new Response("Not found", { status: 404 });
-  return shareCard(stationCardProps(found.station));
+  const stations = await getStations(auth);
+  if (!stations) return new Response("The AIS API is unavailable", { status: 503, headers: { "retry-after": "60" } });
+  const st = stations.find((s) => s.station === id);
+  if (!st) return new Response("Not found", { status: 404 });
+  return shareCard(stationCardProps(st));
+}
+
+/** A card's numbers cover 24 hours, so an hour old is fresh enough for a link preview. */
+const CARD_TTLS = { 200: 3600, 301: 3600, 404: 300 };
+
+/**
+ * The answer to `/ais/stations/<id>.png`, or undefined for any other path. A card is kept at the
+ * edge by its station's id, so every spelling of one station's path shares one card and one render.
+ */
+export function serveStationCard(
+  request: Request,
+  url: URL,
+  auth: ApiAuth,
+  cache: Cache,
+  waitUntil: (p: Promise<unknown>) => void,
+): Promise<Response> | undefined {
+  const id = stationCardId(url.pathname);
+  if (id == null) return undefined;
+  const refused = notGetOrHead(request);
+  if (refused) return Promise.resolve(refused);
+  return edgeCached(cache, `${url.origin}/ais${stationCardPath(id)}`, CARD_TTLS, waitUntil, () => stationCard(auth, id));
 }

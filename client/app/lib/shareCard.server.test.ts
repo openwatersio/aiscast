@@ -1,16 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// workers-og answers at once and renders into the body. This one fails partway, as a render can.
+// workers-og answers at once and renders into the body. This one renders for a few milliseconds and
+// counts the renders in progress, or fails partway, as a render can.
+const og = vi.hoisted(() => ({ fail: false, active: 0, most: 0 }));
 vi.mock("workers-og", () => ({
   ImageResponse: class extends Response {
     constructor() {
-      super(new ReadableStream({ pull: (c) => c.error(new Error("render failed")) }), { headers: { "content-type": "image/png" } });
+      og.most = Math.max(og.most, ++og.active);
+      super(
+        new ReadableStream({
+          pull: async (c) => {
+            await new Promise((r) => setTimeout(r, 5));
+            og.active--;
+            if (og.fail) return c.error(new Error("render failed"));
+            c.enqueue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+            c.close();
+          },
+        }),
+        { headers: { "content-type": "image/png" } },
+      );
     }
   },
 }));
 import { stationCardPath } from "./ais";
-import type { Station } from "./api";
-import { shareCard, stationCard, stationCardId, stationCardProps } from "./shareCard.server";
+import { getStation, type Station } from "./api";
+import { serveStationCard, shareCard, stationCard, stationCardId, stationCardProps } from "./shareCard.server";
 
 const station = (over: Partial<Station>): Station => ({
   station: "station:abc",
@@ -25,7 +39,10 @@ const station = (over: Partial<Station>): Station => ({
   ...over,
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  Object.assign(og, { fail: false, active: 0, most: 0 });
+});
 
 describe("station cards", () => {
   it("are a station's address with .png, whatever its id holds", () => {
@@ -58,10 +75,17 @@ describe("station cards", () => {
 
   it("are a 404 for a station the API does not know, and a 503 when it cannot say", async () => {
     const auth = { api: "https://api.test" };
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json([station({ station: "digitraffic" })])));
     expect((await stationCard(auth, "nowhere/0")).status).toBe(404);
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 502 })));
     expect((await stationCard(auth, "digitraffic")).status).toBe(503);
+  });
+
+  it("read the station from the list, not its own answer with every vessel it last heard", async () => {
+    const api = vi.fn(async (_url: string) => Response.json([station({ station: "aishub", source: "aishub" })]));
+    vi.stubGlobal("fetch", api);
+    expect((await stationCard({ api: "https://api.test" }, "aishub")).status).toBe(200);
+    expect(api.mock.calls.map(([url]) => url)).toEqual(["https://api.test/v1/stations"]);
   });
 
   it("send a receiver's tagged path to the receiver's card, as its page does", async () => {
@@ -81,10 +105,71 @@ describe("station cards", () => {
     vi.stubGlobal("fetch", fetch);
     const id = stationCardId("/ais/stations/..%2F..%2Fv1%2Fvessels.png")!;
     expect(id).toBe("../../v1/vessels");
-    expect((await stationCard({ api: "https://api.test" }, id)).status).toBe(404);
+    expect(await getStation({ api: "https://api.test" }, id)).toBeUndefined();
     expect(fetch).not.toHaveBeenCalled();
   });
   it("fail when the render fails, rather than answer 200 with a broken image", async () => {
+    og.fail = true;
     await expect(shareCard({ title: "Harbor Light", stats: [] })).rejects.toThrow("render failed");
+  });
+
+  it("render one at a time, since workers-og's wasm setup races", async () => {
+    const cards = await Promise.all(["a", "b", "c"].map((title) => shareCard({ title, stats: [] })));
+    expect(cards.map((c) => c.status)).toEqual([200, 200, 200]);
+    expect(og.most).toBe(1);
+  });
+});
+
+describe("the Worker's station cards", () => {
+  const auth = { api: "https://api.test" };
+  const list = [station({ station: "digitraffic", source: "digitraffic" })];
+
+  /** The edge cache, and the puts waiting on waitUntil. */
+  function edge() {
+    const store = new Map<string, Response>();
+    const pending: Promise<unknown>[] = [];
+    const cache = {
+      match: async (key: string) => store.get(key)?.clone(),
+      put: async (key: string, res: Response) => void store.set(key, res),
+    } as unknown as Cache;
+    return { store, cache, waitUntil: (p: Promise<unknown>) => void pending.push(p), settle: () => Promise.all(pending) };
+  }
+  const ask = (e: ReturnType<typeof edge>, path: string, method = "GET") => {
+    const url = new URL(`https://openwaters.io${path}`);
+    return serveStationCard(new Request(url, { method }), url, auth, e.cache, e.waitUntil);
+  };
+
+  it("answer only card paths", () => {
+    expect(ask(edge(), "/ais/stations/digitraffic")).toBeUndefined();
+    expect(ask(edge(), "/ais/vessels/230000000.png")).toBeUndefined();
+  });
+
+  it("keep one card per station, whichever spelling of its path asked", async () => {
+    const api = vi.fn(async () => Response.json(list));
+    vi.stubGlobal("fetch", api);
+    const e = edge();
+    const first = await ask(e, "/ais/stations/digitraffic.png")!;
+    await e.settle();
+    const again = await ask(e, "/ais/stations/%64igitraffic.png")!;
+    expect([first.status, again.status]).toEqual([200, 200]);
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(og.most).toBe(1);
+    expect([...e.store.keys()]).toEqual(["https://openwaters.io/ais/stations/digitraffic.png"]);
+    expect(first.headers.get("cache-control")).toBe("public, max-age=3600");
+  });
+
+  it("keep a station the API does not know for five minutes, and an outage not at all", async () => {
+    const e = edge();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(list)));
+    expect((await ask(e, "/ais/stations/nowhere.png")!).headers.get("cache-control")).toBe("public, max-age=300");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 502 })));
+    expect((await ask(e, "/ais/stations/digitraffic.png")!).status).toBe(503);
+    await e.settle();
+    expect([...e.store.keys()]).toEqual(["https://openwaters.io/ais/stations/nowhere.png"]);
+  });
+
+  it("refuse methods other than GET and HEAD", async () => {
+    const res = await ask(edge(), "/ais/stations/digitraffic.png", "POST")!;
+    expect([res.status, res.headers.get("allow")]).toEqual([405, "GET, HEAD"]);
   });
 });
