@@ -1,6 +1,6 @@
 package main
 
-// The durable vessel record: one row per MMSI ever heard, in one SQLite file. The cache forgets a vessel
+// The durable vessel record: one row per vessel ever heard, keyed by MMSI, in one SQLite file. The cache forgets a vessel
 // 30 minutes after its last report. The record keeps its last known state, so a lookup by MMSI answers
 // for a boat at its berth and a search finds vessels not heard lately. On boot the cache is filled from
 // the record's last 30 minutes, so the record is the one state that survives a restart.
@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -145,6 +147,17 @@ CREATE TABLE IF NOT EXISTS tc (
 	beam          REAL    NOT NULL DEFAULT 0,
 	depth         REAL    NOT NULL DEFAULT 0,
 	home_port     TEXT    NOT NULL DEFAULT ''
+);
+-- Australian vessels with an IMO from AMSA's list of registered ships, replaced weekly (amsa.go)
+CREATE TABLE IF NOT EXISTS amsa (
+	imo        INTEGER PRIMARY KEY,
+	official   TEXT    NOT NULL DEFAULT '',
+	name       TEXT    NOT NULL DEFAULT '',
+	ship_type  TEXT    NOT NULL DEFAULT '',
+	status     TEXT    NOT NULL DEFAULT '', -- Registered or Provisional
+	year_built INTEGER NOT NULL DEFAULT 0,  -- year of completion
+	length     REAL    NOT NULL DEFAULT 0,  -- metres
+	home_port  TEXT    NOT NULL DEFAULT ''
 );
 -- active FCC ship station licenses with an MMSI, replaced weekly from the ULS bulk files (fcc.go)
 CREATE TABLE IF NOT EXISTS fcc (
@@ -336,6 +349,20 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
+	// The fold and the import skip MMSIs validMMSI rejects; this clears the rows a file already holds under them,
+	// a few range scans of the primary key each boot, any station's own vessel chosen under one, which
+	// decideOwn would otherwise keep until the station sends a valid one, and the station a UDP sender was
+	// relabeled to by claiming one as its own, which merged every sender that claimed it.
+	for _, stmt := range []string{
+		"DELETE FROM vessels WHERE " + invalidMMSIWhere("mmsi"),
+		"UPDATE stations SET own = 0 WHERE own != 0 AND (" + invalidMMSIWhere("own") + ")",
+		"DELETE FROM stations WHERE id GLOB 'mmsi:[0-9]*' AND (" + invalidMMSIWhere("CAST(substr(id, 6) AS INTEGER)") + ")",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	s := &store{db: db, path: path}
 	if s.mirror, err = loadMirror(s); err != nil {
 		db.Close()
@@ -348,6 +375,21 @@ func openStore(path string) (*store, error) {
 const storeConns = 8
 
 func (s *store) close() error { return s.db.Close() }
+
+// invalidMMSIWhere matches the MMSIs in col that validMMSI rejects, spelled from the same tables, in SQL that
+// SQLite and ClickHouse both read.
+func invalidMMSIWhere(col string) string {
+	var or []string
+	for _, r := range invalidMMSIRanges {
+		or = append(or, fmt.Sprintf("%s BETWEEN %d AND %d", col, r[0], r[1]))
+	}
+	defaults := make([]string, 0, len(defaultMMSIs))
+	for _, m := range slices.Sorted(maps.Keys(defaultMMSIs)) { // sorted, so the text is the same each time
+		defaults = append(defaults, strconv.FormatUint(uint64(m), 10))
+	}
+	or = append(or, col+" IN ("+strings.Join(defaults, ", ")+")")
+	return strings.Join(or, " OR ")
+}
 
 // bytes is the size of the database and its write-ahead log on disk.
 func (s *store) bytes() int64 {
@@ -861,21 +903,25 @@ func (p *Pipeline) flushRecord() error {
 			rows = append(rows, record{mmsi: mmsi, v: v.state()})
 		}
 	}
-	p.dirty = make(map[uint32]struct{}, len(rows))
+	p.flushing, p.dirty = p.dirty, make(map[uint32]struct{}, len(rows))
 	p.vmu.Unlock()
 	start := time.Now()
 	err := p.store.upsert(rows)
 	p.store.flushNanos.Add(int64(time.Since(start)))
 	p.store.flushes.Add(1)
+	// One lock for both, so a vessel the flush could not write never leaves the cache's view (resolveIMOs).
+	p.vmu.Lock()
+	p.flushing = nil
 	if err != nil {
 		// Marked again, so the next flush retries: a vessel that never reports again would otherwise keep
 		// a stale row. The retry writes whatever the cache holds by then.
-		p.store.flushFailures.Add(1)
-		p.vmu.Lock()
 		for _, r := range rows {
 			p.dirty[r.mmsi] = struct{}{}
 		}
-		p.vmu.Unlock()
+	}
+	p.vmu.Unlock()
+	if err != nil {
+		p.store.flushFailures.Add(1)
 		return err
 	}
 	p.store.rowsWritten.Add(int64(len(rows)))
@@ -941,4 +987,4 @@ const maxBoxes = 256
 // caller's to narrow, not failed as the record's.
 const maxParams = 32766
 
-var errTooManyTerms = errors.New("too many bbox or mmsi for one request")
+var errTooManyTerms = errors.New("too many bbox, mmsi, or imo for one request")

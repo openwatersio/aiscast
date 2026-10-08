@@ -210,3 +210,26 @@ func BenchmarkStationRows(b *testing.B) {
 	}
 	b.ReportMetric(held, "MB-held")
 }
+
+// A saved station file can hold MMSIs the fold keeps out; restored, they would count as vessels heard and stand as
+// own-ship candidates for another day.
+func TestRestoredStationVesselsLeaveOutInvalidMMSIs(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	for _, m := range []uint32{0, 123456789, 366000001} {
+		p.stations.event(&Event{Station: "s1", Source: "s1", Time: now, MMSI: m})
+	}
+	p.stations.event(&Event{Station: "s1", Source: "s1", Time: now, MMSI: 555555555, Own: true})
+	path := t.TempDir() + "/station-vessels.json"
+	if err := p.stations.saveVessels(path, now); err != nil {
+		t.Fatal(err)
+	}
+	q := testPipeline(t)
+	if err := q.stations.loadVessels(path); err != nil {
+		t.Fatal(err)
+	}
+	m := q.stations.restoredV["s1"]
+	if len(m.V) != 1 || uint32(m.V[0][0]) != 366000001 || len(m.Own) != 0 {
+		t.Errorf("restored %+v, want only 366000001 and no own ship", m)
+	}
+}
