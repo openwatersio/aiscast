@@ -34,9 +34,9 @@ export interface ShareCardProps {
 const COLORS = { panel: "#071421", label: "#60a5fa", title: "#ffffff", subtitle: "#cbd5e1", muted: "#94a3b8" };
 
 /**
- * The title's and subtitle's heights at most: two lines each, so a third, which only the longest
- * names and places need, is cut off rather than run into the numbers. Not lineClamp, which with balanced wrapping cuts a
- * title that fits.
+ * The tallest the title and subtitle may be: two lines each. Only the longest names and places need a
+ * third line, which is cut off rather than allowed to run into the numbers. These are heights rather
+ * than lineClamp, because lineClamp with balanced wrapping cuts off a title that fits in two lines.
  */
 const TITLE_MAX = Math.ceil(78 * 1.08 * 2);
 const SUBTITLE_MAX = Math.ceil(34 * 1.3 * 2);
