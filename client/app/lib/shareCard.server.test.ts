@@ -1,14 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// workers-og answers at once and renders into the body. This one renders a few bytes, or fails
-// partway, as a render can.
-const og = vi.hoisted(() => ({ fail: false }));
+// workers-og answers at once and renders into the body. This one takes a few milliseconds and
+// counts the renders in progress. It can fail partway, as a render can, or never finish, as one
+// whose request was canceled does not.
+const og = vi.hoisted(() => ({ fail: false, hang: false, active: 0, most: 0 }));
 vi.mock("workers-og", () => ({
   ImageResponse: class extends Response {
     constructor() {
+      const hang = og.hang;
+      og.hang = false;
+      og.most = Math.max(og.most, ++og.active);
       super(
         new ReadableStream({
-          pull: (c) => {
+          pull: async (c) => {
+            if (hang) return new Promise(() => {});
+            await new Promise((r) => setTimeout(r, 5));
+            og.active--;
             if (og.fail) return c.error(new Error("render failed"));
             c.enqueue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
             c.close();
@@ -21,7 +28,7 @@ vi.mock("workers-og", () => ({
 }));
 import { stationCardPath } from "./ais";
 import { getStation, type Station } from "./api";
-import { serveStationCard, shareCard, stationCard, stationCardId, stationCardProps } from "./shareCard.server";
+import { RENDER_WAIT_MS, serveStationCard, shareCard, stationCard, stationCardId, stationCardProps } from "./shareCard.server";
 
 const station = (over: Partial<Station>): Station => ({
   station: "station:abc",
@@ -38,7 +45,8 @@ const station = (over: Partial<Station>): Station => ({
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  og.fail = false;
+  vi.useRealTimers();
+  Object.assign(og, { fail: false, hang: false, active: 0, most: 0 });
 });
 
 describe("station cards", () => {
@@ -103,14 +111,42 @@ describe("station cards", () => {
   it("never ask the API for a path that leaves the station's", async () => {
     const fetch = vi.fn(async () => Response.json({}));
     vi.stubGlobal("fetch", fetch);
-    const id = stationCardId("/ais/stations/..%2F..%2Fv1%2Fvessels.png")!;
-    expect(id).toBe("../../v1/vessels");
-    expect(await getStation({ api: "https://api.test" }, id)).toBeUndefined();
+    expect(await getStation({ api: "https://api.test" }, "../../v1/vessels")).toBeUndefined();
+    expect(await getStation({ api: "https://api.test" }, "station:x/./y")).toBeUndefined();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("are not a path whose id holds a dot segment, which would key another station's card", () => {
+    expect(stationCardId("/ais/stations/station%3Ammsi%3A1%2F..%2Fdigitraffic.png")).toBeUndefined();
+    expect(stationCardId("/ais/stations/x%2F..%2F..%2F__edge%2Fdark%2Fvessels%2F1.png")).toBeUndefined();
+    expect(stationCardId("/ais/stations/.%2Fdigitraffic.png")).toBeUndefined();
+    // A dot inside a segment is not one.
+    expect(stationCardId("/ais/stations/a..b.png")).toBe("a..b");
   });
   it("fail when the render fails, rather than answer 200 with a broken image", async () => {
     og.fail = true;
     await expect(shareCard({ title: "Harbor Light", stats: [] })).rejects.toThrow("render failed");
+  });
+
+  it("render one at a time, since overlapping renders can corrupt each other's layout", async () => {
+    const first = shareCard({ title: "a", stats: [] });
+    // Started a moment apart, as requests are, rather than in the same tick.
+    await new Promise((r) => setTimeout(r, 1));
+    const cards = await Promise.all([first, shareCard({ title: "b", stats: [] }), shareCard({ title: "c", stats: [] })]);
+    expect(cards.map((c) => c.status)).toEqual([200, 200, 200]);
+    expect(og.most).toBe(1);
+  });
+
+  it("wait for a render that never finishes only so long", async () => {
+    vi.useFakeTimers();
+    og.hang = true;
+    void shareCard({ title: "canceled", stats: [] });
+    await vi.advanceTimersByTimeAsync(1);
+    const next = shareCard({ title: "next", stats: [] });
+    await vi.advanceTimersByTimeAsync(RENDER_WAIT_MS - 100);
+    expect(og.active).toBe(1); // still waiting its turn
+    await vi.advanceTimersByTimeAsync(200);
+    expect((await next).status).toBe(200);
   });
 });
 
@@ -136,6 +172,8 @@ describe("the Worker's station cards", () => {
   it("answer only card paths", () => {
     expect(ask(edge(), "/ais/stations/digitraffic")).toBeUndefined();
     expect(ask(edge(), "/ais/vessels/230000000.png")).toBeUndefined();
+    // Its key would resolve to Digitraffic's card, so it is the page's to 404.
+    expect(ask(edge(), "/ais/stations/station%3Ammsi%3A1%2F..%2Fdigitraffic.png")).toBeUndefined();
   });
 
   it("keep one card per station, whichever spelling of its path asked", async () => {

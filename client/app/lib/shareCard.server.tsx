@@ -45,7 +45,7 @@ export function ShareCard({ title, subtitle, period, stats }: ShareCardProps) {
       <div style={{ position: "absolute", left: 0, top: 0, width: 1200, height: 630, backgroundImage: FADE }} />
       <div style={{ display: "flex", flexDirection: "column", width: TEXT + 70, height: "100%", padding: "84px 0 60px 70px" }}>
         <div style={{ display: "flex", color: COLORS.label, fontSize: 26, fontWeight: 700, letterSpacing: 4 }}>OPEN WATERS AIS</div>
-        <div style={{ display: "block", marginTop: 26, color: COLORS.title, fontSize: 78, fontWeight: 700, lineHeight: 1.08, lineClamp: 2, letterSpacing: -1 }}>
+        <div style={{ display: "block", marginTop: 26, color: COLORS.title, fontSize: 78, fontWeight: 700, lineHeight: 1.08, lineClamp: 2, letterSpacing: -1, wordBreak: "break-word" }}>
           {title}
         </div>
         {subtitle && (
@@ -87,31 +87,60 @@ const FONTS = [
 ] as const;
 
 /**
+ * The last render to start, settled by the request that started it when that render is done.
+ * workers-og swaps in a fresh layout engine on every render and satori looks it up again at each
+ * node, so a render that starts while another waits on an image can corrupt the other's layout.
+ * Each render waits for the one before, for RENDER_WAIT_MS at most: a request canceled mid-render
+ * never settles its turn, and the next card must not hang on it.
+ */
+let turn: Promise<void> = Promise.resolve();
+export const RENDER_WAIT_MS = 5000;
+
+/** workers-og, imported when an isolate first draws a card. An import settles without any request's I/O. */
+let renderer: Promise<typeof import("workers-og")> | undefined;
+
+/**
  * The card as a 1200×630 PNG. The renderer and its wasm load only when a card is asked for. workers-og
- * logs "Already initialized" on every render past the first, which is harmless.
+ * logs "init RESVG" and "Already initialized" on every render, which is harmless.
  *
  * workers-og answers 200 at once and renders into the body, so a render that fails would go out as a
  * 200 with a broken image, which crawlers keep. The card is read whole first, so a failure throws.
  */
 export async function shareCard(props: ShareCardProps): Promise<Response> {
-  const { ImageResponse } = await import("workers-og");
-  const rendering = new ImageResponse(<ShareCard {...props} />, {
-    width: 1200,
-    height: 630,
-    fonts: FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const })),
-  });
-  return new Response(await rendering.arrayBuffer(), { headers: { "content-type": "image/png" } });
+  const { ImageResponse } = await (renderer ??= import("workers-og"));
+  const before = turn;
+  let done!: () => void;
+  turn = new Promise((resolve) => (done = resolve));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([before, new Promise((resolve) => (timer = setTimeout(resolve, RENDER_WAIT_MS)))]);
+  clearTimeout(timer);
+  try {
+    const rendering = new ImageResponse(<ShareCard {...props} />, {
+      width: 1200,
+      height: 630,
+      fonts: FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const })),
+    });
+    return new Response(await rendering.arrayBuffer(), { headers: { "content-type": "image/png" } });
+  } finally {
+    done();
+  }
 }
 
-/** `/ais/stations/<id>.png`, a station's card, answers with the id; any other path with undefined. */
+/**
+ * `/ais/stations/<id>.png`, a station's card, answers with the id; any other path with undefined.
+ * An id with a "." or ".." segment, which "%2F" can spell, is not a card: its cache key would resolve
+ * to another station's, or out of the cards altogether. No station id has one.
+ */
 export function stationCardId(pathname: string): string | undefined {
   const m = /^\/ais\/stations\/(.+)\.png$/.exec(pathname);
   if (!m) return undefined;
+  let id: string;
   try {
-    return decodeURIComponent(m[1]!);
+    id = decodeURIComponent(m[1]!);
   } catch {
     return undefined;
   }
+  return id.split("/").some((s) => s === "." || s === "..") ? undefined : id;
 }
 
 const n = (v: number) => v.toLocaleString("en-US");
