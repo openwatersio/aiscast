@@ -99,6 +99,9 @@ export const RENDER_WAIT_MS = 5000;
 /** workers-og, imported when an isolate first draws a card. An import settles without any request's I/O. */
 let renderer: Promise<typeof import("workers-og")> | undefined;
 
+/** The fonts' bytes, decoded when an isolate first draws a card rather than for every card. */
+let fonts: Array<{ name: string; data: ArrayBuffer; weight: 400 | 700; style: "normal" }> | undefined;
+
 /**
  * The card as a 1200×630 PNG. The renderer and its wasm load only when a card is asked for. workers-og
  * logs "init RESVG" and "Already initialized" on every render, which is harmless.
@@ -118,7 +121,7 @@ export async function shareCard(props: ShareCardProps): Promise<Response> {
     const rendering = new ImageResponse(<ShareCard {...props} />, {
       width: 1200,
       height: 630,
-      fonts: FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const })),
+      fonts: (fonts ??= FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const }))),
     });
     return new Response(await rendering.arrayBuffer(), { headers: { "content-type": "image/png" } });
   } finally {
