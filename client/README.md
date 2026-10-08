@@ -54,7 +54,7 @@ The drawing in [components/ui/ShipDiagram.tsx](app/components/ui/ShipDiagram.tsx
 
 ## Share cards
 
-`/ais/stations/<id>.png` is a station's link preview, a 1200×630 PNG that its page names as `og:image`. It shows the station's title, what it is and where, and its vessels and unique vessels over 24 hours. The Worker answers it before the app, from [lib/shareCard.server.tsx](app/lib/shareCard.server.tsx), with the station's row from `/v1/stations`, and keeps it at the edge for an hour, or five minutes for a station the API does not know, by the station's id, so every spelling of its path shares one card. It renders with workers-og, which loads its wasm only when a card is asked for, in Inter from `@fontsource/inter`, Latin and Latin Extended only, so a name in another script shows as boxes. A page with no card shares the network's.
+`/ais/stations/<id>.png` is a station's link preview, a 1200×630 PNG that its page names as `og:image`. It shows the station's title, what it is and where, and its vessels and unique vessels over 24 hours. The Worker answers it before the app, from [lib/shareCard.server.tsx](app/lib/shareCard.server.tsx), with the station's row from `/v1/stations`, and keeps it at the edge for an hour, or five minutes for a station the API does not know, by the station's id, so every spelling of its path shares one card. No station id ends in `.png`, because the server refuses a token subject that does, so a card's address never shadows a page. It renders with workers-og, which loads its wasm only when a card is asked for, in Inter from `@fontsource/inter`, Latin and Latin Extended only, so a name in another script shows as boxes. A page with no card shares the network's.
 
 ## Tracks
 
