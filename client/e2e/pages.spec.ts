@@ -1,3 +1,4 @@
+import type { APIRequestContext } from "@playwright/test";
 import { vesselPath } from "../app/lib/ais";
 import { namedVessel } from "./data";
 import { expect, test } from "./fixtures";
@@ -8,7 +9,7 @@ test.use({ javaScriptEnabled: false });
 /** An MMSI in no country's range, so no vessel has it. */
 const UNHEARD = 100000001;
 
-test("a vessel page renders the vessel, with its name in the head", async ({ page }) => {
+test("a vessel page renders the vessel, with its name in the head", async ({ page, request }) => {
   const { mmsi, name } = await namedVessel();
   const path = `/ais${vesselPath(mmsi, name)}`;
   const title = `${name} (${mmsi}) live position | Open Waters AIS`;
@@ -27,6 +28,10 @@ test("a vessel page renders the vessel, with its name in the head", async ({ pag
     url: `https://openwaters.io${path}`,
     identifier: expect.arrayContaining([{ "@type": "PropertyValue", propertyID: "MMSI", value: String(mmsi) }]),
   });
+  // Its photo when Wikimedia has one, else its card.
+  const image = await page.locator('meta[property="og:image"]').getAttribute("content");
+  expect(image === `https://openwaters.io/ais/vessels/${mmsi}.png` || image?.startsWith("https://thumb.wikimedia.org/") || image?.startsWith("https://upload.wikimedia.org/")).toBe(true);
+  await expectCard(request, `/ais/vessels/${mmsi}.png`);
   // One heading, the vessel's, in sight: not a fallback with the vessel hidden behind it.
   await expect(page.getByRole("heading", { level: 1, includeHidden: true })).toHaveText([name]);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
@@ -57,12 +62,21 @@ test("an address that is not a vessel is a 404", async ({ page }) => {
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
 });
 
+test("the network and station list pages share their own cards", async ({ page, request }) => {
+  for (const name of ["network", "stations"]) {
+    await page.goto(`/ais/${name}`);
+    await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", `https://openwaters.io/ais/${name}.png`);
+    await expectCard(request, `/ais/${name}.png`);
+  }
+});
+
 test("a station page renders the station, with its id in the head", async ({ page, request }) => {
   const res = await page.goto("/ais/stations/digitraffic");
   expect(res?.status()).toBe(200);
   await expect(page).toHaveTitle("Digitraffic (Finland) receiving station | Open Waters AIS");
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://openwaters.io/ais/stations/digitraffic");
-  await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /^AIS receiving station Digitraffic \(Finland\): [\d,]+ vessels and [\d,]+ messages in 24 hours/);
+  // Without ClickHouse, as this server runs, the station has no vessel counts, so its messages alone.
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /^AIS receiving station Digitraffic \(Finland\): ([\d,]+ vessels? and )?[\d,]+ messages? in 24 hours/);
   await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
   await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://openwaters.io/ais/stations/digitraffic.png");
   const card = await request.get("/ais/stations/digitraffic.png");
@@ -133,3 +147,12 @@ test("old map and station links redirect to where those pages are now", async ({
     expect(location.pathname + location.search, from).toBe(to);
   }
 });
+
+/** A card at `path`: a whole 1200×630 PNG. */
+async function expectCard(request: APIRequestContext, path: string) {
+  const card = await request.get(path);
+  expect(card.status(), path).toBe(200);
+  const png = await card.body();
+  expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
+  expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+}

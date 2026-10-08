@@ -10,7 +10,7 @@ import { browserAuth, getCoverage, getStats, publicApiBase, type ApiAuth } from 
 import { serverEnv } from "../lib/context";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS } from "../lib/links";
 import { useLive } from "../lib/live";
-import { pageMeta } from "../lib/meta";
+import { pageMeta, SITE } from "../lib/meta";
 import type { Route } from "./+types/network";
 
 async function load(auth: ApiAuth) {
@@ -32,6 +32,8 @@ export const meta = () =>
     description:
       "What the Open Waters AIS network is receiving right now and where it hears vessels: a coverage map, sources, message rates, delivery delay, vessels tracked, and stations feeding.",
     path: "/network",
+    // Drawn by the Worker (lib/shareCard.server.tsx).
+    image: `${SITE}/network.png`,
   });
 
 const n = (v: number) => v.toLocaleString("en-US");
