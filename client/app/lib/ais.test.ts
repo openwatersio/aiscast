@@ -8,6 +8,7 @@ import {
   isVolunteer,
   stationName,
   stationStatus,
+  stationDescription,
   stationTitle,
   volunteerReceiver,
   stationTitles,
@@ -565,5 +566,19 @@ describe("trackGap", () => {
     expect(splitTrack(coords, silences(times, trackGap(hour)))).toEqual([coords.slice(0, 3)]);
     expect(splitTrack(coords, silences(times))).toEqual([]);
     expect(trackGap(0)).toBe(TRACK_GAP_MS);
+  });
+});
+
+describe("stationDescription", () => {
+  const st = { vessels: 225, vessels_24h: 645, events: { last_24h: 873404 }, last_age_s: 2 };
+
+  it("counts vessels over the same 24 hours as messages, as the share card does", () => {
+    expect(stationDescription("Near Milazzo, Italy", st)).toMatch(
+      /^AIS receiving station Near Milazzo, Italy: 645 vessels and 873,404 messages in 24 hours, last message /,
+    );
+  });
+
+  it("falls back to the 30-minute count from a server without the 24-hour one", () => {
+    expect(stationDescription("x", { ...st, vessels_24h: undefined })).toContain(": 225 vessels and");
   });
 });
