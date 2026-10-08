@@ -291,7 +291,8 @@ describe("network and station list cards", () => {
     expect(networkCardProps(stats, stations).stats).toEqual([
       { value: "41,234", label: "vessels" },
       { value: "12.3M", label: "messages" },
-      { value: "3", label: "stations" },
+      // The volunteer receivers, as the station list's card counts them.
+      { value: "2", label: "stations" },
     ]);
     // A server without the vessel record has no 24-hour count, so the card leaves it out.
     const bare = { ...stats, vessels: { ...stats.vessels, last_24h: undefined } } as Stats;

@@ -19,7 +19,7 @@ import { edgeCached, notGetOrHead } from "./edge.server";
 
 /**
  * The image a shared link unfurls with, in the layout of the network's own card: a title, a line
- * under it, and up to three numbers. Pages without one share the network's card.
+ * under it, and up to three numbers. Pages without one share the default card, openwaters.io/og/ais.png.
  */
 export interface ShareCardProps {
   title: string;
@@ -30,6 +30,13 @@ export interface ShareCardProps {
 }
 
 const COLORS = { panel: "#071421", label: "#60a5fa", title: "#ffffff", subtitle: "#cbd5e1", muted: "#94a3b8" };
+
+/**
+ * The title's height at most: two lines, so a third, which only a name of the widest letters needs,
+ * is cut off rather than run into the numbers. Not lineClamp, which with balanced wrapping cuts a
+ * title that fits.
+ */
+const TITLE_MAX = Math.ceil(78 * 1.08 * 2);
 
 /** The text column's width: the card's, less its margins, so a title fits on one line. */
 const TEXT = 1060;
@@ -55,7 +62,7 @@ export function ShareCard({ title, subtitle, period, stats }: ShareCardProps) {
       <div style={{ position: "absolute", left: 0, top: 0, width: 1200, height: 630, backgroundImage: FADE }} />
       <div style={{ display: "flex", flexDirection: "column", width: TEXT + 70, height: "100%", padding: "84px 0 60px 70px" }}>
         <div style={{ display: "flex", color: COLORS.label, fontSize: 26, fontWeight: 700, letterSpacing: 4 }}>OPEN WATERS AIS</div>
-        <div style={{ display: "block", marginTop: 26, color: COLORS.title, fontSize: 78, fontWeight: 700, lineHeight: 1.08, letterSpacing: -1, wordBreak: "break-word", textWrap: "balance" }}>
+        <div style={{ display: "block", marginTop: 26, color: COLORS.title, fontSize: 78, fontWeight: 700, lineHeight: 1.08, maxHeight: TITLE_MAX, overflow: "hidden", letterSpacing: -1, wordBreak: "break-word", textWrap: "balance" }}>
           {title}
         </div>
         {subtitle && (
@@ -200,7 +207,7 @@ export function vesselCardMmsi(pathname: string): number | undefined {
 
 const unavailable = () => new Response("The AIS API is unavailable", { status: 503, headers: { "retry-after": "60" } });
 
-/** Facts that hold for the hour a card is kept, so nothing live: its size, then its numbers. */
+/** Facts that hold for the hour a card is kept, so nothing that moves: its size, year built, voyage draught, then its numbers. */
 export function vesselCardProps(p: VesselProps): ShareCardProps {
   const size = vesselDimensions(
     p.to_bow != null ? { toBow: p.to_bow, toStern: p.to_stern ?? 0, toPort: p.to_port ?? 0, toStarboard: p.to_starboard ?? 0 } : undefined,
@@ -237,7 +244,7 @@ export async function vesselCard(auth: ApiAuth, mmsi: number): Promise<Response>
 const DAY_S = 86400;
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
-/** The network's last 24 hours: vessels and messages from its stats, and the stations heard in them. */
+/** The network's last 24 hours: vessels and messages from its stats, and the volunteer stations heard in them. */
 export function networkCardProps(stats: Stats, stations: Station[]): ShareCardProps {
   return {
     title: "Network status",
@@ -246,7 +253,8 @@ export function networkCardProps(stats: Stats, stations: Station[]): ShareCardPr
     stats: [
       ...(stats.vessels.last_24h != null ? [{ value: n(stats.vessels.last_24h), label: "vessels" }] : []),
       { value: compact.format(stats.events.last_24h), label: "messages" },
-      { value: n(stations.filter((s) => s.last_age_s < DAY_S).length), label: "stations" },
+      // Stations are the volunteer receivers, as on the station list's card; feeds are counted there.
+      { value: n(stations.filter((s) => s.last_age_s < DAY_S && isVolunteer(s.source)).length), label: "stations" },
     ],
   };
 }
