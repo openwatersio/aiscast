@@ -283,16 +283,18 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	// A file from before the Wikidata call sign gains the column. While its ships have no call signs, which
-	// is also what a sync by an older build leaves, the sync stamp is cleared so the next hourly check fills
-	// them rather than waiting out the week.
+	// A file from before the Wikidata call sign gains the column. While its ships have no call signs and the
+	// last sync did not record finding none, as before the first sync that reads them or after an older
+	// build's sync in a rollback, the sync stamp is cleared so the next hourly check fills them rather than
+	// waiting out the week.
 	if _, err := db.Exec("ALTER TABLE wikidata ADD COLUMN callsign TEXT NOT NULL DEFAULT ''"); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column") {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if _, err := db.Exec(`DELETE FROM meta WHERE key = 'wikidata_sync' AND EXISTS (SELECT 1 FROM wikidata)
-		AND NOT EXISTS (SELECT 1 FROM wikidata WHERE callsign != '')`); err != nil {
+		AND NOT EXISTS (SELECT 1 FROM wikidata WHERE callsign != '')
+		AND coalesce((SELECT value FROM meta WHERE key = 'wikidata_no_callsigns'), '') != value`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

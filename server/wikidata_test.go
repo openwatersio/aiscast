@@ -393,9 +393,47 @@ func TestOpenStoreAddsWikidataCallSign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.close()
 	if last, _ := st.meta("wikidata_sync"); last != "" {
 		t.Errorf("sync stamp kept after a rollback emptied the call signs: %q", last)
+	}
+	// A sync that found no call signs is not undone at every boot.
+	none := map[uint32]*wikidataShip{}
+	for imo, w := range wantWikidata {
+		c := *w
+		c.CallSign = ""
+		none[imo] = &c
+	}
+	if err := st.replaceWikidata(none, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	st, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last, _ := st.meta("wikidata_sync"); last == "" {
+		t.Error("sync stamp cleared after a sync that found no call signs")
+	}
+	// An older build, rolled back to after that sync, syncs again: the stamp moves and the record of finding
+	// none does not, so rolling forward still fills the call signs within the hour.
+	if _, err := st.db.Exec(`UPDATE meta SET value = '2026-12-01T00:00:00Z' WHERE key = 'wikidata_sync'`); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	st, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	if last, _ := st.meta("wikidata_sync"); last != "" {
+		t.Errorf("sync stamp kept after an older build's sync: %q", last)
+	}
+	// A sync that finds call signs drops the record of finding none.
+	if err := st.replaceWikidata(wantWikidata, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if mark, _ := st.meta("wikidata_no_callsigns"); mark != "" {
+		t.Errorf("record of finding none kept after a sync found call signs: %q", mark)
 	}
 }
 

@@ -494,7 +494,8 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 	if len(ships) == 0 || len(ships) < wikidataMinShips {
 		return fmt.Errorf("found %d ships where at least %d are expected; keeping the stored set", len(ships), wikidataMinShips)
 	}
-	for i, got := range wikidataCounts(ships) {
+	counts := wikidataCounts(ships)
+	for i, got := range counts {
 		if 2*got < have[i] {
 			return fmt.Errorf("found %s on %d ships where %d are stored; keeping the stored set", wikidataFields[i], got, have[i])
 		}
@@ -524,8 +525,18 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 			return err
 		}
 	}
+	stamp := at.Format(time.RFC3339)
 	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('wikidata_sync', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-		at.Format(time.RFC3339)); err != nil {
+		stamp); err != nil {
+		return err
+	}
+	// A sync that found no call signs records its own stamp, so boot can tell it from one by a build that
+	// never read them, which moves the stamp and leaves this alone (store.go).
+	mark, args := `DELETE FROM meta WHERE key = 'wikidata_no_callsigns'`, []any{}
+	if counts[len(counts)-1] == 0 {
+		mark, args = `INSERT INTO meta (key, value) VALUES ('wikidata_no_callsigns', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, []any{stamp}
+	}
+	if _, err := tx.Exec(mark, args...); err != nil {
 		return err
 	}
 	return tx.Commit()
