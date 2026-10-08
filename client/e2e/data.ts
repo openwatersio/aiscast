@@ -1,9 +1,10 @@
 import { createSocket } from "node:dgram";
 import { e2eAuth } from "./auth";
+import { e2ePorts } from "./ports";
 
 /** The e2e server, from e2e/server.sh, and the port it hears volunteer receivers on. */
-export const API = "http://127.0.0.1:8787";
-const UDP_PORT = 8788;
+export const API = `http://127.0.0.1:${e2ePorts().api}`;
+const UDP_PORT = e2ePorts().udp;
 
 /**
  * The Gulf of Finland between Helsinki and Tallinn, the busiest water Digitraffic reports on,

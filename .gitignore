@@ -1,6 +1,6 @@
 .wrangler/
 .env
-.dev.vars
+.dev.vars*
 node_modules/
 signalk-plugin/dist/
 client/build/
