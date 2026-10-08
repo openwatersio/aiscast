@@ -87,15 +87,6 @@ const FONTS = [
 ] as const;
 
 /**
- * Renders run one at a time in an isolate. workers-og sets up its wasm on every render, checking
- * whether it already has only after an await, so two renders at once can race that setup.
- */
-let rendering: Promise<unknown> = Promise.resolve();
-
-/** workers-og, imported once an isolate first draws a card. */
-let renderer: Promise<typeof import("workers-og")> | undefined;
-
-/**
  * The card as a 1200×630 PNG. The renderer and its wasm load only when a card is asked for. workers-og
  * logs "Already initialized" on every render past the first, which is harmless.
  *
@@ -103,16 +94,13 @@ let renderer: Promise<typeof import("workers-og")> | undefined;
  * 200 with a broken image, which crawlers keep. The card is read whole first, so a failure throws.
  */
 export async function shareCard(props: ShareCardProps): Promise<Response> {
-  const { ImageResponse } = await (renderer ??= import("workers-og"));
-  const png = rendering.then(() =>
-    new ImageResponse(<ShareCard {...props} />, {
-      width: 1200,
-      height: 630,
-      fonts: FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const })),
-    }).arrayBuffer(),
-  );
-  rendering = png.catch(() => undefined);
-  return new Response(await png, { headers: { "content-type": "image/png" } });
+  const { ImageResponse } = await import("workers-og");
+  const rendering = new ImageResponse(<ShareCard {...props} />, {
+    width: 1200,
+    height: 630,
+    fonts: FONTS.map((f) => ({ name: "Inter", data: bytes(f.data), weight: f.weight, style: "normal" as const })),
+  });
+  return new Response(await rendering.arrayBuffer(), { headers: { "content-type": "image/png" } });
 }
 
 /** `/ais/stations/<id>.png`, a station's card, answers with the id; any other path with undefined. */
@@ -152,7 +140,7 @@ export function stationCardProps(st: Station): ShareCardProps {
 export async function stationCard(auth: ApiAuth, id: string): Promise<Response> {
   // A receiver's tagged path is the receiver, as its page redirects.
   const receiver = volunteerReceiver(id);
-  if (receiver) return new Response(null, { status: 301, headers: { Location: `/ais/stations/${receiver}.png` } });
+  if (receiver) return new Response(null, { status: 301, headers: { Location: `/ais${stationCardPath(receiver)}` } });
   const stations = await getStations(auth);
   if (!stations) return new Response("The AIS API is unavailable", { status: 503, headers: { "retry-after": "60" } });
   const st = stations.find((s) => s.station === id);
@@ -165,7 +153,7 @@ const CARD_TTLS = { 200: 3600, 301: 3600, 404: 300 };
 
 /**
  * The answer to `/ais/stations/<id>.png`, or undefined for any other path. A card is kept at the
- * edge by its station's id, so every spelling of one station's path shares one card and one render.
+ * edge by its station's id, so every spelling of one station's path shares one card.
  */
 export function serveStationCard(
   request: Request,

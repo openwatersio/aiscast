@@ -1,17 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// workers-og answers at once and renders into the body. This one renders for a few milliseconds and
-// counts the renders in progress, or fails partway, as a render can.
-const og = vi.hoisted(() => ({ fail: false, active: 0, most: 0 }));
+// workers-og answers at once and renders into the body. This one renders a few bytes, or fails
+// partway, as a render can.
+const og = vi.hoisted(() => ({ fail: false }));
 vi.mock("workers-og", () => ({
   ImageResponse: class extends Response {
     constructor() {
-      og.most = Math.max(og.most, ++og.active);
       super(
         new ReadableStream({
-          pull: async (c) => {
-            await new Promise((r) => setTimeout(r, 5));
-            og.active--;
+          pull: (c) => {
             if (og.fail) return c.error(new Error("render failed"));
             c.enqueue(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
             c.close();
@@ -41,7 +38,7 @@ const station = (over: Partial<Station>): Station => ({
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  Object.assign(og, { fail: false, active: 0, most: 0 });
+  og.fail = false;
 });
 
 describe("station cards", () => {
@@ -91,7 +88,10 @@ describe("station cards", () => {
   it("send a receiver's tagged path to the receiver's card, as its page does", async () => {
     const res = await stationCard({ api: "https://api.test" }, "station:mmsi:368168720/n2k");
     expect(res.status).toBe(301);
-    expect(res.headers.get("location")).toBe("/ais/stations/station:mmsi:368168720.png");
+    expect(res.headers.get("location")).toBe("/ais/stations/station%3Ammsi%3A368168720.png");
+    // A receiver's id is encoded, so a "#" or "?" in it stays in the path.
+    const odd = await stationCard({ api: "https://api.test" }, "station:harbor#1/n2k");
+    expect(odd.headers.get("location")).toBe("/ais/stations/station%3Aharbor%231.png");
   });
   it("share one path, and one cache entry, whatever spelling of the id asked for it", () => {
     for (const path of ["/ais/stations/digitraffic.png", "/ais/stations/%64igitraffic.png"]) {
@@ -111,12 +111,6 @@ describe("station cards", () => {
   it("fail when the render fails, rather than answer 200 with a broken image", async () => {
     og.fail = true;
     await expect(shareCard({ title: "Harbor Light", stats: [] })).rejects.toThrow("render failed");
-  });
-
-  it("render one at a time, since workers-og's wasm setup races", async () => {
-    const cards = await Promise.all(["a", "b", "c"].map((title) => shareCard({ title, stats: [] })));
-    expect(cards.map((c) => c.status)).toEqual([200, 200, 200]);
-    expect(og.most).toBe(1);
   });
 });
 
@@ -153,7 +147,6 @@ describe("the Worker's station cards", () => {
     const again = await ask(e, "/ais/stations/%64igitraffic.png")!;
     expect([first.status, again.status]).toEqual([200, 200]);
     expect(api).toHaveBeenCalledTimes(1);
-    expect(og.most).toBe(1);
     expect([...e.store.keys()]).toEqual(["https://openwaters.io/ais/stations/digitraffic.png"]);
     expect(first.headers.get("cache-control")).toBe("public, max-age=3600");
   });
@@ -168,7 +161,9 @@ describe("the Worker's station cards", () => {
     expect([...e.store.keys()]).toEqual(["https://openwaters.io/ais/stations/nowhere.png"]);
   });
 
-  it("refuse methods other than GET and HEAD", async () => {
+  it("answer GET and HEAD, and refuse other methods", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(list)));
+    expect((await ask(edge(), "/ais/stations/digitraffic.png", "HEAD")!).status).toBe(200);
     const res = await ask(edge(), "/ais/stations/digitraffic.png", "POST")!;
     expect([res.status, res.headers.get("allow")]).toEqual([405, "GET, HEAD"]);
   });
