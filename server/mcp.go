@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"net/http"
 	"sort"
@@ -22,7 +23,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.14.0"
+const mcpVersion = "0.15.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -891,7 +892,7 @@ type mcpCoverageIn struct {
 type mcpSource struct {
 	Kind             string    `json:"kind"`
 	Description      string    `json:"description,omitempty"`
-	Vessels          int       `json:"vessels" jsonschema:"distinct vessels heard from this source in the last 30 minutes"`
+	Vessels          int       `json:"vessels" jsonschema:"distinct vessels whose positions this source's stations heard in the last 30 minutes, up to about 7 minutes behind"`
 	VesselsExclusive int       `json:"vessels_exclusive" jsonschema:"of those, heard by no other source"`
 	Events24h        int64     `json:"events_24h"`
 	LastAgeS         int64     `json:"last_age_s" jsonschema:"seconds since the source last delivered a message"`
@@ -908,7 +909,7 @@ type mcpDelay struct {
 type mcpStation struct {
 	Station   string  `json:"station"`
 	Source    string  `json:"source"`
-	Vessels   int     `json:"vessels" jsonschema:"distinct vessels heard in the last 30 minutes"`
+	Vessels   int     `json:"vessels" jsonschema:"distinct vessels whose positions the station heard in the last 30 minutes, its own left out, up to about 7 minutes behind"`
 	Events24h int64   `json:"events_24h"`
 	LastAgeS  int64   `json:"last_age_s"`
 	BBox      *mcpBox `json:"bbox,omitempty" jsonschema:"extent of the positions this station has heard"`
@@ -977,7 +978,8 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 			return nil, mcpCoverage{}, errors.New("max_age needs the vessel record, which this server is running without")
 		}
 	}
-	rows := p.stations.rows(now)
+	counts, vbs := p.rollups(now)
+	rows := p.stations.rows(now, counts)
 	out := mcpCoverage{Time: now.UTC().Format(time.RFC3339), Stations: mcpStationCounts{Total: len(rows)}}
 
 	age := map[string]int64{}
@@ -990,7 +992,10 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 			age[k] = r.LastAgeS
 		}
 	}
-	vbs := p.stations.vesselsBySource(now)
+	vbs = maps.Clone(vbs)
+	if vbs == nil {
+		vbs = map[string][2]int{}
+	}
 	for _, k := range p.usage.sourceNames(now) {
 		if _, ok := vbs[k]; !ok {
 			vbs[k] = [2]int{}
@@ -1074,6 +1079,9 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 	}
 	if out.Area != nil {
 		out.Summary += fmt.Sprintf("; %d vessels%s and %d stations in the requested box", out.Area.Vessels, within, len(out.Area.Stations))
+	}
+	if _, srcs := p.rollups(now); srcs == nil {
+		out.Summary += "; per-source vessel counts are unavailable right now, so a source's 0 says nothing about its traffic"
 	}
 	return nil, out, nil
 }

@@ -148,6 +148,9 @@ if [ -f aiscast-linux ]; then
 	mv /opt/aiscast/aiscast.new /opt/aiscast/aiscast
 fi
 systemctl restart aiscast
+# Station vessel counts read from ClickHouse. A server from before that wrote the file that kept them as it stopped,
+# so it goes once the new one runs.
+rm -f /var/lib/aiscast/station-vessels.json /var/lib/aiscast/station-vessels.json.tmp
 sleep 3
 systemctl is-active aiscast
 systemctl is-active caddy
