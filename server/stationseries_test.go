@@ -46,7 +46,7 @@ func (f *fakeSeries) sourceCounts(context.Context, time.Time) (map[string][2]int
 func (f *fakeSeries) ownCandidates(context.Context, time.Time) (map[string]map[uint32]int64, error) {
 	return f.own, nil
 }
-func (f *fakeSeries) stationPoints(context.Context, time.Time) (map[string][][2]float64, error) {
+func (f *fakeSeries) stationPoints(context.Context, time.Time, time.Time) (map[string][][2]float64, error) {
 	return f.points, nil
 }
 
@@ -296,7 +296,12 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if err := conn.coverageBackfill(ctx, cur.AddDate(0, 0, -2)); err != nil {
 		t.Fatal(err)
 	}
-	points, err := conn.stationPoints(ctx, cur.AddDate(0, 0, -2))
+	today := cur.Truncate(24 * time.Hour)
+	// s2, heard only today, has no points in a window of complete days ending yesterday
+	if before, err := conn.stationPoints(ctx, today.AddDate(0, 0, -2), today.AddDate(0, 0, -1)); err != nil || before["station:s2"] != nil {
+		t.Errorf("label points for days ending yesterday hold today's: %v %v", before["station:s2"], err)
+	}
+	points, err := conn.stationPoints(ctx, today.AddDate(0, 0, -2), today)
 	if err != nil || len(points["station:s1"]) != 1 || math.Abs(points["station:s1"][0][0]-59.9) > 0.05 || math.Abs(points["station:s1"][0][1]-10.7) > 0.05 || points["aishub"] != nil {
 		t.Errorf("label points %v, %v; want s1's one cell near Oslo and no feed's", points, err)
 	}

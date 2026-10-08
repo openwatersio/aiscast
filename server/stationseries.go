@@ -93,8 +93,8 @@ type stationSeries interface {
 	sourceCounts(ctx context.Context, now time.Time) (map[string][2]int, error)
 	// ownCandidates is each station's own-ship MMSIs since a time, with the unix seconds of the last.
 	ownCandidates(ctx context.Context, since time.Time) (map[string]map[uint32]int64, error)
-	// stationPoints is the centers of each volunteer station's finest coverage cells since a day.
-	stationPoints(ctx context.Context, since time.Time) (map[string][][2]float64, error)
+	// stationPoints is the centers of each volunteer station's finest coverage cells from the first day to the last.
+	stationPoints(ctx context.Context, first, last time.Time) (map[string][][2]float64, error)
 }
 
 // stationCount is one station's figures from the series.
@@ -554,11 +554,11 @@ func (c *chConn) ownCandidates(ctx context.Context, since time.Time) (map[string
 	return out, rows.Err()
 }
 
-func (c *chConn) stationPoints(ctx context.Context, since time.Time) (map[string][][2]float64, error) {
+func (c *chConn) stationPoints(ctx context.Context, first, last time.Time) (map[string][][2]float64, error) {
 	rows, err := c.conn.Query(ctx, `SELECT station, arrayMap(c -> h3ToGeo(c).1, cells), arrayMap(c -> h3ToGeo(c).2, cells) FROM (
 			SELECT station, groupUniqArray(cell) AS cells FROM `+c.db+`.station_coverage
-			WHERE day >= ? AND res = ? AND source IN `+chVolunteerSources+` GROUP BY station)
-		SETTINGS h3togeo_lon_lat_result_order = 0`, since, uint8(coverageBands[len(coverageBands)-1].res))
+			WHERE day >= ? AND day <= ? AND res = ? AND source IN `+chVolunteerSources+` GROUP BY station)
+		SETTINGS h3togeo_lon_lat_result_order = 0`, first, last, uint8(coverageBands[len(coverageBands)-1].res))
 	if err != nil {
 		return nil, err
 	}

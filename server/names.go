@@ -264,7 +264,8 @@ func (p *Pipeline) refreshLabels(now time.Time) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	points, err := s.stationPoints(ctx, now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -coverageDays))
+	first, last := coverageWindow(now) // the coverage map's complete days, today's partial one left out
+	points, err := s.stationPoints(ctx, first, last)
 	if err != nil {
 		log.Printf("station labels: %v", err)
 		return
