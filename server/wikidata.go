@@ -525,12 +525,19 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 			return err
 		}
 	}
-	// The call signs stored go beside the stamp, so boot can tell a sync that found none from one by a build
-	// that never read them (store.go).
-	for k, v := range map[string]string{"wikidata_sync": at.Format(time.RFC3339), "wikidata_callsigns": strconv.Itoa(counts[len(counts)-1])} {
-		if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, k, v); err != nil {
-			return err
-		}
+	stamp := at.Format(time.RFC3339)
+	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('wikidata_sync', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+		stamp); err != nil {
+		return err
+	}
+	// A sync that found no call signs records its own stamp, so boot can tell it from one by a build that
+	// never read them, which moves the stamp and leaves this alone (store.go).
+	mark, args := `DELETE FROM meta WHERE key = 'wikidata_no_callsigns'`, []any{}
+	if counts[len(counts)-1] == 0 {
+		mark, args = `INSERT INTO meta (key, value) VALUES ('wikidata_no_callsigns', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, []any{stamp}
+	}
+	if _, err := tx.Exec(mark, args...); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
