@@ -1,8 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 import { e2eAuth } from "./e2e/auth";
-import { e2ePorts } from "./e2e/ports";
+import { e2ePorts, pickE2ePorts } from "./e2e/ports";
 
 const CI = Boolean(process.env.CI);
+await pickE2ePorts();
 const ports = e2ePorts();
 const APP = `http://127.0.0.1:${ports.app}`;
 const API = `http://127.0.0.1:${ports.api}`;
