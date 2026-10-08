@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -337,11 +339,13 @@ func openStore(path string) (*store, error) {
 		}
 	}
 	// The fold and the import skip MMSIs validMMSI rejects; this clears the rows a file already holds under them,
-	// a few range scans of the primary key each boot, and any station's own vessel chosen under one, which
-	// decideOwn would otherwise keep until the station sends a valid one.
+	// a few range scans of the primary key each boot, any station's own vessel chosen under one, which
+	// decideOwn would otherwise keep until the station sends a valid one, and the station a UDP sender was
+	// relabeled to by claiming one as its own, which merged every sender that claimed it.
 	for _, stmt := range []string{
 		"DELETE FROM vessels WHERE " + invalidMMSIWhere("mmsi"),
 		"UPDATE stations SET own = 0 WHERE own != 0 AND (" + invalidMMSIWhere("own") + ")",
+		"DELETE FROM stations WHERE id GLOB 'mmsi:[0-9]*' AND (" + invalidMMSIWhere("CAST(substr(id, 6) AS INTEGER)") + ")",
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			db.Close()
@@ -369,7 +373,7 @@ func invalidMMSIWhere(col string) string {
 		or = append(or, fmt.Sprintf("%s BETWEEN %d AND %d", col, r[0], r[1]))
 	}
 	defaults := make([]string, 0, len(defaultMMSIs))
-	for m := range defaultMMSIs {
+	for _, m := range slices.Sorted(maps.Keys(defaultMMSIs)) { // sorted, so the text is the same each time
 		defaults = append(defaults, strconv.FormatUint(uint64(m), 10))
 	}
 	or = append(or, col+" IN ("+strings.Join(defaults, ", ")+")")

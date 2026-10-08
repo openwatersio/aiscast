@@ -97,7 +97,7 @@ func TestOpenStoreRemovesInvalidMMSIs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for id, own := range map[string]uint32{"a": 555555555, "b": 257000001, "c": 0} {
+	for id, own := range map[string]uint32{"a": 555555555, "b": 257000001, "c": 0, "mmsi:123456789": 0, "mmsi:257000001": 0, "mmsi:2573104": 0} {
 		if _, err := st.db.Exec(`INSERT INTO stations (id, own) VALUES (?, ?)`, id, own); err != nil {
 			t.Fatal(err)
 		}
@@ -107,11 +107,15 @@ func TestOpenStoreRemovesInvalidMMSIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.close()
-	for id, want := range map[string]uint32{"a": 0, "b": 257000001, "c": 0} {
+	for id, want := range map[string]uint32{"a": 0, "b": 257000001, "c": 0, "mmsi:257000001": 0, "mmsi:2573104": 0} {
 		var own uint32
 		if err := st.db.QueryRow(`SELECT own FROM stations WHERE id = ?`, id).Scan(&own); err != nil || own != want {
 			t.Errorf("station %s own vessel %d (%v), want %d", id, own, err, want)
 		}
+	}
+	var merged int
+	if st.db.QueryRow(`SELECT count() FROM stations WHERE id = 'mmsi:123456789'`).Scan(&merged); merged != 0 {
+		t.Error("the station UDP senders were merged into under a default MMSI is kept")
 	}
 	for _, m := range all {
 		if _, ok, _ := st.get(m); ok != validMMSI(m) {
