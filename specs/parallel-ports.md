@@ -19,7 +19,7 @@ So the fix is the e2e harness. The client dev server already works.
 
 Pick the three e2e ports once, in the Playwright runner, and pass them down through the environment. This is how [e2e/auth.ts](../client/e2e/auth.ts) already shares the token: the config runs in the runner and again in each worker, and the workers inherit the runner's environment.
 
-1. **New `client/e2e/ports.ts`.** `e2ePorts(): { api: number; udp: number; app: number }`. If `AISCAST_E2E_API_PORT`, `AISCAST_E2E_UDP_PORT`, and `AISCAST_E2E_APP_PORT` are set, it returns them. Otherwise it finds free ports, writes them to `process.env`, and returns them. Free-port lookup has to be synchronous because the config is synchronous. It runs `execFileSync(process.execPath, ["-e", script])`, where the script binds TCP `127.0.0.1:0` twice and UDP `127.0.0.1:0` once with `node:net` and `node:dgram`, prints the three ports, and closes. No new dependency. Setting the variables yourself pins the ports, for example to match a server you started by hand.
+1. **New `client/e2e/ports.ts`.** `e2ePorts(): { api: number; udp: number; app: number }`. If `AISCAST_E2E_API_PORT`, `AISCAST_E2E_UDP_PORT`, and `AISCAST_E2E_APP_PORT` are set, it returns them. If only some are set, it throws, because the lookup cannot avoid a pinned port it does not hold. Otherwise it finds free ports, writes them to `process.env`, and returns them. Free-port lookup has to be synchronous because the config is synchronous. It runs `execFileSync(process.execPath, ["-e", script])`, where the script binds TCP `127.0.0.1:0` twice and UDP `127.0.0.1:0` once with `node:net` and `node:dgram`, prints the three ports, and closes. No new dependency. Setting the variables yourself pins the ports, for example to match a server you started by hand.
 
 2. **[playwright.config.ts](../client/playwright.config.ts).** Build `APP` and `API` from `e2ePorts()`. Pass `ADDR=127.0.0.1:<api>` and `UDP_ADDR=127.0.0.1:<udp>` in the server's `webServer.env`. Use `--port <app>` on `vite preview` and keep `--strictPort`, so a lost race fails loudly instead of serving on a port the tests don't know. Pass `AIS_API=http://127.0.0.1:<api>` in the preview's `env`, next to `AIS_TOKEN`.
 
@@ -29,7 +29,7 @@ Pick the three e2e ports once, in the Playwright runner, and pass them down thro
 
 5. **Render address.** Wrangler ignores the process environment whenever a `.dev.vars` or `.dev.vars.<env>` file exists, and the build copies that file into the preview. A developer's own `client/.dev.vars`, which CONTRIBUTING has them create, would win over the process environment and drop `AIS_TOKEN`. So the preview command writes `AIS_API` and `AIS_TOKEN` to `client/.dev.vars.e2e` before building. Under `CLOUDFLARE_ENV=e2e`, wrangler reads that file ahead of `.dev.vars`. `CLOUDFLARE_INCLUDE_PROCESS_ENV` is not needed. The `e2e` env in [wrangler.jsonc](../client/wrangler.jsonc) keeps `AIS_API` set to `http://127.0.0.1:0`, so typegen still sees a string and a lost override fails rather than rendering against production. `.gitignore` covers `.dev.vars*`.
 
-6. **[client/README.md](../client/README.md).** Replace "on `127.0.0.1:8787` … on port 4173. Both ports must be free." with: the run picks free ports, and setting the `AISCAST_E2E_*_PORT` variables pins them.
+6. **[client/README.md](../client/README.md).** Replace "on `127.0.0.1:8787` … on port 4173. Both ports must be free." with: the run picks free ports, and setting all three `AISCAST_E2E_*_PORT` variables pins them.
 
 ## Edge cases
 
