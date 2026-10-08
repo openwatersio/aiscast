@@ -875,7 +875,7 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 		key.official = fc.Official
 	}
 	e := enrichment{wd: p.wikidataOf(cur.IMO)[cur.IMO], cg: p.uscgOf(key)[mmsi],
-		fd: p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc: fc}
+		fd: p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc: fc, callsign: cur.CallSign}
 	// The Canadian and Australian registers speak for their own flag's vessels; an IMO another flag
 	// carries may have left the register, and the names must agree, as the other registries require, so
 	// a mistyped or copied IMO in AIS static data never serves another registered ship's facts.

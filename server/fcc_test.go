@@ -32,7 +32,7 @@ func fakeFCC(t *testing.T) string {
 	sh.Write([]byte(strings.Join([]string{
 		"SH|1000001|||WDA0001|R||MM|CIT|RESOLUTE|1257726|Y|Y|||100|30|W19|W50|11220|1502110|367000100|Y|N|N|N|Y",
 		"SH|1000002|||WDA0002|R||MM|CIT|OLD BOAT|999999|Y|Y|||10||W19|W50|||367000200|Y|N|N|N|Y",
-		"SH|1000003|||WDA0003|R||MM|CIT|SEA TOW 42|fl 8656-lb|Y|Y|||5||W19|W50|||367000300|Y|N|N|N|Y",
+		"SH|1000003||| wda0003|R||MM|CIT|SEA TOW 42|fl 8656-lb|Y|Y|||5||W19|W50|||367000300|Y|N|N|N|Y",
 		"SH|1000006|||WDA0006|R||MM|CIT|S\xd8NDERJYDEN\x92S|0000000|Y|Y|||5||W19|W50|||367000400|Y|N|N|N|Y", // Windows-1252 bytes in the name
 		"SH|1000007|||WDA0007|R||MM|CIT|WRONG FLAG|7654321|Y|Y|||5||W19|W50|||230999999|Y|N|N|N|Y",
 		"SH|1000004|||WDA0004|R||MM|CIT|RESOLUTE II|1257727|Y|Y|||100|30|W19|W50|11220|1502110|367000100|Y|N|N|N|Y",
@@ -65,7 +65,7 @@ func TestFCCSyncAndServe(t *testing.T) {
 	}
 	ships, err := p.store.fccByMMSI([]uint32{367000100, 367000300, 367000400})
 	if err != nil || ships[367000100] == nil || ships[367000100].Name != "RESOLUTE II" || ships[367000100].Official != "1257727" ||
-		ships[367000300] == nil || ships[367000300].Official != "FL8656LB" ||
+		ships[367000300] == nil || ships[367000300].Official != "FL8656LB" || ships[367000300].CallSign != "WDA0003" ||
 		ships[367000400].Official != "" || ships[367000400].Name != "SØNDERJYDEN’S" {
 		t.Fatalf("stored: %+v, %v", ships, err)
 	}
@@ -124,10 +124,11 @@ func TestFCCSyncAndServe(t *testing.T) {
 	json.Unmarshal(get(t, p, "/v1/vessels/367000300").Body.Bytes(), &f)
 	m = f.Properties.Particulars
 	if m == nil || m.RegisteredName != "SEA TOW 42" || m.Service != "Recreational" || m.YearBuilt != 2015 ||
-		m.Identification != "FL 8656-LB" || m.Registry != "United States" {
+		m.Identification != "FL 8656-LB" || m.Registry != "United States" || m.CallSign != "WDA0003" {
 		t.Errorf("ident-only particulars: %+v", m)
 	}
-	if f.Properties.Provenance["service"] != "uscg" || f.Properties.Provenance["identification"] != "uscg" {
+	if f.Properties.Provenance["service"] != "uscg" || f.Properties.Provenance["identification"] != "uscg" ||
+		f.Properties.Provenance["callsign"] != "fcc" {
 		t.Errorf("provenance: %v", f.Properties.Provenance)
 	}
 
