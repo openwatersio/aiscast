@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -40,6 +42,85 @@ func TestImportReadsPastAShortPage(t *testing.T) {
 	p := historyPipeline(t, f)
 	if n, err := p.importVessels(context.Background()); err != nil || n != 5 {
 		t.Errorf("a source returning fewer rows than asked must not end the import: %d %v", n, err)
+	}
+}
+
+// History holds MMSIs the fold keeps out, and the import keeps them out of the record too, reading on past a page
+// that holds nothing else.
+func TestImportSkipsInvalidMMSIs(t *testing.T) {
+	month := time.Now().UTC().AddDate(0, -1, 0).Truncate(time.Second)
+	f := &fakeVesselHistory{}
+	for _, m := range []uint32{1, 123456789, 257000001, 999999999} {
+		f.rows = append(f.rows, historyRow{mmsi: m, name: "DATAHUB", first: month, updated: month})
+	}
+	p := historyPipeline(t, f)
+	importPage = 2
+	t.Cleanup(func() { importPage = 20_000 })
+	if n, err := p.importVessels(context.Background()); err != nil || n != 1 {
+		t.Errorf("merged %d: %v", n, err)
+	}
+	for _, m := range []uint32{1, 123456789, 999999999} {
+		if _, ok, _ := p.store.get(m); ok {
+			t.Errorf("record has a row for %d", m)
+		}
+	}
+	if _, ok, _ := p.store.get(257000001); !ok {
+		t.Error("the valid vessel after a page of invalid ones was not imported")
+	}
+}
+
+// Opening the record removes rows it already holds under MMSIs the fold keeps out.
+func TestOpenStoreRemovesInvalidMMSIs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The SQL and validMMSI must agree on every edge of every range and on every default.
+	all := []uint32{1234567, 2573104, 25700001, 257000001, 1 << 30}
+	for _, r := range invalidMMSIRanges {
+		all = append(all, r[0], r[1])
+		if r[0] > 0 {
+			all = append(all, r[0]-1)
+		}
+		if r[1] < math.MaxUint32 {
+			all = append(all, r[1]+1)
+		}
+	}
+	for m := range defaultMMSIs {
+		all = append(all, m, m+1)
+	}
+	slices.Sort(all)
+	all = slices.Compact(all)
+	for _, m := range all {
+		if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, seen, first_seen) VALUES (?, 'X', 1, 1)`, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, own := range map[string]uint32{"a": 555555555, "b": 257000001, "c": 0, "mmsi:123456789": 0, "mmsi:257000001": 0, "mmsi:2573104": 0} {
+		if _, err := st.db.Exec(`INSERT INTO stations (id, own) VALUES (?, ?)`, id, own); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	for id, want := range map[string]uint32{"a": 0, "b": 257000001, "c": 0, "mmsi:257000001": 0, "mmsi:2573104": 0} {
+		var own uint32
+		if err := st.db.QueryRow(`SELECT own FROM stations WHERE id = ?`, id).Scan(&own); err != nil || own != want {
+			t.Errorf("station %s own vessel %d (%v), want %d", id, own, err, want)
+		}
+	}
+	var merged int
+	if st.db.QueryRow(`SELECT count() FROM stations WHERE id = 'mmsi:123456789'`).Scan(&merged); merged != 0 {
+		t.Error("the station UDP senders were merged into under a default MMSI is kept")
+	}
+	for _, m := range all {
+		if _, ok, _ := st.get(m); ok != validMMSI(m) {
+			t.Errorf("row for %d kept=%v, want %v", m, ok, validMMSI(m))
+		}
 	}
 }
 

@@ -18,6 +18,7 @@ import {
   parseEta,
   parsePlace,
   parseVesselParam,
+  mmsiSegment,
   shipClass,
   silences,
   speedAt,
@@ -74,6 +75,13 @@ describe("vesselPath", () => {
   it("omits the separator entirely when there is no name", () => {
     expect(vesselPath(440468000)).toBe("/vessels/440468000");
     expect(vesselPath(440468000, "***")).toBe("/vessels/440468000");
+  });
+});
+
+describe("mmsiSegment", () => {
+  it("writes nine digits, so a coast station is not read as an IMO number", () => {
+    expect(mmsiSegment(2573104)).toBe("002573104");
+    expect(mmsiSegment(440468000)).toBe("440468000");
   });
 });
 

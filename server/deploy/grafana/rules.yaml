@@ -426,6 +426,19 @@ groups:
         annotations:
           summary: The Transport Canada sync failed {{ $value | printf "%.0f" }} times in a day
           description: Nearly every hourly retry is failing, including on a record file where it has never succeeded. journalctl -u aiscast | grep 'tc:' on the box for the error.
+      - alert: EnrichmentSyncStaleAMSA
+        expr: time() - aiscast_amsa_last_success_timestamp_seconds > 8 * 86400
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: The AMSA sync has not succeeded in 8 days
+          description: Every hourly retry for a day or more has failed. journalctl -u aiscast | grep 'amsa:' on the box for the error.
+      - alert: EnrichmentSyncFailingAMSA
+        expr: increase(aiscast_amsa_sync_failures_total[26h]) >= 20
+        labels: {severity: warning}
+        annotations:
+          summary: The AMSA sync failed {{ $value | printf "%.0f" }} times in a day
+          description: Nearly every hourly retry is failing, including on a record file where it has never succeeded. journalctl -u aiscast | grep 'amsa:' on the box for the error.
 
       # The ISED rounds ask per vessel, so a chronically unmatchable vessel fails a few asks a day
       # without harm; the alert is the registry failing while nothing gets through at all.

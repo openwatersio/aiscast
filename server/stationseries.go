@@ -389,6 +389,18 @@ var seriesVersions struct {
 	last time.Time
 }
 
+// chValidMMSI is validMMSI in SQL: live ingest keeps other MMSIs out of receptions, but rows written before it
+// did can hold them, and a backfill must not count them as vessels heard.
+var chValidMMSI = func() string {
+	var conds []string
+	for _, r := range invalidMMSIRanges {
+		conds = append(conds, fmt.Sprintf("mmsi BETWEEN %d AND %d", r[0], r[1]))
+	}
+	defaults := slices.Sorted(maps.Keys(defaultMMSIs))
+	conds = append(conds, "mmsi IN ("+strings.Trim(strings.Join(strings.Fields(fmt.Sprint(defaults)), ", "), "[]")+")")
+	return "NOT (" + strings.Join(conds, " OR ") + ")"
+}()
+
 // binHoursFails, when set by a test, fails the binning of the day it names.
 var binHoursFails func(day time.Time) error
 
@@ -401,7 +413,7 @@ func (c *chConn) binHours(ctx context.Context, hours []time.Time, now time.Time)
 		}
 	}
 	from, to := hours[0], hours[len(hours)-1].Add(time.Hour)
-	where := "ts >= ? AND ts < ? AND toStartOfHour(toDateTime(ts, 'UTC')) IN ? AND " + chUsable
+	where := "ts >= ? AND ts < ? AND toStartOfHour(toDateTime(ts, 'UTC')) IN ? AND " + chUsable + " AND " + chValidMMSI
 	legacy, err := c.legacy(ctx)
 	if err != nil {
 		return err
@@ -521,7 +533,7 @@ func (c *chConn) sourceCounts(ctx context.Context, now time.Time) (map[string][2
 }
 
 func (c *chConn) ownCandidates(ctx context.Context, since time.Time) (map[string]map[uint32]int64, error) {
-	rows, err := c.conn.Query(ctx, "SELECT station, mmsi, toUnixTimestamp(max(last_ts)) FROM "+c.db+".station_own WHERE hour >= toStartOfHour(?) AND last_ts > ? GROUP BY station, mmsi", since, since)
+	rows, err := c.conn.Query(ctx, "SELECT station, mmsi, toUnixTimestamp(max(last_ts)) FROM "+c.db+".station_own WHERE hour >= toStartOfHour(?) AND last_ts > ? AND "+chValidMMSI+" GROUP BY station, mmsi", since, since)
 	if err != nil {
 		return nil, err
 	}

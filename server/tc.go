@@ -183,10 +183,11 @@ func xlsxSheet(path string) ([]map[string]string, error) {
 	return out, nil
 }
 
-// fetchTC downloads the register to a temporary file in dir, the vessel record's directory in
-// production, where ProtectSystem=strict leaves the one writable path, and keeps the vessels whose IMO
-// has a valid check digit, keyed by IMO.
-func fetchTC(ctx context.Context, endpoint, dir string) (map[uint32]*tcVessel, error) {
+// fetchXlsx downloads a spreadsheet to a temporary file in dir, the vessel record's directory in
+// production, where ProtectSystem=strict leaves the one writable path, and reads its first worksheet.
+// pattern names the temporary file, as os.CreateTemp takes it; a file a crash left behind is removed
+// first.
+func fetchXlsx(ctx context.Context, endpoint, dir, pattern string) ([]map[string]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -204,12 +205,12 @@ func fetchTC(ctx context.Context, endpoint, dir string) (map[uint32]*tcVessel, e
 	if staleDir == "" {
 		staleDir = os.TempDir()
 	}
-	if stale, _ := filepath.Glob(filepath.Join(staleDir, "tc-registry-*.xlsx")); stale != nil {
+	if stale, _ := filepath.Glob(filepath.Join(staleDir, pattern)); stale != nil {
 		for _, f := range stale {
 			os.Remove(f)
 		}
 	}
-	tmp, err := os.CreateTemp(dir, "tc-registry-*.xlsx")
+	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -229,20 +230,35 @@ func fetchTC(ctx context.Context, endpoint, dir string) (map[uint32]*tcVessel, e
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("empty sheet")
 	}
-	// The header row names the columns; the register has reordered them before. Letters iterate
-	// sorted, so a duplicated header keeps the first column deterministically.
+	return rows, nil
+}
+
+// xlsxColumns maps each lowercased header in a sheet's first row to its column letter. Registers have
+// reordered their columns before, so a sync reads by header. Letters iterate sorted, so a duplicated
+// header keeps the first column deterministically.
+func xlsxColumns(header map[string]string) map[string]string {
 	col := map[string]string{}
-	letters := make([]string, 0, len(rows[0]))
-	for letter := range rows[0] {
+	letters := make([]string, 0, len(header))
+	for letter := range header {
 		letters = append(letters, letter)
 	}
 	sort.Strings(letters)
 	for _, letter := range letters {
-		name := strings.ToLower(strings.TrimSpace(rows[0][letter]))
+		name := strings.ToLower(strings.TrimSpace(header[letter]))
 		if col[name] == "" {
 			col[name] = letter
 		}
 	}
+	return col
+}
+
+// fetchTC downloads the register and keeps the vessels whose IMO has a valid check digit, keyed by IMO.
+func fetchTC(ctx context.Context, endpoint, dir string) (map[uint32]*tcVessel, error) {
+	rows, err := fetchXlsx(ctx, endpoint, dir, "tc-registry-*.xlsx")
+	if err != nil {
+		return nil, err
+	}
+	col := xlsxColumns(rows[0])
 	get := func(row map[string]string, name string) string {
 		if col[name] == "" {
 			return ""

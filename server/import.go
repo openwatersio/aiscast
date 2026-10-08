@@ -156,12 +156,14 @@ func (p *Pipeline) importVessels(ctx context.Context) (int, error) {
 		if len(batch) == 0 {
 			return total, nil
 		}
+		after = batch[len(batch)-1].mmsi
+		// History can hold MMSIs the fold keeps out: those it wrote before validMMSI, and the archive loads.
+		batch = slices.DeleteFunc(batch, func(h historyRow) bool { return !validMMSI(h.mmsi) })
 		if err := p.store.importRows(batch); err != nil {
 			return total, err
 		}
 		total += len(batch)
 		p.imports.rows.Add(int64(len(batch)))
-		after = batch[len(batch)-1].mmsi
 	}
 }
 

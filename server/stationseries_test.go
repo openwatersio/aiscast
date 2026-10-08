@@ -71,6 +71,9 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	cur := now.Truncate(time.Hour)
 	recent := cur.Add(now.Sub(cur) / 2) // in the current hour, within the last 30 minutes
 	at := func(station string, mmsi uint32, ts time.Time) trackPoint {
+		if mmsi < 1000 {
+			mmsi += 257000000 // a Norwegian vessel, numbered for the test
+		}
 		source, _, _ := strings.Cut(station, ":")
 		return trackPoint{mmsi: mmsi, ts: ts, lat6: int32(59.9 * 600000), lon6: int32(10.7 * 600000), sog10: 1023, cog10: 3600,
 			heading: 511, navStatus: 15, source: source, station: station, txAt: ts, recv: ts}
@@ -84,7 +87,8 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	old := at("station:s3", 4, now.Add(-30*time.Hour))
 	stream := at("station:old/n2k", 6, time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)) // a TAG stream before the fold
 	pts := []trackPoint{at("station:s1", 1, cur.Add(-2*time.Hour+10*time.Minute)), at("station:s1", 2, recent), at("station:s1", 9, recent),
-		shared, at("station:s2", 3, recent), echo, wild, old, stream}
+		shared, at("station:s2", 3, recent), echo, wild, old, stream,
+		at("station:s1", 123456789, recent)} // a default MMSI from before ingest kept them out, which counts as no vessel
 	// The receptions were written before the series existed, as on a database at step 17: its tables and view
 	// come with the upgrade, and the backfill bins what came before.
 	if err := conn.exec(ctx, "DROP VIEW {db}.station_dirty_mv", "DROP TABLE {db}.station_dirty", "DROP TABLE {db}.station_hours",
@@ -100,7 +104,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	// s1 is on vessel 9.
-	if err := conn.insertOwn(ctx, map[ownKey]time.Time{{"station:s1", recent.Unix() / 3600, 9}: recent}); err != nil {
+	if err := conn.insertOwn(ctx, map[ownKey]time.Time{{"station:s1", recent.Unix() / 3600, 257000009}: recent, {"station:s1", recent.Unix() / 3600, 0}: recent}); err != nil {
 		t.Fatal(err)
 	}
 	// A copy stamped decades back, as a bad clock gives, costs its own month of days, not every day since.
@@ -185,7 +189,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if again, _ := seriesCounts(t, conn, now); again["station:s2"] != counts["station:s2"] || again["station:s1"] != counts["station:s1"] {
 		t.Errorf("a second rebuild changed the counts: %+v, was %+v", again, counts)
 	}
-	where := "station = 'station:s2' AND mmsi = 3"
+	where := "station = 'station:s2' AND mmsi = 257000003"
 	dirty, err := conn.dirtyHours(ctx, where)
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +290,7 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	}
 
 	own, err := conn.ownCandidates(ctx, now.Add(-2*time.Hour))
-	if err != nil || own["station:s1"][9] != recent.Unix() {
+	if err != nil || own["station:s1"][257000009] != recent.Unix() || len(own["station:s1"]) != 1 {
 		t.Errorf("own candidates %v, %v", own, err)
 	}
 	if err := conn.coverageBackfill(ctx, cur.AddDate(0, 0, -2)); err != nil {

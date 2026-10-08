@@ -105,6 +105,13 @@ func main() {
 				p.tc.enabled.Store(true)
 				go p.runTC(env("TC_URL", tcEndpoint))
 			}
+			if err := p.loadAMSAStats(); err != nil {
+				log.Printf("amsa: %v", err)
+			}
+			if env("AMSA", "1") == "1" {
+				p.amsa.enabled.Store(true)
+				go p.runAMSA(env("AMSA_URL", amsaPage))
+			}
 			if err := p.loadISEDStats(); err != nil {
 				log.Printf("ised: %v", err)
 			}

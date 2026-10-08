@@ -31,6 +31,33 @@ func flagOf(mmsi uint32) string {
 	return midFlag[mid]
 }
 
+// validMMSI reports whether an MMSI can name one station. The rest are shared by unrelated transmitters, so a
+// vessel keyed by one would merge several boats.
+func validMMSI(mmsi uint32) bool {
+	for _, r := range invalidMMSIRanges {
+		if mmsi >= r[0] && mmsi <= r[1] {
+			return false
+		}
+	}
+	return !defaultMMSIs[mmsi]
+}
+
+// invalidMMSIRanges are the MMSIs with no room for an allocated MID (2xx to 7xx): 0, a coast station
+// (00MIDxxxx) or group (0MIDxxxxx) number whose MID would start with 0, 1, 8, or 9, which is in practice a
+// short number typed in, and the ten-digit values the message's 30-bit field allows. Inclusive bounds.
+var invalidMMSIRanges = [][2]uint32{
+	{0, 1_999_999},
+	{8_000_000, 19_999_999},
+	{80_000_000, 99_999_999},
+	{1_000_000_000, 1<<32 - 1},
+}
+
+// defaultMMSIs are nine-digit factory and placeholder values that many transmitters send at once.
+var defaultMMSIs = map[uint32]bool{
+	100_000_000: true, 111_111_111: true, 222_222_222: true, 333_333_333: true, 444_444_444: true, 555_555_555: true,
+	666_666_666: true, 777_777_777: true, 888_888_888: true, 999_999_999: true, 123_456_789: true, 987_654_321: true,
+}
+
 var midFlag = map[uint32]string{
 	// Europe
 	201: "AL", 202: "AD", 203: "AT", 204: "PT", 205: "BE", 206: "BY", 207: "BG", 208: "VA", 209: "CY", 210: "CY",
