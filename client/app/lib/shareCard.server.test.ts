@@ -260,6 +260,8 @@ describe("vessel cards", () => {
 
   it("fill out with the vessel's numbers when it reports no size", () => {
     // 511 is the most the field holds: "that or more", a size nobody knows.
+    // 9606901 fails the check digit, as a mistyped IMO does; 9606900 passes.
+    expect(vesselCardProps(vessel({ imo: 9606901 })).stats).toEqual([{ value: "230000000", label: "MMSI" }]);
     const props = vesselCardProps(vessel({ to_bow: 511, to_stern: 0, to_port: 0, to_starboard: 0, imo: 9606900 }));
     expect([props.title, props.subtitle]).toEqual(["MMSI 230000000", undefined]);
     expect(props.stats).toEqual([
@@ -365,7 +367,7 @@ describe("cards drawn from the station list", () => {
 
   it("leave the vessel counts out while the list has none, rather than show 0", async () => {
     expect(countsKnown(uncounted)).toBe(false);
-    expect(stationCardProps(uncounted[1]!, false).stats).toEqual([{ value: "40", label: "messages" }]);
+    expect(stationCardProps(uncounted[1]!).stats).toEqual([{ value: "40", label: "messages" }]);
     expect(stationsCardProps(uncounted).stats.map((s) => s.label)).toEqual(["feeds", "stations"]);
     answer(uncounted);
     expect((await stationCard(auth, "station:a")).status).toBe(200);
@@ -373,15 +375,18 @@ describe("cards drawn from the station list", () => {
     expect((await networkCard(auth)).status).toBe(200);
   });
 
-  it("count a station that hears only its own vessel once the rest are counted", () => {
+  it("count the list once its counts are in, and show messages for a station whose own are not", () => {
     const counted = [uncounted[0]!, { ...uncounted[0]!, station: "aishub", source: "aishub", vessels_24h: 900 }, uncounted[1]!];
     expect(countsKnown(counted)).toBe(true);
     expect(stationsCardProps(counted).stats.map((s) => s.label)).toEqual(["feeds", "stations", "vessels"]);
+    // Connected minutes ago, before its counts were written, while the rest are counted.
+    expect(stationCardProps(counted[2]!).stats).toEqual([{ value: "40", label: "messages" }]);
   });
 
   it("are an outage, which is not kept, while the list is empty", async () => {
     answer([]);
     expect((await stationsCard(auth)).status).toBe(503);
     expect((await networkCard(auth)).status).toBe(503);
+    expect((await stationCard(auth, "digitraffic")).status).toBe(503);
   });
 });

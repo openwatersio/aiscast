@@ -6,8 +6,10 @@ import shareMap from "../assets/share-map.jpg?inline";
 import {
   CLASS_LABELS,
   flagName,
+  isValidImo,
   isVolunteer,
   shipClass,
+  stationCounted,
   stationCardPath,
   stationTitle,
   vesselCardPath,
@@ -167,15 +169,16 @@ export function stationCardId(pathname: string): string | undefined {
 const n = (v: number) => v.toLocaleString("en-US");
 
 /** What a station's card says: its title, what it is and where, and its last 24 hours. */
-export function stationCardProps(st: Station, counted = true): ShareCardProps {
+export function stationCardProps(st: Station): ShareCardProps {
   const title = stationTitle(st);
+  const counted = stationCounted(st);
   let subtitle = isVolunteer(st.source) ? "Volunteer receiver" : "Data feed";
   if (st.near && title !== `Near ${st.near}`) subtitle += ` near ${st.near}`;
   return {
     title,
     subtitle,
     period: "Last 24 hours",
-    // Without the vessel counts, its messages, which are always counted.
+    // Without its vessel counts, its messages, which are always counted.
     stats: counted
       ? [
           { value: n(st.vessels_24h ?? st.vessels), label: "vessels" },
@@ -206,10 +209,11 @@ export async function stationCard(auth: ApiAuth, id: string): Promise<Response> 
   const receiver = volunteerReceiver(id);
   if (receiver) return new Response(null, { status: 301, headers: { Location: `/ais${stationCardPath(receiver)}` } });
   const stations = await getStations(auth);
-  if (!stations) return unavailable();
+  // An empty list, as in the seconds after the server starts, is an outage, not a station unheard.
+  if (!stations?.length) return unavailable();
   const st = stations.find((s) => s.station === id);
   if (!st) return new Response("Not found", { status: 404 });
-  return shareCard(stationCardProps(st, countsKnown(stations)));
+  return shareCard(stationCardProps(st));
 }
 
 /** The vessel a card path names, `/ais/vessels/<mmsi>.png`, or undefined for any other path. */
@@ -234,7 +238,8 @@ export function vesselCardProps(p: VesselProps): ShareCardProps {
     ...(built ? [{ value: String(built), label: "built" }] : []),
     ...(p.draught ? [{ value: `${p.draught.toFixed(1)} m`, label: "draught" }] : []),
     { value: String(p.mmsi), label: "MMSI" },
-    ...(p.imo ? [{ value: String(p.imo), label: "IMO" }] : []),
+    // Only an IMO that passes its check digit: AIS static data carries a fair share of mistyped ones.
+    ...(isValidImo(p.imo) ? [{ value: String(p.imo), label: "IMO" }] : []),
   ].slice(0, 3);
   // "Other" says nothing about a vessel, so its line is only the flag, or nothing.
   const cls = shipClass(p.kind, p.type);

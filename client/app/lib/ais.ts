@@ -567,15 +567,27 @@ export function stationName(st: { station: string; name?: string; near?: string 
 }
 
 /**
- * A station page's description: its vessels and messages over the same 24 hours, as its share card
- * counts them. `vessels` alone is the last 30 minutes, the fallback for a server without the 24-hour count.
+ * Whether a station's vessel counts are in. A station that sent messages but reads 0 vessels has
+ * none yet: just connected, its counts are minutes behind, and a server without ClickHouse, or
+ * unable to read it, has none at all. A boat that hears only itself reads the same, and is told by
+ * its messages too.
+ */
+export function stationCounted(st: { vessels: number; vessels_24h?: number; events: { last_24h: number } }): boolean {
+  return (st.vessels_24h ?? st.vessels) > 0 || st.events.last_24h === 0;
+}
+
+/**
+ * A station page's description: its vessels and messages over the same 24 hours, or its messages
+ * alone while its vessel counts are not in, as its share card does. `vessels` alone is the last 30
+ * minutes, the fallback for a server without the 24-hour count.
  */
 export function stationDescription(
   title: string,
   st: { vessels: number; vessels_24h?: number; events: { last_24h: number }; last_age_s: number },
 ): string {
   const count = (v: number, one: string) => `${v.toLocaleString("en-US")} ${v === 1 ? one : `${one}s`}`;
-  return `AIS receiving station ${title}: ${count(st.vessels_24h ?? st.vessels, "vessel")} and ${count(st.events.last_24h, "message")} in 24 hours, last message ${formatAge(st.last_age_s)}.`;
+  const vessels = stationCounted(st) ? `${count(st.vessels_24h ?? st.vessels, "vessel")} and ` : "";
+  return `AIS receiving station ${title}: ${vessels}${count(st.events.last_24h, "message")} in 24 hours, last message ${formatAge(st.last_age_s)}.`;
 }
 
 /** stationName as one line of text, for where it cannot be styled: "Anonymous …bCro". */

@@ -75,7 +75,8 @@ test("a station page renders the station, with its id in the head", async ({ pag
   expect(res?.status()).toBe(200);
   await expect(page).toHaveTitle("Digitraffic (Finland) receiving station | Open Waters AIS");
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://openwaters.io/ais/stations/digitraffic");
-  await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /^AIS receiving station Digitraffic \(Finland\): [\d,]+ vessels and [\d,]+ messages in 24 hours/);
+  // Without ClickHouse, as this server runs, the station has no vessel counts, so its messages alone.
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /^AIS receiving station Digitraffic \(Finland\): ([\d,]+ vessels? and )?[\d,]+ messages? in 24 hours/);
   await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
   await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://openwaters.io/ais/stations/digitraffic.png");
   const card = await request.get("/ais/stations/digitraffic.png");

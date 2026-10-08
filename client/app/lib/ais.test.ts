@@ -578,6 +578,12 @@ describe("stationDescription", () => {
     );
   });
 
+  it("leaves the vessels out while the station's counts are not in, as its card does", () => {
+    expect(stationDescription("x", { ...st, vessels: 0, vessels_24h: 0 })).toContain(": 873,404 messages in 24 hours");
+    // A station that sent nothing has 0 vessels, which is so.
+    expect(stationDescription("x", { ...st, vessels: 0, vessels_24h: 0, events: { last_24h: 0 } })).toContain(": 0 vessels and 0 messages");
+  });
+
   it("counts one vessel or message in the singular", () => {
     expect(stationDescription("x", { ...st, vessels_24h: 1, events: { last_24h: 1 } })).toContain(": 1 vessel and 1 message in 24 hours");
   });
