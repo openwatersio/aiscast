@@ -166,7 +166,7 @@ func (p *Pipeline) saveUsage(path string) error {
 	for _, k := range u.sourceNames(now) {
 		out.Sources[k] = u.source(k).state()
 	}
-	out.Stations, out.StationInfo = p.stations.rings(now), p.stations.infos(now)
+	out.Stations, out.StationInfo = p.stations.saved(now)
 	b, err := json.Marshal(&out)
 	if err != nil {
 		return err

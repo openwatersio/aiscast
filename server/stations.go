@@ -94,23 +94,46 @@ func (s *stationStats) get(station, source string, now time.Time) *stationStat {
 	return st
 }
 
-// rings returns every station's ring state (for the usage file), including restored ones not yet heard again.
+// rings returns every station's ring state, including restored ones not yet heard again.
 func (s *stationStats) rings(now time.Time) map[string]ringState {
-	h := now.Unix() / 3600
+	r, _ := s.saved(now)
+	return r
+}
+
+// infos returns every station heard within stationKeep, leaving out low-trust stations until they are established.
+func (s *stationStats) infos(now time.Time) map[string]stationInfo {
+	_, in := s.saved(now)
+	return in
+}
+
+// saved returns the stations' rings and infos for the usage file, both under one hold of the lock, so a station
+// first heard between the two is never saved with its info and without its ring.
+func (s *stationStats) saved(now time.Time) (map[string]ringState, map[string]stationInfo) {
+	h, cutoff := now.Unix()/3600, now.Add(-stationKeep)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := map[string]ringState{}
+	rings, infos := map[string]ringState{}, make(map[string]stationInfo, len(s.m))
 	for id, st := range s.m {
 		if r := st.ring.state(); h-r.At < int64(len(r.B)) {
-			out[id] = r
+			rings[id] = r
 		}
+		if st.Last.Before(cutoff) {
+			continue
+		}
+		if lowTrust(st.Source) && !st.established {
+			if st.ring.hours(now) < establishedHours {
+				continue
+			}
+			st.established = true
+		}
+		infos[id] = stationInfo{Source: st.Source, First: st.First, Last: st.Last, Dups: st.Dups, Positions: st.Positions, Established: st.established}
 	}
 	for id, r := range s.restored {
 		if h-r.At < int64(len(r.B)) {
-			out[id] = r
+			rings[id] = r
 		}
 	}
-	return out
+	return rings, infos
 }
 
 // ownPendingMax is how long own vessels wait for their candidates from before the start: past it, ClickHouse is
@@ -143,28 +166,6 @@ type stationInfo struct {
 	First, Last     time.Time
 	Dups, Positions int64
 	Established     bool `json:",omitempty"`
-}
-
-// infos returns every station heard within stationKeep, for the usage file, leaving out low-trust stations
-// until they are established.
-func (s *stationStats) infos(now time.Time) map[string]stationInfo {
-	cutoff := now.Add(-stationKeep)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string]stationInfo, len(s.m))
-	for id, st := range s.m {
-		if st.Last.Before(cutoff) {
-			continue
-		}
-		if lowTrust(st.Source) && !st.established {
-			if st.ring.hours(now) < establishedHours {
-				continue
-			}
-			st.established = true
-		}
-		out[id] = stationInfo{Source: st.Source, First: st.First, Last: st.Last, Dups: st.Dups, Positions: st.Positions, Established: st.established}
-	}
-	return out
 }
 
 // restore takes the usage file's stations. Each one with its info is listed again at once, with its ring and
