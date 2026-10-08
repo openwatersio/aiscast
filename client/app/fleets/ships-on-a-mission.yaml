@@ -1,0 +1,71 @@
+title: Ships on a mission
+summary: Hospital ships, the volunteer ships that rescue people crossing the Mediterranean, and the ships of environmental campaigns.
+cover: Ocean Viking
+sections:
+  - title: Hospital ships
+    vessels:
+      - name: Global Mercy
+        subtitle: "174 m · in service 2021"
+        note: The largest civilian hospital ship, run by the charity Mercy Ships along the coast of Africa.
+      - name: Africa Mercy
+        subtitle: "152 m · in service 2007"
+      - name: USNS Mercy
+        mmsi: 367816000
+        imo: 7390454
+        subtitle: "272 m · in service 1986"
+      - name: USNS Comfort
+        mmsi: 368817000
+        imo: 7390478
+        subtitle: "273 m · in service 1976"
+        note: A converted oil tanker; the US Navy's hospital ships carry about a thousand beds each.
+  - title: Rescue at sea
+    vessels:
+      - name: Ocean Viking
+        mmsi: 258479000
+        imo: 8506854
+        subtitle: "70 m · in service 1986"
+        note: Rescues people crossing the central Mediterranean, run by SOS Méditerranée.
+      - name: Sea-Watch 5
+        mmsi: 211879870
+        imo: 9421556
+        subtitle: "58 m · in service 2010"
+      - name: Humanity 1
+        mmsi: 211300760
+        imo: 7427518
+        subtitle: "61 m · in service 1976"
+      - name: Geo Barents
+        mmsi: 258826000
+        imo: 9252503
+        subtitle: "77 m · in service 2007"
+      - name: Life Support
+        mmsi: 352001404
+        imo: 9250206
+        subtitle: "52 m · in service 2002"
+      - name: Open Arms
+        mmsi: 224772000
+        imo: 7325887
+        subtitle: "37 m · in service 1974"
+      - name: Louise Michel
+        mmsi: 211322990
+        subtitle: "30 m"
+  - title: Environment
+    vessels:
+      - name: Rainbow Warrior
+        imo: 9575383
+        subtitle: "58 m · in service 2011"
+        note: Greenpeace's flagship, the third of the name, built in 2011 for campaigning under sail.
+      - name: Arctic Sunrise
+        mmsi: 244538000
+        imo: 7382902
+        subtitle: "50 m · in service 1975"
+      - name: Witness
+        mmsi: 244679599
+        imo: 8977259
+        subtitle: "23 m · in service 2003"
+      - name: Brigitte Bardot
+        mmsi: 226010030
+        subtitle: "27 m"
+      - name: John Paul DeJoria
+      - name: Sam Simon
+      - name: Bob Barker
+        subtitle: "40 m"

@@ -34,11 +34,16 @@ test("fleets open from the map's menu, list their vessels, and open one on the m
   await page.goto("/ais/vessels");
   await page.getByRole("navigation", { name: "Browse" }).getByRole("link", { name: /Fleets/ }).click();
   await expect(page).toHaveURL(/\/ais\/fleets$/);
+  // Groups nest: Superyachts holds the tech billionaires' yachts.
+  const superyachts = page.getByRole("link", { name: /^Superyachts/ });
+  await expect(superyachts).toContainText("3 fleets");
+  await superyachts.click();
+  await expect(page).toHaveURL(/\/ais\/fleets\/superyachts$/);
   // A group's cover is its first fleet's, and carries the photo's credit.
   const group = page.getByRole("link", { name: /Tech billionaires/ });
   await expect(group).toContainText("2 fleets");
   await group.click();
-  await expect(page).toHaveURL(/\/ais\/fleets\/tech-billionaires$/);
+  await expect(page).toHaveURL(/\/ais\/fleets\/superyachts\/tech-billionaires$/);
   await expect(page.getByRole("link", { name: /Sailing yachts/ })).toContainText("© Yacht photographer · CC BY-SA 4.0");
   // The credit shows as a © until it is pointed at, then opens to the whole of it.
   const credit = page.getByRole("link", { name: /Sailing yachts/ }).locator('[class*="group/credit"]');
@@ -46,7 +51,7 @@ test("fleets open from the map's menu, list their vessels, and open one on the m
   await credit.hover();
   await expect.poll(async () => (await credit.boundingBox())!.width).toBeGreaterThan(120);
   await page.getByRole("link", { name: /Sailing yachts/ }).click();
-  await expect(page).toHaveURL(/\/ais\/fleets\/tech-billionaires\/sailing$/);
+  await expect(page).toHaveURL(/\/ais\/fleets\/superyachts\/tech-billionaires\/sailing$/);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Sailing yachts");
   // The one yacht heard is framed beside the panel, not under it.
   const panelRight = await page.getByRole("region", { name: "Panel" }).evaluate((el) => el.getBoundingClientRect().right);
@@ -67,5 +72,5 @@ test("fleets open from the map's menu, list their vessels, and open one on the m
   // Back from the vessel returns to the fleet, and back from the fleet to its group.
   await page.goBack();
   await page.getByRole("link", { name: "Back" }).click();
-  await expect(page).toHaveURL(/\/ais\/fleets\/tech-billionaires(#|$)/);
+  await expect(page).toHaveURL(/\/ais\/fleets\/superyachts\/tech-billionaires(#|$)/);
 });

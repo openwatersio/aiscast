@@ -16,7 +16,7 @@ test("a fleet on a phone is framed close in, above the sheet", async ({ page }) 
       : route.fulfill({ status: 404, json: {}, headers: { "access-control-allow-origin": "*" } });
   });
   await page.route("**/ais/vessels/media/*", (route) => route.fulfill({ json: { photos: [], links: {} } }));
-  await page.goto("/ais/fleets/tech-billionaires/sailing");
+  await page.goto("/ais/fleets/superyachts/tech-billionaires/sailing");
   const sheetTop = (await page.getByRole("region", { name: "Panel" }).boundingBox())!.y;
   // Close enough to tell the two apart, which the whole world is not, and both in the map's
   // uncovered part.

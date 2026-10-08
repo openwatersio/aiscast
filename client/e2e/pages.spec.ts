@@ -150,7 +150,7 @@ test("old map, station and explore links redirect to where those pages are now",
     "/ais/explore/youtube": "/ais/fleets/youtube",
     "/ais/explore/youtube/sailors": "/ais/fleets/youtube/sailors",
     "/ais/explore/youtube/cruisers": "/ais/fleets/youtube/cruisers",
-    "/ais/explore/tech-yachts": "/ais/fleets/tech-billionaires",
+    "/ais/explore/tech-yachts": "/ais/fleets/superyachts/tech-billionaires",
     "/ais/explore/youtube/sailors/": "/ais/fleets/youtube/sailors",
     // A name every object has is not a fleet.
     "/ais/explore/constructor": "/ais/fleets",

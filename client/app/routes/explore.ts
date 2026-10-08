@@ -2,7 +2,7 @@ import { redirect } from "react-router";
 
 // Where fleets were first published, as standalone pages, kept as permanent redirects for links to them.
 const MOVED: Record<string, string> = {
-  "tech-yachts": "/fleets/tech-billionaires",
+  "tech-yachts": "/fleets/superyachts/tech-billionaires",
   youtube: "/fleets/youtube",
   "youtube/sailors": "/fleets/youtube/sailors",
   "youtube/cruisers": "/fleets/youtube/cruisers",
