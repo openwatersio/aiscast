@@ -171,8 +171,8 @@ func (c *chConn) unconverted(ctx context.Context) ([]time.Time, error) {
 		" WHERE c.rows != o.n ORDER BY o.d")
 }
 
-// aiscast rebuild-positions-1m -from -to: rebuild positions_1m for each day, after a source is purged from
-// receptions or an archive day reloaded.
+// aiscast rebuild-positions-1m -from -to: rebuild positions_1m and coverage for each day, after a source is
+// purged from receptions or an archive day reloaded.
 func runRebuildPositions1m(args []string) {
 	fset := flag.NewFlagSet("rebuild-positions-1m", flag.ExitOnError)
 	fromS := fset.String("from", "", "first day, YYYY-MM-DD UTC (required)")
@@ -189,6 +189,9 @@ func runRebuildPositions1m(args []string) {
 		start := time.Now()
 		if err := c.rebuildPositions1m(ctx, d); err != nil {
 			log.Fatalf("rebuild-positions-1m: %s: %v", d.Format("2006-01-02"), err)
+		}
+		if err := c.rebuildCoverage(ctx, d); err != nil {
+			log.Fatalf("rebuild-positions-1m: %s: coverage: %v", d.Format("2006-01-02"), err)
 		}
 		fmt.Printf("%s in %s\n", d.Format("2006-01-02"), time.Since(start).Round(time.Second))
 	}

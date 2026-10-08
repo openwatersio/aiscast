@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -366,7 +367,8 @@ func TestMCPReachesTheRecord(t *testing.T) {
 		len(out.Vessels) != 1 || out.Vessels[0].Lat == nil || out.Vessels[0].AgeS < 7000 || len(out.Unknown) != 1 {
 		t.Errorf("get_vessels: %q %+v", msg, out)
 	}
-	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"imo": []uint32{9000001, 9000002}}, &out); msg != "" || len(out.Vessels) != 2 {
+	feeder := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, &Claims{Sub: "f", Role: "feeder"}))
+	if msg := mcpCall(t, feeder, "get_vessels", map[string]any{"imo": []uint32{9000001, 9000002}}, &out); msg != "" || len(out.Vessels) != 2 {
 		t.Errorf("get_vessels by IMO, recorded and cached: %q %+v", msg, out)
 	}
 	if msg := mcpCall(t, cs, "search_vessels_by_name", map[string]any{"name": "star"}, &out); msg != "" ||

@@ -287,14 +287,25 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	return nil
 }
 
-// rebuildCoverage bins day's usable positions into coverage again. Its distinct sets only ever grow, so a copy
-// replay replaced or judged implausible leaves the cell it counted toward unless the day is deleted first.
+// rebuildCoverage bins day's usable positions into each coverage table again. Their distinct sets only ever
+// grow, so a copy deleted or judged implausible leaves the cell it counted toward unless the day is deleted
+// first. coverage is rebuilt as long as it is written, so a server rolled back to reading it never serves
+// coverage a deletion removed.
 func (c *chConn) rebuildCoverage(ctx context.Context, day time.Time) error {
-	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".coverage WHERE day = ?", day); err != nil {
-		return err
+	coverageBinning.Lock()
+	defer coverageBinning.Unlock()
+	for _, t := range chCoverageTables {
+		if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+"."+t.table+" WHERE day = ?", day); err != nil {
+			return fmt.Errorf("%s: %w", t.table, err)
+		}
+		bctx, cancel := chBinning(ctx)
+		err := c.conn.Exec(bctx, strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1))
+		cancel()
+		if err != nil {
+			return fmt.Errorf("%s: %w", t.table, err)
+		}
 	}
-	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".coverage "+chCoverageSelect(c.db+".receptions", chUsable+" AND ts >= ? AND ts < ?"),
-		day, day.AddDate(0, 0, 1))
+	return nil
 }
 
 // copyStaged inserts the staged rows matching where into receptions, by column name rather than position, so a
@@ -329,7 +340,7 @@ func (c *chConn) createReplayStaging(ctx context.Context) (string, error) {
 func (c *chConn) seedVessels(ctx context.Context, p *Pipeline, at time.Time, archives []string) error {
 	rows, err := c.conn.Query(ctx, "SELECT mmsi, max(ts), argMax(lat6, ts), argMax(lon6, ts), argMax(sog10, ts), argMax(cog10, ts), argMax(heading, ts),"+
 		" maxIf(ts, source NOT IN ('udp', 'mmsi'))"+
-		" FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND ts < ? AND NOT has(?, source) GROUP BY mmsi HAVING max(ts) >= ?",
+		" FROM "+c.db+".positions_1m WHERE slot >= ? AND slot < ? AND ts < ? AND NOT has(?, source) AND NOT ("+invalidMMSIWhere("mmsi")+") GROUP BY mmsi HAVING max(ts) >= ?",
 		at.Add(-corroborationWindow).Truncate(30*time.Minute), at, at, archives, at.Add(-vesselTTL))
 	if err != nil {
 		return err

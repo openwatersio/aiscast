@@ -87,9 +87,10 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 		"367567110,2026-06-30 12:00:30,-71.02771,42.36017,0.9,345.0,,CETACEA,IMO8678968,WDG7421,60,0,25,9,2.0,60,A", // the same row again
 		"367567110,2026-06-30 12:01:30,-60.00000,42.36000,0.9,345.0,,CETACEA,IMO8678968,WDG7421,60,0,25,9,2.0,60,A", // a lone spike
 		"367567110,2026-06-30 12:02:30,-71.02700,42.36050,0.9,345.0,,CETACEA,IMO8678968,WDG7421,60,0,25,9,2.0,60,A",
-		"993670001,2026-06-30 12:00:00,-71.0,42.3,,,,BUOY,,,,,,,,,A", // an aid to navigation
-		"367567111,2026-06-30 12:00:00,0,0,,,,ZERO,,,,,,,,,B",        // a GPS default, no fix
-		"367567112,2026-07-01 00:00:05,-71.0,42.3,,,,LATE,,,,,,,,,B", // the next day's
+		"993670001,2026-06-30 12:00:00,-71.0,42.3,,,,BUOY,,,,,,,,,A",    // an aid to navigation
+		"555555555,2026-06-30 12:00:00,-71.0,42.3,,,,DEFAULT,,,,,,,,,A", // a default many boats share
+		"367567111,2026-06-30 12:00:00,0,0,,,,ZERO,,,,,,,,,B",           // a GPS default, no fix
+		"367567112,2026-07-01 00:00:05,-71.0,42.3,,,,LATE,,,,,,,,,B",    // the next day's
 		`367567113,2026-06-30 13:00:00,-70.5,42.1,5.0,90.0,91,"SMITH, JOHN",,WXY123,37,8,12,4,1.5,,B`,
 		"367567114,2026-06-30 14:00:00,-70.9,42.2,0.0,0.0,,MOORED,,,,5,,,,,A", // moored: moving until it has an anchor, then still
 		"367567114,2026-06-30 14:03:00,-70.9,42.2,0.0,0.0,,MOORED,,,,5,,,,,A",
@@ -130,7 +131,7 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	}
 	got := rows()
 	if len(got) != 8 {
-		t.Fatalf("eight receptions, the repeat, the aid, the default, and the next day's left out: %+v", got)
+		t.Fatalf("eight receptions, the repeat, the aid, the shared MMSI, the GPS default, and the next day's left out: %+v", got)
 	}
 	if !got[0].accepted || got[0].implausible || got[0].off != 0 {
 		t.Errorf("an unmatched row is its own transmission: %+v", got[0])
@@ -154,7 +155,7 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 		Scan(&complete, &read, &unplaced, &repeated, &kept, &matched, &implausible); err != nil {
 		t.Fatal(err)
 	}
-	if !complete || read != 12 || unplaced != 3 || repeated != 1 || kept != 8 || matched != 1 || implausible != 1 {
+	if !complete || read != 13 || unplaced != 4 || repeated != 1 || kept != 8 || matched != 1 || implausible != 1 {
 		t.Errorf("history_loads: complete %v read %d unplaced %d repeated %d kept %d matched %d implausible %d",
 			complete, read, unplaced, repeated, kept, matched, implausible)
 	}
@@ -198,8 +199,19 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	s.list = func(context.Context) ([]historyFile, error) {
 		return []historyFile{{name: "csv2/csv2026/ais-2026-06-30.csv.zst", day: day, size: 101, etag: "0x2"}}, nil
 	}
+	// a cell the earlier load counted that the changed file no longer has, in each coverage table
+	if err := conn.exec(ctx,
+		"INSERT INTO {db}.station_coverage (day, station, res, cell, source, vessels) SELECT toDate('2026-06-30'), 'marinecadastre', 6, 1, 'marinecadastre', uniqExactState(toUInt32(1))",
+		"INSERT INTO {db}.coverage (day, res, cell, vessels, stations) SELECT toDate('2026-06-30'), 6, 1, uniqExactState(toUInt32(1)), uniqExactState('marinecadastre')"); err != nil {
+		t.Fatal(err)
+	}
 	if err := conn.loadHistory(ctx, s, stats); err != nil {
 		t.Fatal(err)
+	}
+	for _, table := range []string{"coverage", "station_coverage"} {
+		if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+"."+table+" WHERE cell = 1"); err != nil || len(n) != 1 || n[0] != 0 {
+			t.Errorf("%s keeps a cell the reloaded day no longer has: %v %v", table, n, err)
+		}
 	}
 	if again := rows(); len(again) != 8 {
 		t.Errorf("a changed file replaces its day rather than adding to it: %d rows", len(again))

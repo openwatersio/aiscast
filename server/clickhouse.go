@@ -106,6 +106,10 @@ var chMigrations = []string{
 	// a late copy, which the stream and the station counts leave out; rows from before read as false
 	13: `ALTER TABLE {db}.receptions ADD COLUMN IF NOT EXISTS stale Bool DEFAULT false`,
 	14: chStationOwn,
+	// coverage per station, which the coverage map reads in place of coverage (coveragemap.go)
+	15: chStationCoverageTable,
+	16: `CREATE MATERIALIZED VIEW IF NOT EXISTS {db}.station_coverage_mv TO {db}.station_coverage AS ` + chStationCoverageSelect("{db}.receptions", chUsable),
+	17: `CREATE TABLE IF NOT EXISTS {db}.station_coverage_backfilled (day Date) ENGINE = ReplacingMergeTree ORDER BY day`,
 }
 
 // chStationOwn keeps, per station, hour, and vessel, the last time the station sent that vessel as its own ship

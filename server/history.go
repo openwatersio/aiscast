@@ -307,14 +307,15 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 
 	// A row is known when its vessel and time are believable, and placed when its position is too. A ship's
 	// MMSI begins with a maritime identification digit of 2 to 7; the rest are aids to navigation, base
-	// stations, and aircraft. Latitude 91 and longitude 181 are the not-available values, and (0, 0) a GPS
-	// default rather than a fix. A row stamped outside its file's day is not the archive's to give.
+	// stations, and aircraft. The defaults in that range are kept out, as they are live (validMMSI): many
+	// unrelated boats share each one. Latitude 91 and longitude 181 are the not-available values, and (0, 0)
+	// a GPS default rather than a fix. A row stamped outside its file's day is not the archive's to give.
 	if err := exec("DROP TABLE IF EXISTS " + stage); err != nil {
 		return 0, err
 	}
 	if err := exec(`CREATE TABLE ` + stage + ` ENGINE = MergeTree ORDER BY (mmsi, ts) AS
 		SELECT *, known AND abs(lat6) <= 54000000 AND abs(lon6) <= 108000000 AND NOT (lat6 = 0 AND lon6 = 0) AS placed
-		FROM (SELECT *, mmsi BETWEEN 201000000 AND 775999999 AND toDate(ts) = toDate('` + day + `') AS known
+		FROM (SELECT *, mmsi BETWEEN 201000000 AND 775999999 AND NOT (` + invalidMMSIWhere("mmsi") + `) AND toDate(ts) = toDate('` + day + `') AS known
 		      FROM (` + s.read(f) + `))`); err != nil {
 		return 0, fmt.Errorf("stage: %w", err)
 	}
@@ -347,10 +348,13 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 		return 0, fmt.Errorf("insert statics: %w", err)
 	}
 
-	// A day loaded before left rows in positions_1m that its delete did not reach.
+	// A day loaded before left rows in positions_1m and coverage that its delete did not reach.
 	if again {
 		if err := c.rebuildPositions1m(ctx, f.day); err != nil {
 			return 0, fmt.Errorf("rebuild positions_1m: %w", err)
+		}
+		if err := c.rebuildCoverage(ctx, f.day); err != nil {
+			return 0, fmt.Errorf("rebuild coverage: %w", err)
 		}
 	}
 	if err := record(true, read, read-placed, placed-distinct, n.kept, n.matched, n.implausible); err != nil {

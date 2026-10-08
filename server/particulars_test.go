@@ -87,4 +87,22 @@ func TestMergeParticulars(t *testing.T) {
 	if src["tc"].Credit != "Transport Canada vessel registry" || src["tc"].License != "OGL-Canada-2.0" {
 		t.Errorf("tc source: %+v", src["tc"])
 	}
+	// The Australian list serves its facts at the flag-state rank; Wikidata's ship type and the tonnage
+	// and beam the list lacks fill the rest, and the list's type serves only without Wikidata's.
+	amv := &amsaVessel{IMO: 9869447, Official: "862874", Name: "ABSOLUTE", ShipType: "Oil Tanker", Status: "Registered",
+		YearBuilt: 2019, Length: 114.99, HomePort: "Fremantle"}
+	m, prov, src = mergeParticulars(enrichment{wd: wd, am: amv})
+	if m.ShipType != "container ship" || m.Status != "Registered" || m.YearBuilt != 2019 || m.Length != 114.99 ||
+		m.Registry != "Australia" || m.GrossTonnage != wd.GrossTonnage || m.Beam != wd.Beam {
+		t.Errorf("amsa with wikidata: %+v", m)
+	}
+	if prov["ship_type"] != "wikidata" || prov["registry"] != "amsa" || prov["gross_tonnage"] != "wikidata" {
+		t.Errorf("amsa provenance: %v", prov)
+	}
+	if m, prov, _ = mergeParticulars(enrichment{am: amv}); m.ShipType != "Oil Tanker" || prov["ship_type"] != "amsa" {
+		t.Errorf("amsa alone: %+v %v", m, prov)
+	}
+	if src["amsa"].Credit != "© Australian Maritime Safety Authority" || src["amsa"].License != "CC-BY-4.0" {
+		t.Errorf("amsa source: %+v", src["amsa"])
+	}
 }
