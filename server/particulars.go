@@ -171,8 +171,9 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		str("registry", "wikidata", wd.Registry, &m.Registry)
 		str("home_port", "wikidata", wd.HomePort, &m.HomePort)
 		// The call sign on an item is often one the ship gave up with an earlier flag: 70 of 231 heard ships
-		// in an October 2026 sample. Nothing on the item tells those apart, so it serves only to confirm AIS.
-		if wd.CallSign == wikidataCallSign(e.callsign) {
+		// in an October 2026 sample. Nothing on the item tells those apart, so it yields to a different call
+		// sign on AIS, as it does to a register's above, and fills in where AIS has none or junk.
+		if ais := wikidataCallSign(e.callsign); ais == "" || ais == wd.CallSign {
 			str("callsign", "wikidata", wd.CallSign, &m.CallSign)
 		}
 		str("owner", "wikidata", wd.Owner, &m.Owner)

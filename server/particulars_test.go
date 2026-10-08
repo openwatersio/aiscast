@@ -105,11 +105,11 @@ func TestMergeParticulars(t *testing.T) {
 	if src["amsa"].Credit != "© Australian Maritime Safety Authority" || src["amsa"].License != "CC-BY-4.0" {
 		t.Errorf("amsa source: %+v", src["amsa"])
 	}
-	// The call sign on a Wikidata item serves only when AIS reports the same one, and the flag state's
+	// The call sign on a Wikidata item serves unless AIS reports a different one, and the flag state's
 	// outranks it.
 	signed := *wd
 	signed.CallSign = "9HXC9"
-	for _, c := range []struct{ ais, want string }{{"9HXC9", "9HXC9"}, {"9hxc9 ", "9HXC9"}, {"V7A3493", ""}, {"", ""}} {
+	for _, c := range []struct{ ais, want string }{{"9HXC9", "9HXC9"}, {"9hxc9 ", "9HXC9"}, {"V7A3493", ""}, {"", "9HXC9"}, {"@@@@@@@", "9HXC9"}, {"0", "9HXC9"}} {
 		m, prov, _ = mergeParticulars(enrichment{wd: &signed, callsign: c.ais})
 		if m.CallSign != c.want || (c.want != "") != (prov["callsign"] == "wikidata") {
 			t.Errorf("wikidata call sign with %q on AIS: %q from %q", c.ais, m.CallSign, prov["callsign"])
