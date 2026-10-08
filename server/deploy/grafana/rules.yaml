@@ -63,6 +63,24 @@ groups:
           summary: aiscast RSS is {{ $value | humanize1024 }}B
           description: A leak or a connection flood. Check streams by tier.
 
+      # aiscast, ClickHouse, and archive replays share the box's memory, and the box has no swap, so running
+      # out means the OOM killer. ClickHouse has a memory cap and aiscast has alerts. A replay caps its ClickHouse
+      # queries but not its own process. These catch all three stacking up, though not a spike between scrapes.
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes < 2 * 1024^3
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: '{{ $value | humanize1024 }}B of memory available on {{ $labels.host }}'
+          description: Compare aiscast and ClickHouse memory on the capacity dashboard, and check for a running replay.
+      - alert: HostMemoryCritical
+        expr: node_memory_MemAvailable_bytes < 1024^3
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: '{{ $value | humanize1024 }}B of memory available on {{ $labels.host }}'
+          description: The OOM killer is next. Stop any replay, then restart whichever of aiscast or ClickHouse has grown.
+
       # MQTT sockets only publish, so they carry no fan-out cost.
       - alert: AiscastStreamsHigh
         expr: sum(aiscast_streams{protocol!="mqtt"}) > 600
