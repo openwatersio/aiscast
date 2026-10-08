@@ -344,10 +344,11 @@ type chStore struct {
 
 // chConn writes positions through a native-protocol connection.
 type chConn struct {
-	conn  driver.Conn
-	db    string
-	table string // the table write inserts into: receptions, or a replay's staging table
-	own   string // the table insertOwn writes: station_own when empty, or a replay's staging table
+	conn    driver.Conn
+	db      string
+	table   string // the table write inserts into: receptions, or a replay's staging table
+	own     string // the table insertOwn writes: station_own when empty, or a replay's staging table
+	statics string // the table insertStatics writes: statics when empty, or a replay's staging table
 }
 
 // openClickHouse connects to url, a clickhouse:// DSN, and creates the schema in the database it names, or

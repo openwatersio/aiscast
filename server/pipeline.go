@@ -125,6 +125,7 @@ type Pipeline struct {
 	chOwn           map[ownKey]time.Time       // own-ship sightings since the last flush, the latest per key; nil until it connects
 	chOwnClaimed    map[ownKey]map[uint32]bool // the vessels each station claimed as its own each hour it received them, keyed without mmsi, for maxOwnPerStation
 	chOwnClaimHours map[int64]int              // how many claims chOwnClaimed holds for each hour, so pruning knows whether there is anything to scan for
+	aishubStaticAt  map[uint32]int64           // the TIME of each vessel's AISHub row last noted for statics, guarded by chMu
 	chStatics       map[staticKey]staticTimes  // static states since the last flush, first and last heard; nil until ClickHouse connects or without a statics writer
 	chOwnHW         int64                      // the latest hour an own-ship message was received in, which claims older than its last hour are pruned against
 	chOn            atomic.Bool                // ClickHouse is attached, so copies are worth building

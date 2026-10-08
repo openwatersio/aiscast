@@ -356,11 +356,11 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 	}
 	// Each distinct static state the file gives a vessel, as statics keeps every source's. Archive rows carry
 	// length and beam, not the antenna's offsets, so those are 0, and no ETA.
-	if err := exec(`INSERT INTO `+db+`.statics (mmsi, day, source, message, name, callsign, imo, ship_type,
+	if err := exec(`INSERT INTO `+db+`.statics (mmsi, day, source, station, message, name, callsign, imo, ship_type,
 			to_bow, to_stern, to_port, to_starboard, draught10, destination, eta, first_ts, last_ts)
-		SELECT mmsi, toDate(ts) AS d, ?, 'archive', name, callsign, imo, ship_type, 0, 0, 0, 0, draught10, destination, '', min(ts), max(ts)
+		SELECT mmsi, toDate(ts) AS d, ?, ?, 'archive', name, callsign, imo, ship_type, 0, 0, 0, 0, draught10, destination, '', min(ts), max(ts)
 		FROM `+stage+` WHERE known AND (name != '' OR callsign != '' OR imo != 0 OR ship_type != 0 OR draught10 != 0 OR destination != '')
-		GROUP BY mmsi, d, name, callsign, imo, ship_type, draught10, destination`, s.name); err != nil {
+		GROUP BY mmsi, d, name, callsign, imo, ship_type, draught10, destination`, s.name, s.name); err != nil {
 		return 0, fmt.Errorf("insert static states: %w", err)
 	}
 

@@ -192,3 +192,69 @@ func TestStaticsFromClickHouse(t *testing.T) {
 		t.Errorf("seeded %q, want %q", got, want)
 	}
 }
+
+// An AISHub snapshot repeats every vessel each minute, so a row counts for statics once per TIME it carries, and
+// again when the TIME moves on, whether or not the row is news to the vessel cache.
+func TestAishubStaticsOncePerTime(t *testing.T) {
+	p := testPipeline(t)
+	st := &fakeStatics{}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}, statics: st})
+	row := func(ts, dest string) string {
+		return fmt.Sprintf(`[[{"MMSI":244750034,"TIME":"%s","LONGITUDE":3022815,"LATITUDE":31476144,"NAME":"CHATEAUROUX","CALLSIGN":"PH7002","TYPE":69,"A":24,"B":6,"C":0,"D":6,"DRAUGHT":12,"DEST":"%s","ETA":1596}]]`, ts, dest)
+	}
+	now := time.Unix(1625826600, 0)
+	p.ingestAishub([]byte(row("1625826523", "NLRTM")), now)
+	p.ingestAishub([]byte(row("1625826523", "NLRTM")), now.Add(time.Minute)) // the same row in the next snapshot
+	p.flushClickHouse()
+	p.ingestAishub([]byte(row("1625826583", "NLRTM")), now.Add(2*time.Minute)) // heard again, unchanged
+	p.flushClickHouse()
+	if len(st.batches) != 2 {
+		t.Fatalf("%d batches, want one per flush with a new TIME", len(st.batches))
+	}
+	for i, b := range st.batches {
+		if len(b) != 1 {
+			t.Fatalf("batch %d: %+v", i, b)
+		}
+		for k, at := range b {
+			if k.source != "aishub" || k.station != "aishub" || k.destination != "NLRTM" || !at.first.Equal(at.last) {
+				t.Errorf("batch %d: %+v %+v", i, k, at)
+			}
+		}
+	}
+}
+
+// A volunteer's state is under its station, so one station can be purged alone; a feed's under its source, as its
+// receivers are one source. A copy stamped a day before it arrived is a bad clock's and goes nowhere. Past the
+// pending bound a new state is dropped and counted.
+func TestStaticsStationsClocksAndBound(t *testing.T) {
+	p := testPipeline(t)
+	st := &fakeStatics{}
+	c := &chStore{w: &fakeCH{}, own: &fakeOwn{}, statics: st}
+	p.attachClickHouse(c)
+	now := time.Now().UTC()
+	msg := func(mmsi uint32) ais.ShipStaticData {
+		return ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: mmsi}, Valid: true, Name: "X"}
+	}
+	p.ingestPacket("station:harbor", "station:harbor", now, now, msg(257000001))
+	p.ingestPacket("kystverket", "kystverket/2573010", now, now, msg(257000002))
+	p.ingestPacket("kystverket", "kystverket", now.Add(-25*time.Hour), now, msg(257000003))
+	invalid := msg(257000004)
+	invalid.Valid = false
+	p.ingestPacket("kystverket", "kystverket", now, now, invalid)
+	p.flushClickHouse()
+	got := map[uint32]string{}
+	for k := range st.batches[0] {
+		got[k.mmsi] = k.source + " " + k.station
+	}
+	if want := map[uint32]string{257000001: "station station:harbor", 257000002: "kystverket kystverket"}; !maps.Equal(got, want) {
+		t.Errorf("states %v, want %v", got, want)
+	}
+	was := maxStaticsPending
+	maxStaticsPending = 1
+	defer func() { maxStaticsPending = was }()
+	p.ingestPacket("kystverket", "kystverket", now, now, msg(257000005))
+	p.ingestPacket("kystverket", "kystverket", now, now, msg(257000006))
+	if d := c.staticsDropped.Load(); d != 1 {
+		t.Errorf("%d states dropped past a bound of 1, want 1", d)
+	}
+}

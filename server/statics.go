@@ -5,6 +5,7 @@ package main
 // message, archive loads one for every distinct state in a file, and the vessel record seeds one per vessel once.
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 // chStatics keeps each source's distinct static states per vessel and day, with when each was first and last
@@ -24,6 +26,7 @@ const chStatics = `CREATE TABLE IF NOT EXISTS {db}.statics (
 	mmsi         UInt32,
 	day          Date,
 	source       LowCardinality(String),
+	station      LowCardinality(String), -- a volunteer's station, so one can be purged alone; a feed's source
 	message      LowCardinality(String), -- 5, 19, 24A, 24B, archive, or record
 	name         String,
 	callsign     String,
@@ -40,27 +43,27 @@ const chStatics = `CREATE TABLE IF NOT EXISTS {db}.statics (
 	last_ts      SimpleAggregateFunction(max, DateTime64(3, 'UTC'))
 ) ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(day)
-ORDER BY (mmsi, day, source, message, name, callsign, imo, ship_type, to_bow, to_stern, to_port, to_starboard, draught10, destination, eta)`
+ORDER BY (mmsi, day, source, station, message, name, callsign, imo, ship_type, to_bow, to_stern, to_port, to_starboard, draught10, destination, eta)`
 
 // chStaticsSeeded records that the record's seed finished, so a start after it does not read the record again.
 const chStaticsSeeded = `CREATE TABLE IF NOT EXISTS {db}.statics_seeded (at DateTime64(3, 'UTC')) ENGINE = MergeTree ORDER BY at`
 
-// maxStaticsPending bounds the static states waiting for ClickHouse. A flush a second takes a few hundred, so the
-// bound is for an outage, when unsent states stay in memory.
-const maxStaticsPending = 50_000
+// maxStaticsPending bounds the static states waiting for ClickHouse. A flush a second takes a few hundred, and an
+// AISHub snapshot tens of thousands at once, so the bound is for an outage, when unsent states stay in memory.
+var maxStaticsPending = 100_000
 
 // staticKey is one row of statics: a vessel's state from one source and message on one day.
 type staticKey struct {
-	mmsi                uint32
-	day                 int64 // unix days
-	source, message     string
-	name, callsign      string
-	imo                 uint32
-	shipType            uint8
-	toBow, toStern      uint16
-	toPort, toStarboard uint8
-	draught10           uint16
-	destination, eta    string
+	mmsi                     uint32
+	day                      int64 // unix days
+	source, station, message string
+	name, callsign           string
+	imo                      uint32
+	shipType                 uint8
+	toBow, toStern           uint16
+	toPort, toStarboard      uint8
+	draught10                uint16
+	destination, eta         string
 }
 
 // staticTimes is when a state was first and last heard.
@@ -76,15 +79,24 @@ func staticOf(pkt ais.Packet) (staticKey, bool) {
 	var k staticKey
 	switch m := pkt.(type) {
 	case ais.ShipStaticData:
+		if !m.Valid {
+			return k, false
+		}
 		k.message, k.name, k.callsign, k.imo, k.shipType = "5", m.Name, m.CallSign, m.ImoNumber, m.Type
 		k.toBow, k.toStern, k.toPort, k.toStarboard = m.Dimension.A, m.Dimension.B, m.Dimension.C, m.Dimension.D
 		k.draught10 = uint16(math.Round(float64(m.MaximumStaticDraught) * 10))
 		k.destination = m.Destination
 		k.eta = fmt.Sprintf("%02d-%02d %02d:%02d", m.Eta.Month, m.Eta.Day, m.Eta.Hour, m.Eta.Minute)
 	case ais.ExtendedClassBPositionReport:
+		if !m.Valid {
+			return k, false
+		}
 		k.message, k.name, k.shipType = "19", m.Name, m.Type
 		k.toBow, k.toStern, k.toPort, k.toStarboard = m.Dimension.A, m.Dimension.B, m.Dimension.C, m.Dimension.D
 	case ais.StaticDataReport:
+		if !m.Valid {
+			return k, false
+		}
 		switch {
 		case m.ReportA.Valid:
 			k.message, k.name = "24A", m.ReportA.Name
@@ -102,18 +114,31 @@ func staticOf(pkt ais.Packet) (staticKey, bool) {
 }
 
 // noteStatic gathers a static message for statics, keeping each state's first and last time per vessel, day,
-// and source until the next flush. Every copy counts, the one delivered first and the duplicates, each under its
-// own source.
+// source, and station until the next flush. Every copy counts, the one delivered first and the duplicates, each
+// under its own source.
 func (p *Pipeline) noteStatic(ev *Event) {
-	if ev.RecvTime.Before(p.replayGate) {
+	p.noteStaticPacket(ev.Source, ev.Station, ev.Time, ev.RecvTime, ev.Packet)
+}
+
+// noteStaticPacket is noteStatic for a packet heard from source and station, stamped t and received at recv. A
+// copy stamped a day or more before it arrived, or ahead of it, is a bad clock's, as receptions mark it, and
+// would put a state on the wrong day.
+func (p *Pipeline) noteStaticPacket(source, station string, t, recv time.Time, pkt ais.Packet) {
+	if recv.Before(p.replayGate) {
 		return // a replay's lead-in builds state and writes nothing
 	}
-	k, ok := staticOf(ev.Packet)
+	if t.Before(recv.Add(-clockBadAge)) || t.After(recv.Add(maxSkew)) {
+		return
+	}
+	k, ok := staticOf(pkt)
 	if !ok {
 		return
 	}
-	k.mmsi, k.source = ev.Packet.GetHeader().UserID, sourceKind(ev.Source)
-	t := ev.Time.UTC()
+	k.mmsi, k.source, k.station = pkt.GetHeader().UserID, sourceKind(source), sourceKind(source)
+	if volunteer(source) {
+		k.station = station
+	}
+	t = t.UTC()
 	k.day = t.Unix() / 86400
 	p.chMu.Lock()
 	defer p.chMu.Unlock()
@@ -132,6 +157,24 @@ func (p *Pipeline) noteStatic(ev *Event) {
 		cur.last = t
 	}
 	p.chStatics[k] = cur
+}
+
+// aishubStaticMoved reports whether a vessel's AISHub row carries a TIME later than the last one noted for statics.
+// A snapshot repeats every vessel AISHub holds each minute, mostly unchanged, so only a new TIME is a new copy.
+func (p *Pipeline) aishubStaticMoved(mmsi uint32, secs int64) bool {
+	p.chMu.Lock()
+	defer p.chMu.Unlock()
+	if p.chStatics == nil {
+		return false
+	}
+	if p.aishubStaticAt == nil {
+		p.aishubStaticAt = map[uint32]int64{}
+	}
+	if secs <= p.aishubStaticAt[mmsi] {
+		return false
+	}
+	p.aishubStaticAt[mmsi] = secs
+	return true
 }
 
 // flushStatics writes the static states gathered since the last flush. A failed insert puts them back, merged
@@ -183,13 +226,15 @@ func (p *Pipeline) flushStatics(c *chStore) error {
 }
 
 func (c *chConn) insertStatics(ctx context.Context, rows map[staticKey]staticTimes) error {
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+".statics (mmsi, day, source, message, name, callsign, imo, ship_type, "+
+	// A backlog from an outage can span many months, which are statics' partitions, as receptions' batches can.
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"throw_on_max_partitions_per_insert_block": 0}))
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.db+"."+cmp.Or(c.statics, "statics")+" (mmsi, day, source, station, message, name, callsign, imo, ship_type, "+
 		"to_bow, to_stern, to_port, to_starboard, draught10, destination, eta, first_ts, last_ts)")
 	if err != nil {
 		return err
 	}
 	for k, t := range rows {
-		if err := batch.Append(k.mmsi, time.Unix(k.day*86400, 0).UTC(), k.source, k.message, k.name, k.callsign, k.imo, k.shipType,
+		if err := batch.Append(k.mmsi, time.Unix(k.day*86400, 0).UTC(), k.source, k.station, k.message, k.name, k.callsign, k.imo, k.shipType,
 			k.toBow, k.toStern, k.toPort, k.toStarboard, k.draught10, k.destination, k.eta, t.first, t.last); err != nil {
 			batch.Abort()
 			return err
@@ -236,7 +281,7 @@ func (c *chConn) seedStatics(ctx context.Context, record *sql.DB) error {
 		if !validMMSI(k.mmsi) {
 			continue
 		}
-		k.source, k.message = "record", "record"
+		k.source, k.station, k.message = "record", "record", "record"
 		k.draught10 = uint16(math.Round(draught * 10))
 		if eta != 0 {
 			k.eta = fmt.Sprintf("%02d-%02d %02d:%02d", eta>>24, eta>>16&0xff, eta>>8&0xff, eta&0xff)
@@ -277,7 +322,10 @@ func (p *Pipeline) runStatics() {
 			return // without the record there is nothing to seed
 		}
 		if c != nil {
-			if err := c.seedStatics(ctx, p.store.db); err == nil {
+			sctx, cancel := context.WithTimeout(ctx, 30*time.Minute) // a stalled server must not hold the record's read open
+			err := c.seedStatics(sctx, p.store.db)
+			cancel()
+			if err == nil {
 				return
 			} else {
 				log.Printf("statics: seed: %v", err)

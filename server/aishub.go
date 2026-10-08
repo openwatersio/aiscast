@@ -183,6 +183,11 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time) (int, error) {
 			n++
 		}
 		if r.Name != "" || r.IMO != 0 {
+			// statics keeps every day a source sends a state, not only the days it changes the cache, so each row
+			// whose TIME has moved on goes to it whether or not it is news.
+			if p.aishubStaticMoved(r.MMSI, secs) {
+				p.noteStaticPacket("aishub", "aishub", t, now, p.asDecoded(r.static()))
+			}
 			if pkt := r.static(); p.staticIsNew(r.MMSI, t, now, p.asDecoded(pkt)) {
 				p.ingestPacketAt("aishub", "aishub", t, now, pkt)
 				n++
