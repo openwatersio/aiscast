@@ -362,11 +362,12 @@ describe("cards drawn from the station list", () => {
     station({ station: "station:a", source: "station:a", events: { last_24h: 40, last_7d: 40 }, vessels: 0, vessels_24h: 0 }),
   ];
 
-  it("are an outage, which is not kept, while the list's counts are unloaded", async () => {
+  it("are an outage, which is not kept, while the list's counts are missing", async () => {
     answer(unloaded);
     expect((await stationsCard(auth)).status).toBe(503);
-    expect((await networkCard(auth)).status).toBe(503);
     expect((await stationCard(auth, "station:a")).status).toBe(503);
+    // The network card's numbers don't come from the stations' vessel counts.
+    expect((await networkCard(auth)).status).toBe(200);
   });
 
   it("draw a station that hears only its own vessel once the rest are counted", async () => {

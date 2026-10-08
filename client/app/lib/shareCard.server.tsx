@@ -183,15 +183,11 @@ export function stationCardProps(st: Station): ShareCardProps {
 }
 
 /**
- * The station's card, a 404 for a station the API does not know, or a 503 when it cannot say. The
- * station comes from the list, a few KB, rather than its own answer, which carries every vessel it
- * last heard: 18 MB for AISHub.
- */
-/**
- * The station list as cards can trust it, or undefined while its counts are unloaded. For the minutes
- * after the server starts, every station's 24-hour counts read 0, and a card drawn then would show
- * 0 vessels for the hour it is kept, and longer in the copies link previews keep. No network that
- * heard messages heard no vessels, so that list is answered as an outage, which is not kept.
+ * The station list as a station card can trust it, or undefined while its counts are missing: for the
+ * minutes after the server starts, and while it cannot read them from ClickHouse, every station's
+ * 24-hour counts read 0. A card drawn then would show 0 vessels for the hour it is kept, and longer in
+ * the copies link previews keep. No network that heard messages heard no vessels, so that list is
+ * answered as an outage, which is not kept.
  */
 function loaded(stations: Station[] | undefined): Station[] | undefined {
   if (!stations) return undefined;
@@ -200,6 +196,11 @@ function loaded(stations: Station[] | undefined): Station[] | undefined {
   return heard && !counted ? undefined : stations;
 }
 
+/**
+ * The station's card, a 404 for a station the API does not know, or a 503 when it cannot say. The
+ * station comes from the list, a few KB, rather than its own answer, which carries every vessel it
+ * last heard: 18 MB for AISHub.
+ */
 export async function stationCard(auth: ApiAuth, id: string): Promise<Response> {
   // A receiver's tagged path is the receiver, as its page redirects.
   const receiver = volunteerReceiver(id);
@@ -220,7 +221,7 @@ export function vesselCardMmsi(pathname: string): number | undefined {
 
 const unavailable = () => new Response("The AIS API is unavailable", { status: 503, headers: { "retry-after": "60" } });
 
-/** Facts that hold for the hour a card is kept, so nothing that moves: its size, year built, voyage draught, then its numbers. */
+/** Facts that don't change by the minute, for the hour a card is kept: its size, year built, voyage draught, then its numbers. */
 export function vesselCardProps(p: VesselProps): ShareCardProps {
   const size = vesselDimensions(
     p.to_bow != null ? { toBow: p.to_bow, toStern: p.to_stern ?? 0, toPort: p.to_port ?? 0, toStarboard: p.to_starboard ?? 0 } : undefined,
@@ -273,8 +274,9 @@ export function networkCardProps(stats: Stats, stations: Station[]): ShareCardPr
 }
 
 export async function networkCard(auth: ApiAuth): Promise<Response> {
-  const [stats, all] = await Promise.all([getStats(auth), getStations(auth)]);
-  const stations = loaded(all);
+  // Its numbers come from the stats and the stations' last messages, not their vessel counts, so it
+  // draws whether or not those are loaded.
+  const [stats, stations] = await Promise.all([getStats(auth), getStations(auth)]);
   if (!stats || !stations) return unavailable();
   return shareCard(networkCardProps(stats, stations));
 }
