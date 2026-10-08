@@ -15,7 +15,8 @@
 //
 //   node client/scripts/fleet-from-wikidata.mjs --operator Q929872 --describe client/app/fleets/cruise-ships/royal-caribbean.yaml
 //
-// --operator, --owner, --builder or --type takes a Wikidata QID. OPENWATERS_TOKEN, when set, is
+// --operator, --owner, --builder or --type takes a Wikidata QID. A type includes only ships with
+// an IMO or MMSI; --min-length <metres> keeps those at least that long by Wikidata's length. OPENWATERS_TOKEN, when set, is
 // sent to the API, which raises its request limit; without it the script paces itself under the
 // anonymous 120 requests a minute.
 
@@ -35,6 +36,7 @@ const { values: args } = parseArgs({
     out: { type: "string" },
     force: { type: "boolean", default: false },
     api: { type: "string", default: "https://ais.openwaters.io" },
+    "min-length": { type: "string" },
   },
 });
 
@@ -60,7 +62,8 @@ const MATCH = {
   operator: `?s p:P137 ?st . ?st ps:P137 wd:${qid} . FILTER NOT EXISTS { ?st pq:P582 [] }`,
   owner: `?s p:P127 ?st . ?st ps:P127 wd:${qid} . FILTER NOT EXISTS { ?st pq:P582 [] }`,
   builder: `?s wdt:P176 wd:${qid} .`,
-  type: `?s wdt:P31/wdt:P279* wd:${qid} .`,
+  // A type reaches back centuries, so only ships with an IMO or MMSI, which the AIS era gave them.
+  type: `?s wdt:P31/wdt:P279* wd:${qid} . FILTER EXISTS { { ?s wdt:P458 [] } UNION { ?s wdt:P587 [] } }`,
 }[by[0]];
 
 const QUERY = `
@@ -69,6 +72,7 @@ SELECT ?s ?sLabel ?mmsi ?imo ?classLabel ?inService ?length WHERE {
   ?s wdt:P31/wdt:P279* wd:Q11446 .
   FILTER NOT EXISTS { ?s wdt:P730 [] }
   FILTER NOT EXISTS { ?s wdt:P576 [] }
+  ${args["min-length"] ? `?s p:P2043/psn:P2043/wikibase:quantityAmount ?minLength . FILTER(?minLength >= ${Number(args["min-length"])})` : ""}
   OPTIONAL { ?s wdt:P587 ?mmsi }
   OPTIONAL { ?s wdt:P458 ?imo }
   OPTIONAL { ?s wdt:P289 ?class }

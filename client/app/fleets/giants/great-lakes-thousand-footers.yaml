@@ -1,0 +1,61 @@
+title: Great Lakes thousand-footers
+summary: The 13 lake freighters 1,000 feet long or more, built between 1971 and 1981 to carry iron ore, coal and stone, and too big to leave the lakes.
+cover: Paul R. Tregurtha
+sections:
+  - title: Thousand-footers
+    vessels:
+      - name: Stewart J. Cort
+        mmsi: 367050550
+        imo: 7105495
+        subtitle: "305 m · in service 1971"
+        note: The first thousand-footer on the Great Lakes.
+      - name: Presque Isle
+        mmsi: 367348220
+        imo: 7303877
+        subtitle: "305 m tug and barge · in service 1973"
+        note: A tug and barge that sail as one; the tug carries the AIS.
+      - name: James R. Barker
+        mmsi: 366905890
+        imo: 7390260
+        subtitle: "305 m · in service 1976"
+      - name: Mesabi Miner
+        mmsi: 366904880
+        imo: 7390272
+        subtitle: "305 m · in service 1977"
+      - name: Walter J. McCarthy Jr.
+        mmsi: 366906610
+        imo: 7514684
+        subtitle: "305 m · in service 1977"
+      - name: American Integrity
+        mmsi: 367120990
+        imo: 7514696
+        subtitle: "305 m · in service 1978"
+      - name: American Spirit
+        mmsi: 366930730
+        imo: 7423392
+        subtitle: "306 m · in service 1978"
+      - name: Indiana Harbor
+        mmsi: 366938730
+        imo: 7514701
+        subtitle: "305 m · in service 1979"
+      - name: Edwin H. Gott
+        mmsi: 366971370
+        imo: 7606061
+        subtitle: "305 m · in service 1979"
+      - name: Burns Harbor
+        mmsi: 367050160
+        imo: 7514713
+        subtitle: "304 m · in service 1980"
+      - name: Edgar B. Speer
+        mmsi: 366971330
+        imo: 7625952
+        subtitle: "306 m · in service 1980"
+      - name: American Century
+        mmsi: 367121010
+        imo: 7923196
+        subtitle: "305 m · in service 1981"
+      - name: Paul R. Tregurtha
+        mmsi: 366904940
+        imo: 7729057
+        subtitle: "309 m · in service 1981"
+        note: The longest ship on the Great Lakes.
