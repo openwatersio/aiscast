@@ -138,7 +138,7 @@ test("a station the network has not heard is a 404 that asks not to be indexed",
   const res = await page.goto("/ais/stations/nowhere/0");
   expect(res?.status()).toBe(404);
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
-  await expect(page.getByText("No station with this id has been heard since the server started.")).toBeVisible();
+  await expect(page.getByText("No station with this id has been heard in the last 30 days.")).toBeVisible();
 });
 
 test("the sitemap lists the vessel pages at their canonical addresses", async ({ request }) => {

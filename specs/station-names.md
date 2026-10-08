@@ -249,5 +249,5 @@ Server only.
 
 ## Found while planning
 
-- **`first_seen` and `duplicates` across restarts.** Both come from ClickHouse's station series, the station's first hour and its receptions over its history ([station-page.md](station-page.md#rollups)), and count from the last restart only while the series lacks the station.
+- **`first_seen` and `duplicates` across restarts.** Both come from ClickHouse's station series, the station's first hour and its receptions over its history ([station-page.md](station-page.md#rollups)), and count from the saved `first_seen` only while the series lacks the station.
 - **A UDP station re-keyed to `mmsi:<n>` earns no feeder tier.** `contributed24h` looks only at `udp:<hash>` for bound addresses, and after re-keying the events land on `mmsi:<n>`.

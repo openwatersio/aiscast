@@ -626,7 +626,7 @@ func (p *Pipeline) broadcast(ev *Event) {
 func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
 		nv := p.vesselCount() // updateVessel sweeps, on the reception clock
-		p.stations.sweep(time.Now().Add(-stationVesselTTL))
+		p.stations.sweep(time.Now())
 		p.sampleRate(time.Now())
 		p.smu.RLock()
 		ns := len(p.subs)

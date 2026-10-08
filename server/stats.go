@@ -75,6 +75,20 @@ func (r *hourRing) sum(now time.Time, hours int) (total int64) {
 	return total
 }
 
+// hours counts the clock hours of the last 7 days with at least one event.
+func (r *hourRing) hours(now time.Time) (n int) {
+	h := now.Unix() / 3600
+	size := int64(len(r.B))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := int64(0); i < size; i++ {
+		if hh := h - i; hh <= r.At && r.At-hh < size && r.B[hh%size] > 0 {
+			n++
+		}
+	}
+	return n
+}
+
 // windows is the JSON shape of one rolling counter.
 func (r *hourRing) windows(now time.Time) map[string]int64 {
 	return map[string]int64{"last_24h": r.sum(now, 24), "last_7d": r.sum(now, 7*24)}
@@ -142,6 +156,7 @@ func (u *usageCounters) sourceNames(now time.Time) []string {
 type usageFile struct {
 	Events, Dups, Streams, Requests ringState
 	Sources, Stations               map[string]ringState
+	StationInfo                     map[string]stationInfo
 }
 
 func (p *Pipeline) saveUsage(path string) error {
@@ -151,7 +166,7 @@ func (p *Pipeline) saveUsage(path string) error {
 	for _, k := range u.sourceNames(now) {
 		out.Sources[k] = u.source(k).state()
 	}
-	out.Stations = p.stations.rings(now)
+	out.Stations, out.StationInfo = p.stations.rings(now), p.stations.infos(now)
 	b, err := json.Marshal(&out)
 	if err != nil {
 		return err
@@ -180,7 +195,7 @@ func (p *Pipeline) loadUsage(path string) error {
 	for k, s := range in.Sources {
 		u.source(k).restore(s)
 	}
-	p.stations.restoreRings(in.Stations)
+	p.stations.restore(in.Stations, in.StationInfo, time.Now())
 	return nil
 }
 

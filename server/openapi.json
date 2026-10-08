@@ -309,7 +309,7 @@
         "operationId": "listStations",
         "tags": ["Stations"],
         "summary": "List stations",
-        "description": "Every receiving station heard since the server started, with what it contributes. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes and `vessels_24h` in the last 24 hours. `vessels_exclusive_24h` counts the vessels no other station heard in those 24 hours, the gap a station fills. `bbox` is the extent of positions heard, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
+        "description": "Every receiving station heard in the last 30 days, with what it contributes. Restarts keep stations, and a station silent for 30 days is dropped and starts afresh when it next reports. A UDP station is kept across restarts once it has delivered a message first in 24 different hours of a week; until then a restart drops it until it sends again. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes and `vessels_24h` in the last 24 hours. `vessels_exclusive_24h` counts the vessels no other station heard in those 24 hours, the gap a station fills. `bbox` is the extent of positions heard since the server last started, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
         "security": [],
         "responses": {
           "200": {
@@ -894,7 +894,7 @@
           "station": { "type": "string", "description": "Station id. Volunteer UDP stations are a keyed hash of the sender, never an address. A feed's TAG `s:` adds a path naming one of its receivers, such as `barentswatch/terra`; a volunteer's station is its `source`, whatever its sentences' TAG `s:` says." },
           "source": { "type": "string" },
           "events": { "$ref": "#/components/schemas/Windows" },
-          "duplicates": { "type": "integer", "description": "Position messages another station delivered first, over the station's history, up to an hour behind; since the last restart while `uptime_7d` is null." },
+          "duplicates": { "type": "integer", "description": "Position messages another station delivered first, over the station's history, up to an hour behind; since `first_seen` while `uptime_7d` is null." },
           "vessels": { "type": "integer", "description": "Distinct MMSIs whose positions the station heard in the last 30 minutes, its own vessel left out. Counts what is binned, up to about 7 minutes behind. 0 without ClickHouse or after 10 minutes of failed reads, when `uptime_7d` is null too." },
           "vessels_24h": { "type": "integer", "description": "Distinct MMSIs whose positions the station heard in the last 24 hours, its own vessel left out. Up to about 7 minutes behind." },
           "vessels_exclusive_24h": { "type": "integer", "description": "Of `vessels_24h`, the vessels no other station heard. A vessel counts whether this station delivered a message first or as a duplicate, and an aggregator's late copy of a report another station already delivered does not count as hearing it." },
@@ -903,13 +903,13 @@
           "name_from": { "type": "string", "enum": ["operator", "vessel"], "description": "Where `name` came from." },
           "mmsi": { "type": "integer", "description": "The station's own vessel, from the `!AIVDO` sentences it sends." },
           "near": { "type": "string", "description": "The town or region nearest the traffic the station hears, such as `Santa Monica, CA` or `Munster, Ireland`. Volunteer stations only. Place names from GeoNames, CC BY 4.0." },
-          "positions": { "type": "integer", "description": "Position messages the station delivered first, over the station's history, up to an hour behind; since the last restart while `uptime_7d` is null." },
-          "first_seen": { "type": "string", "format": "date-time", "description": "The station's first hour in its history, or when this server first heard it if earlier, or while `uptime_7d` is null. During the first backfill the history is partial, so the first hour can read later than it was." },
+          "positions": { "type": "integer", "description": "Position messages the station delivered first, over the station's history, up to an hour behind; since `first_seen` while `uptime_7d` is null." },
+          "first_seen": { "type": "string", "format": "date-time", "description": "The station's first hour in its history, or when the server first heard it if earlier, or while `uptime_7d` is null. Kept across restarts until the station is silent for 30 days. During the first backfill the history is partial, so the first hour can read later than it was." },
           "last_seen": { "type": "string", "format": "date-time" },
           "last_age_s": { "type": "integer", "description": "Seconds since the last message." },
           "bbox": {
             "type": "array",
-            "description": "`[minLat, minLon, maxLat, maxLon]` extent of positions heard, a rough coverage footprint. Absent until a position has been heard.",
+            "description": "`[minLat, minLon, maxLat, maxLon]` extent of positions heard since the server last started, a rough coverage footprint. Absent until the station hears one.",
             "items": { "type": "number" },
             "minItems": 4,
             "maxItems": 4
@@ -933,7 +933,7 @@
           "stations": {
             "type": "object",
             "properties": {
-              "total": { "type": "integer", "description": "Stations heard since the server started." },
+              "total": { "type": "integer", "description": "Stations heard in the last 30 days." },
               "active": { "type": "integer", "description": "Stations heard in the last 5 minutes." },
               "by_source": {
                 "type": "object",
