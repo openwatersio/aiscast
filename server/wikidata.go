@@ -494,7 +494,8 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 	if len(ships) == 0 || len(ships) < wikidataMinShips {
 		return fmt.Errorf("found %d ships where at least %d are expected; keeping the stored set", len(ships), wikidataMinShips)
 	}
-	for i, got := range wikidataCounts(ships) {
+	counts := wikidataCounts(ships)
+	for i, got := range counts {
 		if 2*got < have[i] {
 			return fmt.Errorf("found %s on %d ships where %d are stored; keeping the stored set", wikidataFields[i], got, have[i])
 		}
@@ -524,9 +525,12 @@ func (s *store) replaceWikidata(ships map[uint32]*wikidataShip, at time.Time) er
 			return err
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('wikidata_sync', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-		at.Format(time.RFC3339)); err != nil {
-		return err
+	// The call signs stored go beside the stamp, so boot can tell a sync that found none from one by a build
+	// that never read them (store.go).
+	for k, v := range map[string]string{"wikidata_sync": at.Format(time.RFC3339), "wikidata_callsigns": strconv.Itoa(counts[len(counts)-1])} {
+		if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, k, v); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

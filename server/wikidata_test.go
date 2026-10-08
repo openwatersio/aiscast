@@ -393,9 +393,27 @@ func TestOpenStoreAddsWikidataCallSign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.close()
 	if last, _ := st.meta("wikidata_sync"); last != "" {
 		t.Errorf("sync stamp kept after a rollback emptied the call signs: %q", last)
+	}
+	// A sync that found no call signs is not undone at every boot.
+	none := map[uint32]*wikidataShip{}
+	for imo, w := range wantWikidata {
+		c := *w
+		c.CallSign = ""
+		none[imo] = &c
+	}
+	if err := st.replaceWikidata(none, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	st, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	if last, _ := st.meta("wikidata_sync"); last == "" {
+		t.Error("sync stamp cleared after a sync that found no call signs")
 	}
 }
 
