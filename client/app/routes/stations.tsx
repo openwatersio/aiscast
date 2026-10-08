@@ -9,7 +9,7 @@ import { browserAuth, getCoverage, getStations, type ApiAuth, type Station } fro
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
-import { pageMeta } from "../lib/meta";
+import { pageMeta, SITE } from "../lib/meta";
 import type { Route } from "./+types/stations";
 
 async function load(auth: ApiAuth) {
@@ -31,6 +31,8 @@ export const meta = () =>
     description:
       "Every volunteer receiver feeding the Open Waters AIS network, with the vessels each hears, how many no other station hears, and which are live now.",
     path: "/stations",
+    // Drawn by the Worker (lib/shareCard.server.tsx).
+    image: `${SITE}/stations.png`,
   });
 
 const n = (v: number) => v.toLocaleString("en-US");

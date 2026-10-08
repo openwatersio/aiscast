@@ -5,7 +5,7 @@ import { Panel } from "../components/Panel";
 import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { IconLink } from "../components/ui/IconButton";
 import { VesselDetail } from "../components/VesselDetail";
-import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselPath, vesselSlug } from "../lib/ais";
+import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselCardPath, vesselPath, vesselSlug } from "../lib/ais";
 import { browserAuth, getVessel, orUnavailable, type VesselFeature } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { liveInstance } from "../lib/live";
@@ -90,7 +90,8 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
     // A vessel that has never sent its name is a page about a bare MMSI, and the sitemap
     // leaves it out for the same reason. Its links are still worth following.
     noindex: !loading && !name,
-    image: photo,
+    // A photo when Wikimedia has one, else the vessel's card, drawn by the Worker (lib/shareCard.server.tsx).
+    image: photo ?? (feature || loading ? `${SITE}${vesselCardPath(mmsi)}` : undefined),
     // schema.org has no ship, and Vehicle covers transport over water. The flag is not
     // countryOfOrigin, which is where a thing was made, so it is left out.
     jsonLd: feature && name

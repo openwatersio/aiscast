@@ -27,8 +27,20 @@ vi.mock("workers-og", () => ({
   },
 }));
 import { stationCardPath } from "./ais";
-import { getStation, type Station } from "./api";
-import { RENDER_WAIT_MS, serveStationCard, shareCard, stationCard, stationCardId, stationCardProps } from "./shareCard.server";
+import { getStation, type Station, type Stats, type VesselProps } from "./api";
+import {
+  networkCardProps,
+  RENDER_WAIT_MS,
+  serveCard,
+  shareCard,
+  stationCard,
+  stationCardId,
+  stationCardProps,
+  stationsCardProps,
+  vesselCard,
+  vesselCardMmsi,
+  vesselCardProps,
+} from "./shareCard.server";
 
 const station = (over: Partial<Station>): Station => ({
   station: "station:abc",
@@ -166,12 +178,13 @@ describe("the Worker's station cards", () => {
   }
   const ask = (e: ReturnType<typeof edge>, path: string, method = "GET") => {
     const url = new URL(`https://openwaters.io${path}`);
-    return serveStationCard(new Request(url, { method }), url, auth, e.cache, e.waitUntil);
+    return serveCard(new Request(url, { method }), url, auth, e.cache, e.waitUntil);
   };
 
   it("answer only card paths", () => {
     expect(ask(edge(), "/ais/stations/digitraffic")).toBeUndefined();
-    expect(ask(edge(), "/ais/vessels/230000000.png")).toBeUndefined();
+    expect(ask(edge(), "/ais/vessels/230000000-viking-grace.png")).toBeUndefined();
+    expect(ask(edge(), "/ais/network")).toBeUndefined();
     // Its key would resolve to Digitraffic's card, so it is the page's to 404.
     expect(ask(edge(), "/ais/stations/station%3Ammsi%3A1%2F..%2Fdigitraffic.png")).toBeUndefined();
   });
@@ -204,5 +217,134 @@ describe("the Worker's station cards", () => {
     expect((await ask(edge(), "/ais/stations/digitraffic.png", "HEAD")!).status).toBe(200);
     const res = await ask(edge(), "/ais/stations/digitraffic.png", "POST")!;
     expect([res.status, res.headers.get("allow")]).toEqual([405, "GET, HEAD"]);
+  });
+});
+
+describe("vessel cards", () => {
+  const vessel = (over: Partial<VesselProps>): VesselProps => ({
+    mmsi: 230000000,
+    kind: "vessel",
+    seen: "2026-10-08T12:00:00Z",
+    source: "digitraffic",
+    station: "digitraffic",
+    msg_type: "PositionReport",
+    ...over,
+  });
+
+  it("are a vessel's MMSI with .png, and nothing else under /vessels", () => {
+    expect(vesselCardMmsi("/ais/vessels/230000000.png")).toBe(230000000);
+    expect(vesselCardMmsi("/ais/vessels/023000000.png")).toBe(23000000);
+    expect(vesselCardMmsi("/ais/vessels/230000000-viking-grace.png")).toBeUndefined();
+    expect(vesselCardMmsi("/ais/vessels/0.png")).toBeUndefined();
+    expect(vesselCardMmsi("/ais/vessels/1234567890.png")).toBeUndefined();
+    expect(vesselCardMmsi("/ais/vessels/media/9241061.png")).toBeUndefined();
+  });
+
+  it("say what the vessel is and how big, with nothing that goes stale in an hour", () => {
+    const props = vesselCardProps(
+      vessel({ name: "VIKING GRACE", type: 60, flag: "FI", to_bow: 150, to_stern: 68, to_port: 16, to_starboard: 16, draught: 6.8, particulars: { year_built: 2013 } }),
+    );
+    expect(props).toEqual({
+      title: "VIKING GRACE",
+      subtitle: "Passenger · Finland",
+      stats: [
+        { value: "218 m", label: "length" },
+        { value: "32 m", label: "beam" },
+        { value: "2013", label: "built" },
+      ],
+    });
+  });
+
+  it("fill out with the vessel's numbers when it reports no size", () => {
+    // 511 is the most the field holds: "that or more", a size nobody knows.
+    const props = vesselCardProps(vessel({ to_bow: 511, to_stern: 0, to_port: 0, to_starboard: 0, imo: 9606900 }));
+    expect([props.title, props.subtitle]).toEqual(["MMSI 230000000", undefined]);
+    expect(props.stats).toEqual([
+      { value: "230000000", label: "MMSI" },
+      { value: "9606900", label: "IMO" },
+    ]);
+  });
+
+  it("are a 404 for an MMSI the network has never heard, and a 503 when the API cannot say", async () => {
+    const auth = { api: "https://api.test" };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
+    expect((await vesselCard(auth, 230000000)).status).toBe(404);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 502 })));
+    expect((await vesselCard(auth, 230000000)).status).toBe(503);
+  });
+});
+
+describe("network and station list cards", () => {
+  const stats = {
+    vessels: { total: 0, active: 0, with_position: 0, by_kind: {}, last_24h: 41234 },
+    events: { per_second: 0, last_24h: 12_345_678, last_7d: 0 },
+  } as unknown as Stats;
+  const stations = [
+    station({ station: "digitraffic", source: "digitraffic", vessels_exclusive_24h: 300 }),
+    station({ station: "station:a", source: "station:a", vessels_exclusive_24h: 12 }),
+    station({ station: "udp:b", source: "udp:b", vessels_exclusive_24h: 3 }),
+    // Heard two days ago: not one of the last 24 hours'.
+    station({ station: "station:old", source: "station:old", last_age_s: 2 * 86400, vessels_exclusive_24h: 50 }),
+  ];
+
+  it("count the network's last 24 hours", () => {
+    expect(networkCardProps(stats, stations).stats).toEqual([
+      { value: "41,234", label: "vessels" },
+      { value: "12.3M", label: "messages" },
+      { value: "3", label: "stations" },
+    ]);
+    // A server without the vessel record has no 24-hour count, so the card leaves it out.
+    const bare = { ...stats, vessels: { ...stats.vessels, last_24h: undefined } } as Stats;
+    expect(networkCardProps(bare, stations).stats.map((s) => s.label)).toEqual(["messages", "stations"]);
+  });
+
+  it("count the feeds and volunteer stations heard in the last 24 hours, each once, and what only one heard", () => {
+    expect(stationsCardProps(stations).stats).toEqual([
+      { value: "1", label: "feeds" },
+      { value: "2", label: "stations" },
+      { value: "315", label: "vessels" },
+    ]);
+  });
+});
+
+describe("the Worker's other cards", () => {
+  const auth = { api: "https://api.test" };
+  function edge() {
+    const store = new Map<string, Response>();
+    const pending: Promise<unknown>[] = [];
+    const cache = {
+      match: async (key: string) => store.get(key)?.clone(),
+      put: async (key: string, res: Response) => void store.set(key, res),
+    } as unknown as Cache;
+    return { store, cache, waitUntil: (p: Promise<unknown>) => void pending.push(p), settle: () => Promise.all(pending) };
+  }
+  const ask = (e: ReturnType<typeof edge>, path: string) => {
+    const url = new URL(`https://openwaters.io${path}`);
+    return serveCard(new Request(url), url, auth, e.cache, e.waitUntil);
+  };
+
+  it("keep one card per vessel, whichever spelling of its MMSI asked", async () => {
+    const api = vi.fn(async () => Response.json({ type: "Feature", geometry: null, properties: { mmsi: 23000000, kind: "vessel", seen: "", source: "", station: "", msg_type: "" } }));
+    vi.stubGlobal("fetch", api);
+    const e = edge();
+    expect((await ask(e, "/ais/vessels/23000000.png")!).status).toBe(200);
+    await e.settle();
+    expect((await ask(e, "/ais/vessels/023000000.png")!).status).toBe(200);
+    expect(api).toHaveBeenCalledTimes(1);
+    expect([...e.store.keys()]).toEqual(["https://openwaters.io/ais/vessels/23000000.png"]);
+  });
+
+  it("draw the network and station list from the API, kept under their own paths", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        Response.json(url.endsWith("/v1/stats") ? { vessels: { last_24h: 1 }, events: { last_24h: 1 } } : [station({})]),
+      ),
+    );
+    const e = edge();
+    expect((await ask(e, "/ais/network.png")!).status).toBe(200);
+    expect((await ask(e, "/ais/stations.png")!).status).toBe(200);
+    await e.settle();
+    expect([...e.store.keys()].sort()).toEqual(["https://openwaters.io/ais/network.png", "https://openwaters.io/ais/stations.png"]);
   });
 });

@@ -104,6 +104,11 @@ export function mmsiSegment(mmsi: number): string {
   return String(mmsi).padStart(9, "0");
 }
 
+/** A vessel's card, the PNG its page shares when it has no photo. */
+export function vesselCardPath(mmsi: number): string {
+  return `/vessels/${mmsi}.png`;
+}
+
 /** A station's card, the PNG its page shares, with each segment of the id encoded. */
 export function stationCardPath(id: string): string {
   return `/stations/${id.split("/").map(encodeURIComponent).join("/")}.png`;

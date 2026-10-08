@@ -3,8 +3,18 @@ import interBoldExt from "@fontsource/inter/files/inter-latin-ext-700-normal.wof
 import interRegular from "@fontsource/inter/files/inter-latin-400-normal.woff?inline";
 import interRegularExt from "@fontsource/inter/files/inter-latin-ext-400-normal.woff?inline";
 import shareMap from "../assets/share-map.jpg?inline";
-import { isVolunteer, stationCardPath, stationTitle, volunteerReceiver } from "./ais";
-import { getStations, type ApiAuth, type Station } from "./api";
+import {
+  CLASS_LABELS,
+  flagName,
+  isVolunteer,
+  shipClass,
+  stationCardPath,
+  stationTitle,
+  vesselCardPath,
+  vesselDimensions,
+  volunteerReceiver,
+} from "./ais";
+import { ApiUnavailable, getStations, getStats, getVessel, type ApiAuth, type Station, type Stats, type VesselProps } from "./api";
 import { edgeCached, notGetOrHead } from "./edge.server";
 
 /**
@@ -45,11 +55,11 @@ export function ShareCard({ title, subtitle, period, stats }: ShareCardProps) {
       <div style={{ position: "absolute", left: 0, top: 0, width: 1200, height: 630, backgroundImage: FADE }} />
       <div style={{ display: "flex", flexDirection: "column", width: TEXT + 70, height: "100%", padding: "84px 0 60px 70px" }}>
         <div style={{ display: "flex", color: COLORS.label, fontSize: 26, fontWeight: 700, letterSpacing: 4 }}>OPEN WATERS AIS</div>
-        <div style={{ display: "block", marginTop: 26, color: COLORS.title, fontSize: 78, fontWeight: 700, lineHeight: 1.08, lineClamp: 2, letterSpacing: -1, wordBreak: "break-word" }}>
+        <div style={{ display: "block", marginTop: 26, color: COLORS.title, fontSize: 78, fontWeight: 700, lineHeight: 1.08, letterSpacing: -1, wordBreak: "break-word", textWrap: "balance" }}>
           {title}
         </div>
         {subtitle && (
-          <div style={{ display: "block", marginTop: 20, color: COLORS.subtitle, fontSize: 34, lineHeight: 1.3, lineClamp: 2 }}>{subtitle}</div>
+          <div style={{ display: "block", marginTop: 20, color: COLORS.subtitle, fontSize: 34, lineHeight: 1.3, textWrap: "balance" }}>{subtitle}</div>
         )}
         <div style={{ display: "flex", flexDirection: "column", marginTop: "auto" }}>
           {period && (
@@ -174,29 +184,132 @@ export async function stationCard(auth: ApiAuth, id: string): Promise<Response> 
   const receiver = volunteerReceiver(id);
   if (receiver) return new Response(null, { status: 301, headers: { Location: `/ais${stationCardPath(receiver)}` } });
   const stations = await getStations(auth);
-  if (!stations) return new Response("The AIS API is unavailable", { status: 503, headers: { "retry-after": "60" } });
+  if (!stations) return unavailable();
   const st = stations.find((s) => s.station === id);
   if (!st) return new Response("Not found", { status: 404 });
   return shareCard(stationCardProps(st));
 }
 
+
+/** The vessel a card path names, `/ais/vessels/<mmsi>.png`, or undefined for any other path. */
+export function vesselCardMmsi(pathname: string): number | undefined {
+  const m = /^\/ais\/vessels\/(\d{1,9})\.png$/.exec(pathname);
+  const mmsi = m ? Number(m[1]) : 0;
+  return mmsi > 0 ? mmsi : undefined;
+}
+
+const unavailable = () => new Response("The AIS API is unavailable", { status: 503, headers: { "retry-after": "60" } });
+
+/** Facts that hold for the hour a card is kept, so nothing live: its size, then its numbers. */
+export function vesselCardProps(p: VesselProps): ShareCardProps {
+  const size = vesselDimensions(
+    p.to_bow != null ? { toBow: p.to_bow, toStern: p.to_stern ?? 0, toPort: p.to_port ?? 0, toStarboard: p.to_starboard ?? 0 } : undefined,
+    p.length,
+    p.beam,
+  );
+  const built = p.particulars?.year_built;
+  const stats = [
+    ...(size ? [{ value: `${n(size.length)} m`, label: "length" }, { value: `${n(size.beam)} m`, label: "beam" }] : []),
+    ...(built ? [{ value: String(built), label: "built" }] : []),
+    ...(p.draught ? [{ value: `${p.draught.toFixed(1)} m`, label: "draught" }] : []),
+    { value: String(p.mmsi), label: "MMSI" },
+    ...(p.imo ? [{ value: String(p.imo), label: "IMO" }] : []),
+  ].slice(0, 3);
+  // "Other" says nothing about a vessel, so its line is only the flag, or nothing.
+  const cls = shipClass(p.kind, p.type);
+  const subtitle = [cls !== "other" ? CLASS_LABELS[cls] : undefined, flagName(p.flag)].filter(Boolean).join(" · ");
+  return { title: p.name ?? `MMSI ${p.mmsi}`, subtitle: subtitle || undefined, stats };
+}
+
+/** A vessel's card, a 404 for an MMSI the network has never heard, or a 503 when the API cannot say. */
+export async function vesselCard(auth: ApiAuth, mmsi: number): Promise<Response> {
+  let feature;
+  try {
+    feature = await getVessel(auth, mmsi);
+  } catch (e) {
+    if (e instanceof ApiUnavailable) return unavailable();
+    throw e;
+  }
+  if (!feature) return new Response("Not found", { status: 404 });
+  return shareCard(vesselCardProps(feature.properties));
+}
+
+const DAY_S = 86400;
+const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
+/** The network's last 24 hours: vessels and messages from its stats, and the stations heard in them. */
+export function networkCardProps(stats: Stats, stations: Station[]): ShareCardProps {
+  return {
+    title: "Network status",
+    subtitle: "Live AIS from government feeds, aggregators, and volunteer receivers",
+    period: "Last 24 hours",
+    stats: [
+      ...(stats.vessels.last_24h != null ? [{ value: n(stats.vessels.last_24h), label: "vessels" }] : []),
+      { value: compact.format(stats.events.last_24h), label: "messages" },
+      { value: n(stations.filter((s) => s.last_age_s < DAY_S).length), label: "stations" },
+    ],
+  };
+}
+
+export async function networkCard(auth: ApiAuth): Promise<Response> {
+  const [stats, stations] = await Promise.all([getStats(auth), getStations(auth)]);
+  if (!stats || !stations) return unavailable();
+  return shareCard(networkCardProps(stats, stations));
+}
+
+/**
+ * The last 24 hours of the station list, with nothing counted twice: the feeds and the volunteer
+ * stations heard, and the vessels that only one of them heard.
+ */
+export function stationsCardProps(stations: Station[]): ShareCardProps {
+  const heard = stations.filter((s) => s.last_age_s < DAY_S);
+  const volunteers = heard.filter((s) => isVolunteer(s.source)).length;
+  return {
+    title: "Receiving stations",
+    subtitle: "Volunteer receivers and data feeds in the open AIS network",
+    period: "Last 24 hours",
+    stats: [
+      { value: n(heard.length - volunteers), label: "feeds" },
+      { value: n(volunteers), label: "stations" },
+      { value: n(heard.reduce((sum, s) => sum + (s.vessels_exclusive_24h ?? 0), 0)), label: "vessels" },
+    ],
+  };
+}
+
+export async function stationsCard(auth: ApiAuth): Promise<Response> {
+  const stations = await getStations(auth);
+  if (!stations) return unavailable();
+  return shareCard(stationsCardProps(stations));
+}
+
 /** A card's numbers cover 24 hours, so an hour old is fresh enough for a link preview. */
 const CARD_TTLS = { 200: 3600, 301: 3600, 404: 300 };
 
+/** The card a path names, by its canonical path within the app, and how to draw it. */
+function cardFor(pathname: string, auth: ApiAuth): { path: string; make: () => Promise<Response> } | undefined {
+  if (pathname === "/ais/network.png") return { path: "/network.png", make: () => networkCard(auth) };
+  if (pathname === "/ais/stations.png") return { path: "/stations.png", make: () => stationsCard(auth) };
+  const mmsi = vesselCardMmsi(pathname);
+  if (mmsi != null) return { path: vesselCardPath(mmsi), make: () => vesselCard(auth, mmsi) };
+  const id = stationCardId(pathname);
+  if (id != null) return { path: stationCardPath(id), make: () => stationCard(auth, id) };
+  return undefined;
+}
+
 /**
- * The answer to `/ais/stations/<id>.png`, or undefined for any other path. A card is kept at the
- * edge by its station's id, so every spelling of one station's path shares one card.
+ * The answer to a card's path, or undefined for any other path. A card is kept at the edge by its
+ * canonical path, so every spelling of one station's or vessel's path shares one card.
  */
-export function serveStationCard(
+export function serveCard(
   request: Request,
   url: URL,
   auth: ApiAuth,
   cache: Cache,
   waitUntil: (p: Promise<unknown>) => void,
 ): Promise<Response> | undefined {
-  const id = stationCardId(url.pathname);
-  if (id == null) return undefined;
+  const card = cardFor(url.pathname, auth);
+  if (!card) return undefined;
   const refused = notGetOrHead(request);
   if (refused) return Promise.resolve(refused);
-  return edgeCached(cache, `${url.origin}/ais${stationCardPath(id)}`, CARD_TTLS, waitUntil, () => stationCard(auth, id));
+  return edgeCached(cache, `${url.origin}/ais${card.path}`, CARD_TTLS, waitUntil, card.make);
 }
