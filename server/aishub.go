@@ -158,7 +158,9 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time) (int, error) {
 	}
 	n := 0
 	for _, r := range rows {
-		if r.MMSI == 0 {
+		// Not counted in aiscast_invalid_mmsi_total: every snapshot repeats the row, and the vessel cache, which
+		// says whether a row is news, never holds these MMSIs.
+		if !validMMSI(r.MMSI) {
 			continue
 		}
 		// A row's own TIME is the only thing that says whether it is news, so a row without one, or one

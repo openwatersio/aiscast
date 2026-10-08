@@ -150,9 +150,9 @@ type Pipeline struct {
 	fanout       struct{ v0, v1, sse, nmea fanoutCounter }
 	names        *stationNames
 	stats        struct {
-		keysSigned, keysUnsigned                                                                                                         atomic.Int64 // personal-token mints, by whether the key signed the request
-		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts atomic.Int64
-		bySource                                                                                                                         sync.Map // source → *counterT
+		keysSigned, keysUnsigned                                                                                                                      atomic.Int64 // personal-token mints, by whether the key signed the request
+		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts, invalidMMSI atomic.Int64
+		bySource                                                                                                                                      sync.Map // source → *counterT
 	}
 }
 
@@ -352,7 +352,7 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	if strings.HasPrefix(source, "udp:") {
 		p.mu.Lock()
 		if vdm.Type == "VDO" {
-			if id := pkt.Packet.GetHeader().UserID; id != 0 {
+			if id := pkt.Packet.GetHeader().UserID; validMMSI(id) { // a default would give unrelated senders one label
 				p.ownOf[source] = fmt.Sprintf("mmsi:%d", id)
 			}
 		}
@@ -406,6 +406,12 @@ func aisnmeaPacket(channel byte, payload []byte) aisnmea.VdmPacket {
 
 // emit is the common tail: dedupe on (payload, channel) within the window, then id, vessel cache, fan-out.
 func (p *Pipeline) emit(ev *Event) {
+	// Kept out of the cache, the record, history, the stream, and the delay stats; the raw archive already holds
+	// the reception.
+	if !validMMSI(ev.Packet.GetHeader().UserID) {
+		p.stats.invalidMMSI.Add(1)
+		return
+	}
 	p.delays.observe(ev, time.Now())
 	key := string(ev.Payload) + string(ev.Channel)
 	p.mu.Lock()
