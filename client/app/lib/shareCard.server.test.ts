@@ -383,6 +383,12 @@ describe("cards drawn from the station list", () => {
     expect(stationCardProps(counted[2]!).stats).toEqual([{ value: "40", label: "messages" }]);
   });
 
+  it("leave the vessels out for an older server, whose 30-minute count says nothing of the 24 hours", () => {
+    const { vessels_24h: _, ...older } = station({ station: "station:a", source: "station:a", events: { last_24h: 40, last_7d: 40 }, vessels: 12 });
+    expect(countsKnown([older])).toBe(false);
+    expect(stationsCardProps([older]).stats.map((s) => s.label)).toEqual(["feeds", "stations"]);
+  });
+
   it("are an outage, which is not kept, while the list is empty", async () => {
     answer([]);
     expect((await stationsCard(auth)).status).toBe(503);

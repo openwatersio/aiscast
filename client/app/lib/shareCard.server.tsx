@@ -189,14 +189,15 @@ export function stationCardProps(st: Station): ShareCardProps {
 }
 
 /**
- * Whether the station list carries its stations' vessel counts. A server without ClickHouse has none,
- * and one just started, or unable to read ClickHouse, has none yet: every station's counts read 0. No
- * network that heard messages heard no vessels, so then the cards leave the counts out rather than
- * show 0 vessels for the hour they are kept, and longer in the copies link previews keep.
+ * Whether the station list carries its stations' 24-hour vessel counts. A server without ClickHouse
+ * has none, and one just started, or unable to read ClickHouse, has none yet: every station's counts
+ * read 0. An older server sends no `vessels_24h` at all, and its 30-minute `vessels` says nothing of
+ * the 24 hours. No network that heard messages heard no vessels, so then the cards leave the counts
+ * out rather than show 0 vessels for the hour they are kept, and longer in the copies link previews keep.
  */
 export function countsKnown(stations: Station[]): boolean {
   const heard = stations.some((s) => s.events.last_24h > 0);
-  return !heard || stations.some((s) => (s.vessels_24h ?? s.vessels) > 0);
+  return !heard || stations.some((s) => (s.vessels_24h ?? 0) > 0);
 }
 
 /**
