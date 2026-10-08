@@ -892,21 +892,25 @@ func (p *Pipeline) flushRecord() error {
 			rows = append(rows, record{mmsi: mmsi, v: v.state()})
 		}
 	}
-	p.dirty = make(map[uint32]struct{}, len(rows))
+	p.flushing, p.dirty = p.dirty, make(map[uint32]struct{}, len(rows))
 	p.vmu.Unlock()
 	start := time.Now()
 	err := p.store.upsert(rows)
 	p.store.flushNanos.Add(int64(time.Since(start)))
 	p.store.flushes.Add(1)
+	// One lock for both, so a vessel the flush could not write never leaves the cache's view (resolveIMOs).
+	p.vmu.Lock()
+	p.flushing = nil
 	if err != nil {
 		// Marked again, so the next flush retries: a vessel that never reports again would otherwise keep
 		// a stale row. The retry writes whatever the cache holds by then.
-		p.store.flushFailures.Add(1)
-		p.vmu.Lock()
 		for _, r := range rows {
 			p.dirty[r.mmsi] = struct{}{}
 		}
-		p.vmu.Unlock()
+	}
+	p.vmu.Unlock()
+	if err != nil {
+		p.store.flushFailures.Add(1)
 		return err
 	}
 	p.store.rowsWritten.Add(int64(len(rows)))
@@ -972,4 +976,4 @@ const maxBoxes = 256
 // caller's to narrow, not failed as the record's.
 const maxParams = 32766
 
-var errTooManyTerms = errors.New("too many bbox or mmsi for one request")
+var errTooManyTerms = errors.New("too many bbox, mmsi, or imo for one request")

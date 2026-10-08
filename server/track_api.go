@@ -110,13 +110,8 @@ func clampTime(t, lo, hi time.Time) time.Time {
 	return t
 }
 
-func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, now time.Time) (trackRequest, int, string) {
-	var q trackRequest
-	n, err := strconv.ParseUint(r.PathValue("mmsi"), 10, 32)
-	if err != nil {
-		return q, http.StatusBadRequest, "mmsi must be a number"
-	}
-	q.mmsi = uint32(n)
+func (p *Pipeline) parseTrackRequest(r *http.Request, cl *Claims, mmsi uint32, now time.Time) (trackRequest, int, string) {
+	q := trackRequest{mmsi: mmsi}
 	vals := r.URL.Query()
 	var status int
 	var msg string
@@ -278,7 +273,8 @@ func (p *Pipeline) vesselName(mmsi uint32) (name string, known bool, err error) 
 }
 
 // serveTrack: GET /v1/vessels/{mmsi}/track?from&to&interval&limit&format → the positions the network
-// heard from one vessel over the range, as a GeoJSON Feature or, with format=gpx, a GPX track.
+// heard from one vessel over the range, as a GeoJSON Feature or, with format=gpx, a GPX track. A track by IMO,
+// /v1/vessels/{imo}/track, follows the one MMSI the IMO names (vesselPath).
 func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
 	cl, err := p.requestClaims(r)
 	if err != nil {
@@ -290,8 +286,12 @@ func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "format=geojson or gpx", http.StatusBadRequest)
 		return
 	}
+	mmsi, location, ok := p.vesselPath(w, r, cl, "/track")
+	if !ok {
+		return
+	}
 	now := time.Now()
-	q, status, msg := p.parseTrackRequest(r, p.effective(cl), now)
+	q, status, msg := p.parseTrackRequest(r, cl, mmsi, now)
 	if msg != "" {
 		http.Error(w, msg, status)
 		return
@@ -317,15 +317,14 @@ func (p *Pipeline) serveTrack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(s.points) == 0 && !known {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "unknown vessel"})
+		unknownVessel(w)
 		return
 	}
 	attribution := map[string]string{}
 	for _, src := range pointSources(s.points) {
 		noteAttribution(attribution, src)
 	}
+	setContentLocation(w, location)
 	if format == "gpx" {
 		w.Header().Set("Content-Type", "application/gpx+xml")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%d.gpx"`, q.mmsi))
@@ -470,7 +469,8 @@ func xmlEscape(s string) string {
 const mcpTrackDefaultLimit = 50
 
 type mcpTrackIn struct {
-	MMSI            uint32 `json:"mmsi" jsonschema:"the vessel's MMSI; use search_vessels_by_name first when you only have a name"`
+	MMSI            uint32 `json:"mmsi,omitempty" jsonschema:"the vessel's MMSI; give mmsi or imo. Use search_vessels_by_name first when you only have a name"`
+	IMO             uint32 `json:"imo,omitempty" jsonschema:"the vessel's IMO number, instead of mmsi; needs a feeder or partner token. Follows the one vessel the IMO names: its only MMSI, or the only one heard in the last 30 days"`
 	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. A call covers up to 366 days"`
 	To              string `json:"to,omitempty" jsonschema:"end, RFC 3339 UTC; default now"`
 	IntervalMinutes int    `json:"interval_minutes,omitempty" jsonschema:"at most one position per this many minutes, evenly spaced; by default the track is simplified by shape instead, keeping the positions that hold its path. Anonymous and personal calls reaching past 48 hours are rounded up to whole minutes"`
@@ -520,6 +520,16 @@ func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	if in.IntervalMinutes < 0 {
 		return nil, mcpTrack{}, errors.New("interval_minutes cannot be negative")
+	}
+	if (in.MMSI == 0) == (in.IMO == 0) {
+		return nil, mcpTrack{}, errors.New("give exactly one of mmsi or imo")
+	}
+	if in.IMO != 0 {
+		mmsi, err := p.mcpSoleVessel(cl, in.IMO, now)
+		if err != nil {
+			return nil, mcpTrack{}, err
+		}
+		in.MMSI = mmsi
 	}
 	r := p.trackReader()
 	if r == nil {

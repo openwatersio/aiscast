@@ -105,6 +105,7 @@ type Pipeline struct {
 	cells     map[cellKey]map[uint32]*vessel // spatial index over vessels with a position; see vesselsIn
 	tiles     tileCache                      // encoded vector tiles, shared for tileTTL (tiles.go)
 	dirty     map[uint32]struct{}            // vessels folded since the last flush to the store; nil when none is attached
+	flushing  map[uint32]struct{}            // the vessels a flush is writing, until the mirror holds them
 	store     *store                         // the durable vessel record (store.go); nil in replay and tests that do not attach one
 	coverage  *coverageMap                   // where there are vessel positions, from ClickHouse (coveragemap.go); nil without CLICKHOUSE_URL
 	imports   importStats                    // the daily merge of ClickHouse's vessel history into the record (import.go)
