@@ -287,14 +287,25 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	return nil
 }
 
-// rebuildCoverage bins day's usable positions into coverage again. Its distinct sets only ever grow, so a copy
-// replay replaced or judged implausible leaves the cell it counted toward unless the day is deleted first.
+// rebuildCoverage bins day's usable positions into each coverage table again. Their distinct sets only ever
+// grow, so a copy deleted or judged implausible leaves the cell it counted toward unless the day is deleted
+// first. coverage is rebuilt as long as it is written, so a server rolled back to reading it never serves
+// coverage a deletion removed.
 func (c *chConn) rebuildCoverage(ctx context.Context, day time.Time) error {
-	if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+".coverage WHERE day = ?", day); err != nil {
-		return err
+	coverageBinning.Lock()
+	defer coverageBinning.Unlock()
+	for _, t := range chCoverageTables {
+		if err := c.conn.Exec(chDeleteSync(ctx), "DELETE FROM "+c.db+"."+t.table+" WHERE day = ?", day); err != nil {
+			return fmt.Errorf("%s: %w", t.table, err)
+		}
+		bctx, cancel := chBinning(ctx)
+		err := c.conn.Exec(bctx, strings.ReplaceAll(t.insert, "{db}", c.db), day, day.AddDate(0, 0, 1))
+		cancel()
+		if err != nil {
+			return fmt.Errorf("%s: %w", t.table, err)
+		}
 	}
-	return c.conn.Exec(ctx, "INSERT INTO "+c.db+".coverage "+chCoverageSelect(c.db+".receptions", chUsable+" AND ts >= ? AND ts < ?"),
-		day, day.AddDate(0, 0, 1))
+	return nil
 }
 
 // copyStaged inserts the staged rows matching where into receptions, by column name rather than position, so a

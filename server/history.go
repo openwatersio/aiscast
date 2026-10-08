@@ -348,10 +348,13 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 		return 0, fmt.Errorf("insert statics: %w", err)
 	}
 
-	// A day loaded before left rows in positions_1m that its delete did not reach.
+	// A day loaded before left rows in positions_1m and coverage that its delete did not reach.
 	if again {
 		if err := c.rebuildPositions1m(ctx, f.day); err != nil {
 			return 0, fmt.Errorf("rebuild positions_1m: %w", err)
+		}
+		if err := c.rebuildCoverage(ctx, f.day); err != nil {
+			return 0, fmt.Errorf("rebuild coverage: %w", err)
 		}
 	}
 	if err := record(true, read, read-placed, placed-distinct, n.kept, n.matched, n.implausible); err != nil {

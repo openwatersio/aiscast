@@ -201,7 +201,7 @@ func fetchFCC(ctx context.Context, endpoint, dir string) (map[uint32]*fccShip, e
 			return
 		}
 		out[uint32(mmsi)] = &fccShip{MMSI: uint32(mmsi), USI: usi,
-			CallSign: strings.TrimSpace(p[4]),
+			CallSign: strings.ToUpper(strings.TrimSpace(p[4])),
 			Name:     fromCP1252(strings.TrimSpace(p[9])),
 			Official: normOfficial(p[10])}
 	}); err != nil {
