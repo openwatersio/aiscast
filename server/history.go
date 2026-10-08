@@ -333,6 +333,9 @@ func (c *chConn) loadHistoryFile(ctx context.Context, s historySource, f history
 		if err := exec("DELETE FROM "+db+".receptions WHERE source = ? AND ts >= toDateTime64(?, 3, 'UTC') AND ts < toDateTime64(?, 3, 'UTC') + INTERVAL 1 DAY", s.name, day, day); err != nil {
 			return 0, fmt.Errorf("delete the earlier load: %w", err)
 		}
+		if err := c.markDay(ctx, f.day); err != nil { // the station series, as the reload changed the day's receptions
+			return 0, fmt.Errorf("mark the earlier load's hours: %w", err)
+		}
 	}
 
 	n, err := c.loadHistoryDay(ctx, s, f, stage)

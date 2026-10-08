@@ -125,12 +125,6 @@ func main() {
 	if n, err := p.loadDedupe(dedupe); err == nil {
 		log.Printf("restored %d dedupe entries from %s", n, dedupe)
 	}
-	stationVessels := env("STATION_VESSELS", "station-vessels.json")
-	if err := p.stations.loadVessels(stationVessels); err == nil {
-		log.Printf("restored station vessels from %s", stationVessels)
-	} else if !os.IsNotExist(err) {
-		log.Printf("station vessels: %v (24-hour counts start empty)", err)
-	}
 	usage := env("USAGE", "vessels-usage.json")
 	if err := p.loadUsage(usage); err == nil {
 		log.Printf("restored usage counters from %s", usage)
@@ -182,6 +176,9 @@ func main() {
 		go runUDP(p, l)
 	}
 	if url := os.Getenv("CLICKHOUSE_URL"); url != "" {
+		// Until runStationSeries reads the candidates back, or ownPendingMax passes without ClickHouse answering.
+		p.stations.ownPending.Store(true)
+		time.AfterFunc(ownPendingMax, func() { p.stations.ownPending.Store(false) })
 		go p.runClickHouse(url)
 		var sources []historySource
 		if os.Getenv("MARINECADASTRE") != "" {
@@ -200,6 +197,7 @@ func main() {
 		}
 		p.coverage = newCoverageMap()
 		go p.runCoverage()
+		go p.runStationSeries()
 	}
 	go p.logStats()
 	go p.runStationNames()
@@ -218,9 +216,6 @@ func main() {
 		p.closeArchives() // state saves follow, so they see everything the archives saw
 		if err := p.saveUsage(usage); err != nil {
 			log.Printf("usage: %v", err)
-		}
-		if err := p.stations.saveVessels(stationVessels, time.Now()); err != nil {
-			log.Printf("station vessels: %v", err)
 		}
 		if err := p.saveDedupe(dedupe); err != nil {
 			log.Printf("dedupe: %v (the next process may re-accept copies inside the window)", err)

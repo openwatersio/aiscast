@@ -21,6 +21,10 @@ func TestStats(t *testing.T) {
 	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})   // dup
 	p.Ingest(Reception{Source: "kystverket", Station: "kystverket", RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})   // only kystverket hears this one
 	p.Ingest(Reception{Source: "digitraffic", Station: "digitraffic", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // only ever a duplicate
+	// The station series' per-source figures, as ClickHouse would have them for what was heard above.
+	series := &fakeSeries{sources: map[string][2]int{"udp": {1, 0}, "kystverket": {2, 1}, "digitraffic": {1, 0}}}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, series: series})
+	p.refreshRollups(series, now)
 	p.sampleRate(now)
 	p.subscribe() // one open stream
 	srv := httptest.NewServer(httpHandler(p))
@@ -191,11 +195,11 @@ func TestStationRingSurvivesRestart(t *testing.T) {
 	if err := q.loadUsage(path); err != nil {
 		t.Fatal(err)
 	}
-	if rows := q.stations.rows(now); len(rows) != 0 { // not heard yet since restart: not listed
+	if rows := q.stations.rows(now, nil); len(rows) != 0 { // not heard yet since restart: not listed
 		t.Errorf("restored station listed before it reports: %+v", rows)
 	}
 	q.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})
-	if rows := q.stations.rows(now); len(rows) != 1 || rows[0].Events["last_24h"] != 2 {
+	if rows := q.stations.rows(now, nil); len(rows) != 1 || rows[0].Events["last_24h"] != 2 {
 		t.Errorf("station ring after restore: %+v", rows)
 	}
 }
