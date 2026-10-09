@@ -72,9 +72,8 @@ for (const f of byId.values()) {
   parent.children.push(f.id);
 }
 
-// Each group's fleets, the biggest first: a group counts every vessel in the fleets under it.
-const size = (f: Fleet): number => (f.sections ? fleetVessels(f).length : f.children.reduce((n, id) => n + size(byId.get(id)!), 0));
-for (const f of byId.values()) f.children.sort((a, b) => size(byId.get(b)!) - size(byId.get(a)!) || a.localeCompare(b));
+// Each group's fleets, the biggest first.
+for (const f of byId.values()) f.children.sort((a, b) => vesselCount(byId.get(b)!) - vesselCount(byId.get(a)!) || a.localeCompare(b));
 
 export const FLEETS: Fleet[] = [...byId.values()];
 
@@ -96,7 +95,7 @@ function avatars(fleet: Fleet): string[] {
 
 /** What a fleet's card shows: FleetCardData. */
 export function fleetCard(fleet: Fleet) {
-  const count = fleet.sections ? fleetVessels(fleet).length : fleet.children.length;
+  const count = fleet.sections ? vesselCount(fleet) : fleet.children.length;
   return {
     path: fleetPath(fleet.id),
     title: fleet.title,
@@ -120,6 +119,17 @@ export function fleetPath(id: string): string {
 /** Where the fleet's back button goes: the group it is in, or the map for the Fleets page. */
 export function parentPath(id: string): string {
   return id ? fleetPath(parentOf(id)) : "/vessels";
+}
+
+/** How many vessels a fleet has, or the fleets under a group, each counted once though it is in several. */
+export function vesselCount(fleet: Fleet): number {
+  const all = (f: Fleet): FleetVessel[] => (f.sections ? fleetVessels(f) : f.children.flatMap((id) => all(byId.get(id)!)));
+  return new Set(all(fleet).map((v) => v.mmsi ?? `name:${v.name}`)).size;
+}
+
+/** A fleet's share card, the PNG its page names as og:image: `/fleets.png` for the Fleets page itself. */
+export function fleetCardPath(id: string): string {
+  return `${fleetPath(id)}.png`;
 }
 
 export function fleetVessels(fleet: Fleet): FleetVessel[] {

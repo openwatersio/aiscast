@@ -225,12 +225,17 @@ export async function mediaResponse(key: string, requestUrl: string): Promise<Re
  * than holding up the page. A lookup that loses the race may be cut off with the response.
  */
 export async function firstPhoto(key: string, requestUrl: string, ms = 1000): Promise<string | undefined> {
+  return (await firstPhotoOf(key, requestUrl, ms))?.thumb;
+}
+
+/** The first photo whole, with its credit, on the same terms as firstPhoto. */
+export async function firstPhotoOf(key: string, requestUrl: string, ms = 1000): Promise<Photo | undefined> {
   const res = await Promise.race([
     mediaResponse(key, requestUrl).catch(() => undefined),
     new Promise<undefined>((resolve) => setTimeout(resolve, ms)),
   ]);
   if (!res?.ok) return undefined;
-  return ((await res.json()) as VesselMedia).photos[0]?.thumb;
+  return ((await res.json()) as VesselMedia).photos[0];
 }
 
 /**

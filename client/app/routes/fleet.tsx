@@ -15,7 +15,7 @@ import { coverKey, fleetCard, fleetPath, getFleet, parentPath, photoNames, type 
 import { fileTitle, mediaKey, type Photo } from "../lib/media";
 import { namedPhotos } from "../lib/media.server";
 import { useLive, useNow } from "../lib/live";
-import { pageMeta } from "../lib/meta";
+import { pageMeta, SITE } from "../lib/meta";
 import { useMedia } from "../lib/useMedia";
 import type { BBox } from "../lib/stream";
 import type { Route } from "./+types/fleet";
@@ -43,6 +43,8 @@ export const meta = ({ loaderData, error }: Route.MetaArgs) =>
       title: `${loaderData.fleet.title} | Open Waters AIS`,
       description: loaderData.fleet.id ? loaderData.fleet.summary : "Collections of notable vessels, from cruise ships to YouTube sailors, on the live Open Waters AIS map.",
       path: loaderData.path,
+      // Drawn by the Worker (lib/shareCard.server.tsx).
+      image: `${SITE}${loaderData.path}.png`,
     })
     : routeErrorMeta(error);
 
