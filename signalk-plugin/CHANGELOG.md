@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.3
 
 - The plugin's App Store page has screenshots of aiscast traffic in Navionics and Aqua Map, which receive it from the Signal K server as NMEA 0183 over Wi-Fi.
 
