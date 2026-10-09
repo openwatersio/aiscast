@@ -200,9 +200,9 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		// at a third of its bound, which leaves room for any one record before a copy could be dropped.
 		// Own-ship sightings have a bound of their own, so either queue filling sends both.
 		p.chMu.Lock()
-		queued, owned := len(p.chQueue), len(p.chOwn)
+		queued, owned, states := len(p.chQueue), len(p.chOwn), len(p.chStatics)
 		p.chMu.Unlock()
-		if queued < maxPending/3 && owned < maxOwnPending/3 {
+		if queued < maxPending/3 && owned < maxOwnPending/3 && states < maxStaticsPending/3 {
 			return nil
 		}
 		return flushNow()
@@ -234,6 +234,9 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	// Sightings past a sender's allowance were refused live too; only ones lost to a full map leave the day short.
 	if d := staging.ownDropped.Load(); d > 0 {
 		return fmt.Errorf("%d own-ship sightings dropped from a full map", d)
+	}
+	if d := staging.staticsDropped.Load(); d > 0 {
+		return fmt.Errorf("%d static states dropped from a full map", d)
 	}
 
 	where, args := replayWindow(day, archives)

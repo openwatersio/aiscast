@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"time"
 
@@ -127,7 +128,7 @@ func (p *Pipeline) noteStaticPacket(source, station string, t, recv time.Time, p
 	if recv.Before(p.replayGate) {
 		return // a replay's lead-in builds state and writes nothing
 	}
-	if t.Before(recv.Add(-clockBadAge)) || t.After(recv.Add(maxSkew)) {
+	if recv.Sub(t) >= clockBadAge || t.After(recv.Add(maxSkew)) { // the bound receptions mark clock_bad at
 		return
 	}
 	k, ok := staticOf(pkt)
@@ -175,6 +176,15 @@ func (p *Pipeline) aishubStaticMoved(mmsi uint32, secs int64) bool {
 	}
 	p.aishubStaticAt[mmsi] = secs
 	return true
+}
+
+// pruneAishubStatics forgets the AISHub TIMEs older than clockBadAge: a row that old is a bad clock's for statics
+// anyway, and a vessel AISHub no longer carries would otherwise stay in the map for good.
+func (p *Pipeline) pruneAishubStatics(now time.Time) {
+	cutoff := now.Add(-clockBadAge).Unix()
+	p.chMu.Lock()
+	defer p.chMu.Unlock()
+	maps.DeleteFunc(p.aishubStaticAt, func(_ uint32, secs int64) bool { return secs < cutoff })
 }
 
 // flushStatics writes the static states gathered since the last flush. A failed insert puts them back, merged

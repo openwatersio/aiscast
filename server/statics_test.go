@@ -238,6 +238,7 @@ func TestStaticsStationsClocksAndBound(t *testing.T) {
 	p.ingestPacket("station:harbor", "station:harbor", now, now, msg(257000001))
 	p.ingestPacket("kystverket", "kystverket/2573010", now, now, msg(257000002))
 	p.ingestPacket("kystverket", "kystverket", now.Add(-25*time.Hour), now, msg(257000003))
+	p.noteStaticPacket("kystverket", "kystverket", now.Add(-clockBadAge), now, msg(257000007)) // exactly at the bound receptions mark clock_bad at
 	invalid := msg(257000004)
 	invalid.Valid = false
 	p.ingestPacket("kystverket", "kystverket", now, now, invalid)
@@ -256,5 +257,34 @@ func TestStaticsStationsClocksAndBound(t *testing.T) {
 	p.ingestPacket("kystverket", "kystverket", now, now, msg(257000006))
 	if d := c.staticsDropped.Load(); d != 1 {
 		t.Errorf("%d states dropped past a bound of 1, want 1", d)
+	}
+}
+
+// An AISHub row carrying any static field counts, not only one with a name or IMO; and the TIMEs kept per vessel
+// for that are forgotten once older than a bad clock's bound.
+func TestAishubStaticFieldsAndPrune(t *testing.T) {
+	p := testPipeline(t)
+	st := &fakeStatics{}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, own: &fakeOwn{}, statics: st})
+	now := time.Unix(1625826600, 0)
+	body := `[[{"MMSI":244750035,"TIME":"1625826523","LONGITUDE":3022815,"LATITUDE":31476144,"TYPE":70,"DEST":"NLRTM"}]]`
+	p.ingestAishub([]byte(body), now)
+	p.flushClickHouse()
+	if len(st.batches) != 1 || len(st.batches[0]) != 1 {
+		t.Fatalf("a row with a type and destination but no name: %+v", st.batches)
+	}
+	for k := range st.batches[0] {
+		if k.shipType != 70 || k.destination != "NLRTM" {
+			t.Errorf("state %+v", k)
+		}
+	}
+	p.chMu.Lock()
+	p.aishubStaticAt[1] = now.Add(-clockBadAge - time.Second).Unix()
+	p.chMu.Unlock()
+	p.pruneAishubStatics(now)
+	p.chMu.Lock()
+	defer p.chMu.Unlock()
+	if _, old := p.aishubStaticAt[1]; old || len(p.aishubStaticAt) != 1 {
+		t.Errorf("after pruning: %v", p.aishubStaticAt)
 	}
 }

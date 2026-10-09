@@ -103,6 +103,11 @@ type aishubRow struct {
 	Eta       uint32 `json:"ETA"` // packed month/day/hour/minute
 }
 
+// hasStatic reports whether a row carries any static field.
+func (r aishubRow) hasStatic() bool {
+	return r.Name != "" || r.IMO != 0 || r.CallSign != "" || r.Type != 0 || r.A+r.B != 0 || r.C+r.D != 0 || r.Draught != 0 || r.Dest != "" || r.Eta != 0
+}
+
 func (r aishubRow) position(t time.Time) ais.Packet {
 	if r.Rot > 127 || r.Rot < -128 { // AISHub reports ROT n/a as 128; AIS encodes it as -128
 		r.Rot = -128
@@ -182,12 +187,12 @@ func (p *Pipeline) ingestAishub(body []byte, now time.Time) (int, error) {
 			p.ingestPacketAt("aishub", "aishub", t, now, r.position(t))
 			n++
 		}
+		// statics keeps every day a source sends a state, not only the days it changes the cache, so each row with
+		// any static field whose TIME has moved on goes to it whether or not it is news.
+		if r.hasStatic() && p.aishubStaticMoved(r.MMSI, secs) {
+			p.noteStaticPacket("aishub", "aishub", t, now, p.asDecoded(r.static()))
+		}
 		if r.Name != "" || r.IMO != 0 {
-			// statics keeps every day a source sends a state, not only the days it changes the cache, so each row
-			// whose TIME has moved on goes to it whether or not it is news.
-			if p.aishubStaticMoved(r.MMSI, secs) {
-				p.noteStaticPacket("aishub", "aishub", t, now, p.asDecoded(r.static()))
-			}
 			if pkt := r.static(); p.staticIsNew(r.MMSI, t, now, p.asDecoded(pkt)) {
 				p.ingestPacketAt("aishub", "aishub", t, now, pkt)
 				n++

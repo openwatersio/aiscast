@@ -630,6 +630,7 @@ func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
 		nv := p.vesselCount() // updateVessel sweeps, on the reception clock
 		p.stations.sweep(time.Now().Add(-stationVesselTTL))
+		p.pruneAishubStatics(time.Now())
 		p.sampleRate(time.Now())
 		p.smu.RLock()
 		ns := len(p.subs)
