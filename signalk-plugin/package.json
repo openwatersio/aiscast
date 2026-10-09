@@ -1,6 +1,6 @@
 {
   "name": "signalk-aiscast",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Show nearby traffic without an AIS receiver and share what yours hears via the Open Waters AIS network",
   "license": "MIT",
   "author": "Brandon Keepers <brandon@opensoul.org>",
@@ -22,6 +22,7 @@
   "files": [
     "dist",
     "icon.svg",
+    "docs/screenshots",
     "CHANGELOG.md",
     "README.md"
   ],
@@ -35,6 +36,10 @@
   "signalk": {
     "displayName": "Open Waters AIS",
     "appIcon": "./icon.svg",
+    "screenshots": [
+      "./docs/screenshots/navionics.jpg",
+      "./docs/screenshots/aquamap.jpg"
+    ],
     "recommends": [
       "signalk-buddylist-plugin"
     ]
