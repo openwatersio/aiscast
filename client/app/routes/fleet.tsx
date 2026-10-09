@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { data, Link } from "react-router";
 import { PageTitle, Panel } from "../components/Panel";
 import { RouteError, routeErrorMeta } from "../components/RouteError";
+import { Credit } from "../components/ui/Credit";
 import { PhotoCarousel } from "../components/ui/PhotoCarousel";
 import { ChipRow, MenuChip } from "../components/ui/Chip";
 import { Section } from "../components/ui/Section";
@@ -343,7 +344,7 @@ function VesselCard({
             {(context || vessel.subtitle) && <p>{[context, vessel.subtitle].filter(Boolean).join(" · ")}</p>}
             <p className="truncate">
               {!vessel.mmsi ? (
-                "Not on map"
+                "Last location unknown"
               ) : age ? (
                 <>
                   {doing && <span className="text-fg-secondary">{doing} · </span>}
@@ -352,7 +353,7 @@ function VesselCard({
               ) : report === undefined ? (
                 "\u00a0"
               ) : (
-                "Not heard"
+                "Last location unknown"
               )}
             </p>
             {to && (
@@ -374,15 +375,16 @@ function VesselCard({
 /** A photo, square and rounded, linking to its Commons page and its credit. */
 function Thumb({ photo, className }: { photo: Photo; className: string }) {
   return (
-    <a
-      href={photo.page}
-      target="_blank"
-      rel="noopener"
-      title={`© ${photo.artist} · ${photo.license}`}
-      className={cn("relative z-10 block shrink-0 overflow-hidden rounded-xl bg-surface-tile", className)}
-    >
-      <img src={photo.thumb.replace("/960px-", "/330px-")} alt={photo.description ?? ""} loading="lazy" decoding="async" className="size-full object-cover" />
-    </a>
+    // Above the card's own link, with the credit beside the photo's link rather than in it, so a tap on
+    // the © opens the credit. Anchored right, it opens leftward across the card.
+    <span className={cn("relative z-10 block shrink-0", className)}>
+      <a href={photo.page} target="_blank" rel="noopener" className="block size-full overflow-hidden rounded-xl bg-surface-tile">
+        <img src={photo.thumb.replace("/960px-", "/330px-")} alt={photo.description ?? ""} loading="lazy" decoding="async" className="size-full object-cover" />
+      </a>
+      <Credit className="absolute right-1 bottom-1 max-w-[min(18rem,calc(100vw-4rem))]">
+        {photo.artist} · {photo.license}
+      </Credit>
+    </span>
   );
 }
 

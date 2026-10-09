@@ -44,12 +44,15 @@ test("fleets open from the map's menu, list their vessels, and open one on the m
   await expect(group).toContainText("2 fleets");
   await group.click();
   await expect(page).toHaveURL(/\/ais\/fleets\/superyachts\/tech-billionaires$/);
-  await expect(page.getByRole("link", { name: /Sailing yachts/ })).toContainText("© Yacht photographer · CC BY-SA 4.0");
-  // The credit shows as a © until it is pointed at, then opens to the whole of it.
-  const credit = page.getByRole("link", { name: /Sailing yachts/ }).locator('[class*="group/credit"]');
+  // The credit sits beside the card's link, so a tap opens it rather than the fleet.
+  const card = page.getByRole("link", { name: /Sailing yachts/ }).locator("..");
+  await expect(card).toContainText("© Yacht photographer · CC BY-SA 4.0");
+  // It shows as a © until it is pointed at or focused, then opens to the whole of it.
+  const credit = card.locator('[class*="group/credit"]');
   expect((await credit.boundingBox())!.width).toBeLessThan(40);
-  await credit.hover();
+  await credit.focus();
   await expect.poll(async () => (await credit.boundingBox())!.width).toBeGreaterThan(120);
+  await expect(page).toHaveURL(/\/ais\/fleets\/superyachts\/tech-billionaires$/);
   await page.getByRole("link", { name: /Sailing yachts/ }).click();
   await expect(page).toHaveURL(/\/ais\/fleets\/superyachts\/tech-billionaires\/sailing$/);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Sailing yachts");
@@ -59,6 +62,11 @@ test("fleets open from the map's menu, list their vessels, and open one on the m
     .poll(() => page.evaluate(() => (window.aiscastMap!.isMoving() ? -1 : window.aiscastMap!.project([7.4, 43.7]).x)))
     .toBeGreaterThan(panelRight);
   await expect(page.getByRole("link", { name: "Ownership history" })).toHaveCount(4);
+  // A vessel's photo carries its credit too, which opens on focus as a tap gives it.
+  const koruCredit = page.locator("li", { has: page.getByRole("heading", { name: /^Koru/ }) }).locator('[class*="group/credit"]');
+  await expect(koruCredit).toContainText("Yacht photographer · CC BY-SA 4.0");
+  await koruCredit.focus();
+  await expect.poll(async () => (await koruCredit.boundingBox())!.width).toBeGreaterThan(120);
   // An unconfirmed identity is listed, but not as a link into the map.
   await expect(page.getByText("Rán VII")).toBeVisible();
   await expect(page.getByRole("link", { name: /Rán VII/ })).toHaveCount(0);

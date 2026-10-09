@@ -30,37 +30,34 @@ export function FleetCard({ card, photos, featured = false }: { card: FleetCardD
   // falls back to that when the named one does not come.
   const media = useMedia(card.photo && (!photos || own) ? undefined : card.cover);
   const photo = own ?? media?.photos[0];
+  // The credit sits beside the link, not in it, so a tap on it opens the credit rather than the fleet.
   return (
-    <Link
-      to={card.path}
-      className={cn(
-        "relative block overflow-hidden rounded-xl bg-surface-tile text-white no-underline hover:text-white",
-        featured ? "aspect-[16/10]" : "aspect-square",
-      )}
-    >
-      {photo ? (
-        <>
+    <div className={cn("relative overflow-hidden rounded-xl bg-surface-tile", featured ? "aspect-[16/10]" : "aspect-square")}>
+      <Link to={card.path} className="absolute inset-0 block text-white no-underline hover:text-white">
+        {photo ? (
           <img src={photo.thumb} alt="" decoding="async" className="absolute inset-0 size-full object-cover" />
-          {/* The licences ask for a credit wherever the photo shows; the carousels link it to the file. */}
-          <Credit focusable={false} className="absolute top-2 left-2 max-w-[calc(100%-1rem)]">
-            {photo.artist} · {photo.license}
-          </Credit>
-        </>
-      ) : card.avatars?.length ? (
-        // Who the fleet is, for one whose boats no one has photographed for Commons.
-        // A row of five on a wide card, two by two on a square one, clear of the title below.
-        <span className={cn("absolute inset-x-0 top-0 bottom-1/3 grid content-center justify-center gap-2 p-4", featured ? "grid-cols-5" : "grid-cols-2")} aria-hidden>
-          {card.avatars.slice(0, featured ? 5 : 4).map((src) => (
-            <img key={src} src={src} alt="" referrerPolicy="no-referrer" className={cn("rounded-full object-cover shadow-sm ring-2 ring-white/80", featured ? "size-14" : "size-12")} />
-          ))}
+        ) : card.avatars?.length ? (
+          // Who the fleet is, for one whose boats no one has photographed for Commons.
+          // A row of five on a wide card, two by two on a square one, clear of the title below.
+          <span className={cn("absolute inset-x-0 top-0 bottom-1/3 grid content-center justify-center gap-2 p-4", featured ? "grid-cols-5" : "grid-cols-2")} aria-hidden>
+            {card.avatars.slice(0, featured ? 5 : 4).map((src) => (
+              <img key={src} src={src} alt="" referrerPolicy="no-referrer" className={cn("rounded-full object-cover shadow-sm ring-2 ring-white/80", featured ? "size-14" : "size-12")} />
+            ))}
+          </span>
+        ) : (
+          <Ship className="absolute top-1/3 left-1/2 size-10 -translate-1/2 text-fg-muted" aria-hidden strokeWidth={1.5} />
+        )}
+        <span className="absolute inset-x-0 bottom-0 bg-linear-to-t from-black/75 to-transparent p-3 pt-12">
+          <span className={cn("block leading-tight font-semibold", featured ? "text-title" : "text-headline")}>{card.title}</span>
+          <span className="mt-0.5 block text-footnote text-white/80">{featured ? card.summary : card.count}</span>
         </span>
-      ) : (
-        <Ship className="absolute top-1/3 left-1/2 size-10 -translate-1/2 text-fg-muted" aria-hidden strokeWidth={1.5} />
+      </Link>
+      {photo && (
+        // The licences ask for a credit wherever the photo shows.
+        <Credit className="absolute top-2 left-2 z-10 max-w-[calc(100%-1rem)]">
+          {photo.artist} · {photo.license}
+        </Credit>
       )}
-      <span className="absolute inset-x-0 bottom-0 bg-linear-to-t from-black/75 to-transparent p-3 pt-12">
-        <span className={cn("block leading-tight font-semibold", featured ? "text-title" : "text-headline")}>{card.title}</span>
-        <span className="mt-0.5 block text-footnote text-white/80">{featured ? card.summary : card.count}</span>
-      </span>
-    </Link>
+    </div>
   );
 }
