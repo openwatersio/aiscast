@@ -1,0 +1,130 @@
+title: Tall ships
+summary: Square-riggers and schooners still under sail, from navy training ships to cruise ships with masts. The oldest, Belem, was launched in 1896.
+cover: Statsraad Lehmkuhl
+source:
+  Wikipedia: https://en.wikipedia.org/wiki/List_of_large_sailing_vessels
+sections:
+  - title: Sail training ships
+    vessels:
+      - name: Kruzenshtern
+        mmsi: 273243700
+        imo: 6822979
+        subtitle: "Russia · four-masted barque · 1926"
+      - name: Mir
+        mmsi: 273133800
+        imo: 8501701
+        subtitle: "Russia · full-rigged ship · 1987"
+      - name: Sedov
+        subtitle: "Russia · four-masted barque · 1921"
+      - name: Statsraad Lehmkuhl
+        mmsi: 258113000
+        imo: 5339248
+        subtitle: "Norway · barque · 1914"
+      - name: Christian Radich
+        mmsi: 258373000
+        imo: 5071729
+        subtitle: "Norway · full-rigged ship · 1937"
+      - name: Sørlandet
+        mmsi: 257165000
+        imo: 5334561
+        subtitle: "Norway · full-rigged ship · 1927"
+      - name: Danmark
+        mmsi: 219500000
+        imo: 5086279
+        subtitle: "Denmark · full-rigged ship · 1933"
+      - name: Gorch Fock
+        mmsi: 211210280
+        imo: 5133644
+        subtitle: "Germany · barque · 1958"
+      - name: Dar Młodzieży
+        mmsi: 261148000
+        imo: 7821075
+        subtitle: "Poland · full-rigged ship · 1982"
+      - name: Mircea
+        mmsi: 264800057
+        subtitle: "Romania · barque · 1938"
+      - name: Amerigo Vespucci
+        mmsi: 247999000
+        subtitle: "Italy · full-rigged ship · 1931"
+      - name: NRP Sagres
+        mmsi: 263141000
+        imo: 8642579
+        subtitle: "Portugal · barque · 1937"
+      - name: Juan Sebastián de Elcano
+        mmsi: 224977000
+        imo: 8642567
+        subtitle: "Spain · four-masted topsail schooner · 1928"
+      - name: USCGC Eagle
+        subtitle: "United States · barque · 1936"
+      - name: Cuauhtémoc
+        mmsi: 345186001
+        imo: 8107505
+        subtitle: "Mexico · barque · 1982"
+      - name: Gloria
+        mmsi: 730153580
+        imo: 8642555
+        subtitle: "Colombia · barque · 1968"
+      - name: Esmeralda
+        mmsi: 725019006
+        imo: 8642799
+        subtitle: "Chile · four-masted barquentine · 1954"
+      - name: Kaiwo Maru
+        mmsi: 431006000
+        imo: 8801010
+        subtitle: "Japan · four-masted barque · 1989"
+      - name: Nippon Maru
+        mmsi: 431498000
+        imo: 8211502
+        subtitle: "Japan · four-masted barque · 1984"
+  - title: Cruising under sail
+    vessels:
+      - name: Royal Clipper
+        mmsi: 215813000
+        imo: 8712178
+        subtitle: "Star Clippers · five-masted full-rigged ship · 2000"
+      - name: Star Flyer
+        mmsi: 248785000
+        imo: 8915433
+        subtitle: "Star Clippers · four-masted barquentine · 1991"
+      - name: Star Clipper
+        mmsi: 248786000
+        imo: 8915445
+        subtitle: "Star Clippers · four-masted barquentine · 1992"
+      - name: Sea Cloud
+        mmsi: 256084000
+        imo: 8843446
+        subtitle: "Sea Cloud Cruises · four-masted barque · 1931"
+      - name: Sea Cloud II
+        mmsi: 248953000
+        imo: 9171292
+        subtitle: "Sea Cloud Cruises · three-masted barque · 2001"
+      - name: Sea Cloud Spirit
+        mmsi: 215855000
+        imo: 9483712
+        subtitle: "Sea Cloud Cruises · three-masted full-rigged ship · 2021"
+  - title: Classic ships
+    vessels:
+      - name: Belem
+        mmsi: 227051000
+        imo: 8622983
+        subtitle: "France · barque · 1896"
+      - name: Stad Amsterdam
+        mmsi: 246494000
+        imo: 9185554
+        subtitle: "Netherlands · clipper · 2000"
+      - name: Oosterschelde
+        mmsi: 246011000
+        imo: 5347221
+        subtitle: "Netherlands · three-masted schooner · 1918"
+      - name: Eendracht
+        mmsi: 244543000
+        imo: 8814275
+        subtitle: "Netherlands · three-masted schooner · 1989"
+      - name: Alexander von Humboldt II
+        mmsi: 218768000
+        imo: 9618446
+        subtitle: "Germany · barque · 2011"
+      - name: Großherzogin Elisabeth
+        mmsi: 211205920
+        imo: 5309413
+        subtitle: "Germany · three-masted schooner · 1909"

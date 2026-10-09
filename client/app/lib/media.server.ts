@@ -1,5 +1,5 @@
 import { isValidImo } from "./ais";
-import { type Photo, type VesselMedia } from "./media";
+import { fileTitle, type Photo, type VesselMedia } from "./media";
 
 const COMMONS = "https://commons.wikimedia.org/w/api.php";
 const WIKIDATA = "https://www.wikidata.org/w/api.php";
@@ -71,6 +71,47 @@ function taken(meta: Record<string, { value?: string }>): number {
 }
 
 /**
+ * Each file's thumbnail and credit, from Commons' imageinfo, for up to 50 titles. Only images
+ * are kept. `normalized` maps a title as asked to Commons' own form of it.
+ */
+async function imageInfo(titles: string[]): Promise<{ found: Array<Photo & { taken: number; title: string }>; normalized: Map<string, string> }> {
+  const body = await wikimedia(COMMONS, {
+    action: "query",
+    prop: "imageinfo",
+    iiprop: "url|size|mime|extmetadata",
+    iiurlwidth: String(THUMB_WIDTH),
+    iiextmetadatafilter: "Artist|LicenseShortName|LicenseUrl|ImageDescription|DateTimeOriginal|DateTime",
+    titles: titles.join("|"),
+  });
+
+  // Commons answers under its own form of each title, which may differ from Wikidata's.
+  const normalized = new Map<string, string>((body.query?.normalized ?? []).map((n: { from: string; to: string }) => [n.from, n.to]));
+
+  const found: Array<Photo & { taken: number; title: string }> = [];
+  for (const page of body.query?.pages ?? []) {
+    const info = page.imageinfo?.[0];
+    // Categories also hold PDFs, videos and plans; only photographs and drawings render here.
+    if (!info?.thumburl || !String(info.mime ?? "").startsWith("image/")) continue;
+    const meta = info.extmetadata ?? {};
+    found.push({
+      thumb: info.thumburl,
+      width: info.thumbwidth,
+      height: info.thumbheight,
+      page: info.descriptionurl,
+      // Every file in the census had an Artist; the file name stands in if one does not.
+      artist: text(meta.Artist?.value) ?? String(page.title).replace(/^File:/, ""),
+      license: text(meta.LicenseShortName?.value) ?? "See file page",
+      // Metadata comes partly from the file page's wikitext; only a web link becomes an href.
+      licenseUrl: /^https?:\/\//i.test(text(meta.LicenseUrl?.value) ?? "") ? text(meta.LicenseUrl?.value) : undefined,
+      description: text(meta.ImageDescription?.value),
+      taken: taken(meta),
+      title: page.title,
+    });
+  }
+  return { found, normalized };
+}
+
+/**
  * The photo Wikidata gives the ship with this IMO (P458): its P18, which Wikidata serves as the
  * item's page image. An editor chose it for this hull, where a Commons category is filed by
  * hand and can hold another ship of the same name. An IMO on more than one item takes the lowest
@@ -113,40 +154,8 @@ async function lookupPhotos(category: string, imo?: number): Promise<{ media: Ve
   const titles = [...new Set(lead ? [lead, ...files] : files)].slice(0, MAX_CANDIDATES);
   if (!titles.length) return { media: { photos: [], links: {} }, complete };
 
-  const body = await wikimedia(COMMONS, {
-    action: "query",
-    prop: "imageinfo",
-    iiprop: "url|size|mime|extmetadata",
-    iiurlwidth: String(THUMB_WIDTH),
-    iiextmetadatafilter: "Artist|LicenseShortName|LicenseUrl|ImageDescription|DateTimeOriginal|DateTime",
-    titles: titles.join("|"),
-  });
-
-  // Commons answers under its own form of each title, which may differ from Wikidata's.
-  const normalized = new Map<string, string>((body.query?.normalized ?? []).map((n: { from: string; to: string }) => [n.from, n.to]));
+  const { found, normalized } = await imageInfo(titles);
   const leadTitle = lead && (normalized.get(lead) ?? lead);
-
-  const found: Array<Photo & { taken: number; title: string }> = [];
-  for (const page of body.query?.pages ?? []) {
-    const info = page.imageinfo?.[0];
-    // Categories also hold PDFs, videos and plans; only photographs and drawings render here.
-    if (!info?.thumburl || !String(info.mime ?? "").startsWith("image/")) continue;
-    const meta = info.extmetadata ?? {};
-    found.push({
-      thumb: info.thumburl,
-      width: info.thumbwidth,
-      height: info.thumbheight,
-      page: info.descriptionurl,
-      // Every file in the census had an Artist; the file name stands in if one does not.
-      artist: text(meta.Artist?.value) ?? String(page.title).replace(/^File:/, ""),
-      license: text(meta.LicenseShortName?.value) ?? "See file page",
-      // Metadata comes partly from the file page's wikitext; only a web link becomes an href.
-      licenseUrl: /^https?:\/\//i.test(text(meta.LicenseUrl?.value) ?? "") ? text(meta.LicenseUrl?.value) : undefined,
-      description: text(meta.ImageDescription?.value),
-      taken: taken(meta),
-      title: page.title,
-    });
-  }
 
   // Wikidata's photo, then recent livery.
   found.sort((a, b) => b.taken - a.taken);
@@ -222,4 +231,38 @@ export async function firstPhoto(key: string, requestUrl: string, ms = 1000): Pr
   ]);
   if (!res?.ok) return undefined;
   return ((await res.json()) as VesselMedia).photos[0]?.thumb;
+}
+
+/**
+ * Photos of named Commons files, such as those a fleet lists, keyed by fileTitle(name), in
+ * Commons' 50-title batches. Kept at the edge under the set of names, so a list edited in a
+ * deploy is asked for afresh. Never rejects: Wikimedia failing answers with what it found, or
+ * nothing, cached briefly.
+ */
+export async function namedPhotos(names: string[], requestUrl: string): Promise<Record<string, Photo>> {
+  const titles = [...new Set(names.map(fileTitle))].sort();
+  if (!titles.length) return {};
+  const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(titles.join("|")));
+  const id = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const cache = (caches as unknown as { default: Cache }).default;
+  const cacheKey = new Request(new URL(`/ais/fleets/photos/${id}`, requestUrl));
+  const hit = await cache.match(cacheKey).catch(() => undefined);
+  if (hit) return hit.json();
+
+  const photos: Record<string, Photo> = {};
+  let complete = true;
+  for (let i = 0; i < titles.length; i += MAX_CANDIDATES) {
+    try {
+      const { found, normalized } = await imageInfo(titles.slice(i, i + MAX_CANDIDATES));
+      const asked = new Map([...normalized].map(([from, to]) => [to, from]));
+      for (const { taken: _, title, ...photo } of found) photos[asked.get(title) ?? title] = photo;
+    } catch {
+      // Wikimedia failing, or answering with something other than its JSON: what was found is
+      // the answer, and it is asked again soon.
+      complete = false;
+    }
+  }
+  const response = Response.json(photos, { headers: { "cache-control": complete ? FOUND : FAILED } });
+  await cache.put(cacheKey, response).catch(() => undefined);
+  return photos;
 }

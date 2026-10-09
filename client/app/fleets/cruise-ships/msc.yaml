@@ -1,0 +1,107 @@
+title: MSC Cruises
+summary: "MSC Cruises was founded in 1970, is based in Geneva and is part of Mediterranean Shipping Company. Its 23 ships range from MSC Armonia (1999) to MSC World America (2025)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q663626
+sections:
+  - title: World class
+    vessels:
+      - name: MSC World America
+        mmsi: 249193000
+        imo: 9837432
+        subtitle: "333 m · in service 2025"
+  - title: Fantasia class
+    vessels:
+      - name: MSC Preziosa
+        mmsi: 371861000
+        imo: 9595321
+        subtitle: "333 m · in service 2013"
+      - name: MSC Divina
+        mmsi: 373178000
+        imo: 9585285
+        subtitle: "333 m · in service 2012"
+      - name: MSC Splendida
+        mmsi: 357698000
+        imo: 9359806
+        subtitle: "333 m · in service 2009"
+      - name: MSC Fantasia
+        mmsi: 370648000
+        imo: 9359791
+        subtitle: "333 m · in service 2008"
+  - title: Musica class
+    vessels:
+      - name: MSC Magnifica
+        mmsi: 352594000
+        imo: 9387085
+        subtitle: "294 m · in service 2010"
+      - name: MSC Poesia
+        mmsi: 355931000
+        imo: 9387073
+        subtitle: "294 m · in service 2008"
+      - name: MSC Orchestra
+        mmsi: 372497000
+        imo: 9320099
+        subtitle: "294 m · in service 2007"
+      - name: MSC Musica
+        mmsi: 352003000
+        imo: 9320087
+        subtitle: "294 m · in service 2006"
+  - title: Lirica class
+    vessels:
+      - name: MSC Opera
+        mmsi: 357627000
+        imo: 9250464
+        subtitle: "275 m · in service 2004"
+      - name: MSC Lirica
+        mmsi: 356042000
+        imo: 9246102
+        subtitle: "275 m · in service 2003"
+      - name: MSC Sinfonia
+        mmsi: 356716000
+        imo: 9210153
+        subtitle: "275 m · in service 2002"
+      - name: MSC Armonia
+        mmsi: 357281000
+        imo: 9210141
+        subtitle: "275 m · in service 1999"
+  - title: Other ships
+    vessels:
+      - name: MSC Euribia
+        mmsi: 256281000
+        imo: 9901544
+        subtitle: "332 m · in service 2023"
+      - name: MSC Seascape
+        mmsi: 256059000
+        imo: 9843807
+        subtitle: "339 m · in service 2022"
+      - name: MSC World Europa
+        mmsi: 256070000
+        imo: 9837420
+        subtitle: "333 m · in service 2022"
+      - name: MSC Seashore
+        mmsi: 215920000
+        imo: 9843792
+        subtitle: "339 m · in service 2021"
+      - name: MSC Virtuosa
+        mmsi: 215610000
+        imo: 9803625
+        subtitle: "332 m · in service 2020"
+      - name: MSC Bellissima
+        mmsi: 248992000
+        imo: 9760524
+        subtitle: "316 m · in service 2019"
+      - name: MSC Grandiosa
+        mmsi: 215325000
+        imo: 9803613
+        subtitle: "332 m · in service 2019"
+      - name: MSC Seaview
+        mmsi: 248717000
+        imo: 9745378
+        subtitle: "323 m · in service 2018"
+      - name: MSC Meraviglia
+        mmsi: 249973000
+        imo: 9760512
+        subtitle: "316 m · in service 2017"
+      - name: MSC Seaside
+        mmsi: 248392000
+        imo: 9745366
+        subtitle: "323 m · in service 2017"

@@ -39,3 +39,6 @@ export function mediaKey(imo: number | undefined, mmsi: number): string | undefi
 export function smallThumb(photo: Photo): string {
   return photo.thumb.replace("/960px-", "/120px-");
 }
+
+/** A Commons file's title as Commons lists it, `File:` and the name with spaces, which keys namedPhotos. */
+export const fileTitle = (name: string) => `File:${name.replace(/^file:/i, "").replace(/_/g, " ")}`;

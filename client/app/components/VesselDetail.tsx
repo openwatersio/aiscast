@@ -21,12 +21,13 @@ import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS, SIGNALK_PLUGIN } from "../li
 import { SITE } from "../lib/meta";
 import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
-import { mediaKey } from "../lib/media";
+import { mediaKey, type Photo } from "../lib/media";
 import { particularsFacts } from "../lib/particulars";
 import { useMedia } from "../lib/useMedia";
 import type { TrackRange } from "../lib/trackRange";
 import { useStation } from "../lib/useStationTitle";
 import { useTrack } from "../lib/useTrack";
+import { FleetCard, type FleetCardData } from "./FleetCard";
 import { PageTitle } from "./Panel";
 import { ActionButton, ActionLink, ActionRow } from "./ui/ActionButton";
 import { Facts } from "./ui/Facts";
@@ -282,6 +283,8 @@ export function VesselDetail({
         </p>
       </Section>
 
+      <Fleets mmsi={mmsi} />
+
       {/* The credit that came with this vessel's own last message, which only the stream carries. */}
       {attribution && (
         <p className="mt-5 text-footnote text-fg-muted">
@@ -400,5 +403,31 @@ function ContributePrompt({ ownBoat, volunteer }: { ownBoat: boolean; volunteer:
     <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-5">
       A volunteer&rsquo;s receiver heard this vessel.
     </Prompt>
+  );
+}
+
+/** The fleets this vessel is in, as their cards, from routes/vessel-fleets.ts. Nothing until they come, or if none. */
+function Fleets({ mmsi }: { mmsi: number }) {
+  const [answer, setAnswer] = useState<{ cards: FleetCardData[]; photos: Record<string, Photo> }>();
+  useEffect(() => {
+    let current = true;
+    setAnswer(undefined);
+    void fetch(`/ais/vessels/fleets/${mmsi}`)
+      .then((res) => (res.ok ? (res.json() as Promise<{ cards: FleetCardData[]; photos: Record<string, Photo> }>) : undefined))
+      .catch(() => undefined)
+      .then((a) => current && setAnswer(a));
+    return () => {
+      current = false;
+    };
+  }, [mmsi]);
+  if (!answer?.cards.length) return null;
+  return (
+    <Section label={answer.cards.length === 1 ? "In a fleet" : "In fleets"} bare>
+      <div className="space-y-3">
+        {answer.cards.map((card) => (
+          <FleetCard key={card.path} card={card} photos={answer.photos} featured />
+        ))}
+      </div>
+    </Section>
   );
 }

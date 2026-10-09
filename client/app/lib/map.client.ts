@@ -994,6 +994,21 @@ export function createMap(
     // ring, and one too old for the map still shows its class in the dot.
     map.addSource("results", { type: "geojson", data: resultsFC(), promoteId: "mmsi" });
     const lit: any = ["boolean", ["feature-state", "lit"], false];
+    // The row under the pointer: a wide halo in the accent around its ring, so the mark it means
+    // stands out from the rest at any zoom.
+    map.addLayer({
+      id: "result-glow",
+      type: "circle",
+      source: "results",
+      paint: {
+        "circle-radius": ["case", lit, 24, 0],
+        "circle-color": c.track,
+        "circle-opacity": 0.22,
+        "circle-stroke-width": ["case", lit, 1.5, 0],
+        "circle-stroke-color": c.track,
+        "circle-radius-transition": { duration: 150 },
+      },
+    });
     map.addLayer({
       id: "result-ring",
       type: "circle",
@@ -1267,8 +1282,6 @@ export function createMap(
       requestCamera((animate) => map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 11), speed: 1.4, animate }));
     },
     fitBBox(bbox) {
-      // fitBounds' own padding replaces the camera padding rather than adding to it, so the
-      // panel insets have to be folded in here or the fitted box lands under a panel.
       requestCamera((animate) => fit(bbox, animate));
     },
     onSelect(fn) {
@@ -1357,22 +1370,15 @@ export function createMap(
   }
 
   function fit(bbox: BBox, animate: boolean) {
-    const p = map.getPadding();
     map.fitBounds(
       [
         [bbox[1], bbox[0]],
         [bbox[3], bbox[2]],
       ],
-      {
-        padding: {
-          top: (p.top ?? 0) + 40,
-          right: (p.right ?? 0) + 40,
-          bottom: (p.bottom ?? 0) + 40,
-          left: (p.left ?? 0) + 40,
-        },
-        maxZoom: 11,
-        animate,
-      },
+      // A margin around the box. The camera padding, the panels' insets, is already left out of
+      // the room fitBounds fits into; counting it again here leaves a phone under its sheet no
+      // room at all, and the camera does not move.
+      { padding: 40, maxZoom: 11, animate },
     );
   }
 }

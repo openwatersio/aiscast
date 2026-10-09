@@ -1,0 +1,246 @@
+title: Sailors
+summary: Sailing channels and their boats, past and present.
+description: A previous boat's position follows that vessel, even after its creators move on.
+sections:
+  - title: Gone With The Wynns
+    avatar: https://yt3.ggpht.com/kcNHZ8M51KedUJSNYII4FcBKLMyYPr0od_XWGysK_VvBZWwhLqK4JfnTZVJFtllBWNw3c81RhcY=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Jason & Nikki Wynn
+    links:
+      YouTube: https://www.youtube.com/@gonewiththewynns
+    vessels:
+      - name: Undra
+        mmsi: 368478440
+        subtitle: 50-foot aluminum explorer yacht
+        note: Third boat
+        links:
+          Boat details: https://www.gonewiththewynns.com/explorer-yacht-undra/
+          AIS identity: https://www.aiscatcher.org/ship/details/368478440
+      - name: Curiosity²
+        subtitle: HH44 sailing catamaran
+        note: Previous boat
+        links:
+          Boat details: https://www.gonewiththewynns.com/curiosity-sailboat/
+      - name: Curiosity
+        subtitle: Leopard 43 catamaran
+        note: First boat
+        links:
+          Boat details: https://www.gonewiththewynns.com/sweet-life-sailing-dream-boat/
+  - title: Sampson Boat Co.
+    avatar: https://yt3.ggpht.com/ytc/AIdro_nNrhPNPPqTQRyOd6V_r2u8JCUPzm7BVIdb3XZQYoPotJA=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Leo Goolden & crew
+    links:
+      YouTube: https://www.youtube.com/@SampsonBoatCo
+    vessels:
+      - name: Tally Ho
+        mmsi: 235093681
+        subtitle: 1910 Albert Strange gaff cutter
+        note: Restored & sailing
+        links:
+          Boat details: https://www.yachttallyho.com/
+          AIS identity: https://www.marineradar.com/vessel/mmsi-235093681/tally-ho
+  - title: No Bullshit Just Sailing
+    avatar: https://yt3.ggpht.com/v9P5exONF_Vt8HC4otjMeZmw2zTWJLIeXxWSABJS9cHp7bGstxUztBZsMXy1O9q0js0SbJFYMg=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Erik Aanderaa
+    links:
+      YouTube: https://www.youtube.com/@erikaanderaa
+    vessels:
+      - name: Tessie
+        mmsi: 257528790
+        subtitle: Contessa 35
+        note: Solo North Atlantic sailing
+        links:
+          Boat details: https://nbjs.no/
+          AIS identity: https://www.vesselfinder.com/vessels/details/257528790
+  - title: Sailing With Phoenix
+    avatar: https://yt3.ggpht.com/lCMCGe6h3mcEjxVFLcBMSQ_WrMtxZYsUAtIATDWseTv4t5_ps_gNlQfbvjxGIMMSpQDOP00u=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Oliver Widger & Phoenix the cat
+    links:
+      YouTube: https://www.youtube.com/channel/UCAub01nC6godaiC7iI9kasw
+    vessels:
+      - name: Phoenix do Mar
+        mmsi: 368448560
+        subtitle: Pacific Seacraft 40
+        note: Current boat
+        links:
+          Boat details: https://www.youtube.com/watch?v=fASS2iAo5FU
+          AIS identity: https://www.vesselfinder.com/vessels/details/368448560
+      - name: Phoenix
+        subtitle: 33-foot cruising sailboat
+        note: Previous boat
+        links:
+          Boat details: https://www.buzzsprout.com/2321035/episodes/16992754-salty-podcast-58-sailing-oregon-to-hawaii-sailing_with_phoenix-prepares-to-cross-the-pacific
+  - title: Distant Shores
+    avatar: https://yt3.ggpht.com/ytc/AIdro_mCcLvBLFmxIjwAMPTtwzHM3h6hs7ewRm6lprnSZf7MD04=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Paul & Sheryl Shard
+    links:
+      YouTube: https://www.youtube.com/@DistantShoresTV
+    vessels:
+      - name: Distant Shores IV
+        mmsi: 232057925
+        subtitle: Enksail Orion 49 aluminum sailboat
+        note: Fourth Distant Shores boat
+        links:
+          Boat details: https://www.patreon.com/distantshorestv/posts/new-video-shores-103883084
+          AIS identity: https://www.harbourmaps.com/ship/journey/q?mmsi=232057925
+      - name: Distant Shores III
+        subtitle: Southerly 480
+        note: Previous boat
+        links:
+          Boat details: https://www.distantshores.ca/boatblog_files/category-distant-shores-iii.php
+      - name: Distant Shores II
+        subtitle: Southerly 49
+        note: Earlier boat
+        links:
+          Boat details: https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php
+      - name: Distant Shores
+        subtitle: Southerly 42
+        note: First Distant Shores boat
+        links:
+          Boat details: https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php
+      - name: Two-Step
+        subtitle: Classic 37
+        note: Original boat
+        links:
+          Boat details: https://distantshores.ca/boatblog_files/distant-shores-3-criteria-for-the-around-the-world-sailboat.php
+  - title: Sailing La Vagabonde
+    avatar: https://yt3.ggpht.com/idehYrFJqFfE-LL6offHIhZJlc28vwSd881LKYH-F9vEgtUWTpmDLbiZ08nD6_w_3a89R7hE=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Riley Whitelum & Elayna Carausu
+    links:
+      YouTube: https://www.youtube.com/@SailingLaVagabonde
+    vessels:
+      - name: La Vagabonde III
+        mmsi: 268233302
+        subtitle: Rapido 60 trimaran
+        note: Third boat
+        links:
+          Boat details: https://www.sailinglavagabonde.org/our-trimaran
+          AIS identity: https://www.myshiptracking.com/vessels/la-vagabond-iii-mmsi-268233302-imo-
+      - name: La Vagabonde II
+        subtitle: Outremer 45 catamaran
+        note: Previous boat
+        links:
+          Boat details: https://www.sailinglavagabonde.org/
+      - name: La Vagabonde I
+        subtitle: Beneteau Cyclades 43.4
+        note: First boat
+        links:
+          Boat details: https://www.sailinglavagabonde.org/
+  - title: SV Delos
+    avatar: https://yt3.ggpht.com/-3d6-KDvtXyh905o2gJpd3r1tR2buZgUjQ46b3tuBqTpRmtnBbzGBB9ACUkI6V7f6FIcVyDm9Q=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Brian Trautman & Karin
+    links:
+      YouTube: https://www.youtube.com/@svdelos
+    vessels:
+      - name: Delos 2.0
+        subtitle: Delos Explorer 53 aluminum catamaran
+        note: New build
+        links:
+          Boat details: https://svdelos.com/delos2/
+      - name: Delos
+        subtitle: Amel Super Maramu 53
+        note: Original boat
+        links:
+          Boat details: https://svdelos.com/frequently-asked-questions/
+  - title: Sailing Uma
+    avatar: https://yt3.ggpht.com/ytc/AIdro_k7athviTZa-vIL58V4M4VOfgKUua33A7tzmIvteClaGuc=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Dan Deckert & Kika Mevs
+    links:
+      YouTube: https://www.youtube.com/@SailingUma
+    vessels:
+      - name: Uma
+        mmsi: 316039039
+        subtitle: Pearson 36, converted to electric
+        note: Electric refit
+        links:
+          Boat details: https://sailinguma.com/
+          AIS identity: https://www.vesseltracker.com/en/Ships/Uma-I2338997.html
+  - title: Sailing Parlay Revival
+    avatar: https://yt3.ggpht.com/ytc/AIdro_mHRflzn4nosR0oojaKXTjehTKIJoKPQWuXsLzv_fN-EQ=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Colin MacRae & crew
+    links:
+      YouTube: https://www.youtube.com/@ParlayRevival
+    vessels:
+      - name: Parlay
+        mmsi: 368115250
+        subtitle: Lagoon 450 catamaran
+        note: Hurricane recovery & rebuild
+        links:
+          Boat details: https://parlayrevival.com/
+          AIS identity: https://www.harbourmaps.com/ship/journey/q?mmsi=368115250
+  - title: Sailing Yacht Florence
+    avatar: https://yt3.ggpht.com/u06m0L07WS_69Kv561NNqc7cNjpUFL79ktayXxpBHzWLPloj2F-nUU5nVAz56aZpgnIewXU6cg=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Matt Humphreys & Amy Cartwright
+    links:
+      YouTube: https://www.youtube.com/@sailingflorence
+    vessels:
+      - name: Florence
+        subtitle: Oyster Heritage 37
+        note: Circumnavigation & refit
+        links:
+          Boat details: https://sailwiththeflo.wordpress.com/florence/
+  - title: Sam Holmes Sailing
+    avatar: https://yt3.ggpht.com/PZJjz-PDC-LotDE_zUg7Q1NUX0XTBcHGBtTdhdzsSyDpxBl51ZiwGIHnWige-5C5G8dK8QjyTQ=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Sam Holmes
+    links:
+      YouTube: https://www.youtube.com/@samholmessailing
+    vessels:
+      - name: Pickled Catfish
+        subtitle: 43-foot Schionning catamaran
+        note: Current boat
+        links:
+          Boat details: https://www.patreon.com/posts/tour-of-our-next-125870605
+      - name: Pickled Herring
+        subtitle: Cape Dory 28
+        note: Previous boat
+        links:
+          Boat details: https://windpilot.com/blog/blog/portraits/sv-pickled-herring-sam-holmes-us/
+      - name: Swedish Fish
+        subtitle: Ranger 23
+        note: Earlier boat
+        links:
+          Boat details: https://windpilot.com/blog/blog/portraits/sv-pickled-herring-sam-holmes-us/
+  - title: Alluring Arctic
+    avatar: https://yt3.ggpht.com/5YaEPWaFo4PfERnZNsKSiV47BBrfwGMS40IYxhQUWseXHFlmhay-40zuQyhbUqcS76VvMOQlFw=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Juho Karhu & Sohvi Kangasluoma
+    links:
+      YouTube: https://www.youtube.com/@AlluringArctic
+    vessels:
+      - name: Lumi
+        mmsi: 230174360
+        subtitle: Garcia Nouanni 43/46 aluminum sailboat
+        note: Current boat
+        links:
+          Boat details: https://www.alluringarctic.com/about-us
+          AIS identity: https://www.myshiptracking.com/vessels/lumi-mmsi-230174360-imo-
+      - name: Sylvia
+        subtitle: Beneteau Idylle 11.50
+        note: Previous boat
+        links:
+          Boat details: https://www.alluringarctic.com/our-story
+  - title: Wind Hippie Sailing
+    avatar: https://yt3.ggpht.com/ytc/AIdro_m_3pfII_4t8Nj7g7Nff9NaHQ_wSYzV1h3hEIo_FEHSWnQ=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Holly Martin
+    links:
+      YouTube: https://www.youtube.com/@WindHippieSailing
+    vessels:
+      - name: Gecko
+        subtitle: Grinde 27
+        note: Solo sailing
+        links:
+          Boat details: https://windhippie.com/about-my-boat/
+  - title: Sailing Magic Carpet
+    avatar: https://yt3.ggpht.com/I0atlJJSgxAmGLkNUwBCWhlks6_aYf5rEvZwkIuYkuwz3qaUGtVUhM9OtMBQEuRAksvd-YOv=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Maya & Aladino
+    links:
+      YouTube: https://www.youtube.com/@SailingMagicCarpet
+    vessels:
+      - name: Magic Carpet II
+        subtitle: Cape George 36
+        note: Second boat
+        links:
+          Boat details: https://sailingmagiccarpet.com/about/
+      - name: Magic Carpet I
+        subtitle: Vindö 32 (28 feet)
+        note: Previous boat
+        links:
+          Boat details: https://sailingmagiccarpet.com/about/

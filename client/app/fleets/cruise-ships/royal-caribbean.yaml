@@ -1,0 +1,159 @@
+title: Royal Caribbean
+summary: "Royal Caribbean was founded in 1968, is based in Miami and is part of Royal Caribbean Group. Its 30 ships range from Grandeur of the Seas (1996) to Legend of the Seas (2026)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q929872
+cover: Icon of the Seas
+photos:
+  - CentralParkinOasis.jpg
+  - Oasis of the Seas Royal Promenade from Prince Greene.jpg
+  - Oasis of the Seas Boardwalk entrance.jpg
+  - Deck 5 (52419819364).jpg
+  - Bridge, Radiance of the Seas 03.jpg
+sections:
+  - title: Icon class
+    vessels:
+      - name: Legend of the Seas
+        mmsi: 311001716
+        imo: 9888560
+        subtitle: 365 m · in service 2026
+      - name: Star of the Seas
+        mmsi: 311001551
+        imo: 9829942
+        subtitle: 365 m · in service 2025
+      - name: Icon of the Seas
+        mmsi: 311001178
+        imo: 9829930
+        subtitle: 365 m · in service 2024
+  - title: Oasis class
+    vessels:
+      - name: Utopia of the Seas
+        mmsi: 311001259
+        imo: 9880001
+        subtitle: 362 m · in service 2024
+      - name: Wonder of the Seas
+        mmsi: 311001033
+        imo: 9838345
+        subtitle: 362 m · in service 2022
+      - name: Symphony of the Seas
+        mmsi: 311000660
+        imo: 9744001
+        subtitle: 362 m · in service 2018
+      - name: Harmony of the Seas
+        mmsi: 311000396
+        imo: 9682875
+        subtitle: 362 m · in service 2016
+      - name: Allure of the Seas
+        mmsi: 311020700
+        imo: 9383948
+        subtitle: 362 m · in service 2010
+      - name: Oasis of the Seas
+        mmsi: 311020600
+        imo: 9383936
+        subtitle: 360 m · in service 2009
+        photos:
+          - Oasis of the Seas Central Park.jpg
+          - Vue plongeante arrière.jpg
+          - Simulateur de surf.jpg
+  - title: Quantum class
+    vessels:
+      - name: Odyssey of the Seas
+        mmsi: 311000912
+        imo: 9795737
+        subtitle: 348 m · in service 2021
+      - name: Spectrum of the Seas
+        mmsi: 210563000
+        imo: 9778856
+        subtitle: 348 m · in service 2019
+      - name: Ovation of the Seas
+        mmsi: 311000397
+        imo: 9697753
+        subtitle: 348 m · in service 2016
+      - name: Anthem of the Seas
+        mmsi: 311000274
+        imo: 9656101
+        subtitle: 348 m · in service 2015
+        photos:
+          - Royal Caribbean Anthem of the Seas (17264675905).jpg
+          - Royal Caribbean Anthem of the Seas (16642241264).jpg
+      - name: Quantum of the Seas
+        mmsi: 311000267
+        imo: 9549463
+        subtitle: 348 m · in service 2014
+        photos:
+          - Two-70 (52403635530).jpg
+          - Cabin 8326 with Virtual Window (52424452613).jpg
+  - title: Freedom class
+    vessels:
+      - name: Independence of the Seas
+        mmsi: 309374000
+        imo: 9349681
+        subtitle: 339 m · in service 2008
+      - name: Liberty of the Seas
+        mmsi: 309436000
+        imo: 9330032
+        subtitle: 339 m · in service 2007
+      - name: Freedom of the Seas
+        mmsi: 309906000
+        imo: 9304033
+        subtitle: 339 m · in service 2006
+  - title: Voyager class
+    vessels:
+      - name: Mariner of the Seas
+        mmsi: 311493000
+        imo: 9227510
+        subtitle: 311 m · in service 2003
+      - name: Navigator of the Seas
+        mmsi: 210662000
+        imo: 9227508
+        subtitle: 312 m · in service 2002
+      - name: Adventure of the Seas
+        mmsi: 311263000
+        imo: 9167227
+        subtitle: 312 m · in service 2001
+      - name: Explorer of the Seas
+        mmsi: 311316000
+        imo: 9161728
+        subtitle: 311 m · in service 2000
+      - name: Voyager of the Seas
+        mmsi: 311317000
+        imo: 9161716
+        subtitle: 311 m · in service 1999
+  - title: Radiance class
+    vessels:
+      - name: Jewel of the Seas
+        mmsi: 311583000
+        imo: 9228356
+        subtitle: 294 m · in service 2004
+      - name: Serenade of the Seas
+        mmsi: 311492000
+        imo: 9228344
+        subtitle: 294 m · in service 2003
+      - name: Brilliance of the Seas
+        mmsi: 311361000
+        imo: 9195200
+        subtitle: 294 m · in service 2002
+      - name: Radiance of the Seas
+        mmsi: 311319000
+        imo: 9195195
+        subtitle: 294 m · in service 2001
+        photos:
+          - Bridge, Radiance of the Seas 03.jpg
+          - Junior suite, Radiance of the Seas 03.jpg
+  - title: Vision class
+    vessels:
+      - name: Vision of the Seas
+        mmsi: 311321000
+        imo: 9116876
+        subtitle: 279 m · in service 1998
+      - name: Enchantment of the Seas
+        mmsi: 311733000
+        imo: 9111802
+        subtitle: 302 m · in service 1997
+      - name: Rhapsody of the Seas
+        mmsi: 311805000
+        imo: 9116864
+        subtitle: 279 m · in service 1997
+      - name: Grandeur of the Seas
+        mmsi: 311315000
+        imo: 9102978
+        subtitle: 280 m · in service 1996

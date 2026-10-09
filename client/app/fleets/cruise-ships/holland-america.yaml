@@ -1,0 +1,55 @@
+title: Holland America Line
+summary: "Holland America Line was founded in 1873 by Antoine Plate, is based in Seattle and is part of Carnival Corporation. Its 11 ships range from Volendam (1999) to Rotterdam (2021)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q1624735
+sections:
+  - title: Vista class
+    vessels:
+      - name: Noordam
+        mmsi: 246028000
+        imo: 9230115
+        subtitle: "285 m · in service 2006"
+      - name: Westerdam
+        mmsi: 244128000
+        imo: 9226891
+        subtitle: "285 m · in service 2004"
+      - name: Zuiderdam
+        mmsi: 245304000
+        imo: 9221279
+        subtitle: "285 m · in service 2002"
+      - name: Oosterdam
+        mmsi: 245417000
+        imo: 9221281
+        subtitle: "285 m · in service 2003"
+  - title: Rotterdam class
+    vessels:
+      - name: Zaandam
+        mmsi: 246442000
+        imo: 9156527
+        subtitle: "238 m · in service 2000"
+      - name: Volendam
+        mmsi: 245968000
+        imo: 9156515
+        subtitle: "237 m · in service 1999"
+  - title: Other ships
+    vessels:
+      - name: Rotterdam
+        mmsi: 245464000
+        imo: 9837470
+        subtitle: "296 m · in service 2021"
+      - name: Nieuw Statendam
+        mmsi: 244140580
+        imo: 9767106
+        subtitle: "299 m · in service 2018"
+      - name: Koningsdam
+        mmsi: 244830547
+        imo: 9692557
+        subtitle: "299 m · in service 2016"
+      - name: Nieuw Amsterdam
+        mmsi: 246648000
+        imo: 9378450
+        subtitle: "285 m · in service 2010"
+      - name: Eurodam
+        mmsi: 245206000
+        imo: 9378448
+        subtitle: "287 m · in service 2008"

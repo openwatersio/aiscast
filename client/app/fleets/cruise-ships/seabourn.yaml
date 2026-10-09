@@ -1,0 +1,26 @@
+title: Seabourn
+summary: "Seabourn was founded in 1986 by Atle Brynestad, is based in Seattle and is part of Carnival Corporation. Its 5 ships range from Seabourn Quest (2011) to Seabourn Pursuit (2023)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q282903
+vessels:
+  - name: Seabourn Venture
+    mmsi: 311000930
+    imo: 9862023
+    subtitle: "172 m · in service 2022"
+  - name: Seabourn Quest
+    mmsi: 311038900
+    imo: 9483126
+    subtitle: "198 m · in service 2011"
+
+  - name: Seabourn Ovation
+    mmsi: 311000585
+    imo: 9764958
+    subtitle: "211 m · in service 2018"
+  - name: Seabourn Encore
+    mmsi: 311000464
+    imo: 9731171
+    subtitle: "211 m · in service 2017"
+  - name: Seabourn Pursuit
+    mmsi: 311001081
+    imo: 9862035
+    subtitle: "172 m · in service 2023"

@@ -1,5 +1,6 @@
 import { isVolunteer, vesselPath, volunteerReceiver } from "./ais";
 import { ApiUnavailable, getSitemapPages, getSitemapVessels, getStations, type ApiAuth } from "./api";
+import { FLEETS, fleetPath } from "./fleets.server";
 import { SITE } from "./meta";
 
 /**
@@ -13,7 +14,7 @@ const PAGES_SITEMAP = "/ais/sitemap-pages.xml";
 const VESSELS_SITEMAP = /^\/ais\/sitemap-vessels-([1-9]\d{0,3})\.xml$/;
 
 /** The app's own pages. They change with the network, not on a date worth stating. */
-const APP_PAGES = ["/vessels", "/stations", "/network", "/explore", "/explore/tech-yachts", "/explore/youtube", "/explore/youtube/sailors", "/explore/youtube/cruisers"];
+const APP_PAGES = ["/vessels", "/stations", "/network", ...FLEETS.map((f) => fleetPath(f.id))];
 
 /** A station unheard for this long is a page about a receiver that has gone quiet. */
 const STATION_MAX_AGE_S = 30 * 24 * 3600;

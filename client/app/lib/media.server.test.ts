@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { VesselMedia } from "./media";
-import { mediaResponse } from "./media.server";
+import { fileTitle, type VesselMedia } from "./media";
+import { mediaResponse, namedPhotos } from "./media.server";
 
 const IMO = "9728916";
 const thumb = (title: string) => `https://upload.wikimedia.org/thumb/${encodeURIComponent(title)}/960px-x.jpg`;
@@ -141,5 +141,29 @@ describe("vessel photos", () => {
     const { media } = await lookup("249515000");
     expect(pages(media)).toEqual(["File:Yacht.jpg"]);
     expect(fetch.mock.calls.some(([u]) => new URL(u).host === "www.wikidata.org")).toBe(false);
+  });
+});
+
+describe("named photos", () => {
+  it("keys each photo by fileTitle of the name as a fleet writes it, and answers again from the cache", async () => {
+    const fetch = fakeWikimedia({ categories: {}, taken: {} });
+    vi.stubGlobal("fetch", fetch);
+    const names = ["Central_Park.jpg", "File:Bridge, Radiance 03.jpg"];
+    const photos = await namedPhotos(names, "https://openwaters.io/ais/fleets/x");
+    for (const name of names) expect(photos[fileTitle(name)]?.page, name).toContain(fileTitle(name).replace(/^File:/, ""));
+    expect(await namedPhotos([...names].reverse(), "https://openwaters.io/ais/fleets/y")).toEqual(photos);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers with nothing, not an error, when Commons fails or answers with something other than JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 503 })));
+    expect(await namedPhotos(["A.jpg"], "https://openwaters.io/ais/fleets/x")).toEqual({});
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>busy</html>", { status: 200 })));
+    expect(await namedPhotos(["B.jpg"], "https://openwaters.io/ais/fleets/x")).toEqual({});
+  });
+
+  it("reads a name however its File: prefix is written", () => {
+    expect(fileTitle("file:Central_Park.jpg")).toBe("File:Central Park.jpg");
+    expect(fileTitle("Central Park.jpg")).toBe("File:Central Park.jpg");
   });
 });

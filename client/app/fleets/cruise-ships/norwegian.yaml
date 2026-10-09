@@ -1,0 +1,87 @@
+title: Norwegian Cruise Line
+summary: "Norwegian Cruise Line was founded in 1966, is based in Miami-Dade County and is part of Norwegian Cruise Line Holdings Ltd. Its 19 ships range from Norwegian Spirit (1998) to Norwegian Aqua (2025)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q130309
+sections:
+  - title: Prima class
+    vessels:
+      - name: Norwegian Viva
+        mmsi: 311001127
+        imo: 9823998
+        subtitle: "293 m · in service 2023"
+      - name: Norwegian Prima
+        mmsi: 311001059
+        imo: 9823986
+        subtitle: "293 m · in service 2022"
+  - title: Jewel class
+    vessels:
+      - name: Norwegian Gem
+        mmsi: 309951000
+        imo: 9355733
+        subtitle: "294 m · in service 2007"
+      - name: Norwegian Jade
+        mmsi: 308416000
+        imo: 9304057
+        subtitle: "294 m · in service 2006"
+      - name: Norwegian Pearl
+        mmsi: 309653000
+        imo: 9342281
+        subtitle: "294 m · in service 2006"
+      - name: Norwegian Jewel
+        mmsi: 311827000
+        imo: 9304045
+        subtitle: "294 m · in service 2005"
+  - title: Other ships
+    vessels:
+      - name: Norwegian Aqua
+        mmsi: 311001559
+        imo: 9824007
+        subtitle: "322 m · in service 2025"
+      - name: Norwegian Encore
+        mmsi: 311000879
+        imo: 9751511
+        subtitle: "334 m · in service 2019"
+      - name: Norwegian Bliss
+        mmsi: 311000710
+        imo: 9751509
+        subtitle: "334 m · in service 2018"
+      - name: Norwegian Joy
+        mmsi: 311000599
+        imo: 9703796
+        subtitle: "334 m · in service 2017"
+      - name: Norwegian Escape
+        mmsi: 311000341
+        imo: 9677076
+        subtitle: "326 m · in service 2015"
+      - name: Norwegian Getaway
+        mmsi: 311050900
+        imo: 9606924
+        subtitle: "326 m · in service 2014"
+      - name: Norwegian Breakaway
+        mmsi: 311050800
+        imo: 9606912
+        subtitle: "325 m · in service 2013"
+      - name: Pride of America
+        mmsi: 366994450
+        imo: 9209221
+        subtitle: "280 m · in service 2005"
+      - name: Norwegian Dawn
+        mmsi: 311307000
+        imo: 9195169
+        subtitle: "295 m · in service 2001"
+      - name: Norwegian Star
+        mmsi: 311082000
+        imo: 9195157
+        subtitle: "295 m · in service 2001"
+      - name: Norwegian Sun
+        mmsi: 311109000
+        imo: 9218131
+        subtitle: "259 m · in service 2001"
+      - name: Norwegian Sky
+        mmsi: 308865000
+        imo: 9128532
+        subtitle: "258 m · in service 1999"
+      - name: Norwegian Spirit
+        mmsi: 311746000
+        imo: 9141065
+        subtitle: "269 m · in service 1998"
