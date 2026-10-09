@@ -234,11 +234,13 @@ sections:
     links:
       YouTube: https://www.youtube.com/@SailingMagicCarpet
     vessels:
-      - name: Magic Carpet II
+      - name: Sailing Magic Carpet
+        mmsi: 316056489
         subtitle: Cape George 36
         note: Second boat
         links:
           Boat details: https://sailingmagiccarpet.com/about/
+          AIS identity: https://ised-isde.canada.ca/mmsi-ismm/eng/shipSearch.html
       - name: Magic Carpet I
         subtitle: Vindö 32 (28 feet)
         note: Previous boat
