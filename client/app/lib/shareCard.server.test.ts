@@ -28,12 +28,14 @@ vi.mock("workers-og", () => ({
 }));
 import { stationCardPath } from "./ais";
 import { getStation, type Station, type Stats, type VesselProps } from "./api";
-import { getFleet } from "./fleets.server";
+import { coverPhoto, getFleet, vesselCount } from "./fleets.server";
+import { fileTitle } from "./media";
 import {
   countsKnown,
-  fleetCard,
+  fleetShareCard,
   fleetCardId,
   fleetCardProps,
+  fleetCover,
   networkCard,
   networkCardProps,
   RENDER_WAIT_MS,
@@ -425,17 +427,59 @@ describe("fleet cards", () => {
     // The summary's first sentence: two would run past the card's two lines.
     expect(rc.subtitle).toBe("Royal Caribbean was founded in 1968, is based in Miami and is part of Royal Caribbean Group.");
     expect(rc.stats).toEqual([{ value: "30", label: "vessels" }]);
+    expect(fleetCardProps({ ...getFleet("tall-ships")!, sections: [{ vessels: [{ name: "Solo" }] }] } as never).stats).toEqual([{ value: "1", label: "vessel" }]);
     const cruise = getFleet("cruise-ships")!;
     expect(fleetCardProps(cruise).stats[0]).toEqual({ value: String(cruise.children.length), label: "fleets" });
     expect(fleetCardProps(cruise).stats[1]!.label).toBe("vessels");
   });
 
-  it("are a 404 for a fleet there is not, and over the map when Commons does not answer", async () => {
+  it("count a vessel in several of a group's fleets once", () => {
+    const group = getFleet("cruise-ships")!;
+    const sum = group.children.reduce((n, id) => n + vesselCount(getFleet(id)!), 0);
+    expect(vesselCount(group)).toBeLessThanOrEqual(sum);
+    expect(vesselCount(group)).toBeGreaterThan(0);
+  });
+
+  it("are a 404 for a fleet there is not, and over the map for 15 minutes when Commons does not answer", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 503 })));
     vi.stubGlobal("caches", { default: { match: async () => undefined, put: async () => undefined } });
-    expect((await fleetCard("nope", "https://openwaters.io/ais/fleets/nope.png")).status).toBe(404);
-    const res = await fleetCard("tall-ships", "https://openwaters.io/ais/fleets/tall-ships.png");
+    expect((await fleetShareCard("nope", "https://openwaters.io/ais/fleets/nope.png")).status).toBe(404);
+    const res = await fleetShareCard("tall-ships", "https://openwaters.io/ais/fleets/tall-ships.png");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=900");
+  });
+
+  it("are over the fleet's photo, credited, for the usual hour", async () => {
+    const name = coverPhoto(getFleet("cruise-ships/royal-caribbean")!)!;
+    const photo = { thumb: "https://upload.wikimedia.org/x.png", width: 1, height: 1, page: "https://commons.wikimedia.org/wiki/File:x.png", artist: "Jane Doe", license: "CC BY-SA 4.0" };
+    vi.stubGlobal("caches", { default: { match: async () => Response.json({ [fileTitle(name)]: photo }), put: async () => undefined } });
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+    const fetch = vi.fn(async () => new Response(png, { headers: { "content-type": "image/png" } }));
+    vi.stubGlobal("fetch", fetch);
+    const cover = await fleetCover(getFleet("cruise-ships/royal-caribbean")!, "https://openwaters.io/ais/fleets/x.png");
+    expect(cover?.data).toMatch(/^data:image\/png;base64,iVBOR/);
+    expect(cover?.credit).toEqual({ artist: "Jane Doe", license: "CC BY-SA 4.0" });
+    expect(cover?.named).toBe(true);
+    vi.stubGlobal("caches", { default: { match: async () => Response.json({ [fileTitle(name)]: { ...photo, artist: "https://www.flickr.com/photos/navin75/" } }), put: async () => undefined } });
+    expect((await fleetCover(getFleet("cruise-ships/royal-caribbean")!, "https://openwaters.io/ais/fleets/x.png"))?.credit.artist).toBe("flickr.com/photos/navin75");
+    expect(fetch).toHaveBeenCalledWith(photo.thumb, expect.anything());
+    const res = await fleetShareCard("cruise-ships/royal-caribbean", "https://openwaters.io/ais/fleets/x.png");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBeNull();
+  });
+
+  it("are kept for 15 minutes over the cover vessel's photo when the one the fleet names does not come", async () => {
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+    const photo = { thumb: "https://upload.wikimedia.org/v.png", width: 1, height: 1, page: "p", artist: "A", license: "L" };
+    // The vessel's photos are at the edge; Commons, asked for the named photo, fails.
+    const match = async (req: Request) => (req.url.includes("/ais/vessels/media/") ? Response.json({ photos: [photo], links: {} }) : undefined);
+    vi.stubGlobal("caches", { default: { match, put: async () => undefined } });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => (String(input) === photo.thumb ? new Response(png, { headers: { "content-type": "image/png" } }) : new Response("", { status: 503 }))));
+    const cover = await fleetCover(getFleet("cruise-ships/royal-caribbean")!, "https://openwaters.io/ais/fleets/x.png");
+    expect(cover?.credit.artist).toBe("A");
+    expect(cover?.named).toBe(false);
+    const res = await fleetShareCard("cruise-ships/royal-caribbean", "https://openwaters.io/ais/fleets/x.png");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=900");
   });
 });

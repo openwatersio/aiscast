@@ -19,8 +19,8 @@ import {
 import { ApiUnavailable, getStations, getStats, getVessel, type ApiAuth, type Station, type Stats, type VesselProps } from "./api";
 import { edgeCached, notGetOrHead } from "./edge.server";
 import { coverKey, coverPhoto, fleetCardPath, getFleet, vesselCount, type Fleet } from "./fleets.server";
-import { fileTitle } from "./media";
-import { firstPhoto, namedPhotos } from "./media.server";
+import { fileTitle, type Photo } from "./media";
+import { firstPhotoOf, namedPhotos } from "./media.server";
 
 /**
  * The image a shared link unfurls with, in the layout of the network's own card: a title, a line
@@ -34,6 +34,8 @@ export interface ShareCardProps {
   stats: Array<{ value: string; label: string }>;
   /** A photo to show behind the text in place of the map, as a data URL. */
   background?: string;
+  /** The background photo's credit, which its licence asks for wherever it shows. */
+  credit?: { artist: string; license: string };
 }
 
 const COLORS = { panel: "#071421", label: "#60a5fa", title: "#ffffff", subtitle: "#cbd5e1", muted: "#94a3b8" };
@@ -63,7 +65,7 @@ const FADE = `linear-gradient(to top left, ${Array.from({ length: 21 }, (_, i) =
  * The card: the text over the map from openwaters.io/ais/, dimmed by a quarter, which shows through
  * the fade toward the bottom right. `assets/share-map.jpg` is that map, captured at the card's size without its controls.
  */
-export function ShareCard({ title, subtitle, period, stats, background }: ShareCardProps) {
+export function ShareCard({ title, subtitle, period, stats, background, credit }: ShareCardProps) {
   return (
     <div style={{ display: "flex", width: "100%", height: "100%", background: COLORS.panel, fontFamily: "Inter" }}>
       <img
@@ -95,6 +97,13 @@ export function ShareCard({ title, subtitle, period, stats, background }: ShareC
           </div>
         </div>
       </div>
+      {credit && (
+        // A long artist is cut short; the licence always shows.
+        <div style={{ position: "absolute", right: 28, bottom: 22, display: "flex", maxWidth: 640, color: COLORS.subtitle, fontSize: 18, opacity: 0.85, whiteSpace: "nowrap" }}>
+          <span style={{ flexShrink: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>Photo: {credit.artist}</span>
+          <span style={{ flexShrink: 0 }}>&nbsp;· {credit.license}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -335,46 +344,66 @@ export function fleetCardId(pathname: string): string | undefined {
 
 /** What a fleet's card says: its title, its summary's first sentence, which fits the card's two lines, and how many. */
 export function fleetCardProps(fleet: Fleet): ShareCardProps {
-  const vessels = { value: n(vesselCount(fleet)), label: "vessels" };
+  const count = (k: number, one: string) => ({ value: n(k), label: k === 1 ? one : `${one}s` });
+  const vessels = count(vesselCount(fleet), "vessel");
   return {
     title: fleet.title,
     subtitle: /^.*?[.!?](?=\s|$)/.exec(fleet.summary)?.[0] ?? fleet.summary,
-    stats: fleet.sections ? [vessels] : [{ value: n(fleet.children.length), label: "fleets" }, vessels],
+    stats: fleet.sections ? [vessels] : [count(fleet.children.length, "fleet"), vessels],
   };
 }
 
 // Wikimedia asks every client to name itself.
 const USER_AGENT = "aiscast-web/1.0 (https://openwaters.io/ais/; hello@openwaters.io)";
 
+/** How long a fleet's card waits for its photo, all told, before it is drawn over the map. */
+export const COVER_WAIT_MS = 2500;
+
 /**
  * The fleet's cover photo, as its card shows it: the photo it names, else its cover vessel's first on
- * Commons, as a data URL for the renderer. Undefined when there is none, or it does not come in a few
- * seconds, and the card then shows the map: a slow Wikimedia never fails a card.
+ * Commons, as a data URL for the renderer, with its credit, and whether it is the photo the fleet names.
+ * Undefined when it does not come within COVER_WAIT_MS, so a slow Wikimedia never holds up or fails a card.
  */
-async function fleetCover(fleet: Fleet, requestUrl: string): Promise<string | undefined> {
-  try {
+export async function fleetCover(
+  fleet: Fleet,
+  requestUrl: string,
+): Promise<{ data: string; credit: { artist: string; license: string }; named: boolean } | undefined> {
+  const deadline = AbortSignal.timeout(COVER_WAIT_MS);
+  const late = new Promise<undefined>((resolve) => deadline.addEventListener("abort", () => resolve(undefined)));
+  const lookup = (async () => {
     const named = coverPhoto(fleet);
-    let thumb = named ? (await namedPhotos([named], requestUrl))[fileTitle(named)]?.thumb : undefined;
+    let photo: Photo | undefined = named ? (await namedPhotos([named], requestUrl))[fileTitle(named)] : undefined;
+    const isNamed = !!photo;
     const key = coverKey(fleet);
-    if (!thumb && key) thumb = await firstPhoto(key, requestUrl, 3000);
-    if (!thumb) return undefined;
-    const res = await fetch(thumb, { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(4000) });
+    if (!photo && key) photo = await firstPhotoOf(key, requestUrl, COVER_WAIT_MS);
+    if (!photo) return undefined;
+    const res = await fetch(photo.thumb, { headers: { "user-agent": USER_AGENT }, signal: deadline });
     const type = res.headers.get("content-type") ?? "";
     if (!res.ok || !/^image\/(jpeg|png)/.test(type)) return undefined;
-    const data = new Uint8Array(await res.arrayBuffer());
+    const bytes = new Uint8Array(await res.arrayBuffer());
     let bin = "";
-    for (let i = 0; i < data.length; i += 0x8000) bin += String.fromCharCode(...data.subarray(i, i + 0x8000));
-    return `data:${type.split(";")[0]};base64,${btoa(bin)}`;
-  } catch {
-    return undefined;
-  }
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return {
+      data: `data:${type.split(";")[0]};base64,${btoa(bin)}`,
+      credit: { artist: photo.artist.replace(/^https?:\/\/(www\.)?|\/$/g, ""), license: photo.license },
+      named: isNamed,
+    };
+  })().catch(() => undefined);
+  return Promise.race([lookup, late]);
 }
 
-/** A fleet's card, over its cover photo when it has one, or a 404 for a fleet there is not. */
-export async function fleetCard(id: string, requestUrl: string): Promise<Response> {
+/**
+ * A fleet's card, over its cover photo when it has one, or a 404 for a fleet there is not. A card
+ * drawn without the photo it should have, the one the fleet names or else its cover vessel's, is kept
+ * for 15 minutes rather than the hour, so a slow Commons on the first request does not set it for an hour.
+ */
+export async function fleetShareCard(id: string, requestUrl: string): Promise<Response> {
   const fleet = getFleet(id);
   if (!fleet) return new Response("Not found", { status: 404 });
-  return shareCard({ ...fleetCardProps(fleet), background: await fleetCover(fleet, requestUrl) });
+  const cover = await fleetCover(fleet, requestUrl);
+  const card = await shareCard({ ...fleetCardProps(fleet), background: cover?.data, credit: cover?.credit });
+  if (coverPhoto(fleet) ? !cover?.named : !cover && coverKey(fleet)) card.headers.set("Cache-Control", "public, max-age=900");
+  return card;
 }
 
 /** A card's numbers cover 24 hours, so an hour old is fresh enough for a link preview. */
@@ -384,7 +413,7 @@ const CARD_TTLS = { 200: 3600, 301: 3600, 404: 300 };
 function cardFor(url: URL, auth: ApiAuth): { path: string; make: () => Promise<Response> } | undefined {
   const pathname = url.pathname;
   const fleet = fleetCardId(pathname);
-  if (fleet != null) return { path: fleetCardPath(fleet), make: () => fleetCard(fleet, url.href) };
+  if (fleet != null) return { path: fleetCardPath(fleet), make: () => fleetShareCard(fleet, url.href) };
   if (pathname === "/ais/network.png") return { path: "/network.png", make: () => networkCard(auth) };
   if (pathname === "/ais/stations.png") return { path: "/stations.png", make: () => stationsCard(auth) };
   const mmsi = vesselCardMmsi(pathname);

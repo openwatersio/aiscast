@@ -95,7 +95,7 @@ function avatars(fleet: Fleet): string[] {
 
 /** What a fleet's card shows: FleetCardData. */
 export function fleetCard(fleet: Fleet) {
-  const count = fleet.sections ? fleetVessels(fleet).length : fleet.children.length;
+  const count = fleet.sections ? vesselCount(fleet) : fleet.children.length;
   return {
     path: fleetPath(fleet.id),
     title: fleet.title,
@@ -121,9 +121,10 @@ export function parentPath(id: string): string {
   return id ? fleetPath(parentOf(id)) : "/vessels";
 }
 
-/** A fleet's vessels, or every vessel in the fleets under a group. */
+/** How many vessels a fleet has, or the fleets under a group, each counted once though it is in several. */
 export function vesselCount(fleet: Fleet): number {
-  return fleet.sections ? fleetVessels(fleet).length : fleet.children.reduce((n, id) => n + vesselCount(byId.get(id)!), 0);
+  const all = (f: Fleet): FleetVessel[] => (f.sections ? fleetVessels(f) : f.children.flatMap((id) => all(byId.get(id)!)));
+  return new Set(all(fleet).map((v) => v.mmsi ?? `name:${v.name}`)).size;
 }
 
 /** A fleet's share card, the PNG its page names as og:image: `/fleets.png` for the Fleets page itself. */

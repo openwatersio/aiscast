@@ -11,21 +11,21 @@ summary: The cruise lines and their fleets.
 A fleet:
 
 ```yaml
-title: Tall ships                      # required
-summary: Square riggers and schooners still under sail.   # required, one line, shown on the card
+title: Tall ships # required
+summary: Square riggers and schooners still under sail. # required, one line, shown on the card
 description: Longer text shown under the title on the fleet's page.
-source:                                # where the members come from, shown as "Source: Wikipedia", linked
+source: # where the members come from, shown as "Source: Wikipedia", linked
   Wikipedia: https://en.wikipedia.org/wiki/Statsraad_Lehmkuhl
-cover: Statsraad Lehmkuhl              # a vessel with an MMSI whose photo covers the fleet; the first with an MMSI otherwise
-photos:                                # Wikimedia Commons file names that head the fleet's page and cover its card, ahead of `cover`
+cover: Statsraad Lehmkuhl # a vessel with an MMSI whose photo covers the fleet; the first with an MMSI otherwise
+photos: # Wikimedia Commons file names that head the fleet's page and cover its card, ahead of `cover`
   - Statsraad Lehmkuhl in Bergen.jpg
 vessels:
-  - name: Statsraad Lehmkuhl           # required
-    mmsi: 258113000                    # how the map finds the vessel; leave out when unconfirmed, and the row reads "Not on map"
-    imo: 5339248                       # finds its photos on Wikimedia Commons
+  - name: Statsraad Lehmkuhl # required
+    mmsi: 258113000 # how the map finds the vessel; leave out when unconfirmed
+    imo: 5339248 # finds its photos on Wikimedia Commons
     subtitle: Norway · three-masted barque, 1914
     note: A sentence or two about the vessel.
-    photos:                            # Commons files shown with the vessel, such as its interiors
+    photos: # Commons files shown with the vessel, such as its interiors
       - Statsraad Lehmkuhl deck.jpg
     links:
       Ship details: https://example.org/ship
