@@ -35,7 +35,7 @@ export interface ShareCardProps {
   /** A photo to show behind the text in place of the map, as a data URL. */
   background?: string;
   /** The background photo's credit, which its licence asks for wherever it shows. */
-  credit?: { artist: string; license: string };
+  credit?: Credit;
 }
 
 const COLORS = { panel: "#071421", label: "#60a5fa", title: "#ffffff", subtitle: "#cbd5e1", muted: "#94a3b8" };
@@ -98,10 +98,14 @@ export function ShareCard({ title, subtitle, period, stats, background, credit }
         </div>
       </div>
       {credit && (
-        // A long artist is cut short; the licence always shows.
-        <div style={{ position: "absolute", right: 28, bottom: 22, display: "flex", maxWidth: 640, color: COLORS.subtitle, fontSize: 18, opacity: 0.85, whiteSpace: "nowrap" }}>
+        // A long artist is cut short; the rest, which the licence asks for, always shows. The card
+        // crops and dims the photo, so it says the photo is modified.
+        <div style={{ position: "absolute", right: 28, bottom: 22, display: "flex", maxWidth: 860, color: COLORS.subtitle, fontSize: 16, opacity: 0.85, whiteSpace: "nowrap" }}>
           <span style={{ flexShrink: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>Photo: {credit.artist}</span>
-          <span style={{ flexShrink: 0 }}>&nbsp;· {credit.license}</span>
+          <span style={{ flexShrink: 0 }}>
+            &nbsp;· modified · {credit.license}
+            {credit.licenseUrl ? ` ${credit.licenseUrl}` : ""}
+          </span>
         </div>
       )}
     </div>
@@ -356,6 +360,13 @@ export function fleetCardProps(fleet: Fleet): ShareCardProps {
 // Wikimedia asks every client to name itself.
 const USER_AGENT = "aiscast-web/1.0 (https://openwaters.io/ais/; hello@openwaters.io)";
 
+/** A photo's credit on a card: its licence's address without the scheme, as its artist when that is a URL. */
+interface Credit {
+  artist: string;
+  license: string;
+  licenseUrl?: string;
+}
+
 /** How long a fleet's card waits for its photo, all told, before it is drawn over the map. */
 export const COVER_WAIT_MS = 2500;
 
@@ -367,27 +378,31 @@ export const COVER_WAIT_MS = 2500;
 export async function fleetCover(
   fleet: Fleet,
   requestUrl: string,
-): Promise<{ data: string; credit: { artist: string; license: string }; named: boolean } | undefined> {
+): Promise<{ data: string; credit: Credit; named: boolean } | undefined> {
   const deadline = AbortSignal.timeout(COVER_WAIT_MS);
   const late = new Promise<undefined>((resolve) => deadline.addEventListener("abort", () => resolve(undefined)));
-  const lookup = (async () => {
-    const named = coverPhoto(fleet);
-    let photo: Photo | undefined = named ? (await namedPhotos([named], requestUrl))[fileTitle(named)] : undefined;
-    const isNamed = !!photo;
-    const key = coverKey(fleet);
-    if (!photo && key) photo = await firstPhotoOf(key, requestUrl, COVER_WAIT_MS);
+  // A photo the renderer can draw, or undefined when its image does not come, so the next is tried.
+  const load = async (photo: Photo | undefined) => {
     if (!photo) return undefined;
-    const res = await fetch(photo.thumb, { headers: { "user-agent": USER_AGENT }, signal: deadline });
-    const type = res.headers.get("content-type") ?? "";
-    if (!res.ok || !/^image\/(jpeg|png)/.test(type)) return undefined;
+    const res = await fetch(photo.thumb, { headers: { "user-agent": USER_AGENT }, signal: deadline }).catch(() => undefined);
+    const type = res?.headers.get("content-type") ?? "";
+    if (!res?.ok || !/^image\/(jpeg|png)/.test(type)) return undefined;
     const bytes = new Uint8Array(await res.arrayBuffer());
     let bin = "";
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const short = (url: string) => url.replace(/^https?:\/\/(www\.)?|\/$/g, "");
     return {
       data: `data:${type.split(";")[0]};base64,${btoa(bin)}`,
-      credit: { artist: photo.artist.replace(/^https?:\/\/(www\.)?|\/$/g, ""), license: photo.license },
-      named: isNamed,
+      credit: { artist: short(photo.artist), license: photo.license, licenseUrl: photo.licenseUrl && short(photo.licenseUrl) },
     };
+  };
+  const lookup = (async () => {
+    const named = coverPhoto(fleet);
+    const fromName = named ? await load((await namedPhotos([named], requestUrl))[fileTitle(named)]).catch(() => undefined) : undefined;
+    if (fromName) return { ...fromName, named: true };
+    const key = coverKey(fleet);
+    const fromVessel = key ? await load(await firstPhotoOf(key, requestUrl, COVER_WAIT_MS)) : undefined;
+    return fromVessel && { ...fromVessel, named: false };
   })().catch(() => undefined);
   return Promise.race([lookup, late]);
 }
