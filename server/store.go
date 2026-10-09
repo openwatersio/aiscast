@@ -182,6 +182,18 @@ var storeAddedCols = []string{
 	"to_starboard INTEGER NOT NULL DEFAULT 0",
 }
 
+// upsertKind is the kind a row takes from the cache's. A kind a message type sets (aton, base, sar) wins and stays.
+// Between vessel and gear the cache decides, unless it does not yet know the station's name or type, as when a buoy
+// the sweep forgot reports its position before its static data: then the row keeps gear. A beacon number is sar only
+// while it says AIS-SART active, so once the cache has heard its position the cache decides that too.
+const upsertKind = `CASE
+		WHEN excluded.kind NOT IN ('vessel', 'gear') THEN excluded.kind
+		WHEN vessels.kind = 'sar' AND excluded.mmsi / 1000000 IN (970, 972, 974) AND excluded.has_pos THEN excluded.kind
+		WHEN vessels.kind NOT IN ('vessel', 'gear') THEN vessels.kind
+		WHEN excluded.kind = 'vessel' AND vessels.kind = 'gear' AND excluded.name = '' AND excluded.ship_type = 0 THEN 'gear'
+		ELSE excluded.kind
+	END`
+
 // upsertSQL merges a cache state into its row with the fold's own rules, because a vessel the cache swept
 // comes back blank: its name, particulars, and position arrive over the next minutes. A blank field keeps
 // the stored value, a position replaces the stored one only when it is newer, and seen never moves back.
@@ -194,10 +206,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 ON CONFLICT (mmsi) DO UPDATE SET
 	name        = iif(excluded.name != '', excluded.name, vessels.name),
 	search      = iif(excluded.name != '', excluded.search, vessels.search),
-	kind        = iif(excluded.kind != 'vessel', excluded.kind, vessels.kind),
+	kind        = ` + upsertKind + `,
 	class       = iif(excluded.class != '', excluded.class, vessels.class),
 	ship_type   = iif(excluded.ship_type != 0, excluded.ship_type, vessels.ship_type),
-	flag        = excluded.flag,
+	flag        = iif(` + upsertKind + ` = 'gear', '', iif(excluded.kind = 'gear', vessels.flag, excluded.flag)),
 	imo         = iif(excluded.imo != 0, excluded.imo, vessels.imo),
 	callsign    = iif(excluded.callsign != '', excluded.callsign, vessels.callsign),
 	destination = iif(excluded.destination != '', excluded.destination, vessels.destination),
@@ -460,7 +472,7 @@ func (s *store) upsert(rows []record) error {
 		}
 		seen := unixMs(v.Seen)
 		if _, err := st.Exec(r.mmsi, v.Name, searchKey(v.Name), v.Kind, v.Class, v.ShipType,
-			flagOf(r.mmsi), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
+			servedFlag(r.mmsi, v.Kind), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
 			v.Dim.A, v.Dim.B, v.Dim.C, v.Dim.D,
 			v.HasPos, v.Lat, v.Lon, cell, v.Cog, v.Sog, v.Heading, v.NavStatus, unixMs(v.PosAt),
 			unixMs(v.TrustedAt), unixMs(v.StaticAt), seen, seen, v.Source, v.Station, v.MsgType); err != nil {
@@ -974,7 +986,7 @@ func (v *vessel) merge(o *vessel) (changed bool) {
 		}
 	}
 	fill(v.Name == "", o.Name != "", func() { v.Name = o.Name })
-	fill(v.Kind == "vessel", o.Kind != "vessel", func() { v.Kind = o.Kind })
+	fill(v.Kind == "vessel" || v.Kind == "gear" && o.Kind != "gear", o.Kind != "vessel", func() { v.Kind = o.Kind }) // gear only fills in for vessel
 	fill(v.Class == "", o.Class != "", func() { v.Class = o.Class })
 	fill(v.ShipType == 0, o.ShipType != 0, func() { v.ShipType = o.ShipType })
 	fill(v.IMO == 0, o.IMO != 0, func() { v.IMO = o.IMO })

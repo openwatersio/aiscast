@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   vesselActivity,
@@ -20,6 +21,7 @@ import {
   parseEta,
   parsePlace,
   parseVesselParam,
+  derivedKind,
   mmsiSegment,
   shipClass,
   silences,
@@ -78,6 +80,11 @@ describe("vesselPath", () => {
     expect(vesselPath(440468000)).toBe("/vessels/440468000");
     expect(vesselPath(440468000, "***")).toBe("/vessels/440468000");
   });
+
+  it("leaves gear's name out, which is a serial and a battery level", () => {
+    expect(vesselPath(994168892, "994168892-75%", "gear")).toBe("/vessels/994168892");
+    expect(vesselPath(992576072, "AQUACULTURE 1", "aton")).toBe("/vessels/992576072-aquaculture-1");
+  });
 });
 
 describe("mmsiSegment", () => {
@@ -122,11 +129,24 @@ describe("parseVesselParam", () => {
   });
 });
 
+describe("derivedKind", () => {
+  it("decides as the server does, on the cases both are tested against", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../../../server/testdata/derived_kinds.json", import.meta.url), "utf8")) as {
+      cases: Array<{ mmsi: number; name: string; shipType: number; length: number; beam: number; navStatus: number; want: string }>;
+    };
+    expect(fixture.cases.length).toBeGreaterThan(0);
+    for (const c of fixture.cases) {
+      expect(derivedKind(c.mmsi, c), `${c.mmsi} ${c.name}`).toBe(c.want);
+    }
+  });
+});
+
 describe("shipClass", () => {
   it("prefers the AIS kind over the ship type", () => {
     expect(shipClass("aton", 70)).toBe("aton");
     expect(shipClass("base", undefined)).toBe("base");
     expect(shipClass("sar", 0)).toBe("sar");
+    expect(shipClass("gear", 30)).toBe("gear");
   });
 
   it("maps ITU type ranges", () => {

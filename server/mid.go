@@ -17,7 +17,7 @@ func flagOf(mmsi uint32) string {
 		mid = mmsi / 1_000_000
 	case mmsi >= 800_000_000 && mmsi < 900_000_000: // handheld VHF: 8MIDxxxxx
 		mid = mmsi / 100_000 % 1000
-	case mmsi >= 980_000_000: // craft associated with a parent ship: 98MIDxxxx and 99MIDxxxx
+	case mmsi >= 980_000_000: // craft associated with a parent ship, 98MIDxxxx, and aids to navigation, 99MIDxxxx
 		mid = mmsi / 10_000 % 1000
 	case mmsi >= 111_000_000 && mmsi < 112_000_000: // SAR aircraft: 111MIDxxx
 		mid = mmsi / 1000 % 1000

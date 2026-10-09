@@ -40,7 +40,7 @@ const n = (v: number) => v.toLocaleString("en-US");
 // For a column that has to fit a panel: 42,961,771 reads as 43M.
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
-const KINDS: Record<string, string> = { vessel: "Vessels", aton: "Aids to navigation", base: "Base stations", sar: "Search and rescue aircraft" };
+const KINDS: Record<string, string> = { vessel: "Vessels", aton: "Aids to navigation", base: "Base stations", sar: "Search and rescue", gear: "Fishing gear" };
 
 export default function Network({ loaderData }: Route.ComponentProps) {
   const { stats, coverage } = loaderData;

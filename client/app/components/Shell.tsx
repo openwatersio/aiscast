@@ -171,16 +171,16 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
   // A vessel tapped on the map is pushed onto the stack, over whatever is showing. Over another
   // vessel it records how far back the page beneath them is, so Back skips the vessels.
-  const onSelect = useRef<(mmsi: number, name?: string) => void>(undefined);
+  const onSelect = useRef<(mmsi: number, name?: string, kind?: string) => void>(undefined);
   // The state a tap asked for, until its page lands. The vessel's loader redirects an address
   // whose slug is not the record's name, and a redirect lands without the state, so it is put
   // back then.
   const tapped = useRef<{ mmsi: number; state: StackState }>(undefined);
-  onSelect.current = (mmsi, name) => {
-    const known = live?.stream.vessels.get(mmsi)?.name;
+  onSelect.current = (mmsi, name, kind) => {
+    const known = live?.stream.vessels.get(mmsi);
     const state = stackStateFor(location, Boolean(vessel));
     tapped.current = state && { mmsi, state };
-    navigate(vesselPath(mmsi, known ?? name), { state });
+    navigate(vesselPath(mmsi, known?.name ?? name, kind ?? known?.kind), { state });
   };
   const navigationType = useNavigationType();
   useEffect(() => {
@@ -198,7 +198,7 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
   }, [location.key]);
   useEffect(() => {
     if (!live) return;
-    live.ctl.onSelect((mmsi, name) => onSelect.current?.(mmsi, name));
+    live.ctl.onSelect((mmsi, name, kind) => onSelect.current?.(mmsi, name, kind));
     // Moving the map means looking at it, so the sheet gets out of the way.
     live.ctl.map.on("dragstart", () => setDetent("peek"));
   }, [live]);

@@ -96,7 +96,7 @@ export interface MapController {
   flyToPoint(at: [number, number]): void;
   fitBBox(bbox: BBox): void;
   /** A vessel clicked on the map, with the name its feature carries for the URL slug. */
-  onSelect(fn: (mmsi: number, name?: string) => void): void;
+  onSelect(fn: (mmsi: number, name?: string, kind?: string) => void): void;
   /**
    * Keeps the open vessel centred as it moves. Dragging the map or opening another vessel
    * lets go; `onCameraFollow` hears every change, whichever side made it.
@@ -335,7 +335,7 @@ export function createMap(
 
   let focus: number | undefined;
   let attribution: maplibregl.AttributionControl | undefined;
-  const selectHandlers: Array<(mmsi: number, name?: string) => void> = [];
+  const selectHandlers: Array<(mmsi: number, name?: string, kind?: string) => void> = [];
   let ready = false;
 
   const viewBBoxes = (): BBox[] => {
@@ -349,7 +349,7 @@ export function createMap(
   const type: any = ["to-number", ["get", "type"], 0];
   const classExpr: any = [
     "case",
-    ["in", ["get", "kind"], ["literal", ["aton", "base", "sar"]]],
+    ["in", ["get", "kind"], ["literal", ["aton", "base", "sar", "gear"]]],
     ["get", "kind"],
     ["==", type, 30],
     "fishing",
@@ -817,7 +817,8 @@ export function createMap(
       const props = visible(e)?.properties;
       const mmsi = Number(props?.mmsi);
       const name = typeof props?.name === "string" && props.name ? props.name : undefined;
-      if (mmsi) for (const fn of selectHandlers) fn(mmsi, name);
+      const kind = typeof props?.kind === "string" ? props.kind : undefined;
+      if (mmsi) for (const fn of selectHandlers) fn(mmsi, name, kind);
     });
   }
 

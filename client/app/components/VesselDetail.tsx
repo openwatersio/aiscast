@@ -185,7 +185,7 @@ export function VesselDetail({
       </p>
       <p className="mt-0.5 text-footnote text-fg-muted">{ids}</p>
 
-      <VesselActions live={live} mmsi={mmsi} imo={imo} name={name} hasTrack={(track?.coords.length ?? 0) > 0} />
+      <VesselActions live={live} mmsi={mmsi} imo={imo} name={name} kind={kind} hasTrack={(track?.coords.length ?? 0) > 0} />
 
       {lat != null && lon != null && (
         <Section
@@ -354,12 +354,14 @@ function VesselActions({
   mmsi,
   imo,
   name,
+  kind,
   hasTrack,
 }: {
   live: Live | undefined;
   mmsi: number;
   imo?: number;
   name?: string;
+  kind?: string;
   hasTrack: boolean;
 }) {
   const [following, setFollowing] = useState(false);
@@ -369,7 +371,7 @@ function VesselActions({
 
   async function share() {
     const title = name ?? `MMSI ${mmsi}`;
-    const done = await shareLink({ title, text: `${title}, live on Open Waters AIS`, url: `${SITE}${vesselPath(mmsi, name)}` });
+    const done = await shareLink({ title, text: `${title}, live on Open Waters AIS`, url: `${SITE}${vesselPath(mmsi, name, kind)}` });
     if (done !== "copied") return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);

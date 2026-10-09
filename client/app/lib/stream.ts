@@ -1,3 +1,4 @@
+import { derivedKind, isBeacon } from "./ais";
 import { publicApiBase, storedToken, type VesselProps } from "./api";
 import { reportError } from "./report";
 import { Hub, HUB_HEARTBEAT, type HubState, type Limits, type Port, type ToHub, type ToTab } from "./streamHub";
@@ -202,7 +203,8 @@ export class Stream {
     if (!v) return;
     if (!v.name && from.name) v.name = from.name;
     if (!v.shipType && from.shipType) v.shipType = from.shipType;
-    if (v.kind === "vessel" && from.kind) v.kind = from.kind;
+    // The stream's own gear stands to vessel, but a tile or the record knows an aid it took for one.
+    if (from.kind && (v.kind === "vessel" || (v.kind === "gear" && from.kind !== "vessel"))) v.kind = from.kind;
     this.#dirty = true;
   }
 
@@ -308,6 +310,7 @@ export class Stream {
 
   #fold(ev: StreamEvent) {
     const m = ev.message ?? {};
+    const seenFirst = !this.vessels.has(ev.mmsi);
     const v: Vessel = this.vessels.get(ev.mmsi) ?? {
       mmsi: ev.mmsi,
       kind: "vessel",
@@ -356,6 +359,21 @@ export class Stream {
     if (ev.msg_type === "AidsToNavigationReport") v.kind = "aton";
     else if (ev.msg_type === "BaseStationReport") v.kind = "base";
     else if (ev.msg_type === "StandardSearchAndRescueAircraftReport") v.kind = "sar";
+    // Decided again only on a message that brings what it decides by, as the server does, so a buoy a tile named
+    // gear by its hull stays gear through the position reports between its static ones.
+    else if (
+      (v.kind === "vessel" || v.kind === "gear" || (v.kind === "sar" && isBeacon(ev.mmsi))) &&
+      (seenFirst || name || type || m.Dimension || (ev.lat != null && isBeacon(ev.mmsi)))
+    ) {
+      const d = v.dimension;
+      v.kind = derivedKind(ev.mmsi, {
+        name: v.name,
+        shipType: v.shipType,
+        length: d && d.A + d.B,
+        beam: d && d.C + d.D,
+        navStatus: v.navStatus,
+      });
+    }
 
     if (!stale) {
       v.seen = t;

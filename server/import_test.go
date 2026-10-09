@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
@@ -50,14 +51,38 @@ func TestImportReadsPastAShortPage(t *testing.T) {
 func TestImportSkipsInvalidMMSIs(t *testing.T) {
 	month := time.Now().UTC().AddDate(0, -1, 0).Truncate(time.Second)
 	f := &fakeVesselHistory{}
-	for _, m := range []uint32{1, 123456789, 257000001, 999999999} {
+	for _, m := range []uint32{1, 123456789, 257000001, 970123456, 999999999} {
 		f.rows = append(f.rows, historyRow{mmsi: m, name: "DATAHUB", first: month, updated: month})
 	}
+	// Gear by what it said about itself: a net buoy only history knows, and one the record holds as a flagged vessel.
+	f.rows = append(f.rows, historyRow{mmsi: 233510227, name: "HSD-NET-88%", length: 10, beam: 10, first: month, updated: month},
+		historyRow{mmsi: 254301782, name: "HSD-NET-84%", length: 10, beam: 10, first: month, updated: month})
+	slices.SortFunc(f.rows, func(a, b historyRow) int { return cmp.Compare(a.mmsi, b.mmsi) })
 	p := historyPipeline(t, f)
+	if _, err := p.store.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, seen, first_seen) VALUES (254301782, 'X', 'vessel', 'MC', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	// A vessel the record knows by name and type, whose history holds an older blank state with a square hull: judged
+	// on the row as the merge leaves it, it stays a vessel.
+	if _, err := p.store.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, ship_type, seen, first_seen) VALUES (257000001, 'NORDIC STAR', 'vessel', 'NO', 70, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	for i := range f.rows {
+		if f.rows[i].mmsi == 257000001 {
+			f.rows[i].name, f.rows[i].length, f.rows[i].beam = "", 10, 10
+		}
+	}
 	importPage = 2
 	t.Cleanup(func() { importPage = 20_000 })
-	if n, err := p.importVessels(context.Background()); err != nil || n != 1 {
+	if n, err := p.importVessels(context.Background()); err != nil || n != 4 {
 		t.Errorf("merged %d: %v", n, err)
+	}
+	// History keeps no navigational status, so a beacon's number alone does not make it sar.
+	for m, want := range map[uint32]string{233510227: "gear ", 254301782: "gear ", 970123456: "vessel ", 257000001: "vessel NO"} {
+		var got string
+		if err := p.store.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = ?`, m).Scan(&got); err != nil || got != want {
+			t.Errorf("imported %d is %q (%v), want %q", m, got, err, want)
+		}
 	}
 	for _, m := range []uint32{1, 123456789, 999999999} {
 		if _, ok, _ := p.store.get(m); ok {
