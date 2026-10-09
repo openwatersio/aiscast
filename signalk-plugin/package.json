@@ -32,7 +32,7 @@
     "aiscast"
   ],
   "signalk": {
-    "displayName": "AIScast",
+    "displayName": "Open Waters AIS",
     "appIcon": "./icon.svg",
     "recommends": [
       "signalk-buddylist-plugin"
