@@ -29,9 +29,8 @@ if [ ! -f /usr/share/keyrings/clickhouse-keyring.gpg ]; then
 	curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
 fi
 echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=$(dpkg --print-architecture)] https://packages.clickhouse.com/deb lts main" >/etc/apt/sources.list.d/clickhouse.list
-apt-get update -q
-# confold: rootfs/ owns config files such as /etc/alloy/config.alloy, so a package upgrade must not stop to ask.
-apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold alloy caddy curl fail2ban jq unattended-upgrades
+# Refresh the lists and install the packages, getting past a vendor repository that refuses its index.
+. ./apt-update.sh
 # ClickHouse is installed once and upgraded by hand, so a deploy never changes the database under live data.
 if ! command -v clickhouse-server >/dev/null; then
 	apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold clickhouse-client clickhouse-server
