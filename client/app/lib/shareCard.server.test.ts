@@ -264,6 +264,12 @@ describe("vessel cards", () => {
     });
   });
 
+  it("give gear no size: a net buoy's 10 m square is a placeholder", () => {
+    const props = vesselCardProps(vessel({ mmsi: 233510227, name: "HSD-NET-88%", kind: "gear", to_bow: 5, to_stern: 5, to_port: 5, to_starboard: 5 }));
+    expect(props.subtitle).toBe("Fishing gear");
+    expect(props.stats.map((s) => s.label)).not.toContain("length");
+  });
+
   it("fill out with the vessel's numbers when it reports no size", () => {
     // 511 is the most the field holds: "that or more", a size nobody knows.
     // 9606901 fails the check digit, as a mistyped IMO does; 9606900 passes.

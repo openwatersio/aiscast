@@ -251,7 +251,8 @@ const unavailable = () => new Response("The AIS API is unavailable", { status: 5
 
 /** Facts that don't change by the minute, for the hour a card is kept: its size, year built, voyage draught, then its numbers. */
 export function vesselCardProps(p: VesselProps): ShareCardProps {
-  const size = vesselDimensions(
+  // Gear has no hull to size: whatever it sends, as a net buoy's 10 m square placeholder, describes no vessel.
+  const size = p.kind === "gear" ? undefined : vesselDimensions(
     p.to_bow != null ? { toBow: p.to_bow, toStern: p.to_stern ?? 0, toPort: p.to_port ?? 0, toStarboard: p.to_starboard ?? 0 } : undefined,
     p.length,
     p.beam,

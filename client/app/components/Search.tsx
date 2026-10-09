@@ -78,7 +78,7 @@ function fromFeature(f: VesselFeature): Row {
 /** What tells one result from another of the same name: where it is, what it is, and whether it is moving. */
 function rowSubtitle(v: Row, byMMSI: boolean): string | undefined {
   const cls = shipClass(v.kind, v.shipType);
-  const what = [cls !== "other" ? CLASS_LABELS[cls] : undefined, v.length ? `${v.length} m` : undefined].filter(Boolean).join(", ");
+  const what = [cls !== "other" ? CLASS_LABELS[cls] : undefined, v.length && v.kind !== "gear" ? `${v.length} m` : undefined].filter(Boolean).join(", ");
   const parts = [
     // A vessel without a name is already titled by its MMSI.
     byMMSI && v.name ? `MMSI ${v.mmsi}` : undefined,

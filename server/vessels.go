@@ -475,13 +475,16 @@ func (v *vessel) feature(mmsi uint32) vesselFeature {
 		MMSI: mmsi, Kind: v.Kind, Seen: v.Seen.UTC().Format(time.RFC3339),
 		Source: v.Source, Station: v.Station, MsgType: v.MsgType,
 		Name: v.Name, Type: v.ShipType, Flag: servedFlag(mmsi, v.Kind), IMO: v.IMO, CallSign: v.CallSign,
-		Destination: v.Destination, ETA: etaString(v.ETA), Draught: v.Draught, Length: v.Length, Beam: v.Beam,
+		Destination: v.Destination, ETA: etaString(v.ETA),
 	}
-	if d := v.Dim; v.hasLengthOffsets() { // a copy, so the feature does not point into the live vessel
-		props.ToBow, props.ToStern = &d.A, &d.B
-	}
-	if d := v.Dim; v.hasBeamOffsets() {
-		props.ToPort, props.ToStarboard = &d.C, &d.D
+	if hasHull(v.Kind) {
+		props.Draught, props.Length, props.Beam = v.Draught, v.Length, v.Beam
+		if d := v.Dim; v.hasLengthOffsets() { // a copy, so the feature does not point into the live vessel
+			props.ToBow, props.ToStern = &d.A, &d.B
+		}
+		if d := v.Dim; v.hasBeamOffsets() {
+			props.ToPort, props.ToStarboard = &d.C, &d.D
+		}
 	}
 	if v.Cog < 360 {
 		cog := v.Cog
@@ -491,7 +494,7 @@ func (v *vessel) feature(mmsi uint32) vesselFeature {
 		sog := v.Sog
 		props.Sog = &sog
 	}
-	if v.Heading < 511 {
+	if validHeading(v.Heading) && hasHull(v.Kind) {
 		h := v.Heading
 		props.Heading = &h
 	}

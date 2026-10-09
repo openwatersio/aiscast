@@ -275,17 +275,19 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.navStatus != 15 {
 			props = append(props, mvtProp{"nav_status", uint64(pt.navStatus)})
 		}
-		if pt.length > 0 {
-			props = append(props, mvtProp{"length", uint64(pt.length)})
-		}
-		if pt.lengthOffsets { // served whole, as the Feature serves them (hasLengthOffsets)
-			props = append(props, mvtProp{"to_bow", uint64(pt.dim.A)}, mvtProp{"to_stern", uint64(pt.dim.B)})
-		}
-		if pt.beam > 0 {
-			props = append(props, mvtProp{"beam", uint64(pt.beam)})
-		}
-		if pt.beamOffsets {
-			props = append(props, mvtProp{"to_port", uint64(pt.dim.C)}, mvtProp{"to_starboard", uint64(pt.dim.D)})
+		if hasHull(pt.kind) {
+			if pt.length > 0 {
+				props = append(props, mvtProp{"length", uint64(pt.length)})
+			}
+			if pt.lengthOffsets { // served whole, as the Feature serves them (hasLengthOffsets)
+				props = append(props, mvtProp{"to_bow", uint64(pt.dim.A)}, mvtProp{"to_stern", uint64(pt.dim.B)})
+			}
+			if pt.beam > 0 {
+				props = append(props, mvtProp{"beam", uint64(pt.beam)})
+			}
+			if pt.beamOffsets {
+				props = append(props, mvtProp{"to_port", uint64(pt.dim.C)}, mvtProp{"to_starboard", uint64(pt.dim.D)})
+			}
 		}
 		if pt.sog < 102.3 {
 			props = append(props, mvtProp{"sog", pt.sog})
@@ -293,9 +295,10 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.cog < 360 {
 			props = append(props, mvtProp{"cog", pt.cog})
 		}
-		if pt.heading < 511 {
+		// hdg turns a vessel's arrow; gear is drawn without one, its course the drift of its net.
+		if validHeading(pt.heading) && hasHull(pt.kind) {
 			props = append(props, mvtProp{"heading", uint64(pt.heading)}, mvtProp{"hdg", float64(pt.heading)})
-		} else if pt.cog < 360 {
+		} else if pt.cog < 360 && hasHull(pt.kind) {
 			props = append(props, mvtProp{"hdg", pt.cog})
 		}
 		l.point(uint64(pt.mmsi), pt.x, pt.y, props)
@@ -436,10 +439,10 @@ var tileFields = map[string]string{
 	"mmsi": "Number", "name": "String", "kind": "String: vessel, aton, base, sar (search and rescue aircraft or distress beacon), or gear", "class": "String: A or B",
 	"type": "Number: ITU ship and cargo type; the AtoN type for an aid to navigation", "flag": "String: ISO 3166 alpha-2 from the MMSI, never for gear",
 	"nav_status": "Number", "sog": "Number: knots", "cog": "Number: degrees", "heading": "Number: degrees",
-	"hdg": "Number: heading, else course over ground, the angle to rotate an icon by", "length": "Number: metres",
-	"beam": "Number: metres", "to_bow": "Number: metres from the AIS antenna to the bow",
-	"to_stern": "Number: metres from the AIS antenna to the stern", "to_port": "Number: metres from the AIS antenna to port",
-	"to_starboard": "Number: metres from the AIS antenna to starboard", "source": "String: source kind", "station": "String: the station that heard the last message", "age_s": "Number: seconds since the last report when the tile was built",
+	"hdg": "Number: heading, else course over ground, the angle to rotate an icon by; never for gear", "length": "Number: metres; never for gear",
+	"beam": "Number: metres; never for gear", "to_bow": "Number: metres from the AIS antenna to the bow; never for gear",
+	"to_stern": "Number: metres from the AIS antenna to the stern; never for gear", "to_port": "Number: metres from the AIS antenna to port; never for gear",
+	"to_starboard": "Number: metres from the AIS antenna to starboard; never for gear", "source": "String: source kind", "station": "String: the station that heard the last message", "age_s": "Number: seconds since the last report when the tile was built",
 }
 
 // tileAttribution is one linked credit, the web-map convention: a tile holds whichever sources heard its

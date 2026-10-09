@@ -58,6 +58,22 @@ test("gear's address carries no name, and its page asks not to be indexed", asyn
   expect(doc?.status()).toBe(200);
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `https://openwaters.io/ais/vessels/${mmsi}`);
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
+  // The 10 m square it reports is a placeholder, so the page draws no hull for it.
+  await expect(page.getByText("Fishing gear").first()).toBeVisible();
+  await expect(page.getByText("AIS antenna position")).toHaveCount(0);
+  await expect(page.getByText("Dimensions", { exact: true })).toHaveCount(0);
+  // Nothing a vessel's page offers that gear has not got: photos, a heading, a status, a boat to own.
+  await expect(page.getByText("Share your photo of this vessel")).toHaveCount(0);
+  await expect(page.getByText("Add photo")).toHaveCount(0);
+  await expect(page.getByText("Drift", { exact: true })).toBeVisible();
+  await expect(page.getByText("Heading", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Is this your boat?")).toHaveCount(0);
+  await expect(page.locator('script[type="application/ld+json"]')).toHaveCount(0);
+  // With no photo to float over, the bar stands on the page and the title starts below it.
+  await expect(page.locator("[data-over-photo]")).toHaveCount(0);
+  const close = await page.getByRole("link", { name: "Close" }).boundingBox();
+  const title = await page.getByRole("heading", { level: 1 }).boundingBox();
+  expect(title!.y, "the title starts below the bar's buttons").toBeGreaterThanOrEqual(close!.y + close!.height);
 });
 
 test("a vessel the network has never heard is a 404 that asks not to be indexed", async ({ page }) => {

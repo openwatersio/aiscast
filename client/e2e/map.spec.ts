@@ -1,6 +1,6 @@
 import { createPropertyExpression, latest } from "@maplibre/maplibre-gl-style-spec";
 import { vesselPath } from "../app/lib/ais";
-import { api, namedVessel } from "./data";
+import { api, heardGear, namedVessel } from "./data";
 import { expect, openMap, test, waitForFlight } from "./fixtures";
 
 test("no vessel is drawn by both the tiles and the stream", async ({ page }) => {
@@ -11,8 +11,8 @@ test("no vessel is drawn by both the tiles and the stream", async ({ page }) => 
     page.evaluate(() => {
       const map = window.aiscastMap!;
       const mmsi = (f: { properties: Record<string, unknown> }) => Number(f.properties.mmsi);
-      const live = new Set(map.queryRenderedFeatures({ layers: ["vessel-still", "vessel-moving"] }).map(mmsi));
-      const inBoth = map.queryRenderedFeatures({ layers: ["tile-still", "tile-moving"] }).filter((f) => live.has(mmsi(f)));
+      const live = new Set(map.queryRenderedFeatures({ layers: ["vessel-still", "vessel-moving", "vessel-gear"] }).map(mmsi));
+      const inBoth = map.queryRenderedFeatures({ layers: ["tile-still", "tile-moving", "tile-gear"] }).filter((f) => live.has(mmsi(f)));
       return { inBoth: inBoth.length, unmarked: [...new Set(inBoth.filter((f) => !f.state.live).map(mmsi))] };
     });
   // Only a vessel both sources hold can be drawn twice, so wait for some.
@@ -25,7 +25,7 @@ test("no vessel is drawn by both the tiles and the stream", async ({ page }) => 
       .aiscastMap!.getStyle()
       .layers.flatMap((l) => ("source" in l && l.source === "tiles" ? [{ id: l.id, type: l.type, paint: l.paint ?? {} }] : [])),
   );
-  expect(layers.map((l) => l.id)).toEqual(expect.arrayContaining(["tile-still", "tile-moving", "tile-label"]));
+  expect(layers.map((l) => l.id)).toEqual(expect.arrayContaining(["tile-still", "tile-moving", "tile-gear", "tile-label"]));
   const vessel = { type: 1 as const, id: 1, properties: { mmsi: 1, name: "TEST", age_s: 0, hdg: 90 } };
   for (const layer of layers) {
     const opacities = Object.entries(layer.paint).filter(([property]) => property.endsWith("-opacity"));
@@ -39,6 +39,20 @@ test("no vessel is drawn by both the tiles and the stream", async ({ page }) => 
       expect(at({}), `${layer.id} ${property} for a vessel only the tiles draw`).toBeGreaterThan(0);
     }
   }
+});
+
+test("fishing gear is drawn as its own square, not a vessel's arrow or dot", async ({ page }) => {
+  // The buoy reports the course of its drift, which would turn a vessel's arrow.
+  const { mmsi } = await heardGear();
+  await openMap(page);
+  const layersOf = () =>
+    page.evaluate((m) => {
+      const ids = new Set<string>();
+      for (const f of window.aiscastMap!.queryRenderedFeatures()) if (Number(f.properties?.mmsi) === m) ids.add(f.layer.id);
+      return [...ids];
+    }, mmsi);
+  await expect.poll(async () => (await layersOf()).some((id) => id.endsWith("-gear")), { timeout: 30_000 }).toBe(true);
+  expect((await layersOf()).filter((id) => /-(still|moving)$/.test(id))).toEqual([]);
 });
 
 test("the map opens where the visitor is, unless the link has a #map= hash", async ({ page }) => {

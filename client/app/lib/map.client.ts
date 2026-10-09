@@ -16,6 +16,7 @@ import {
   trackThenStream,
   viewBoxes,
 } from "./ais";
+import { GEAR_FILTER, MOVING_FILTER, STILL_FILTER } from "./vesselFilters";
 import { publicApiBase, type CoverageTiles } from "./api";
 import { coverageColor, coverageOpacity, coverageSummary, type CoverageMeasure } from "./coverage";
 import { reportError } from "./report";
@@ -157,6 +158,17 @@ function shipIcon(): ImageData {
   g.closePath();
   g.fillStyle = "#000";
   g.fill();
+  return g.getImageData(0, 0, s, s);
+}
+
+/** Gear's marker: a small square, which reads as neither a vessel's arrow nor an aid's diamond. */
+function gearIcon(): ImageData {
+  const s = 24;
+  const c = document.createElement("canvas");
+  c.width = c.height = s;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#000";
+  g.fillRect(6, 6, s - 12, s - 12);
   return g.getImageData(0, 0, s, s);
 }
 
@@ -381,7 +393,7 @@ export function createMap(
   const iconSize: any = ["interpolate", ["linear"], ["zoom"], 2, 0.3, 6, 0.55, 9, 0.7];
   const dotRadius: any = ["interpolate", ["linear"], ["zoom"], 2, 1.5, 6, 3, 9, 4];
 
-  /** The vessel layers for one source: dots for the stationary, arrows for the moving, names. */
+  /** The vessel layers for one source: dots for the stationary, arrows for the moving, squares for gear, names. */
   function vesselLayers(
     prefix: string,
     source: string,
@@ -394,7 +406,7 @@ export function createMap(
         id: `${prefix}-still`,
         type: "circle",
         ...from,
-        filter: ["!", ["has", "hdg"]],
+        filter: STILL_FILTER as maplibregl.FilterSpecification,
         paint: {
           "circle-radius": dotRadius,
           "circle-color": colorExpr,
@@ -408,12 +420,30 @@ export function createMap(
         id: `${prefix}-moving`,
         type: "symbol",
         ...from,
-        filter: ["has", "hdg"],
+        filter: MOVING_FILTER as maplibregl.FilterSpecification,
         layout: {
           "icon-image": "ship",
           "icon-size": iconSize,
           "icon-rotate": ["get", "hdg"],
           "icon-rotation-alignment": "map",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+        paint: {
+          "icon-color": colorExpr,
+          "icon-opacity": opacity,
+          "icon-halo-color": PALETTE[theme].outline,
+          "icon-halo-width": 1,
+        },
+      },
+      {
+        id: `${prefix}-gear`,
+        type: "symbol",
+        ...from,
+        filter: GEAR_FILTER as maplibregl.FilterSpecification,
+        layout: {
+          "icon-image": "gear",
+          "icon-size": iconSize,
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
@@ -791,10 +821,12 @@ export function createMap(
 
     const meta = el.appendChild(document.createElement("div"));
     meta.className = "meta";
+    // Gear's speed and course are the drift of its net, which says nothing a reader looking for vessels wants.
+    const underWay = v.kind !== "gear";
     meta.textContent = [
       CLASS_LABELS[shipClass(v.kind, v.shipType)],
-      v.sog != null ? `${v.sog.toFixed(1)} kn` : undefined,
-      v.cog != null ? `${Math.round(v.cog)}°` : undefined,
+      underWay && v.sog != null ? `${v.sog.toFixed(1)} kn` : undefined,
+      underWay && v.cog != null ? `${Math.round(v.cog)}°` : undefined,
     ]
       .filter(Boolean)
       .join(" · ");
@@ -807,7 +839,7 @@ export function createMap(
     hover.setLngLat([v.lon!, v.lat!]).setDOMContent(el).addTo(map);
   }
 
-  for (const layer of ["vessel-still", "vessel-moving", "tile-still", "tile-moving", "result-ring"]) {
+  for (const layer of ["vessel-still", "vessel-moving", "vessel-gear", "tile-still", "tile-moving", "tile-gear", "result-ring"]) {
     map.on("mousemove", layer, showHover);
     map.on("mouseleave", layer, () => {
       map.getCanvas().style.cursor = "";
@@ -855,9 +887,11 @@ export function createMap(
     "vessel-halo",
     "vessel-still",
     "vessel-moving",
+    "vessel-gear",
     "vessel-label",
     "tile-still",
     "tile-moving",
+    "tile-gear",
     "tile-label",
     "result-ring",
     "result-dot",
@@ -935,6 +969,7 @@ export function createMap(
   map.on("style.load", () => {
     const c = PALETTE[theme];
     map.addImage("ship", shipIcon(), { sdf: true });
+    map.addImage("gear", gearIcon(), { sdf: true });
 
     map.addSource("track", { type: "geojson", data: emptyFC() });
     map.addSource("track-all", { type: "geojson", data: emptyFC() });

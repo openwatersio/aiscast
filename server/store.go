@@ -391,12 +391,68 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
+	if err := deriveStoredKinds(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	s := &store{db: db, path: path}
 	if s.mirror, err = loadMirror(s); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return s, nil
+}
+
+// derivedKindsVersion names the rule deriveStoredKinds last applied; a change to derivedKind bumps it, so the next
+// boot applies the new rule to the rows the fold has not heard since.
+const derivedKindsVersion = "1"
+
+// deriveStoredKinds gives every row saved as a vessel or gear the kind its stored name, type, size, and status give
+// it (derivedKind), and the flag that goes with it, once per version of the rule. The fold decides a station's kind
+// as it is heard and the daily import as history merges in, but a station not heard since keeps the row it had. A
+// beacon's sar row is left to the fold: the import resets a row's status to not available when history brings a
+// newer position, so a stored status cannot say a beacon has stopped. A full scan, under a second for 300,000 rows,
+// then a write per row that changes.
+func deriveStoredKinds(db *sql.DB) error {
+	var done string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'derived_kinds'`).Scan(&done); err == nil && done == derivedKindsVersion {
+		return nil
+	}
+	rows, err := db.Query(`SELECT mmsi, kind, name, ship_type, length, beam, nav_status FROM vessels WHERE kind IN ('vessel', 'gear')`)
+	if err != nil {
+		return err
+	}
+	changed := map[uint32]string{}
+	for rows.Next() {
+		var mmsi uint32
+		v := newVessel()
+		if err := rows.Scan(&mmsi, &v.Kind, &v.Name, &v.ShipType, &v.Length, &v.Beam, &v.NavStatus); err != nil {
+			rows.Close()
+			return err
+		}
+		if k := derivedKind(mmsi, v); k != v.Kind {
+			changed[mmsi] = k
+		}
+	}
+	rows.Close()
+	// An iteration error would leave rows unread, and the version below would mark them done for good.
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for mmsi, kind := range changed {
+		if _, err := tx.Exec(`UPDATE vessels SET kind = ?, flag = ? WHERE mmsi = ?`, kind, servedFlag(mmsi, kind), mmsi); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('derived_kinds', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, derivedKindsVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // storeConns bounds the vessel record's connections: the writer and the requests reading beside it.

@@ -379,7 +379,7 @@ func (pt trackPoint) motion() (sog, cog *float64, heading *uint16, nav *uint8) {
 	if pt.cog10 < 3600 {
 		cog = mcpPtr(float64(pt.cog10) / 10)
 	}
-	if pt.heading < 511 {
+	if validHeading(pt.heading) {
 		heading = mcpPtr(pt.heading)
 	}
 	if pt.navStatus != 15 {
