@@ -28,8 +28,12 @@ vi.mock("workers-og", () => ({
 }));
 import { stationCardPath } from "./ais";
 import { getStation, type Station, type Stats, type VesselProps } from "./api";
+import { getFleet } from "./fleets.server";
 import {
   countsKnown,
+  fleetCard,
+  fleetCardId,
+  fleetCardProps,
   networkCard,
   networkCardProps,
   RENDER_WAIT_MS,
@@ -340,6 +344,16 @@ describe("the Worker's other cards", () => {
     expect([...e.store.keys()]).toEqual(["https://openwaters.io/ais/vessels/23000000.png"]);
   });
 
+  it("keep a fleet's card under its own path, the Fleets page's too", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 503 })));
+    vi.stubGlobal("caches", { default: { match: async () => undefined, put: async () => undefined } });
+    const e = edge();
+    expect((await ask(e, "/ais/fleets/tall-ships.png")!).status).toBe(200);
+    expect((await ask(e, "/ais/fleets.png")!).status).toBe(200);
+    await e.settle();
+    expect([...e.store.keys()].sort()).toEqual(["https://openwaters.io/ais/fleets.png", "https://openwaters.io/ais/fleets/tall-ships.png"]);
+  });
+
   it("draw the network and station list from the API, kept under their own paths", async () => {
     vi.stubGlobal(
       "fetch",
@@ -394,5 +408,34 @@ describe("cards drawn from the station list", () => {
     expect((await stationsCard(auth)).status).toBe(503);
     expect((await networkCard(auth)).status).toBe(503);
     expect((await stationCard(auth, "digitraffic")).status).toBe(503);
+  });
+});
+
+describe("fleet cards", () => {
+  it("are a fleet's address with .png, and the Fleets page's is /fleets.png", () => {
+    expect(fleetCardId("/ais/fleets.png")).toBe("");
+    expect(fleetCardId("/ais/fleets/tall-ships.png")).toBe("tall-ships");
+    expect(fleetCardId("/ais/fleets/cruise-ships/royal-caribbean.png")).toBe("cruise-ships/royal-caribbean");
+    for (const path of ["/ais/fleets/tall-ships", "/ais/fleets/../vessels/1.png", "/ais/fleets/Tall.png", "/ais/fleets//x.png"]) expect(fleetCardId(path), path).toBeUndefined();
+  });
+
+  it("say what the fleet is in a sentence, and how many vessels, or fleets and vessels for a group", () => {
+    const rc = fleetCardProps(getFleet("cruise-ships/royal-caribbean")!);
+    expect(rc.title).toBe("Royal Caribbean");
+    // The summary's first sentence: two would run past the card's two lines.
+    expect(rc.subtitle).toBe("Royal Caribbean was founded in 1968, is based in Miami and is part of Royal Caribbean Group.");
+    expect(rc.stats).toEqual([{ value: "30", label: "vessels" }]);
+    const cruise = getFleet("cruise-ships")!;
+    expect(fleetCardProps(cruise).stats[0]).toEqual({ value: String(cruise.children.length), label: "fleets" });
+    expect(fleetCardProps(cruise).stats[1]!.label).toBe("vessels");
+  });
+
+  it("are a 404 for a fleet there is not, and over the map when Commons does not answer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 503 })));
+    vi.stubGlobal("caches", { default: { match: async () => undefined, put: async () => undefined } });
+    expect((await fleetCard("nope", "https://openwaters.io/ais/fleets/nope.png")).status).toBe(404);
+    const res = await fleetCard("tall-ships", "https://openwaters.io/ais/fleets/tall-ships.png");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
   });
 });

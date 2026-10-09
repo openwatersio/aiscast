@@ -72,9 +72,8 @@ for (const f of byId.values()) {
   parent.children.push(f.id);
 }
 
-// Each group's fleets, the biggest first: a group counts every vessel in the fleets under it.
-const size = (f: Fleet): number => (f.sections ? fleetVessels(f).length : f.children.reduce((n, id) => n + size(byId.get(id)!), 0));
-for (const f of byId.values()) f.children.sort((a, b) => size(byId.get(b)!) - size(byId.get(a)!) || a.localeCompare(b));
+// Each group's fleets, the biggest first.
+for (const f of byId.values()) f.children.sort((a, b) => vesselCount(byId.get(b)!) - vesselCount(byId.get(a)!) || a.localeCompare(b));
 
 export const FLEETS: Fleet[] = [...byId.values()];
 
@@ -120,6 +119,16 @@ export function fleetPath(id: string): string {
 /** Where the fleet's back button goes: the group it is in, or the map for the Fleets page. */
 export function parentPath(id: string): string {
   return id ? fleetPath(parentOf(id)) : "/vessels";
+}
+
+/** A fleet's vessels, or every vessel in the fleets under a group. */
+export function vesselCount(fleet: Fleet): number {
+  return fleet.sections ? fleetVessels(fleet).length : fleet.children.reduce((n, id) => n + vesselCount(byId.get(id)!), 0);
+}
+
+/** A fleet's share card, the PNG its page names as og:image: `/fleets.png` for the Fleets page itself. */
+export function fleetCardPath(id: string): string {
+  return `${fleetPath(id)}.png`;
 }
 
 export function fleetVessels(fleet: Fleet): FleetVessel[] {

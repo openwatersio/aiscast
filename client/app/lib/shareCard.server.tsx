@@ -18,6 +18,9 @@ import {
 } from "./ais";
 import { ApiUnavailable, getStations, getStats, getVessel, type ApiAuth, type Station, type Stats, type VesselProps } from "./api";
 import { edgeCached, notGetOrHead } from "./edge.server";
+import { coverKey, coverPhoto, fleetCardPath, getFleet, vesselCount, type Fleet } from "./fleets.server";
+import { fileTitle } from "./media";
+import { firstPhoto, namedPhotos } from "./media.server";
 
 /**
  * The image a shared link unfurls with, in the layout of the network's own card: a title, a line
@@ -29,6 +32,8 @@ export interface ShareCardProps {
   /** What the numbers cover, over them: "Last 24 hours". */
   period?: string;
   stats: Array<{ value: string; label: string }>;
+  /** A photo to show behind the text in place of the map, as a data URL. */
+  background?: string;
 }
 
 const COLORS = { panel: "#071421", label: "#60a5fa", title: "#ffffff", subtitle: "#cbd5e1", muted: "#94a3b8" };
@@ -58,10 +63,15 @@ const FADE = `linear-gradient(to top left, ${Array.from({ length: 21 }, (_, i) =
  * The card: the text over the map from openwaters.io/ais/, dimmed by a quarter, which shows through
  * the fade toward the bottom right. `assets/share-map.jpg` is that map, captured at the card's size without its controls.
  */
-export function ShareCard({ title, subtitle, period, stats }: ShareCardProps) {
+export function ShareCard({ title, subtitle, period, stats, background }: ShareCardProps) {
   return (
     <div style={{ display: "flex", width: "100%", height: "100%", background: COLORS.panel, fontFamily: "Inter" }}>
-      <img src={shareMap} width={1200} height={630} style={{ position: "absolute", left: 0, top: 0, opacity: 0.75 }} />
+      <img
+        src={background ?? shareMap}
+        width={1200}
+        height={630}
+        style={{ position: "absolute", left: 0, top: 0, opacity: 0.75, objectFit: "cover" }}
+      />
       <div style={{ position: "absolute", left: 0, top: 0, width: 1200, height: 630, backgroundImage: FADE }} />
       <div style={{ display: "flex", flexDirection: "column", width: TEXT + 70, height: "100%", padding: "84px 0 60px 70px" }}>
         <div style={{ display: "flex", color: COLORS.label, fontSize: 26, fontWeight: 700, letterSpacing: 4 }}>OPEN WATERS AIS</div>
@@ -313,11 +323,68 @@ export async function stationsCard(auth: ApiAuth): Promise<Response> {
   return shareCard(stationsCardProps(stations));
 }
 
+/**
+ * `/ais/fleets.png`, the Fleets page's card, or `/ais/fleets/<id>.png`, a fleet's or a group's, answers
+ * with the fleet's id, "" for the Fleets page; any other path with undefined. A fleet id is lowercase
+ * words and dashes in folders, so nothing else is a fleet's card.
+ */
+export function fleetCardId(pathname: string): string | undefined {
+  const m = /^\/ais\/fleets(?:\/([a-z0-9-]+(?:\/[a-z0-9-]+)*))?\.png$/.exec(pathname);
+  return m ? (m[1] ?? "") : undefined;
+}
+
+/** What a fleet's card says: its title, its summary's first sentence, which fits the card's two lines, and how many. */
+export function fleetCardProps(fleet: Fleet): ShareCardProps {
+  const vessels = { value: n(vesselCount(fleet)), label: "vessels" };
+  return {
+    title: fleet.title,
+    subtitle: /^.*?[.!?](?=\s|$)/.exec(fleet.summary)?.[0] ?? fleet.summary,
+    stats: fleet.sections ? [vessels] : [{ value: n(fleet.children.length), label: "fleets" }, vessels],
+  };
+}
+
+// Wikimedia asks every client to name itself.
+const USER_AGENT = "aiscast-web/1.0 (https://openwaters.io/ais/; hello@openwaters.io)";
+
+/**
+ * The fleet's cover photo, as its card shows it: the photo it names, else its cover vessel's first on
+ * Commons, as a data URL for the renderer. Undefined when there is none, or it does not come in a few
+ * seconds, and the card then shows the map: a slow Wikimedia never fails a card.
+ */
+async function fleetCover(fleet: Fleet, requestUrl: string): Promise<string | undefined> {
+  try {
+    const named = coverPhoto(fleet);
+    let thumb = named ? (await namedPhotos([named], requestUrl))[fileTitle(named)]?.thumb : undefined;
+    const key = coverKey(fleet);
+    if (!thumb && key) thumb = await firstPhoto(key, requestUrl, 3000);
+    if (!thumb) return undefined;
+    const res = await fetch(thumb, { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(4000) });
+    const type = res.headers.get("content-type") ?? "";
+    if (!res.ok || !/^image\/(jpeg|png)/.test(type)) return undefined;
+    const data = new Uint8Array(await res.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < data.length; i += 0x8000) bin += String.fromCharCode(...data.subarray(i, i + 0x8000));
+    return `data:${type.split(";")[0]};base64,${btoa(bin)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A fleet's card, over its cover photo when it has one, or a 404 for a fleet there is not. */
+export async function fleetCard(id: string, requestUrl: string): Promise<Response> {
+  const fleet = getFleet(id);
+  if (!fleet) return new Response("Not found", { status: 404 });
+  return shareCard({ ...fleetCardProps(fleet), background: await fleetCover(fleet, requestUrl) });
+}
+
 /** A card's numbers cover 24 hours, so an hour old is fresh enough for a link preview. */
 const CARD_TTLS = { 200: 3600, 301: 3600, 404: 300 };
 
 /** The card a path names, by its canonical path within the app, and how to draw it. */
-function cardFor(pathname: string, auth: ApiAuth): { path: string; make: () => Promise<Response> } | undefined {
+function cardFor(url: URL, auth: ApiAuth): { path: string; make: () => Promise<Response> } | undefined {
+  const pathname = url.pathname;
+  const fleet = fleetCardId(pathname);
+  if (fleet != null) return { path: fleetCardPath(fleet), make: () => fleetCard(fleet, url.href) };
   if (pathname === "/ais/network.png") return { path: "/network.png", make: () => networkCard(auth) };
   if (pathname === "/ais/stations.png") return { path: "/stations.png", make: () => stationsCard(auth) };
   const mmsi = vesselCardMmsi(pathname);
@@ -338,7 +405,7 @@ export function serveCard(
   cache: Cache,
   waitUntil: (p: Promise<unknown>) => void,
 ): Promise<Response> | undefined {
-  const card = cardFor(url.pathname, auth);
+  const card = cardFor(url, auth);
   if (!card) return undefined;
   const refused = notGetOrHead(request);
   if (refused) return Promise.resolve(refused);
