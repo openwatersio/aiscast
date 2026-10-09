@@ -35,7 +35,7 @@ export function FleetCard({ card, photos, featured = false }: { card: FleetCardD
       to={card.path}
       className={cn(
         "relative block overflow-hidden rounded-xl bg-surface-tile text-white no-underline hover:text-white",
-        featured ? "aspect-[16/10]" : "aspect-[3/4]",
+        featured ? "aspect-[16/10]" : "aspect-square",
       )}
     >
       {photo ? (
@@ -48,10 +48,10 @@ export function FleetCard({ card, photos, featured = false }: { card: FleetCardD
         </>
       ) : card.avatars?.length ? (
         // Who the fleet is, for one whose boats no one has photographed for Commons.
-        // A row of five on a wide card, two by two on a tall one, clear of the title below.
+        // A row of five on a wide card, two by two on a square one, clear of the title below.
         <span className={cn("absolute inset-x-0 top-0 bottom-1/3 grid content-center justify-center gap-2 p-4", featured ? "grid-cols-5" : "grid-cols-2")} aria-hidden>
           {card.avatars.slice(0, featured ? 5 : 4).map((src) => (
-            <img key={src} src={src} alt="" referrerPolicy="no-referrer" className="size-14 rounded-full object-cover shadow-sm ring-2 ring-white/80" />
+            <img key={src} src={src} alt="" referrerPolicy="no-referrer" className={cn("rounded-full object-cover shadow-sm ring-2 ring-white/80", featured ? "size-14" : "size-12")} />
           ))}
         </span>
       ) : (

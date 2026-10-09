@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  vesselActivity,
   bearing,
   distanceNM,
   formatDistance,
@@ -590,5 +591,18 @@ describe("stationDescription", () => {
 
   it("falls back to the 30-minute count from a server without the 24-hour one", () => {
     expect(stationDescription("x", { ...st, vessels_24h: undefined })).toContain(": 225 vessels and");
+  });
+});
+
+describe("vesselActivity", () => {
+  it("says what a vessel is doing and where", () => {
+    expect(vesselActivity({ nav_status: 5, sog: 0, near: "Monaco" })).toBe("Moored near Monaco");
+    expect(vesselActivity({ nav_status: 0, sog: 11.4, near: "Antibes, France" })).toBe("Under way near Antibes, France");
+    expect(vesselActivity({ nav_status: 8, sog: 7 })).toBe("Sailing");
+    expect(vesselActivity({ nav_status: 1, sog: 0.8 })).toBe("At anchor");
+    // No status: moving reads as under way, still says only where.
+    expect(vesselActivity({ sog: 12 })).toBe("Under way");
+    expect(vesselActivity({ sog: 0, near: "Nassau" })).toBe("Near Nassau");
+    expect(vesselActivity({})).toBeUndefined();
   });
 });

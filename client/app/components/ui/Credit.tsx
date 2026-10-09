@@ -12,7 +12,7 @@ export function Credit({ children, focusable = true, className }: { children: Re
     <span
       tabIndex={focusable ? 0 : undefined}
       className={cn(
-        "group/credit pointer-events-auto inline-flex max-w-full min-w-0 items-center rounded-full bg-black/55 text-caption text-white backdrop-blur-sm outline-none",
+        "group/credit pointer-events-auto inline-flex max-w-full min-w-0 items-center rounded-full bg-white/25 text-caption text-black/50 backdrop-blur-sm outline-none",
         className,
       )}
     >

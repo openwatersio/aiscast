@@ -62,11 +62,8 @@ test("fleets open from the map's menu, list their vessels, and open one on the m
   // An unconfirmed identity is listed, but not as a link into the map.
   await expect(page.getByText("Rán VII")).toBeVisible();
   await expect(page.getByRole("link", { name: /Rán VII/ })).toHaveCount(0);
-  // Only Koru has been heard, so filtering to the last day leaves it alone.
-  await page.getByRole("button", { name: "All vessels" }).click();
-  await page.getByRole("menuitemradio", { name: "Heard in the last day" }).click();
-  await expect(page.getByRole("link", { name: "Ownership history" })).toHaveCount(1);
-  await expect(page.getByText("Rán VII")).toHaveCount(0);
+  // The most recently heard lead, so Koru, the only one heard, comes first.
+  await expect(page.locator("[data-sheet-scroll] li h3").first()).toHaveText(/^Koru/);
   await page.getByRole("link", { name: /^Koru/ }).click();
   await expect(page).toHaveURL(/\/ais\/vessels\/319225400/);
   // Back from the vessel returns to the fleet, and back from the fleet to its group.

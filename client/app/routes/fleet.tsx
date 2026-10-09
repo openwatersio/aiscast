@@ -4,10 +4,10 @@ import { PageTitle, Panel } from "../components/Panel";
 import { RouteError, routeErrorMeta } from "../components/RouteError";
 import { PhotoCarousel } from "../components/ui/PhotoCarousel";
 import { ChipRow, MenuChip } from "../components/ui/Chip";
-import { ClassDot } from "../components/ui/List";
 import { Section } from "../components/ui/Section";
-import { shortAge, vesselPath } from "../lib/ais";
+import { parseDestination, parseEta, shortAge, vesselActivity, vesselPath } from "../lib/ais";
 import { browserAuth, getVessel, type VesselFeature } from "../lib/api";
+import { cardRows } from "../lib/cardRows";
 import { cn } from "../lib/cn";
 import { FleetCard } from "../components/FleetCard";
 import { coverKey, fleetCard, fleetPath, getFleet, parentPath, photoNames, type Fleet, type FleetSection, type FleetVessel } from "../lib/fleets.server";
@@ -39,10 +39,10 @@ const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 export const meta = ({ loaderData, error }: Route.MetaArgs) =>
   loaderData
     ? pageMeta({
-        title: `${loaderData.fleet.title} | Open Waters AIS`,
-        description: loaderData.fleet.id ? loaderData.fleet.summary : "Collections of notable vessels, from cruise ships to YouTube sailors, on the live Open Waters AIS map.",
-        path: loaderData.path,
-      })
+      title: `${loaderData.fleet.title} | Open Waters AIS`,
+      description: loaderData.fleet.id ? loaderData.fleet.summary : "Collections of notable vessels, from cruise ships to YouTube sailors, on the live Open Waters AIS map.",
+      path: loaderData.path,
+    })
     : routeErrorMeta(error);
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
@@ -83,26 +83,25 @@ type Card = Route.ComponentProps["loaderData"]["cards"][number];
 
 /** A group's fleets as cards, the first shown largest, as guides are shown in a maps app. */
 function GroupView({ fleet, cards, back, photos }: { fleet: Omit<Fleet, "children">; cards: Card[]; back: string; photos?: Record<string, Photo> }) {
-  // The first fleet is shown largest; with only one more, it is too, rather than half a row.
-  const wide = cards.length <= 2 ? cards : cards.slice(0, 1);
-  const rest = cards.slice(wide.length);
   return (
     <Panel back={back} title={fleet.title}>
       <PageTitle>{fleet.title}</PageTitle>
       <p className="mt-1 text-body text-fg-secondary">{fleet.summary}</p>
       {fleet.description && <p className="mt-2 text-footnote text-fg-muted">{fleet.description}</p>}
+      {/* A wide card every third row, and no half row left with one card: lib/cardRows.ts. */}
       <div className="mt-4 space-y-3">
-        {wide.map((c) => (
-          <FleetCard key={c.path} card={c} photos={photos} featured />
-        ))}
+        {cardRows(cards).map((row) =>
+          row.length === 1 ? (
+            <FleetCard key={row[0]!.path} card={row[0]!} photos={photos} featured />
+          ) : (
+            <div key={row[0]!.path} className="grid grid-cols-2 gap-3">
+              {row.map((c) => (
+                <FleetCard key={c.path} card={c} photos={photos} />
+              ))}
+            </div>
+          ),
+        )}
       </div>
-      {rest.length > 0 && (
-        <div className="mt-3 grid grid-cols-2 gap-3">
-          {rest.map((c) => (
-            <FleetCard key={c.path} card={c} photos={photos} />
-          ))}
-        </div>
-      )}
     </Panel>
   );
 }
@@ -139,18 +138,12 @@ function useReports(vessels: FleetVessel[]): Map<number, VesselFeature | null> {
   return reports;
 }
 
-type Sort = "listed" | "heard" | "name";
+// Most recently heard first by default; "As listed" keeps the fleet's sections, such as a YouTube channel's boats.
+type Sort = "recent" | "name" | "listed";
 const SORTS: Array<{ value: Sort; label: string; chip: string }> = [
-  { value: "listed", label: "As listed", chip: "As listed" },
-  { value: "heard", label: "Recently heard", chip: "Recently heard" },
+  { value: "recent", label: "Recent", chip: "Recent" },
   { value: "name", label: "Name", chip: "Name" },
-];
-
-type Show = "all" | "map" | "day";
-const SHOWS: Array<{ value: Show; label: string; chip: string }> = [
-  { value: "all", label: "All vessels", chip: "All vessels" },
-  { value: "map", label: "On the map", chip: "On the map" },
-  { value: "day", label: "Heard in the last day", chip: "Heard today" },
+  { value: "listed", label: "As listed", chip: "As listed" },
 ];
 
 interface Entry {
@@ -175,19 +168,15 @@ function FleetView({
   const media = useMedia(fleet.photos?.length && (!photos || own.length) ? undefined : cover);
   const hero = own.length ? own : (media?.photos ?? []);
   const live = useLive();
-  const now = useNow(60_000);
   const vessels = fleet.sections.flatMap((s) => s.vessels);
   const reports = useReports(vessels);
   const [hovered, setHovered] = useState<number>();
-  const [sort, setSort] = useState<Sort>("listed");
-  const [show, setShow] = useState<Show>("all");
+  const [sort, setSort] = useState<Sort>("recent");
 
   const seen = (e: Entry) => (e.report ? Date.parse(e.report.properties.seen) : 0);
-  const shown = (e: Entry) => (show === "all" ? true : show === "map" ? Boolean(e.report?.geometry) : now - seen(e) < 86_400_000);
   const entries = fleet.sections.flatMap((section) =>
     section.vessels.map((vessel): Entry => ({ vessel, section, report: (vessel.mmsi && reports.get(vessel.mmsi)) || undefined })),
   );
-  const visible = entries.filter(shown);
 
   // The map rings the vessels shown and frames the whole fleet, as it does search results.
   const ring = (es: Entry[]) =>
@@ -197,7 +186,7 @@ function FleetView({
         : [],
     );
   useEffect(() => {
-    live?.ctl.setResults(ring(visible));
+    live?.ctl.setResults(ring(entries));
     live?.ctl.highlightResult(hovered);
   });
   useEffect(() => () => live?.ctl.setResults([]), [live]);
@@ -235,11 +224,11 @@ function FleetView({
           <div className="relative aspect-[4/3] bg-surface-tile">
             <PhotoCarousel photos={hero} alt={fleet.title} />
           </div>
-          <div className="bg-neutral-900 px-4 pt-4 pb-5 text-white">
-            <PageTitle className="text-large-title font-bold text-white">{fleet.title}</PageTitle>
-            <p className="mt-2 text-body text-white/85">{fleet.summary}</p>
-            {fleet.description && <p className="mt-2 text-footnote text-white/60">{fleet.description}</p>}
-            {fleet.source && <Source links={fleet.source} className="text-white/60 [&_a]:text-white/85" />}
+          <div className="px-4 pt-4 pb-5">
+            <PageTitle className="text-large-title font-bold">{fleet.title}</PageTitle>
+            <p className="mt-2 text-body text-fg-muted">{fleet.summary}</p>
+            {fleet.description && <p className="mt-2 text-footnote text-fg-muted">{fleet.description}</p>}
+            {fleet.source && <Source links={fleet.source} className="text-fg-muted [&_a]:text-fg-muted" />}
           </div>
         </div>
       ) : (
@@ -250,37 +239,36 @@ function FleetView({
           {fleet.source && <Source links={fleet.source} className="text-fg-muted" />}
         </>
       )}
-      <ChipRow label="Sort and filter vessels" className="-mx-3 mt-4">
+      <ChipRow label="Sort vessels" className="-mx-3 mt-4">
         <MenuChip value={sort} options={SORTS} onChange={setSort} />
-        <MenuChip value={show} options={SHOWS} onChange={setShow} />
       </ChipRow>
-      {!visible.length && <p className="mt-4 text-body text-fg-secondary">No vessels match.</p>}
       {sort === "listed"
         ? fleet.sections.map((s, i) => {
-            const es = visible.filter((e) => e.section === s);
-            return es.length ? (
-              s.avatar || s.links ? (
-                <section key={s.title ?? i} className="mt-6">
-                  <SectionHeader section={s} />
-                  <ul className="space-y-3">{es.map((e) => row(e))}</ul>
-                </section>
-              ) : (
-                <Section key={s.title ?? i} label={s.title ?? plural(es.length, "vessel")} aside={s.subtitle} bare>
-                  <ul className="space-y-3">{es.map((e) => row(e))}</ul>
-                </Section>
-              )
-            ) : null;
-          })
-        : visible.length > 0 && (
-            <Section label={plural(visible.length, "vessel")} bare>
-              <ul className="space-y-3">
-                {[...visible]
-                  .sort((a, b) => (sort === "heard" ? seen(b) - seen(a) : a.vessel.name.localeCompare(b.vessel.name)))
-                  // Out of their sections, each row says which it is from.
-                  .map((e) => row(e, e.section.title))}
-              </ul>
-            </Section>
-          )}
+          const es = entries.filter((e) => e.section === s);
+          return es.length ? (
+            s.avatar || s.links ? (
+              <section key={s.title ?? i} className="mt-6">
+                <SectionHeader section={s} />
+                <ul className="space-y-3">{es.map((e) => row(e))}</ul>
+              </section>
+            ) : (
+              <Section key={s.title ?? i} label={s.title ?? plural(es.length, "vessel")} aside={s.subtitle} bare>
+                <ul className="space-y-3">{es.map((e) => row(e))}</ul>
+              </Section>
+            )
+          ) : null;
+        })
+        : entries.length > 0 && (
+          <Section label={plural(entries.length, "vessel")} bare>
+            <ul className="space-y-3">
+              {[...entries]
+                // Never heard sorts last, by name.
+                .sort((a, b) => (sort === "recent" ? seen(b) - seen(a) : 0) || a.vessel.name.localeCompare(b.vessel.name))
+                // Out of their sections, each row says which it is from.
+                .map((e) => row(e, e.section.title))}
+            </ul>
+          </Section>
+        )}
     </Panel>
   );
 }
@@ -304,8 +292,7 @@ function useCardPhotos(vessel: FleetVessel, named: Photo[]) {
 
 /**
  * A vessel as a card, as a place is in a maps app: what it is and when it was last heard, with
- * one photo beside it, then its note and links across the card, then three photos across the
- * foot when it has that many.
+ * its first photo beside it when it has one, then its note and links across the card.
  * The name's link covers the card; the photos and links sit above it, each going where it says.
  */
 function VesselCard({
@@ -324,8 +311,15 @@ function VesselCard({
   const now = useNow();
   const { ref, photos } = useCardPhotos(vessel, named);
   const p = report?.properties;
-  const row = photos.length >= 3;
   const age = p && shortAge(Math.max(0, Math.round((now - Date.parse(p.seen)) / 1000)));
+  const doing = p && vesselActivity(p);
+  // Where the crew says the vessel is going, as the vessel page reads it, and when.
+  const voyage = parseDestination(p?.destination);
+  // The country in words, with the crew's code beside it; a destination typed as words, as typed.
+  const to = voyage?.to && (voyage.to.country ? `${voyage.to.code}, ${voyage.to.country}` : voyage.to.raw);
+  const eta = to ? parseEta(p?.eta) : undefined;
+  // An arrival well past is a voyage over, or a crew that never updated it.
+  const etaText = eta && eta.getTime() > now - 12 * 3_600_000 ? eta.toLocaleString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }) : undefined;
   return (
     <li
       ref={ref}
@@ -344,24 +338,35 @@ function VesselCard({
               vessel.name
             )}
           </h3>
-          {(context || vessel.subtitle) && <p className="text-subhead text-fg-muted">{[context, vessel.subtitle].filter(Boolean).join(" · ")}</p>}
-          <p className="flex items-center gap-1.5 text-subhead text-fg-muted">
-            {vessel.mmsi && <ClassDot kind={p?.kind} type={p?.type} />}
-            {!vessel.mmsi ? "Not on map" : age ? `Heard ${age} ago` : report === undefined ? "\u00a0" : "Not heard"}
-          </p>
+          {/* One size under the name; what it is doing reads darker, everything else muted. */}
+          <div className="mt-0.5 space-y-0.5 text-subhead text-fg-muted">
+            {(context || vessel.subtitle) && <p>{[context, vessel.subtitle].filter(Boolean).join(" · ")}</p>}
+            <p className="truncate">
+              {!vessel.mmsi ? (
+                "Not on map"
+              ) : age ? (
+                <>
+                  {doing && <span className="text-fg-secondary">{doing} · </span>}
+                  {age} ago
+                </>
+              ) : report === undefined ? (
+                "\u00a0"
+              ) : (
+                "Not heard"
+              )}
+            </p>
+            {to && (
+              <p className="truncate" title={p?.destination}>
+                {[`Bound for ${to}`, etaText && `ETA ${etaText}`].filter(Boolean).join(" · ")}
+              </p>
+            )}
+          </div>
         </div>
-        {!row && photos[0] && <Thumb photo={photos[0]} className="size-24" />}
+        {photos[0] && <Thumb photo={photos[0]} className="size-24" />}
       </div>
       {/* Below the photo, the note and links take the card's full width. */}
       {vessel.note && <p className="mt-2 text-footnote text-fg-secondary">{vessel.note}</p>}
       {vessel.links && <Links links={vessel.links} className="relative z-10 mt-1 w-fit" />}
-      {row && (
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          {photos.slice(0, 3).map((photo) => (
-            <Thumb key={photo.page} photo={photo} className="aspect-square" />
-          ))}
-        </div>
-      )}
     </li>
   );
 }

@@ -636,3 +636,19 @@ export function volunteerReceiver(id: string): string | undefined {
   const [base, path] = id.split("/", 2);
   return path != null && isVolunteer(base) ? base : undefined;
 }
+
+/**
+ * What a vessel is doing and where, in a line: "Moored near Monaco", "Under way near Antibes".
+ * Its status in a word or two, and the place nearest it when the API names one; the vessel's
+ * page has the speed. Undefined when there is nothing to say.
+ */
+export function vesselActivity(p: { nav_status?: number; sog?: number; near?: string }): string | undefined {
+  const moving = p.sog != null && p.sog >= 0.5;
+  const status = p.nav_status != null ? SHORT_STATUS[p.nav_status] ?? NAV_STATUS[p.nav_status] : moving ? "Under way" : undefined;
+  const what = status;
+  if (what && p.near) return `${what} near ${p.near}`;
+  return what ?? (p.near ? `Near ${p.near}` : undefined);
+}
+
+// The vessel page spells the status out; a card has a line for it.
+const SHORT_STATUS: Record<number, string> = { 0: "Under way", 7: "Fishing", 8: "Sailing" };
