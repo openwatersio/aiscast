@@ -140,6 +140,6 @@ function encode(msg: Record<string, unknown>): string | null {
 }
 
 // Radians → degrees in [0, 360); a magnetic + variation sum can fall outside one turn.
-function deg(rad: number): number {
+export function deg(rad: number): number {
   return ((((rad * 180) / Math.PI) % 360) + 360) % 360;
 }
