@@ -444,7 +444,7 @@ type vesselProps struct {
 	MsgType     string   `json:"msg_type"`
 	Name        string   `json:"name,omitempty"`
 	NavStatus   *uint8   `json:"nav_status,omitempty"`
-	Near        string   `json:"near,omitempty"` // the place nearest the position, on searches only
+	Near        string   `json:"near,omitempty"` // the place nearest the position, on searches and /v1/vessels/{mmsi}
 	Seen        string   `json:"seen"`
 	Sog         *float64 `json:"sog,omitempty"`
 	Source      string   `json:"source"`
@@ -821,7 +821,8 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 // serveVessel: GET /v1/vessels/{mmsi} → one vessel's last known state as a GeoJSON Feature, from the cache
 // completed by the record, or from the record alone for a vessel the cache no longer holds, with its
 // particulars from Wikidata when its IMO has an item and from the Coast Guard when it is a documented US
-// vessel. geometry is null for a vessel whose position was never heard. An unknown vessel is a 404.
+// vessel, and near naming the place nearest its position. geometry is null for a vessel whose position was
+// never heard. An unknown vessel is a 404.
 // /v1/vessels/{imo}, seven digits, answers for the vessel an IMO names (vesselPath).
 func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	cl, err := p.requestClaims(r)
@@ -903,6 +904,7 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	}{Attribution: map[string]string{}, ID: f.ID, Properties: f.Properties, Type: f.Type}
 	if cur.HasPos {
 		out.Geometry = &f.Geometry
+		out.Properties.Near = nearLabel(f.Geometry.Coordinates[1], f.Geometry.Coordinates[0])
 	}
 	noteAttribution(out.Attribution, cur.Source)
 	setContentLocation(w, location)

@@ -824,7 +824,7 @@
               "sog": { "type": "number", "description": "Speed over ground, knots. Present only when known." },
               "heading": { "type": "integer", "description": "True heading, degrees. Present only when known." },
               "nav_status": { "type": "integer", "description": "AIS navigational status. Present only when known." },
-              "near": { "type": "string", "description": "The town or region nearest the position, such as `Santa Monica, CA` or `Munster, Ireland`. On `q` searches only, and absent more than 100 km from a town of 5,000. Place names from GeoNames, CC BY 4.0." },
+              "near": { "type": "string", "description": "The town or region nearest the position, such as `Santa Monica, CA` or `Munster, Ireland`. On `q` searches and `/v1/vessels/{mmsi}`, and absent more than 100 km from a town of 5,000, or without a position. Place names from GeoNames, CC BY 4.0." },
               "flag": { "type": "string", "description": "ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits. Present only when the MID is known." },
               "imo": { "type": "integer", "description": "IMO number from the vessel's static data. Present only when sent." },
               "callsign": { "type": "string", "description": "Radio call sign. Present only when sent." },

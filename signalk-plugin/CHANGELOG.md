@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.2
+
+- Traffic your NMEA 2000 AIS receiver hears reaches Open Waters AIS more faithfully. A vessel steering just west of north no longer has its course and heading sent as not available, a turn's rate is no longer rounded down, and a position report that leaves out the navigation status or rate of turn now says so, where it used to claim the vessel was under way using its engine and not turning.
+
+## 0.6.1
+
+- The plugin is now called Open Waters AIS, in Plugin Config and in the App Store, where it was AIScast. It is the same plugin: the package is still `signalk-aiscast`, your settings and station carry over, and nothing about how it shares or receives traffic has changed.
+- The plugin has an icon in the App Store, and its page there suggests [signalk-buddylist-plugin](https://github.com/sbender9/signalk-buddylist-plugin), which lets you follow buddy boats on Open Waters AIS far beyond VHF range.
+
 ## 0.6.0
 
 - Your station on aiscast takes your boat's name, the vessel name set in Signal K, while *Share my own ship* is on. Turning that switch off removes the name, so the station never says where the boat is. There is nothing to set up.
