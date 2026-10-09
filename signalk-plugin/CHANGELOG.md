@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.2
 
 - Traffic your NMEA 2000 AIS receiver hears reaches Open Waters AIS more faithfully. A vessel steering just west of north no longer has its course and heading sent as not available, a turn's rate is no longer rounded down, and a position report that leaves out the navigation status or rate of turn now says so, where it used to claim the vessel was under way using its engine and not turning.
 
