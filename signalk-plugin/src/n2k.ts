@@ -135,10 +135,11 @@ function mpsToKn(mps: number | undefined): number | undefined {
   return mps === undefined ? undefined : mps * 1.9438444924574;
 }
 
-// AIS rate of turn: 4.733 * sqrt(deg/min), sign preserved; 0 stays "not turning". ±127 is the most the
-// 8-bit field holds, and means turning faster than it can say.
+// AIS rate of turn: 4.733 * sqrt(deg/min), sign preserved; 0 stays "not turning". A measured rate tops out
+// at ±126, which means 708°/min or faster; ±127 is reserved for a turn with no rate-of-turn sensor behind it
+// (ITU-R M.1371, Table 46).
 function rotToAis(radPerSec: number | undefined): number {
   if (radPerSec === undefined) return ROT_NA;
   const degPerMin = Math.abs(radPerSec) * 3437.74677078493;
-  return Math.sign(radPerSec) * Math.min(127, Math.round(4.733 * Math.sqrt(degPerMin)));
+  return Math.sign(radPerSec) * Math.min(126, Math.round(4.733 * Math.sqrt(degPerMin)));
 }

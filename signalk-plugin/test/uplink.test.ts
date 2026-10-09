@@ -307,6 +307,8 @@ describe("draining the queue", () => {
       vi.advanceTimersByTime(10_000); // past the 30 s the server has to ack
       expect(link.reconnects).toBe(1);
       expect(up.stats).toMatchObject({ queued: 1, inFlight: 0, sent: 0 });
+      await up.stop(); // the requeued sentence lands on disk, as it would across a restart
+      expect(await onDisk()).toEqual(sentences(link.published[0]));
     } finally {
       vi.useRealTimers();
     }
@@ -327,7 +329,7 @@ describe("queue cap", () => {
       await up.start();
       expect(up.stats.queued).toBe(count * perSegment);
       vi.advanceTimersByTime(60_000);
-      await until(() => up.stats.dropped > 0);
+      await until(() => up.stats.dropped === over * perSegment); // every segment over the cap, not just the first
       expect(up.stats.dropped).toBe(over * perSegment);
       expect(up.stats.queued).toBe((count - over) * perSegment);
       const left = await files();

@@ -52,9 +52,11 @@ describe("NMEA 2000 AIS re-encoding", () => {
     expect(port["navigation.rateOfTurn"]).toBeCloseTo(-0.01, 3);
     expect(report(0.01)["navigation.rateOfTurn"]).toBeCloseTo(0.01, 3);
     expect(report(0)["navigation.rateOfTurn"]).toBe(0);
-    // Faster than the field can say: the most it holds, not a wrap into a turn the other way.
+    // Faster than the field can say: the highest measured rate, not a wrap into a turn the other way, and
+    // not ±127, which says no rate-of-turn sensor is fitted.
     const fast = encode(fakeApp(), 129038, { userId: MMSI, longitude: 4.4, latitude: 52.1, rateOfTurn: -0.5 });
-    expect(new ggencoder.AisDecode(fast!)).toMatchObject({ rot: -127 });
+    expect(new ggencoder.AisDecode(fast!)).toMatchObject({ rot: -126 });
+    expect(decode(fast).values["navigation.rateOfTurn"]).toBeLessThan(0);
   });
 
   it("leaves a class A position's status and rate of turn not available when NMEA 2000 lacks them", () => {
@@ -62,9 +64,9 @@ describe("NMEA 2000 AIS re-encoding", () => {
     expect(new ggencoder.AisDecode(sentence!)).toMatchObject({ navstatus: 15, rot: -128 });
   });
 
-  it("keeps a course and heading just short of north, at the tenth of a degree AIS carries", () => {
+  it.each([129038, 129039])("keeps a course and heading just short of north, at the tenth of a degree AIS carries (%i)", (pgn) => {
     const values = (cog: number, heading: number) =>
-      decode(encode(fakeApp(), 129039, { userId: MMSI, longitude: 4.4, latitude: 52.1, sog: 3, cog: deg(cog), heading: deg(heading) })).values;
+      decode(encode(fakeApp(), pgn, { userId: MMSI, longitude: 4.4, latitude: 52.1, sog: 3, cog: deg(cog), heading: deg(heading) })).values;
     const north = values(359.8, 359.8);
     expect(north["navigation.courseOverGroundTrue"]).toBeCloseTo(deg(359.8), 3);
     expect(north["navigation.headingTrue"]).toBe(0); // heading is whole degrees, and 360 is not one
