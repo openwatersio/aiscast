@@ -89,6 +89,31 @@ export function derivedKind(
   return "vessel";
 }
 
+/**
+ * The kind a stream vessel takes when a tile or the record lends it what it has not heard. An aid,
+ * base station, or SAR craft they know wins. Otherwise the rule decides again on the merged state:
+ * a ship type the stream missed, as when it heard a yacht's name in part A of message 24 but not
+ * its type in part B, makes its gear a vessel; and their gear stands for a hull the stream has not
+ * heard.
+ */
+export function adoptedKind(
+  mmsi: number,
+  v: { kind: string; name?: string; shipType?: number; dimension?: { A: number; B: number; C: number; D: number }; navStatus?: number },
+  from?: string,
+): string {
+  if (v.kind !== "vessel" && v.kind !== "gear") return v.kind;
+  if (from && from !== "vessel" && from !== "gear") return from;
+  const d = v.dimension;
+  const derived = derivedKind(mmsi, {
+    name: v.name,
+    shipType: v.shipType,
+    length: d && d.A + d.B,
+    beam: d && d.C + d.D,
+    navStatus: v.navStatus,
+  });
+  return derived === "vessel" && from === "gear" ? "gear" : derived;
+}
+
 export function shipClass(kind?: string, type?: number): ShipClass {
   if (kind === "aton" || kind === "base" || kind === "sar" || kind === "gear") return kind;
   if (!type) return "other";

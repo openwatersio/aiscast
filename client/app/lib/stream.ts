@@ -1,4 +1,4 @@
-import { derivedKind, isBeacon } from "./ais";
+import { adoptedKind, derivedKind, isBeacon } from "./ais";
 import { publicApiBase, storedToken, type VesselProps } from "./api";
 import { reportError } from "./report";
 import { Hub, HUB_HEARTBEAT, type HubState, type Limits, type Port, type ToHub, type ToTab } from "./streamHub";
@@ -203,8 +203,7 @@ export class Stream {
     if (!v) return;
     if (!v.name && from.name) v.name = from.name;
     if (!v.shipType && from.shipType) v.shipType = from.shipType;
-    // The stream's own gear stands to vessel, but a tile or the record knows an aid it took for one.
-    if (from.kind && (v.kind === "vessel" || (v.kind === "gear" && from.kind !== "vessel"))) v.kind = from.kind;
+    v.kind = adoptedKind(mmsi, v, from.kind) as Vessel["kind"];
     this.#dirty = true;
   }
 

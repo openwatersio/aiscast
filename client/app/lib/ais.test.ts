@@ -21,6 +21,7 @@ import {
   parseEta,
   parsePlace,
   parseVesselParam,
+  adoptedKind,
   derivedKind,
   mmsiSegment,
   shipClass,
@@ -138,6 +139,26 @@ describe("derivedKind", () => {
     for (const c of fixture.cases) {
       expect(derivedKind(c.mmsi, c), `${c.mmsi} ${c.name}`).toBe(c.want);
     }
+  });
+});
+
+describe("adoptedKind", () => {
+  it("lets a ship type the stream missed make its gear a vessel", () => {
+    // Part A of message 24 heard, part B not; the tile knows type 37.
+    expect(adoptedKind(368472570, { kind: "gear", name: "BUOY TIME", shipType: 37 }, "vessel")).toBe("vessel");
+  });
+
+  it("keeps the server's gear for a hull the stream has not heard", () => {
+    expect(adoptedKind(260400999, { kind: "vessel" }, "gear")).toBe("gear");
+  });
+
+  it("takes an aid the server knows, and keeps what a message set", () => {
+    expect(adoptedKind(992576072, { kind: "gear", name: "AQUACULTURE BUOY 1" }, "aton")).toBe("aton");
+    expect(adoptedKind(992576072, { kind: "aton", name: "AQUACULTURE BUOY 1" }, "gear")).toBe("aton");
+  });
+
+  it("decides gear the stream can tell by name", () => {
+    expect(adoptedKind(254301782, { kind: "vessel", name: "HSD-NET-84%" }, "vessel")).toBe("gear");
   });
 });
 
