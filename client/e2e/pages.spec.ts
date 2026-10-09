@@ -1,6 +1,6 @@
 import type { APIRequestContext } from "@playwright/test";
-import { vesselPath } from "../app/lib/ais";
-import { namedVessel } from "./data";
+import { vesselPath, vesselSlug } from "../app/lib/ais";
+import { heardGear, namedVessel } from "./data";
 import { expect, test } from "./fixtures";
 
 // With scripts off, whatever the page shows came from the Worker's render.
@@ -44,6 +44,20 @@ test("a vessel's address without its name, or with another, redirects to the can
     expect(res.status(), path).toBe(301);
     expect(new URL(res.headers().location!, res.url()).pathname, path).toBe(`/ais${vesselPath(mmsi, name)}`);
   }
+});
+
+test("gear's address carries no name, and its page asks not to be indexed", async ({ page, request }) => {
+  const { mmsi, name } = await heardGear();
+  // A net buoy's name is its serial and battery level, so the address leaves it out.
+  const named = `/ais/vessels/${mmsi}-${vesselSlug(name)}`;
+  const res = await request.get(named, { maxRedirects: 0 });
+  expect(res.status(), named).toBe(301);
+  expect(new URL(res.headers().location!, res.url()).pathname).toBe(`/ais/vessels/${mmsi}`);
+
+  const doc = await page.goto(`/ais/vessels/${mmsi}`);
+  expect(doc?.status()).toBe(200);
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `https://openwaters.io/ais/vessels/${mmsi}`);
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
 });
 
 test("a vessel the network has never heard is a 404 that asks not to be indexed", async ({ page }) => {

@@ -334,7 +334,7 @@ function VesselCard({
         <div className="min-w-0 flex-1">
           <h3 className="text-headline font-semibold text-fg">
             {vessel.mmsi ? (
-              <Link data-card to={vesselPath(vessel.mmsi, p?.name)} className="text-fg no-underline after:absolute after:inset-0 after:rounded-2xl hover:text-fg">
+              <Link data-card to={vesselPath(vessel.mmsi, p?.name, p?.kind)} className="text-fg no-underline after:absolute after:inset-0 after:rounded-2xl hover:text-fg">
                 {vessel.name}
               </Link>
             ) : (

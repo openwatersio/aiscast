@@ -22,6 +22,7 @@ import (
 func testPipeline(t *testing.T) *Pipeline {
 	allowAnon = true
 	wsConnectLimit = newLimiter(wsConnectLimit.max) // package-level, so connects otherwise accumulate across tests
+	httpLimit = newLimiter(httpLimit.max)           // and requests
 	return newPipeline(newArchive("", nil))
 }
 

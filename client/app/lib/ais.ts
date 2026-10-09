@@ -23,6 +23,7 @@ export type ShipClass =
   | "aton"
   | "base"
   | "sar"
+  | "gear"
   | "other";
 
 /** Matches the palette on openwaters.io/ais, tuned for the dark basemap. */
@@ -36,6 +37,7 @@ export const CLASS_COLORS: Record<ShipClass, string> = {
   aton: "#6d4c41",
   base: "#37474f",
   sar: "#d81b60",
+  gear: "#9e9d24",
   other: "#f9a825",
 };
 
@@ -49,11 +51,71 @@ export const CLASS_LABELS: Record<ShipClass, string> = {
   aton: "Aid to navigation",
   base: "Base station",
   sar: "Search and rescue",
+  gear: "Fishing gear",
   other: "Other",
 };
 
+/** An AIS-SART (970), man-overboard (972), or EPIRB-AIS (974) number. */
+export function isBeacon(mmsi: number): boolean {
+  const prefix = Math.floor(mmsi / 1_000_000);
+  return prefix === 970 || prefix === 972 || prefix === 974;
+}
+
+/**
+ * The kind a station's own state gives it when its message types set none, as the server's
+ * derivedKind (server/kinds.go) decides it, against the same cases
+ * (server/testdata/derived_kinds.json): a 970, 972, or 974 MMSI saying AIS-SART active is a
+ * distress beacon, and a 979 MMSI, a name ending in a battery level, or a voltage, a buoy's name,
+ * or a 10 m square hull from a station sending no ship type, is fishing gear. The stream has no
+ * tile to ask for a buoy that sends a name and a type, so it decides here.
+ */
+export function derivedKind(
+  mmsi: number,
+  s: { name?: string; shipType?: number; length?: number; beam?: number; navStatus?: number },
+): "vessel" | "gear" | "sar" {
+  const prefix = Math.floor(mmsi / 1_000_000);
+  const name = (s.name ?? "").trim();
+  const shipType = s.shipType !== undefined && s.shipType >= 20 && s.shipType <= 99;
+  if (isBeacon(mmsi) && s.navStatus === 14) return "sar";
+  if (prefix === 979) return "gear";
+  if (/[0-9]\s*%$/.test(name)) return "gear";
+  if (
+    !shipType &&
+    (/[0-9]\s*V[0-9]?$|[0-9]\.[0-9]V|@[0-9]+V/.test(name) ||
+      /BUOY|BOUY|NET ?MARK|NET ?FISH/.test(name) ||
+      (s.length === 10 && s.beam === 10))
+  )
+    return "gear";
+  return "vessel";
+}
+
+/**
+ * The kind a stream vessel takes when a tile or the record lends it what it has not heard. An aid,
+ * base station, or SAR craft they know wins. Otherwise the rule decides again on the merged state:
+ * a ship type the stream missed, as when it heard a yacht's name in part A of message 24 but not
+ * its type in part B, makes its gear a vessel; and their gear stands for a hull the stream has not
+ * heard.
+ */
+export function adoptedKind(
+  mmsi: number,
+  v: { kind: string; name?: string; shipType?: number; dimension?: { A: number; B: number; C: number; D: number }; navStatus?: number },
+  from?: string,
+): string {
+  if (v.kind !== "vessel" && v.kind !== "gear") return v.kind;
+  if (from && from !== "vessel" && from !== "gear") return from;
+  const d = v.dimension;
+  const derived = derivedKind(mmsi, {
+    name: v.name,
+    shipType: v.shipType,
+    length: d && d.A + d.B,
+    beam: d && d.C + d.D,
+    navStatus: v.navStatus,
+  });
+  return derived === "vessel" && from === "gear" ? "gear" : derived;
+}
+
 export function shipClass(kind?: string, type?: number): ShipClass {
-  if (kind === "aton" || kind === "base" || kind === "sar") return kind;
+  if (kind === "aton" || kind === "base" || kind === "sar" || kind === "gear") return kind;
   if (!type) return "other";
   if (type === 30) return "fishing";
   if (type === 36 || type === 37) return "pleasure";
@@ -114,8 +176,16 @@ export function stationCardPath(id: string): string {
   return `/stations/${id.split("/").map(encodeURIComponent).join("/")}.png`;
 }
 
-export function vesselPath(mmsi: number, name?: string): string {
-  const slug = vesselSlug(name);
+/**
+ * The slug a vessel's address carries. Gear has none: a net buoy's name is a serial and its
+ * battery level, which changes, and would move the address with it.
+ */
+export function pathSlug(name?: string, kind?: string): string {
+  return kind === "gear" ? "" : vesselSlug(name);
+}
+
+export function vesselPath(mmsi: number, name?: string, kind?: string): string {
+  const slug = pathSlug(name, kind);
   return slug ? `/vessels/${mmsi}-${slug}` : `/vessels/${mmsi}`;
 }
 

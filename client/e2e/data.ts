@@ -37,6 +37,30 @@ export async function namedVessel(): Promise<VesselRef> {
   return vessel;
 }
 
+/**
+ * A fishing-net buoy under an aid's 99 MMSI, as a volunteer receiver hears one: a vessel's
+ * position report and its name, a serial and its battery level. Sends it over UDP and waits until
+ * the e2e server holds it as gear.
+ */
+export async function heardGear(): Promise<VesselRef> {
+  const mmsi = 994123456;
+  const sentences = ["!AIVDM,1,1,,A,1>l4Nh?P051ivs0RCKl>4?v00000,0*15", "!AIVDM,1,1,,A,H>l4Nh0pEB09DuV3NoOFD000000,2*5A"];
+  const socket = createSocket("udp4");
+  await new Promise<void>((resolve, reject) =>
+    socket.send(sentences.join("\n") + "\n", UDP_PORT, "127.0.0.1", (err) => (err ? reject(err) : resolve())),
+  );
+  socket.close();
+  for (let i = 0; i < 50; i++) {
+    const res = await fetch(`${API}/v1/vessels/${mmsi}`, { headers: { Authorization: `Bearer ${e2eAuth().token}` } });
+    if (res.ok) {
+      const { properties } = (await res.json()) as { properties: { kind: string; name?: string } };
+      if (properties.kind === "gear" && properties.name) return { mmsi, name: properties.name };
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("the e2e server never held the buoy as gear");
+}
+
 // Two position reports from gpsd's sample log, of ships Digitraffic will not also be reporting.
 const VOLUNTEER_HEARS = ["!AIVDM,1,1,,A,15RTgt0PAso;90TKcjM8h6g208CQ,0*4A", "!AIVDM,1,1,,A,16SteH0P00Jt63hHaa6SagvJ087r,0*42"];
 

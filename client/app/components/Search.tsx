@@ -477,7 +477,7 @@ function ResultList({
         return (
           <ListRow
             key={v.mmsi}
-            to={vesselPath(v.mmsi, v.name)}
+            to={vesselPath(v.mmsi, v.name, v.kind)}
             onHover={(over) => setHovered(over ? v.mmsi : undefined)}
             leading={<VesselThumb row={v} />}
             title={

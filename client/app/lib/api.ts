@@ -44,7 +44,7 @@ export function browserAuth(): ApiAuth {
 
 export interface VesselProps {
   mmsi: number;
-  kind: "vessel" | "aton" | "base" | "sar";
+  kind: "vessel" | "aton" | "base" | "sar" | "gear";
   name?: string;
   type?: number;
   cog?: number;

@@ -266,7 +266,7 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.class != "" {
 			props = append(props, mvtProp{"class", pt.class})
 		}
-		if flag := flagOf(pt.mmsi); flag != "" {
+		if flag := servedFlag(pt.mmsi, pt.kind); flag != "" {
 			props = append(props, mvtProp{"flag", flag})
 		}
 		if pt.shipType != 0 {
@@ -433,8 +433,8 @@ func gzipBytes(b []byte) []byte {
 
 // tileFields describes the layer's attributes in TileJSON, as the vessel Feature describes them in openapi.json.
 var tileFields = map[string]string{
-	"mmsi": "Number", "name": "String", "kind": "String: vessel, aton, base, or sar", "class": "String: A or B",
-	"type": "Number: ITU ship and cargo type; the AtoN type for an aid to navigation", "flag": "String: ISO 3166 alpha-2 from the MMSI",
+	"mmsi": "Number", "name": "String", "kind": "String: vessel, aton, base, sar (search and rescue aircraft or distress beacon), or gear", "class": "String: A or B",
+	"type": "Number: ITU ship and cargo type; the AtoN type for an aid to navigation", "flag": "String: ISO 3166 alpha-2 from the MMSI, never for gear",
 	"nav_status": "Number", "sog": "Number: knots", "cog": "Number: degrees", "heading": "Number: degrees",
 	"hdg": "Number: heading, else course over ground, the angle to rotate an icon by", "length": "Number: metres",
 	"beam": "Number: metres", "to_bow": "Number: metres from the AIS antenna to the bow",

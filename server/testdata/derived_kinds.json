@@ -1,0 +1,26 @@
+{
+ "_comment": "Kinds a station's own state gives it (server/kinds.go derivedKind, client/app/lib/ais.ts derivedKind). HSD-NET rows are real buoys as heard; BUOYSUND is a cargo ship and BUOY TIME a yacht; 972168869 is a cargo ship on a beacon number.",
+ "cases": [
+  {"mmsi": 254301782, "name": "HSD-NET-84%", "shipType": 0, "length": 10, "beam": 10, "navStatus": 15, "want": "gear"},
+  {"mmsi": 260400570, "name": "HSD-NET-33%", "shipType": 128, "length": 10, "beam": 10, "navStatus": 15, "want": "gear"},
+  {"mmsi": 233510227, "name": "HSD-NET-88%", "shipType": 60, "length": 10, "beam": 10, "navStatus": 15, "want": "gear"},
+  {"mmsi": 994160224, "name": "ZHENG-24--60%", "shipType": 129, "length": 0, "beam": 0, "navStatus": 15, "want": "gear"},
+  {"mmsi": 994160224, "name": "ZHENG-24--60%       ", "shipType": 129, "length": 0, "beam": 0, "navStatus": 15, "want": "gear"},
+  {"mmsi": 994163978, "name": "994163978         3V", "shipType": 0, "length": 0, "beam": 0, "navStatus": 15, "want": "gear"},
+  {"mmsi": 994160547, "name": "BUOY35728-02     8V1", "shipType": 200, "length": 0, "beam": 0, "navStatus": 15, "want": "gear"},
+  {"mmsi": 45427959, "name": "BUOY 427-959     7V7", "shipType": 0, "length": 0, "beam": 0, "navStatus": 15, "want": "gear"},
+  {"mmsi": 250500161, "name": "BUOY 6 TF 18 G", "shipType": 0, "length": 0, "beam": 0, "navStatus": 15, "want": "gear"},
+  {"mmsi": 260400999, "name": "", "shipType": 0, "length": 10, "beam": 10, "navStatus": 15, "want": "gear"},
+  {"mmsi": 257914900, "name": "BUOYSUND", "shipType": 70, "length": 0, "beam": 0, "navStatus": 15, "want": "vessel"},
+  {"mmsi": 257000003, "name": "PIER 2V", "shipType": 70, "length": 0, "beam": 0, "navStatus": 15, "want": "vessel"},
+  {"mmsi": 368472570, "name": "BUOY TIME", "shipType": 37, "length": 0, "beam": 0, "navStatus": 15, "want": "vessel"},
+  {"mmsi": 257000002, "name": "", "shipType": 70, "length": 10, "beam": 10, "navStatus": 15, "want": "vessel"},
+  {"mmsi": 710102039, "name": "NETUNO", "shipType": 60, "length": 0, "beam": 0, "navStatus": 15, "want": "vessel"},
+  {"mmsi": 979123456, "name": "", "shipType": 0, "length": 0, "beam": 0, "navStatus": 15, "want": "gear"},
+  {"mmsi": 970123456, "name": "", "shipType": 0, "length": 0, "beam": 0, "navStatus": 14, "want": "sar"},
+  {"mmsi": 972000001, "name": "", "shipType": 0, "length": 0, "beam": 0, "navStatus": 14, "want": "sar"},
+  {"mmsi": 970123456, "name": "", "shipType": 0, "length": 0, "beam": 0, "navStatus": 15, "want": "vessel"},
+  {"mmsi": 972168869, "name": "TRU0NG HUY A2", "shipType": 70, "length": 0, "beam": 0, "navStatus": 0, "want": "vessel"},
+  {"mmsi": 257000001, "name": "NORDIC STAR", "shipType": 70, "length": 0, "beam": 0, "navStatus": 14, "want": "vessel"}
+ ]
+}

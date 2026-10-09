@@ -167,7 +167,7 @@ export default function Station({ loaderData }: Route.ComponentProps) {
                 return (
                   <ListRow
                     key={p.mmsi}
-                    to={vesselPath(p.mmsi, p.name)}
+                    to={vesselPath(p.mmsi, p.name, p.kind)}
                     leading={<ClassDot kind={p.kind} type={p.type} />}
                     title={
                       <>
