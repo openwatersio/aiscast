@@ -177,8 +177,11 @@ func TestIMOResolution(t *testing.T) {
 	w = get(t, p, "/v1/vessels/1234567")
 	var c struct {
 		Features []struct {
-			ID   uint32 `json:"id"`
-			Href string `json:"href"`
+			ID         uint32 `json:"id"`
+			Href       string `json:"href"`
+			Properties struct {
+				Near string `json:"near"`
+			} `json:"properties"`
 		} `json:"features"`
 		Attribution map[string]string `json:"attribution"`
 		Truncated   bool              `json:"truncated"`
@@ -187,6 +190,10 @@ func TestIMOResolution(t *testing.T) {
 		c.Features[0].ID != 230000111 || c.Features[0].Href != "/v1/vessels/230000111" || c.Attribution["kystverket"] == "" || !c.Truncated ||
 		w.Header().Get("Content-Location") != "" {
 		t.Errorf("placeholder: %d %s", w.Code, w.Body)
+	}
+	// Each candidate names where it is, as a resolved answer does.
+	if want := nearLabel(59.9, 10.7); want == "" || c.Features[0].Properties.Near != want {
+		t.Errorf("candidate near %q, want %q", c.Features[0].Properties.Near, want)
 	}
 	// a candidate's link keeps the request's parameters but not its token
 	w = get(t, p, "/v1/vessels/1234567/track?format=gpx&key=junk")

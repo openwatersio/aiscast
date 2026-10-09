@@ -276,6 +276,8 @@ func (p *Pipeline) vesselPath(w http.ResponseWriter, r *http.Request, cl *Claims
 		}{Href: href(rec.mmsi), ID: f.ID, Properties: f.Properties, Type: f.Type}
 		if v.HasPos {
 			c.Geometry = &f.Geometry
+			// As a resolved answer names where its vessel is, so does each candidate.
+			c.Properties.Near = nearLabel(f.Geometry.Coordinates[1], f.Geometry.Coordinates[0])
 		}
 		b, _ := json.Marshal(c)
 		features = append(features, b)

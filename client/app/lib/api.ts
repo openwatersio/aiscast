@@ -65,7 +65,7 @@ export interface VesselProps {
   to_port?: number;
   to_starboard?: number;
   first_seen?: string;
-  /** The town or region nearest the position, on search results only. */
+  /** The town or region nearest the position, on search results and /v1/vessels/{mmsi}. */
   near?: string;
   seen: string;
   source: string;
