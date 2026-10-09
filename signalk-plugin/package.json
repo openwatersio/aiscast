@@ -22,6 +22,7 @@
   "files": [
     "dist",
     "icon.svg",
+    "docs/screenshots",
     "CHANGELOG.md",
     "README.md"
   ],
@@ -35,6 +36,10 @@
   "signalk": {
     "displayName": "Open Waters AIS",
     "appIcon": "./icon.svg",
+    "screenshots": [
+      "./docs/screenshots/navionics.jpg",
+      "./docs/screenshots/aquamap.jpg"
+    ],
     "recommends": [
       "signalk-buddylist-plugin"
     ]
