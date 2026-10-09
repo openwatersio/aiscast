@@ -14,10 +14,14 @@ import {
   YesNo,
 } from "@canboat/ts-pgns";
 import ggencoder from "ggencoder";
+import { deg } from "./ownship.js";
 
 const { AisEncode } = ggencoder; // CommonJS without static named exports
 
 export const AIS_PGNS = new Set([129038, 129039, 129041, 129794, 129809, 129810]);
+// AIS "not available" for fields ggencoder would otherwise encode as 0: under way using engine, not turning.
+const NAVSTATUS_NA = 15;
+const ROT_NA = -128;
 
 interface Fields {
   [k: string]: unknown;
@@ -39,12 +43,12 @@ export function n2kToSentence(app: ServerAPI, msg: { pgn: number; fields?: Field
       enc = {
         aistype: 3,
         mmsi: f.userId,
-        navstatus: f.navStatus !== undefined ? NavStatusValues[f.navStatus as string] : undefined,
+        navstatus: (f.navStatus !== undefined ? NavStatusValues[f.navStatus as string] : undefined) ?? NAVSTATUS_NA,
         sog: mpsToKn(f.sog as number | undefined),
         lon: f.longitude,
         lat: f.latitude,
-        cog: radToDeg(f.cog as number | undefined),
-        hdg: radToDeg(f.heading as number | undefined),
+        cog: course(f.cog as number | undefined),
+        hdg: heading(f.heading as number | undefined),
         rot: rotToAis(f.rateOfTurn as number | undefined),
       };
       break;
@@ -56,8 +60,8 @@ export function n2kToSentence(app: ServerAPI, msg: { pgn: number; fields?: Field
         accuracy: f.positionAccuracy === PositionAccuracy.Low ? 0 : 1,
         lon: f.longitude,
         lat: f.latitude,
-        cog: radToDeg(f.cog as number | undefined),
-        hdg: radToDeg(f.heading as number | undefined),
+        cog: course(f.cog as number | undefined),
+        hdg: heading(f.heading as number | undefined),
       };
       break;
     case 129794: // class A static and voyage
@@ -117,17 +121,24 @@ function dimensions(fromBow: unknown, length: unknown, fromStarboard: unknown, b
   return d;
 }
 
-function radToDeg(rad: number | undefined): number | undefined {
-  return rad === undefined ? undefined : Math.round((rad * 180) / Math.PI);
+// ggencoder truncates what it is given, so each value arrives rounded to the step AIS carries. Near north
+// that wraps to 0 rather than rounding up to 360, which AIS reads as not available.
+function course(rad: number | undefined): number | undefined {
+  return rad === undefined ? undefined : (Math.round(deg(rad) * 10) % 3600) / 10;
+}
+
+function heading(rad: number | undefined): number | undefined {
+  return rad === undefined ? undefined : Math.round(deg(rad)) % 360;
 }
 
 function mpsToKn(mps: number | undefined): number | undefined {
   return mps === undefined ? undefined : mps * 1.9438444924574;
 }
 
-// AIS rate of turn: 4.733 * sqrt(deg/min), sign preserved; 0 stays "not turning".
-function rotToAis(radPerSec: number | undefined): number | undefined {
-  if (radPerSec === undefined || radPerSec === 0) return radPerSec;
+// AIS rate of turn: 4.733 * sqrt(deg/min), sign preserved; 0 stays "not turning". ±127 is the most the
+// 8-bit field holds, and means turning faster than it can say.
+function rotToAis(radPerSec: number | undefined): number {
+  if (radPerSec === undefined) return ROT_NA;
   const degPerMin = Math.abs(radPerSec) * 3437.74677078493;
-  return Math.sign(radPerSec) * 4.733 * Math.sqrt(degPerMin);
+  return Math.sign(radPerSec) * Math.min(127, Math.round(4.733 * Math.sqrt(degPerMin)));
 }
