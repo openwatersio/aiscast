@@ -38,7 +38,7 @@ export default function (app: ServerAPI): Plugin {
 
   const plugin: Plugin = {
     id: PLUGIN_ID,
-    name: "AIScast",
+    name: "Open Waters AIS",
     description:
       "Show nearby traffic without an AIS receiver and share what yours hears via the Open Waters AIS network",
     schema: {

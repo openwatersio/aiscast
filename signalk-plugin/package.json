@@ -21,6 +21,7 @@
   "exports": "./dist/index.js",
   "files": [
     "dist",
+    "icon.svg",
     "CHANGELOG.md",
     "README.md"
   ],
@@ -31,7 +32,11 @@
     "aiscast"
   ],
   "signalk": {
-    "displayName": "AIScast"
+    "displayName": "Open Waters AIS",
+    "appIcon": "./icon.svg",
+    "recommends": [
+      "signalk-buddylist-plugin"
+    ]
   },
   "engines": {
     "node": ">=20"
