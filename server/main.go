@@ -198,6 +198,7 @@ func main() {
 		p.coverage = newCoverageMap()
 		go p.runCoverage()
 		go p.runStationSeries()
+		go p.runStatics()
 	}
 	go p.logStats()
 	go p.runStationNames()
