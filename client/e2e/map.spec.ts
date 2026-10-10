@@ -53,8 +53,10 @@ test("fishing gear is drawn as its own square, not a vessel's arrow or dot", asy
   // A volunteer's buoy no trusted source has heard is not streamed, so only a tile draws it, and the
   // server shares a tile for 10 s: one another test had built before the buoy was heard can lack
   // it, and a still view reloads its tiles only every few minutes. So the map opens again until a
-  // tile built after the buoy is in.
+  // tile built after the buoy is in. Opening the same address again only moves to its hash, so the
+  // page leaves first.
   await expect(async () => {
+    await page.goto("about:blank");
     await openMap(page);
     await expect.poll(async () => (await layersOf()).some((id) => id.endsWith("-gear")), { timeout: 3_000 }).toBe(true);
   }).toPass({ intervals: [11_000], timeout: 45_000 });
