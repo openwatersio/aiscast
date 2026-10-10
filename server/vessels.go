@@ -231,6 +231,13 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	created := v == nil
 	if created {
 		v = newVessel()
+		// A station back after the sweep or a restart is what the record knew it to be, so a buoy's first position
+		// report draws it as gear, not a vessel, until its static data comes. The mirror takes only its own lock.
+		if p.store != nil && p.store.mirror != nil {
+			if k := p.store.mirror.kind(ev.MMSI); k != "" {
+				v.Kind = k
+			}
+		}
 		p.vessels[ev.MMSI] = v
 	}
 	hadPrev, prevLat, prevLon := v.HasPos, v.Lat, v.Lon // before this report moves it, for whether it is moving
@@ -323,7 +330,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// brings what it decides by: a ship type after a buoy-like name, as a class B part B follows part A, makes gear a
 	// vessel again.
 	if (v.Kind == "vessel" || v.Kind == "gear" || v.Kind == "sar" && isBeaconMMSI(ev.MMSI)) &&
-		(created || u.Name != "" || u.ShipType != 0 || u.Length > 0 || u.Beam > 0 || hasPos && isBeaconMMSI(ev.MMSI)) {
+		(created && v.Kind == "vessel" || u.Name != "" || u.ShipType != 0 || u.Length > 0 || u.Beam > 0 || hasPos && isBeaconMMSI(ev.MMSI)) {
 		v.Kind = derivedKind(ev.MMSI, v)
 	}
 	ev.Name, ev.Lat, ev.Lon, ev.HasPos = v.Name, v.Lat, v.Lon, v.HasPos
@@ -475,13 +482,16 @@ func (v *vessel) feature(mmsi uint32) vesselFeature {
 		MMSI: mmsi, Kind: v.Kind, Seen: v.Seen.UTC().Format(time.RFC3339),
 		Source: v.Source, Station: v.Station, MsgType: v.MsgType,
 		Name: v.Name, Type: v.ShipType, Flag: servedFlag(mmsi, v.Kind), IMO: v.IMO, CallSign: v.CallSign,
-		Destination: v.Destination, ETA: etaString(v.ETA), Draught: v.Draught, Length: v.Length, Beam: v.Beam,
+		Destination: v.Destination, ETA: etaString(v.ETA),
 	}
-	if d := v.Dim; v.hasLengthOffsets() { // a copy, so the feature does not point into the live vessel
-		props.ToBow, props.ToStern = &d.A, &d.B
-	}
-	if d := v.Dim; v.hasBeamOffsets() {
-		props.ToPort, props.ToStarboard = &d.C, &d.D
+	if hasHull(v.Kind) {
+		props.Draught, props.Length, props.Beam = v.Draught, v.Length, v.Beam
+		if d := v.Dim; v.hasLengthOffsets() { // a copy, so the feature does not point into the live vessel
+			props.ToBow, props.ToStern = &d.A, &d.B
+		}
+		if d := v.Dim; v.hasBeamOffsets() {
+			props.ToPort, props.ToStarboard = &d.C, &d.D
+		}
 	}
 	if v.Cog < 360 {
 		cog := v.Cog
@@ -491,7 +501,7 @@ func (v *vessel) feature(mmsi uint32) vesselFeature {
 		sog := v.Sog
 		props.Sog = &sog
 	}
-	if v.Heading < 511 {
+	if validHeading(v.Heading) && hasHull(v.Kind) {
 		h := v.Heading
 		props.Heading = &h
 	}

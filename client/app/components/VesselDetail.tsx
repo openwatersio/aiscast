@@ -63,6 +63,8 @@ export function VesselDetail({
 
   const name = p?.name ?? heard?.name;
   const kind = p?.kind ?? heard?.kind;
+  // Fishing gear is not a vessel: no photo, fleet, hull, heading, or owner's boat, and the page says what it is.
+  const gear = kind === "gear";
   const type = p?.type ?? heard?.shipType;
   const cls = shipClass(kind, type);
   const [recordLon, recordLat] = feature?.geometry?.coordinates ?? [];
@@ -84,7 +86,8 @@ export function VesselDetail({
       <span className="text-subhead text-fg-secondary tabular-nums">{p.draught.toFixed(1)} m</span>
     </span>
   ) : undefined;
-  const dimensions = vesselDimensions(
+  // Gear has no hull to draw: whatever size it sends, as a net buoy's 10 m square placeholder, describes no vessel.
+  const dimensions = kind === "gear" ? undefined : vesselDimensions(
     p?.to_bow != null
       ? { toBow: p.to_bow, toStern: p.to_stern ?? 0, toPort: p.to_port ?? 0, toStarboard: p.to_starboard ?? 0 }
       : heard?.dimension && {
@@ -96,7 +99,7 @@ export function VesselDetail({
     p?.length,
     p?.beam,
   );
-  const media = useMedia(feature || heard ? mediaKey(imo, mmsi) : undefined);
+  const media = useMedia((feature || heard) && !gear ? mediaKey(imo, mmsi) : undefined);
 
   // Draw, follow, and frame the vessel. The record's position seeds the stream, so the map
   // shows the vessel even when the stream is refused, which happens per address.
@@ -172,7 +175,7 @@ export function VesselDetail({
 
   return (
     <article>
-      <VesselPhotos media={media} mmsi={mmsi} imo={imo} name={name ?? `MMSI ${mmsi}`} />
+      {!gear && <VesselPhotos media={media} mmsi={mmsi} imo={imo} name={name ?? `MMSI ${mmsi}`} />}
       {country && (
         <p className="text-subhead text-fg-muted">
           {flagEmoji(p!.flag)} {country}
@@ -181,7 +184,7 @@ export function VesselDetail({
       <PageTitle className="truncate text-large-title">{name ?? `MMSI ${mmsi}`}</PageTitle>
       <p className="text-footnote text-fg-muted">
         {CLASS_LABELS[cls]}
-        {type ? ` · type ${type}` : ""}
+        {type && !gear ? ` · type ${type}` : ""}
       </p>
       <p className="mt-0.5 text-footnote text-fg-muted">{ids}</p>
 
@@ -240,18 +243,19 @@ export function VesselDetail({
       />
 
       {/* Shown even when absent: a blank under "Speed" says the vessel is not reporting it,
-          where an omitted row says nothing at all. */}
-      <Section label={navStatus ?? "Motion"} bare>
+          where an omitted row says nothing at all. Gear has no heading or status: it drifts with
+          the net it marks. */}
+      <Section label={gear ? "Drift" : (navStatus ?? "Motion")} bare>
         <StatGrid
           stats={[
             { label: "Speed", value: sog != null ? sog.toFixed(1) : undefined, unit: "\u00a0kn" },
             { label: "Course", value: cog != null ? Math.round(cog).toString() : undefined, unit: "°" },
-            { label: "Heading", value: heading != null ? String(heading) : undefined, unit: "°" },
+            ...(gear ? [] : [{ label: "Heading", value: heading != null ? String(heading) : undefined, unit: "°" }]),
           ]}
         />
       </Section>
 
-      {(dimensions || p?.draught) && (
+      {(dimensions || (p?.draught && !gear)) && (
         <Section label="Dimensions">
           {dimensions ? <ShipDiagram {...dimensions} type={type} aside={draught} /> : draught}
         </Section>
@@ -268,10 +272,14 @@ export function VesselDetail({
         <Particulars particulars={p.particulars} provenance={p.provenance} sources={p.sources} name={name} photos={media?.links.commonsCategory} />
       )}
 
-      <ContributePrompt ownBoat={cls === "pleasure" || /ClassB/.test(p?.msg_type ?? "")} volunteer={isVolunteer(source)} />
+      <ContributePrompt
+        ownBoat={!gear && (cls === "pleasure" || /ClassB/.test(p?.msg_type ?? ""))}
+        volunteer={isVolunteer(source)}
+        what={gear ? "this fishing gear" : "this vessel"}
+      />
 
       <Section label="Use this data">
-        <p className="text-subhead text-fg-secondary">This vessel&rsquo;s latest record, as JSON:</p>
+        <p className="text-subhead text-fg-secondary">{gear ? "Its" : "This vessel\u2019s"} latest record, as JSON:</p>
         <code className="mt-1.5 block rounded-md bg-surface-subtle px-2 py-1.5 font-mono text-footnote break-all text-fg">
           curl {publicApiBase()}/v1/vessels/{mmsi}
         </code>
@@ -283,7 +291,7 @@ export function VesselDetail({
         </p>
       </Section>
 
-      <Fleets mmsi={mmsi} />
+      {!gear && <Fleets mmsi={mmsi} />}
 
       {/* The credit that came with this vessel's own last message, which only the stream carries. */}
       {attribution && (
@@ -382,7 +390,7 @@ function VesselActions({
       <ActionButton icon={LocateFixed} label="Follow" pressed={following} onClick={() => live?.ctl.followCamera(!following)} />
       <ActionButton icon={copied ? Check : Share} label={copied ? "Copied" : "Share"} onClick={() => void share()} />
       <ActionButton icon={Route} label="Track" disabled={!hasTrack} onClick={() => live?.ctl.fitTrack()} />
-      <ActionLink icon={ImagePlus} label="Add photo" href={uploadUrl(imo, mmsi)} target="_blank" rel="noopener" />
+      {kind !== "gear" && <ActionLink icon={ImagePlus} label="Add photo" href={uploadUrl(imo, mmsi)} target="_blank" rel="noopener" />}
     </ActionRow>
   );
 }
@@ -392,7 +400,7 @@ function VesselActions({
  * or a class B set is often its owner, who has the antenna already. Otherwise it is shown when
  * a volunteer's receiver heard the vessel, which is the network working as it should.
  */
-function ContributePrompt({ ownBoat, volunteer }: { ownBoat: boolean; volunteer: boolean }) {
+function ContributePrompt({ ownBoat, volunteer, what }: { ownBoat: boolean; volunteer: boolean; what: string }) {
   if (ownBoat) {
     return (
       <Prompt icon={Sailboat} href={SIGNALK_PLUGIN} action="Signal K plugin" className="mt-5">
@@ -403,7 +411,7 @@ function ContributePrompt({ ownBoat, volunteer }: { ownBoat: boolean; volunteer:
   if (!volunteer) return null;
   return (
     <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-5">
-      A volunteer&rsquo;s receiver heard this vessel.
+      A volunteer&rsquo;s receiver heard {what}.
     </Prompt>
   );
 }

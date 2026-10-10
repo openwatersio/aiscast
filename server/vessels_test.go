@@ -526,3 +526,74 @@ func TestMCPNamesGearsTypeAsAShipType(t *testing.T) {
 		t.Errorf("aid type named %q, want %q", got, atonTypeName(30))
 	}
 }
+
+// Gear has no hull and no way it points: its lookup, MCP row, and tile serve no size and no heading, even one in range,
+// and its tile no angle to turn an arrow by. A heading out of range, as HSD-NET buoys send 456, is served for no station.
+func TestGearServesNoHull(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	buoy := posReport(233510227, 44.13, -125.03).(ais.PositionReport)
+	buoy.Cog, buoy.Sog, buoy.TrueHeading = 245.3, 0.1, 120 // in range, and still no way a buoy points
+	p.ingestPacket("aishub", "aishub", now, now, buoy)
+	p.ingestPacket("aishub", "aishub", now.Add(time.Second), now.Add(time.Second), netBuoyStatic(233510227, "HSD-NET-88%"))
+	ship := posReport(257000001, 44.14, -125.02).(ais.PositionReport)
+	ship.TrueHeading = 456
+	p.ingestPacket("kystverket", "kystverket", now, now, ship)
+	mustFlush(t, p)
+
+	body := get(t, p, "/v1/vessels/233510227").Body.String()
+	for _, field := range []string{`"length"`, `"beam"`, `"to_bow"`, `"to_port"`, `"draught"`, `"heading"`} {
+		if strings.Contains(body, field) {
+			t.Errorf("gear's lookup serves %s: %s", field, body)
+		}
+	}
+	if !strings.Contains(body, `"kind":"gear"`) || !strings.Contains(body, `"cog"`) {
+		t.Errorf("gear's lookup: %s", body)
+	}
+	if r := mcpRow(233510227, p.vessels[233510227], now); r.Length != nil || r.Beam != nil || r.Heading != nil {
+		t.Errorf("gear's MCP row serves a size or heading: %+v", r)
+	}
+	if body := get(t, p, "/v1/vessels/257000001").Body.String(); strings.Contains(body, `"heading"`) {
+		t.Errorf("a heading of 456 is served: %s", body)
+	}
+	x, y := tileOf(44.13, -125.03, 10)
+	fs := decodeTile(t, get(t, p, fmt.Sprintf("/v1/vessels/tiles/10/%d/%d", x, y)).Body.Bytes())
+	f, ok := fs[233510227]
+	if !ok {
+		t.Fatalf("the buoy is not on its tile: %v", fs)
+	}
+	for _, prop := range []string{"length", "beam", "to_bow", "to_port", "heading", "hdg"} {
+		if _, has := f.props[prop]; has {
+			t.Errorf("gear's tile carries %s: %v", prop, f.props)
+		}
+	}
+	if s, ok := fs[257000001]; !ok || s.props["heading"] != nil {
+		t.Errorf("the ship's tile: %v", s.props)
+	}
+}
+
+// A buoy back after the sweep or a restart is gear from its first position report, as the record knows it, not a
+// vessel with an arrow until its static data comes again.
+func TestReturningGearKeepsItsKind(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	p.ingestPacket("aishub", "aishub", now, now, posReport(233510227, 44.13, -125.03))
+	p.ingestPacket("aishub", "aishub", now.Add(time.Second), now.Add(time.Second), netBuoyStatic(233510227, "HSD-NET-88%"))
+	mustFlush(t, p)
+	p.vmu.Lock()
+	delete(p.vessels, 233510227)
+	p.vmu.Unlock()
+
+	later := now.Add(time.Hour)
+	buoy := posReport(233510227, 44.13, -125.03).(ais.PositionReport)
+	buoy.Cog, buoy.Sog = 245.3, 0.1
+	p.ingestPacket("aishub", "aishub", later, later, buoy)
+	mustFlush(t, p)
+	if k := p.vessels[233510227].Kind; k != "gear" {
+		t.Errorf("the returning buoy is %q, want gear", k)
+	}
+	x, y := tileOf(44.13, -125.03, 10)
+	if f := decodeTile(t, get(t, p, fmt.Sprintf("/v1/vessels/tiles/10/%d/%d", x, y)).Body.Bytes())[233510227]; f.props["kind"] != "gear" || f.props["hdg"] != nil {
+		t.Errorf("the returning buoy's tile feature: %v", f.props)
+	}
+}

@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+import { Suspense, type ReactNode } from "react";
 import { Await, data, redirect } from "react-router";
 import { X } from "lucide-react";
 import { Panel } from "../components/Panel";
@@ -37,7 +37,8 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
   // with one permanent redirect rather than served as a second URL for the same vessel.
   if (feature && slug !== pathSlug(name, kind)) throw redirect(vesselPath(mmsi, name, kind), 301);
   const record: VesselRecord = feature;
-  const key = feature && mediaKey(feature.properties.imo, mmsi);
+  // Gear has no photo: its MMSI is one a maker or owner chose, often a ship's, whose photo a link would unfurl with.
+  const key = feature && kind !== "gear" && mediaKey(feature.properties.imo, mmsi);
   const photo = key ? await firstPhoto(key, request.url) : undefined;
   return data({ mmsi, name, feature: record, photo }, feature ? undefined : { status: 404 });
 }
@@ -98,7 +99,8 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
     image: photo ?? (feature || loading ? `${SITE}${vesselCardPath(mmsi)}` : undefined),
     // schema.org has no ship, and Vehicle covers transport over water. The flag is not
     // countryOfOrigin, which is where a thing was made, so it is left out.
-    jsonLd: feature && name
+    // Fishing gear is not a vehicle, and its page is not indexed.
+    jsonLd: feature && name && kind !== "gear"
       ? {
           "@context": "https://schema.org",
           "@type": "Vehicle",
@@ -116,17 +118,20 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
 
 export default function Vessel({ loaderData }: Route.ComponentProps) {
   const { mmsi, feature, name } = loaderData;
-  const detail = (
-    <Suspense fallback={<VesselDetail mmsi={mmsi} feature={undefined} loading />}>
-      <Await resolve={feature}>{(f) => <VesselDetail mmsi={mmsi} feature={f} />}</Await>
-    </Suspense>
-  );
+  const heardKind = "kind" in loaderData ? loaderData.kind : undefined;
   // Back pops to whatever pushed this vessel; close always returns to the map, as a place
-  // card's does in a maps app.
-  return (
-    <Panel back="/vessels" title={name ?? `MMSI ${mmsi}`} hero actions={<IconLink icon={X} label="Close" to="/vessels" small />}>
+  // card's does in a maps app. A vessel's page opens with its photos under the bar; gear has
+  // none, so its bar stands on the page as any other panel's does, and the title starts below it.
+  // The record's kind decides once it is in, the stream's until then.
+  const panel = (kind: string | undefined, detail: ReactNode) => (
+    <Panel back="/vessels" title={name ?? `MMSI ${mmsi}`} hero={kind !== "gear"} actions={<IconLink icon={X} label="Close" to="/vessels" small />}>
       {detail}
     </Panel>
+  );
+  return (
+    <Suspense fallback={panel(heardKind, <VesselDetail mmsi={mmsi} feature={undefined} loading />)}>
+      <Await resolve={feature}>{(f) => panel(f?.properties.kind ?? heardKind, <VesselDetail mmsi={mmsi} feature={f} />)}</Await>
+    </Suspense>
   );
 }
 

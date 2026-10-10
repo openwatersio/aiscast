@@ -327,3 +327,78 @@ func TestImportReadsClickHouse(t *testing.T) {
 		}
 	}
 }
+
+// A row saved as a vessel before its kind was derived, and not heard since, takes the kind its stored name, size, and
+// status give it when the record opens, once per version of the rule.
+func TestOpenStoreDerivesStoredKinds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`DELETE FROM meta WHERE key = 'derived_kinds'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct {
+		mmsi       uint32
+		name, kind string
+		flag       string
+		shipType   int
+		length     int
+		beam       int
+		nav        int
+	}{
+		{233510227, "HSD-NET-88%", "vessel", "GB", 0, 10, 10, 15},
+		{970123456, "", "vessel", "", 0, 0, 0, 14},
+		{257000001, "NORDIC STAR", "vessel", "NO", 70, 120, 20, 0},
+		{992576072, "AQUACULTURE BUOY 1", "aton", "NO", 30, 0, 0, 15},
+		// A beacon's row whose status the import reset: a stored status cannot say the beacon stopped.
+		{972000001, "", "sar", "", 0, 0, 0, 15},
+	} {
+		if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, ship_type, length, beam, nav_status, seen, first_seen)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`, r.mmsi, r.name, r.kind, r.flag, r.shipType, r.length, r.beam, r.nav); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	for m, want := range map[uint32]string{233510227: "gear ", 970123456: "sar ", 257000001: "vessel NO", 992576072: "aton NO", 972000001: "sar "} {
+		var got string
+		if err := st.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = ?`, m).Scan(&got); err != nil || got != want {
+			t.Errorf("row %d after opening: %q (%v), want %q", m, got, err, want)
+		}
+	}
+	// The rule's version is recorded, so a later boot does not scan again.
+	if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, length, beam, seen, first_seen) VALUES (260400570, 'HSD-NET-33%', 'vessel', 'MC', 10, 10, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	var kind string
+	if err := st.db.QueryRow(`SELECT kind FROM vessels WHERE mmsi = 260400570`).Scan(&kind); err != nil || kind != "vessel" {
+		t.Errorf("a row added after the rule ran is %q (%v); the scan runs once per version", kind, err)
+	}
+	// A new version of the rule runs again, over gear too: a row the old rule called gear and the new one does not is
+	// a vessel again, with its flag.
+	if _, err := st.db.Exec(`UPDATE meta SET value = '0' WHERE key = 'derived_kinds'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, ship_type, seen, first_seen) VALUES (257000002, 'NORDIC STAR', 'gear', '', 70, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	for m, want := range map[uint32]string{260400570: "gear ", 257000002: "vessel NO"} {
+		var got string
+		if err := st.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = ?`, m).Scan(&got); err != nil || got != want {
+			t.Errorf("row %d after a new version: %q (%v), want %q", m, got, err, want)
+		}
+	}
+	st.close()
+}

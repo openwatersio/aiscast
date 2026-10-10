@@ -62,3 +62,12 @@ func servedFlag(mmsi uint32, kind string) string {
 	}
 	return flagOf(mmsi)
 }
+
+// validHeading reports a true heading AIS can mean, 0 to 359. 511 is "not available", and some transmitters send
+// other values out of range: HSD-NET net buoys send 456.
+func validHeading(h uint16) bool { return h < 360 }
+
+// hasHull reports whether a kind's size and heading describe a hull. Gear sends a size because the message has room for
+// one, a net buoy's 10 m square placeholder, and points no way, so its length, beam, antenna offsets, draught, and
+// heading are not served.
+func hasHull(kind string) bool { return kind != "gear" }

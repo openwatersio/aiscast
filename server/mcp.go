@@ -23,7 +23,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.16.0"
+const mcpVersion = "0.17.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -150,7 +150,7 @@ type mcpVessel struct {
 	Lon           *float64             `json:"lon,omitempty" jsonschema:"longitude of the last position, degrees"`
 	Cog           *float64             `json:"cog,omitempty" jsonschema:"course over ground, degrees true"`
 	Sog           *float64             `json:"sog,omitempty" jsonschema:"speed over ground, knots"`
-	Heading       *uint16              `json:"heading,omitempty" jsonschema:"true heading, degrees"`
+	Heading       *uint16              `json:"heading,omitempty" jsonschema:"true heading, degrees, 0 to 359; never for gear"`
 	NavStatus     *uint8               `json:"nav_status,omitempty" jsonschema:"AIS navigational status code"`
 	NavStatusName string               `json:"nav_status_name,omitempty"`
 	Flag          string               `json:"flag,omitempty" jsonschema:"ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits; never set for gear"`
@@ -158,9 +158,9 @@ type mcpVessel struct {
 	CallSign      string               `json:"callsign,omitempty"`
 	Destination   string               `json:"destination,omitempty" jsonschema:"destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful"`
 	ETA           string               `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD; AIS carries no year, so read it as the next occurrence"`
-	Draught       *float64             `json:"draught,omitempty" jsonschema:"maximum static draught, metres"`
-	Length        *uint16              `json:"length,omitempty" jsonschema:"overall length, metres"`
-	Beam          *uint16              `json:"beam,omitempty" jsonschema:"beam, metres"`
+	Draught       *float64             `json:"draught,omitempty" jsonschema:"maximum static draught, metres; never for gear"`
+	Length        *uint16              `json:"length,omitempty" jsonschema:"overall length, metres; never for gear, whose size is a placeholder"`
+	Beam          *uint16              `json:"beam,omitempty" jsonschema:"beam, metres; never for gear"`
 	Seen          string               `json:"seen" jsonschema:"time of the last message heard, RFC 3339 UTC"`
 	AgeS          int64                `json:"age_s" jsonschema:"seconds since seen"`
 	Source        string               `json:"source" jsonschema:"feed or station kind the last message came from"`
@@ -200,21 +200,23 @@ func mcpRow(mmsi uint32, v *vessel, now time.Time) mcpVessel {
 	if v.Sog < 102.3 {
 		r.Sog = mcpPtr(v.Sog)
 	}
-	if v.Heading < 511 {
+	if validHeading(v.Heading) && hasHull(v.Kind) {
 		r.Heading = mcpPtr(v.Heading)
 	}
 	if v.NavStatus != 15 {
 		r.NavStatus, r.NavStatusName = mcpPtr(v.NavStatus), navStatusName(v.NavStatus)
 	}
 	r.Flag, r.IMO, r.CallSign, r.Destination, r.ETA = servedFlag(mmsi, v.Kind), v.IMO, v.CallSign, v.Destination, etaString(v.ETA)
-	if v.Draught > 0 {
-		r.Draught = mcpPtr(v.Draught)
-	}
-	if v.Length > 0 {
-		r.Length = mcpPtr(v.Length)
-	}
-	if v.Beam > 0 {
-		r.Beam = mcpPtr(v.Beam)
+	if hasHull(v.Kind) {
+		if v.Draught > 0 {
+			r.Draught = mcpPtr(v.Draught)
+		}
+		if v.Length > 0 {
+			r.Length = mcpPtr(v.Length)
+		}
+		if v.Beam > 0 {
+			r.Beam = mcpPtr(v.Beam)
+		}
 	}
 	return r
 }

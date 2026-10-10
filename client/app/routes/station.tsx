@@ -99,9 +99,9 @@ export default function Station({ loaderData }: Route.ComponentProps) {
 
   const extent = st?.bbox ? formatExtent(st.bbox) : undefined;
   // Vessels newest first, so what the station hears now leads and the order holds from one load to
-  // the next. Base stations and aids to navigation follow: they transmit every few seconds, and
-  // would otherwise always lead.
-  const fixed = (f: (typeof vessels)[number]) => (f.properties.kind === "base" || f.properties.kind === "aton" ? 1 : 0);
+  // the next. Base stations, aids to navigation, and fishing gear follow: they transmit every few
+  // seconds, and would otherwise always lead.
+  const fixed = (f: (typeof vessels)[number]) => (["base", "aton", "gear"].includes(f.properties.kind) ? 1 : 0);
   const heard = [...vessels].sort((a, b) => fixed(a) - fixed(b) || Date.parse(b.properties.seen) - Date.parse(a.properties.seen));
   const now = Date.now();
   const own = st?.mmsi != null && st.name_from === "vessel" && st.name ? st.name : undefined;

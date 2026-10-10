@@ -338,7 +338,8 @@ export class Stream {
       const lr = ev.msg_type === "LongRangeAisBroadcastMessage";
       v.cog = m.Cog != null && m.Cog < (lr ? 511 : 360) ? m.Cog : undefined;
       v.sog = m.Sog != null && m.Sog < (lr ? 63 : 102.3) ? m.Sog : undefined;
-      v.heading = m.TrueHeading != null && m.TrueHeading < 511 ? m.TrueHeading : undefined;
+      // 0 to 359; 511 is not available, and some transmitters send other values out of range (HSD-NET buoys send 456).
+      v.heading = m.TrueHeading != null && m.TrueHeading < 360 ? m.TrueHeading : undefined;
     }
     if (m.NavigationalStatus != null && m.NavigationalStatus !== 15 && !stale) {
       v.navStatus = m.NavigationalStatus;
