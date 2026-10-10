@@ -796,8 +796,7 @@ func (c *chConn) coverageDays(ctx context.Context, first, last time.Time) ([]str
 // distinct stations, a feed's counted once by its source, with its outline as (lat, lon) pairs, the order the
 // result setting fixes.
 func (c *chConn) coverageCells(ctx context.Context, first, last time.Time, each func(covRow) error) error {
-	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, groupUniqArrayState(`+chCoverageSources+`) AS s
-		FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND res >= ? AND res <= ? GROUP BY res, cell, day`,
+	return c.coverageQuery(ctx, chCoverageSources, `FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND res >= ? AND res <= ?`,
 		each, first, last, uint8(coverageBands[0].res), uint8(coverageBands[len(coverageBands)-1].res))
 }
 
@@ -807,21 +806,22 @@ func (c *chConn) coverageStations(ctx context.Context, first, last time.Time) ([
 
 // stationCoverageCells answers coverageCells for the cells one station heard, each counting the one station.
 func (c *chConn) stationCoverageCells(ctx context.Context, station string, first, last time.Time, each func(covRow) error) error {
-	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, groupUniqArrayState(station) AS s
-		FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND station = ? AND res >= ? AND res <= ? GROUP BY res, cell, day`,
+	return c.coverageQuery(ctx, "station", `FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND station = ? AND res >= ? AND res <= ?`,
 		each, first, last, station, uint8(coverageBands[0].res), uint8(coverageBands[len(coverageBands)-1].res))
 }
 
-// coverageQuery folds days, a query answering each cell's vessels v and the set of its stations s for each day, into
-// the window.
-func (c *chConn) coverageQuery(ctx context.Context, days string, each func(covRow) error, args ...any) error {
+// coverageQuery folds the rows of from, filtered by args, into each cell's window: the sum of each day's distinct
+// vessels, the days it was heard, and the stations, by key, that heard it. The stations are numbered once per
+// query and each cell's day keeps a bitmap of their numbers, which costs about what a distinct count does, where a
+// set of the ids themselves outgrew chBinning's memory on a production-sized window.
+func (c *chConn) coverageQuery(ctx context.Context, key, from string, each func(covRow) error, args ...any) error {
 	ctx, cancel := chBinning(ctx)
 	defer cancel()
-	rows, err := c.conn.Query(ctx, `WITH h3ToGeoBoundary(cell) AS b
-		SELECT res, cell, sum(v), count(), groupUniqArrayMerge(s), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
-		FROM (`+days+`)
+	rows, err := c.conn.Query(ctx, `WITH (SELECT groupUniqArray(`+key+`) `+from+`) AS names, h3ToGeoBoundary(cell) AS b
+		SELECT res, cell, sum(v), count(), arrayMap(i -> names[i], bitmapToArray(groupBitmapMergeState(s))), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
+		FROM (SELECT res, cell, day, uniqExactMerge(vessels) AS v, groupBitmapState(toUInt32(indexOf(names, `+key+`))) AS s `+from+` GROUP BY res, cell, day)
 		GROUP BY res, cell
-		SETTINGS h3togeo_lon_lat_result_order = 0`, args...)
+		SETTINGS h3togeo_lon_lat_result_order = 0`, append(slices.Clone(args), args...)...)
 	if err != nil {
 		return err
 	}
@@ -833,6 +833,8 @@ func (c *chConn) coverageQuery(ctx context.Context, days string, each func(covRo
 		if err := rows.Scan(&res, &r.cell, &r.vessels, &days, &r.ids, &r.lats, &r.lons); err != nil {
 			return err
 		}
+		// A station first written after names was read has no number, and comes back empty until the next load.
+		r.ids = slices.DeleteFunc(r.ids, func(id string) bool { return id == "" })
 		r.res, r.days, r.stations = int(res), int(days), len(r.ids)
 		if err := each(r); err != nil {
 			return err

@@ -18,7 +18,7 @@ import {
 } from "./ais";
 import { GEAR_FILTER, MOVING_FILTER, STILL_FILTER } from "./vesselFilters";
 import { publicApiBase, type CoverageTiles } from "./api";
-import { coverageColor, coverageOpacity, coverageSummary, type CoverageMeasure } from "./coverage";
+import { coverageCellStations, coverageColor, coverageOpacity, coverageSummary, type CoverageMeasure } from "./coverage";
 import { reportError } from "./report";
 import type { BBox, Stream } from "./stream";
 import type { Theme } from "./theme";
@@ -993,13 +993,7 @@ export function createMap(
   map.on("click", (e) => {
     if (!coverage || !coverageSelectHandlers.size) return;
     const f = map.getLayer("coverage") ? map.queryRenderedFeatures(e.point, { layers: ["coverage"] })[0] : undefined;
-    // A tile from a server that does not name the stations selects nothing, rather than a cell nobody heard.
-    let stations: string[] | undefined;
-    try {
-      stations = f?.properties.station_ids != null ? JSON.parse(String(f.properties.station_ids)) : undefined;
-    } catch {
-      stations = undefined;
-    }
+    const stations = coverageCellStations(f?.properties);
     selectedCell = stations && typeof f?.id === "number" ? f.id : undefined;
     applyCoverage();
     for (const fn of coverageSelectHandlers) fn(stations);
