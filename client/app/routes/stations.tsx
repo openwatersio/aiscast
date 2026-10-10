@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { PageTitle, Panel } from "../components/Panel";
 import { Activity, Plus } from "lucide-react";
-import { ChipRow, MenuChip } from "../components/ui/Chip";
+import { ChipRow, ClearChip, MenuChip } from "../components/ui/Chip";
 import { IconBadge, List, ListRow, StationTitle, StatusDot } from "../components/ui/List";
 import { Section } from "../components/ui/Section";
 import { isVolunteer, stationStatus, stationTitles } from "../lib/ais";
@@ -56,8 +56,23 @@ function LiveCount({ stations }: { stations: Station[] }) {
 
 export default function Stations({ loaderData }: Route.ComponentProps) {
   const [sortBy, setSortBy] = useState<Sort>("unique");
+  // The stations that heard the coverage cell last clicked on the map, which the list narrows to.
+  const [area, setArea] = useState<Set<string>>();
   const live = useLive();
   const { coverage } = loaderData;
+
+  useEffect(() => {
+    if (!live) return;
+    const off = live.ctl.onCoverageSelect((ids) => setArea(ids && new Set(ids)));
+    return () => {
+      off();
+      live.ctl.clearCoverageSelect();
+    };
+  }, [live]);
+  const clearArea = () => {
+    setArea(undefined);
+    live?.ctl.clearCoverageSelect();
+  };
 
   // The map shows how many stations hear each cell in place of the vessels while this page is open.
   useEffect(() => {
@@ -69,7 +84,7 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
   const sort = SORTS.find((o) => o.value === sortBy)!;
   const stations = loaderData.stations && [...loaderData.stations].sort((a, b) => sort.of(b) - sort.of(a));
   const titles = stationTitles(stations ?? []);
-  const volunteers = stations?.filter((s) => isVolunteer(s.source)) ?? [];
+  const volunteers = stations?.filter((s) => isVolunteer(s.source) && (!area || area.has(s.station))) ?? [];
   const feeds = stations?.filter((s) => !isVolunteer(s.source)) ?? [];
 
   const row = (s: Station) => {
@@ -115,13 +130,17 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
       <PageTitle>Stations</PageTitle>
       {!stations && <p className="mt-1 text-body text-fg-secondary">Station list unavailable.</p>}
       {stations && (
-        <ChipRow label="Sort stations" className="-mx-3 mt-4">
+        <ChipRow label="Sort and filter stations" className="-mx-3 mt-4">
           <MenuChip value={sortBy} options={SORTS} onChange={setSortBy} />
+          {area && <ClearChip onClear={clearArea}>Selected area</ClearChip>}
         </ChipRow>
       )}
       {stations && (
         <Section label="Volunteer receivers" aside={<LiveCount stations={volunteers} />} bare>
           <List>{volunteers.map(row)}</List>
+          {area && !volunteers.length && (
+            <p className="mt-1 text-body text-fg-secondary">No listed volunteer receiver heard this area.</p>
+          )}
         </Section>
       )}
       {/* Feeds are a handful of upstreams, not receivers anyone runs, so they live with the network's sources. */}

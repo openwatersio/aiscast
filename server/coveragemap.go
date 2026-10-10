@@ -58,6 +58,7 @@ type covCell struct {
 	vessels                float64 // distinct vessels a day, over the window
 	days                   int     // days in the window the cell was heard
 	stations               int     // distinct stations that heard it in the window
+	ids                    string  // those stations as a JSON array, shared by every cell heard by the same ones
 }
 
 // coverageData is one load. It is never modified once published, so tiles read it without a lock.
@@ -120,6 +121,7 @@ type covRow struct {
 	vessels    uint64
 	days       int
 	stations   int
+	ids        []string // the stations counted in stations
 	lats, lons []float64
 }
 
@@ -306,6 +308,7 @@ func (c *coverageMap) stationData(ctx context.Context, station string, now time.
 func buildCoverage(first, last time.Time, days int, now time.Time, fetch func(each func(covRow) error) error) (*coverageData, error) {
 	d := &coverageData{from: first.Format("2006-01-02"), to: last.Format("2006-01-02"), days: days, loaded: now.UnixNano()}
 	res := make(map[int]int, len(coverageBands))
+	interned := map[string]string{}
 	for b, band := range coverageBands {
 		res[band.res] = b
 	}
@@ -319,6 +322,14 @@ func buildCoverage(first, last time.Time, days int, now time.Time, fetch func(ea
 			return err
 		}
 		cell.vessels, cell.days, cell.stations = float64(r.vessels)/float64(max(d.days, 1)), r.days, r.stations
+		if len(r.ids) > 0 {
+			slices.Sort(r.ids)
+			b, _ := json.Marshal(r.ids)
+			if _, ok := interned[string(b)]; !ok {
+				interned[string(b)] = string(b)
+			}
+			cell.ids = interned[string(b)]
+		}
 		d.cells[b] = append(d.cells[b], cell)
 		return nil
 	})
@@ -466,7 +477,11 @@ func (d *coverageData) tile(z, x, y int) []byte {
 				ring[a], ring[e] = ring[e], ring[a]
 			}
 		}
-		l.polygon(c.id, ring, []mvtProp{{"vessels", math.Round(c.vessels*10) / 10}, {"days", uint64(c.days)}, {"stations", uint64(c.stations)}})
+		props := []mvtProp{{"vessels", math.Round(c.vessels*10) / 10}, {"days", uint64(c.days)}, {"stations", uint64(c.stations)}}
+		if c.ids != "" {
+			props = append(props, mvtProp{"station_ids", c.ids})
+		}
+		l.polygon(c.id, ring, props)
 	}
 	return l.tile()
 }
@@ -537,9 +552,10 @@ func (p *Pipeline) coverageFor(ctx context.Context, station string) (*coverageDa
 
 // coverageFields describes the layer's attributes in TileJSON, as openapi.json does.
 var coverageFields = map[string]string{
-	"vessels":  "Number: distinct vessels heard in the cell a day, averaged over the window",
-	"days":     "Number: days in the window the network heard the cell",
-	"stations": "Number: distinct stations that heard the cell in the window; each aggregator and government feed counts as one",
+	"vessels":     "Number: distinct vessels heard in the cell a day, averaged over the window",
+	"days":        "Number: days in the window the network heard the cell",
+	"stations":    "Number: distinct stations that heard the cell in the window; each aggregator and government feed counts as one",
+	"station_ids": "String: those stations as a JSON array of ids, as /v1/stations names a volunteer's station; an aggregator or government feed is its source",
 }
 
 // serveCoverageTileJSON: GET /v1/coverage/tiles.json → TileJSON for the coverage tiles, plus the window they
@@ -780,7 +796,7 @@ func (c *chConn) coverageDays(ctx context.Context, first, last time.Time) ([]str
 // distinct stations, a feed's counted once by its source, with its outline as (lat, lon) pairs, the order the
 // result setting fixes.
 func (c *chConn) coverageCells(ctx context.Context, first, last time.Time, each func(covRow) error) error {
-	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, uniqExactState(`+chCoverageSources+`) AS s
+	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, groupUniqArrayState(`+chCoverageSources+`) AS s
 		FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND res >= ? AND res <= ? GROUP BY res, cell, day`,
 		each, first, last, uint8(coverageBands[0].res), uint8(coverageBands[len(coverageBands)-1].res))
 }
@@ -791,17 +807,18 @@ func (c *chConn) coverageStations(ctx context.Context, first, last time.Time) ([
 
 // stationCoverageCells answers coverageCells for the cells one station heard, each counting the one station.
 func (c *chConn) stationCoverageCells(ctx context.Context, station string, first, last time.Time, each func(covRow) error) error {
-	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, uniqExactState(station) AS s
+	return c.coverageQuery(ctx, `SELECT res, cell, day, uniqExactMerge(vessels) AS v, groupUniqArrayState(station) AS s
 		FROM `+c.db+`.station_coverage WHERE day >= ? AND day <= ? AND station = ? AND res >= ? AND res <= ? GROUP BY res, cell, day`,
 		each, first, last, station, uint8(coverageBands[0].res), uint8(coverageBands[len(coverageBands)-1].res))
 }
 
-// coverageQuery folds days, a query answering each cell's vessels v and stations s for each day, into the window.
+// coverageQuery folds days, a query answering each cell's vessels v and the set of its stations s for each day, into
+// the window.
 func (c *chConn) coverageQuery(ctx context.Context, days string, each func(covRow) error, args ...any) error {
 	ctx, cancel := chBinning(ctx)
 	defer cancel()
 	rows, err := c.conn.Query(ctx, `WITH h3ToGeoBoundary(cell) AS b
-		SELECT res, cell, sum(v), count(), uniqExactMerge(s), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
+		SELECT res, cell, sum(v), count(), groupUniqArrayMerge(s), arrayMap(p -> p.1, b), arrayMap(p -> p.2, b)
 		FROM (`+days+`)
 		GROUP BY res, cell
 		SETTINGS h3togeo_lon_lat_result_order = 0`, args...)
@@ -812,11 +829,11 @@ func (c *chConn) coverageQuery(ctx context.Context, days string, each func(covRo
 	for rows.Next() {
 		var r covRow
 		var res uint8
-		var days, stations uint64
-		if err := rows.Scan(&res, &r.cell, &r.vessels, &days, &stations, &r.lats, &r.lons); err != nil {
+		var days uint64
+		if err := rows.Scan(&res, &r.cell, &r.vessels, &days, &r.ids, &r.lats, &r.lons); err != nil {
 			return err
 		}
-		r.res, r.days, r.stations = int(res), int(days), int(stations)
+		r.res, r.days, r.stations = int(res), int(days), len(r.ids)
 		if err := each(r); err != nil {
 			return err
 		}

@@ -124,6 +124,13 @@ export interface MapController {
    * the vessels, until called with nothing.
    */
   setCoverage(tiles: CoverageTiles | undefined, measure?: CoverageMeasure): void;
+  /**
+   * Hears the stations that heard a clicked coverage cell, or nothing when a click lands off
+   * the cells. The clicked cell is outlined while anyone listens.
+   */
+  onCoverageSelect(fn: (stations: string[] | undefined) => void): () => void;
+  /** Lets go of the outlined cell. */
+  clearCoverageSelect(): void;
 }
 
 export interface MapView {
@@ -883,6 +890,10 @@ export function createMap(
   // the cells they were counted in.
   let coverage: CoverageTiles | undefined;
   let measure: CoverageMeasure = "vessels";
+  // The clicked cell's feature id, its H3 index. Past 2^53 it loses its lowest bits, which H3 fills with
+  // unused digits at the resolutions drawn, so it still names one cell and matches every tile's copy.
+  let selectedCell: number | undefined;
+  const coverageSelectHandlers = new Set<(stations: string[] | undefined) => void>();
   const VESSEL_LAYERS = [
     "vessel-halo",
     "vessel-still",
@@ -924,6 +935,22 @@ export function createMap(
         } as maplibregl.LayerSpecification,
         labels,
       );
+      map.addLayer(
+        {
+          id: "coverage-selected",
+          type: "line",
+          source: "coverage",
+          "source-layer": "coverage",
+          filter: ["==", ["id"], -1],
+          paint: { "line-color": PALETTE[theme].label, "line-width": 2 },
+        } as maplibregl.LayerSpecification,
+        labels,
+      );
+    }
+    if (map.getLayer("coverage-selected")) {
+      map.setLayoutProperty("coverage-selected", "visibility", coverage ? "visible" : "none");
+      map.setFilter("coverage-selected", ["==", ["id"], selectedCell ?? -1]);
+      map.setPaintProperty("coverage-selected", "line-color", PALETTE[theme].label);
     }
     if (map.getLayer("coverage")) {
       map.setLayoutProperty("coverage", "visibility", coverage ? "visible" : "none");
@@ -963,6 +990,20 @@ export function createMap(
   map.on("mousemove", "coverage", showCoverage);
   map.on("click", "coverage", showCoverage);
   map.on("mouseleave", "coverage", () => hover.remove());
+  map.on("click", (e) => {
+    if (!coverage || !coverageSelectHandlers.size) return;
+    const f = map.getLayer("coverage") ? map.queryRenderedFeatures(e.point, { layers: ["coverage"] })[0] : undefined;
+    // A tile from a server that does not name the stations selects nothing, rather than a cell nobody heard.
+    let stations: string[] | undefined;
+    try {
+      stations = f?.properties.station_ids != null ? JSON.parse(String(f.properties.station_ids)) : undefined;
+    } catch {
+      stations = undefined;
+    }
+    selectedCell = stations && typeof f?.id === "number" ? f.id : undefined;
+    applyCoverage();
+    for (const fn of coverageSelectHandlers) fn(stations);
+  });
 
   // Sources, layers, and images belong to the style, so swapping the basemap for a theme
   // removes them. This puts them back, on the first style and on every swap.
@@ -1332,8 +1373,17 @@ export function createMap(
         // A tapped cell's card has no mouseleave to close it, and the vessel tiles did not
         // reload while hidden.
         hover.remove();
+        selectedCell = undefined;
         refreshTiles();
       }
+    },
+    onCoverageSelect(fn) {
+      coverageSelectHandlers.add(fn);
+      return () => coverageSelectHandlers.delete(fn);
+    },
+    clearCoverageSelect() {
+      selectedCell = undefined;
+      applyCoverage();
     },
     followCamera: setCameraFollow,
     onCameraFollow(fn) {
