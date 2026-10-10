@@ -79,7 +79,7 @@ export default function Station({ loaderData }: Route.ComponentProps) {
   const vessels = found?.vessels.features ?? [];
   const live = useLive();
 
-  // The station's own bbox is every position it has heard since it was first seen, which for
+  // The station's own bbox is every position it has heard since the server last started, which for
   // a satellite or an aggregate is most of the planet. What a reader wants on opening a
   // station is where its traffic is right now, so fit the vessels it is currently reporting
   // and fall back to the recorded extent only when it has none.
@@ -113,7 +113,7 @@ export default function Station({ loaderData }: Route.ComponentProps) {
       </PageTitle>
 
       {!st ? (
-        <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard since the server started.</Tile>
+        <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard in the last 30 days.</Tile>
       ) : (
         <>
           <p className="mt-1 flex items-center gap-1.5 text-body text-fg-secondary">

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
@@ -186,7 +187,7 @@ func TestUsageSurvivesRestart(t *testing.T) {
 func TestStationRingSurvivesRestart(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Now()
-	p.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket/1", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
 	path := t.TempDir() + "/vessels-usage.json"
 	if err := p.saveUsage(path); err != nil {
 		t.Fatal(err)
@@ -195,10 +196,43 @@ func TestStationRingSurvivesRestart(t *testing.T) {
 	if err := q.loadUsage(path); err != nil {
 		t.Fatal(err)
 	}
-	if rows := q.stations.rows(now, nil); len(rows) != 0 { // not heard yet since restart: not listed
-		t.Errorf("restored station listed before it reports: %+v", rows)
+	if rows := q.stations.rows(now, nil); len(rows) != 1 || rows[0].Events["last_24h"] != 1 {
+		t.Errorf("restored station before it reports: %+v", rows)
 	}
-	q.Ingest(Reception{Source: "udp:abc", Station: "udp:abc", RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})
+	q.Ingest(Reception{Source: "kystverket", Station: "kystverket/1", RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})
+	if rows := q.stations.rows(now, nil); len(rows) != 1 || rows[0].Events["last_24h"] != 2 {
+		t.Errorf("station ring after restore: %+v", rows)
+	}
+}
+
+// A usage file with rings and no station infos, as the deployed server writes it, keeps each ring until its
+// station reports again.
+func TestStationRingWithoutInfo(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.Ingest(Reception{Source: "kystverket", Station: "kystverket/1", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	path := t.TempDir() + "/vessels-usage.json"
+	if err := p.saveUsage(path); err != nil {
+		t.Fatal(err)
+	}
+	var file map[string]json.RawMessage
+	b, _ := os.ReadFile(path)
+	if err := json.Unmarshal(b, &file); err != nil {
+		t.Fatal(err)
+	}
+	delete(file, "StationInfo")
+	b, _ = json.Marshal(file)
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	q := testPipeline(t)
+	if err := q.loadUsage(path); err != nil {
+		t.Fatal(err)
+	}
+	if rows := q.stations.rows(now, nil); len(rows) != 0 {
+		t.Errorf("station listed without its info: %+v", rows)
+	}
+	q.Ingest(Reception{Source: "kystverket", Station: "kystverket/1", RecvTime: now, Body: "!AIVDM,1,1,,A,15NJ5cPP00o?8pHG8CpSWwvP2<1h,0*6E"})
 	if rows := q.stations.rows(now, nil); len(rows) != 1 || rows[0].Events["last_24h"] != 2 {
 		t.Errorf("station ring after restore: %+v", rows)
 	}

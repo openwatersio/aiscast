@@ -688,7 +688,7 @@ func TestFeederSurvivesRestart(t *testing.T) {
 		p.stations.event(&Event{Station: "station:ed25519:dev1", Source: "station:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
 	}
 	q := testPipeline(t)
-	q.stations.restoreRings(p.stations.rings(now))
+	q.stations.restore(p.stations.rings(now), p.stations.infos(now), now)
 	if e := q.effective(&Claims{Sub: "ed25519:dev1", Role: "personal"}); !e.Feeder {
 		t.Error("restored station lost the feeder tier before it published")
 	}
