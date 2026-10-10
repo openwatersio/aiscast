@@ -183,3 +183,32 @@ test("the bar takes the page's title once the large title scrolls under its butt
   await expect(page.getByRole("heading", { level: 1 })).toBeInViewport();
   await expect(barTitle).toHaveAttribute("aria-hidden", "false");
 });
+
+test("The map's fleets are asked for once, and returning without the Worker keeps the map", async ({ page }) => {
+  let asked = 0;
+  page.on("request", (r) => r.url().includes("/ais/vessels.data") && asked++);
+  await openMap(page);
+  await expect(page.getByRole("link", { name: "Browse all" })).toBeVisible();
+  const toStations = async () => {
+    await page.getByRole("navigation", { name: "Browse" }).getByRole("link", { name: /^Stations/ }).click();
+    await expect(page).toHaveURL(STATIONS);
+  };
+  await toStations();
+  await back(page);
+  await expect(page.getByRole("link", { name: "Browse all" })).toBeVisible();
+  await toStations();
+  await back(page);
+  await expect(page.getByRole("link", { name: "Browse all" })).toBeVisible();
+  expect(asked).toBe(1);
+
+  // In a fresh page, offline or a Worker that cannot answer: the fleets are the only thing it asks for.
+  await page.reload();
+  await waitForVessels(page);
+  await toStations();
+  await page.route("**/ais/vessels.data*", (route) => route.abort());
+  await back(page);
+  await expect(page).toHaveURL(HOME);
+  await expect(page.getByRole("navigation", { name: "Browse" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Browse all" })).toHaveCount(0);
+  await waitForVessels(page);
+});

@@ -1,8 +1,10 @@
+import { Check, Share } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { data, Link } from "react-router";
 import { PageTitle, Panel } from "../components/Panel";
 import { RouteError, routeErrorMeta } from "../components/RouteError";
 import { Credit } from "../components/ui/Credit";
+import { IconButton } from "../components/ui/IconButton";
 import { PhotoCarousel } from "../components/ui/PhotoCarousel";
 import { ChipRow, MenuChip } from "../components/ui/Chip";
 import { Section } from "../components/ui/Section";
@@ -10,12 +12,13 @@ import { parseDestination, parseEta, shortAge, vesselActivity, vesselPath } from
 import { browserAuth, getVessel, type VesselFeature } from "../lib/api";
 import { cardRows } from "../lib/cardRows";
 import { cn } from "../lib/cn";
-import { FleetCard } from "../components/FleetCard";
+import { FleetCard, usePhotos } from "../components/FleetCard";
 import { coverKey, fleetCard, fleetPath, getFleet, parentPath, photoNames, type Fleet, type FleetSection, type FleetVessel } from "../lib/fleets.server";
 import { fileTitle, mediaKey, type Photo } from "../lib/media";
 import { namedPhotos } from "../lib/media.server";
 import { useLive, useNow } from "../lib/live";
-import { pageMeta } from "../lib/meta";
+import { pageMeta, SITE } from "../lib/meta";
+import { shareLink } from "../lib/share";
 import { useMedia } from "../lib/useMedia";
 import type { BBox } from "../lib/stream";
 import type { Route } from "./+types/fleet";
@@ -51,31 +54,14 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
 }
 
 export default function FleetPage({ loaderData }: Route.ComponentProps) {
-  const { fleet, cards, back, cover } = loaderData;
+  const { fleet, cards, back, cover, path } = loaderData;
   const photos = usePhotos(loaderData.photos);
   // Keyed by fleet, since one route serves them all: a fleet's answers and framing start afresh.
   return fleet.sections ? (
-    <FleetView key={fleet.id} fleet={{ ...fleet, sections: fleet.sections }} back={back} cover={cover} photos={photos} />
+    <FleetView key={fleet.id} fleet={{ ...fleet, sections: fleet.sections }} back={back} path={path} cover={cover} photos={photos} />
   ) : (
-    <GroupView fleet={fleet} cards={cards} back={back} photos={photos} />
+    <GroupView key={fleet.id} fleet={fleet} cards={cards} back={back} path={path} photos={photos} />
   );
-}
-
-/** The named photos once they arrive, undefined until then; none if Commons did not answer. */
-function usePhotos(promise: Promise<Record<string, Photo>>): Record<string, Photo> | undefined {
-  const [photos, setPhotos] = useState<Record<string, Photo>>();
-  useEffect(() => {
-    let current = true;
-    setPhotos(undefined);
-    promise.then(
-      (p) => current && setPhotos(p),
-      () => current && setPhotos({}),
-    );
-    return () => {
-      current = false;
-    };
-  }, [promise]);
-  return photos;
 }
 
 const named = (names: string[] | undefined, photos: Record<string, Photo> | undefined) => (names ?? []).flatMap((n) => photos?.[fileTitle(n)] ?? []);
@@ -83,9 +69,9 @@ const named = (names: string[] | undefined, photos: Record<string, Photo> | unde
 type Card = Route.ComponentProps["loaderData"]["cards"][number];
 
 /** A group's fleets as cards, the first shown largest, as guides are shown in a maps app. */
-function GroupView({ fleet, cards, back, photos }: { fleet: Omit<Fleet, "children">; cards: Card[]; back: string; photos?: Record<string, Photo> }) {
+function GroupView({ fleet, cards, back, path, photos }: { fleet: Omit<Fleet, "children">; cards: Card[]; back: string; path: string; photos?: Record<string, Photo> }) {
   return (
-    <Panel back={back} title={fleet.title}>
+    <Panel back={back} title={fleet.title} actions={<ShareFleet title={fleet.title} path={path} />}>
       <PageTitle>{fleet.title}</PageTitle>
       <p className="mt-1 text-body text-fg-secondary">{fleet.summary}</p>
       {fleet.description && <p className="mt-2 text-footnote text-fg-muted">{fleet.description}</p>}
@@ -156,11 +142,13 @@ interface Entry {
 function FleetView({
   fleet,
   back,
+  path,
   cover,
   photos,
 }: {
   fleet: Omit<Fleet, "children"> & { sections: FleetSection[] };
   back: string;
+  path: string;
   cover?: string;
   photos?: Record<string, Photo>;
 }) {
@@ -218,7 +206,7 @@ function FleetView({
 
   return (
     // Only photos head the fleet: an empty frame would push its vessels down for nothing.
-    <Panel back={back} title={fleet.title} hero={hero.length > 0}>
+    <Panel back={back} title={fleet.title} hero={hero.length > 0} actions={<ShareFleet title={fleet.title} path={path} />}>
       {hero.length ? (
         // Full bleed, as a guide opens in a maps app: the photos, then the title on a dark band.
         <div className="-mx-4 mb-4">
@@ -446,4 +434,16 @@ function Links({ links, className }: { links: Record<string, string>; className?
       ))}
     </p>
   );
+}
+
+/** Shares the fleet's page. */
+function ShareFleet({ title, path }: { title: string; path: string }) {
+  const [copied, setCopied] = useState(false);
+  async function share() {
+    const done = await shareLink({ title, text: `${title}, live on Open Waters AIS`, url: `${SITE}${path}` });
+    if (done !== "copied") return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+  return <IconButton icon={copied ? Check : Share} label={copied ? "Link copied" : "Share"} small onClick={() => void share()} />;
 }

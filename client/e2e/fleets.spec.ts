@@ -1,7 +1,7 @@
 import { API } from "./data";
 import { expect, test } from "./fixtures";
 
-test("fleets open from the map's menu, list their vessels, and open one on the map", async ({ page }) => {
+test("fleets show on the home panel and open from it, list their vessels, and open one on the map", async ({ page }) => {
   // Koru answers; every other vessel is one the network has never heard.
   await page.route(`${API}/v1/vessels/*`, (route) => {
     const mmsi = Number(new URL(route.request().url()).pathname.split("/").pop());
@@ -32,7 +32,9 @@ test("fleets open from the map's menu, list their vessels, and open one on the m
   );
 
   await page.goto("/ais/vessels");
-  await page.getByRole("navigation", { name: "Browse" }).getByRole("link", { name: /Fleets/ }).click();
+  // The home panel shows a few fleets and links to the rest.
+  await expect(page.getByRole("region", { name: "Panel" }).getByRole("link", { name: /^Superyachts/ })).toBeVisible();
+  await page.getByRole("link", { name: "Browse all" }).click();
   await expect(page).toHaveURL(/\/ais\/fleets$/);
   // Groups nest: Superyachts holds the tech billionaires' yachts.
   const superyachts = page.getByRole("link", { name: /^Superyachts/ });

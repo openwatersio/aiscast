@@ -60,7 +60,7 @@ export function PanelHeader({
         // No ground of its own: once the title shows, Panel fades out what scrolls under it.
         "pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-1 px-3 pt-3 *:pointer-events-auto",
         // Over a photo the buttons need their own scrim, as the photo's credit has.
-        "data-over-photo:*:[a]:bg-black/45 data-over-photo:*:[a]:text-white data-over-photo:*:[a]:backdrop-blur-sm data-over-photo:*:[a]:hover:bg-black/60",
+        "data-over-photo:*:[a,button]:bg-black/45 data-over-photo:*:[a,button]:text-white data-over-photo:*:[a,button]:backdrop-blur-sm data-over-photo:*:[a,button]:hover:bg-black/60",
       )}
     >
       {back && <BackButton parent={back} />}

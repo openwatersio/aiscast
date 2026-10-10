@@ -1,4 +1,4 @@
-import { Activity, RadioTower, Ship, type LucideIcon } from "lucide-react";
+import { Activity, RadioTower, type LucideIcon } from "lucide-react";
 import { ABOUT, DEVELOPERS } from "./links";
 
 export interface Destination {
@@ -15,7 +15,6 @@ export interface Destination {
  * where it fits.
  */
 export const BROWSE: Destination[] = [
-  { to: "/fleets", label: "Fleets", hint: "Collections of notable vessels", icon: Ship },
   { to: "/stations", label: "Stations", hint: "Who is receiving, and where", icon: RadioTower },
   { to: "/network", label: "Network", hint: "Coverage, sources and delay", icon: Activity },
 ];

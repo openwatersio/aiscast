@@ -1,5 +1,5 @@
 import { Antenna } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import {
   centerBoxes,
@@ -200,22 +200,25 @@ function SearchChips() {
 }
 
 /** What the search turns up, the vessels on the map while searching with nothing typed, or the destinations. */
-export function SearchResults() {
+export function SearchResults({ children }: { children?: ReactNode }) {
   const { query, searching } = useShell();
   const q = query.trim();
-  return q ? <Results q={q} /> : searching ? <InView /> : <Destinations />;
+  return q ? <Results q={q} /> : searching ? <InView /> : <Destinations>{children}</Destinations>;
 }
 
-/** What there is to browse besides vessels. */
-function Destinations() {
+/** What there is to browse besides vessels, and below it whatever the page adds, such as fleets. */
+function Destinations({ children }: { children?: ReactNode }) {
   return (
-    <nav aria-label="Browse">
-      <List>
-        {BROWSE.map((d) => (
-          <ListRow key={d.label} to={d.to} leading={<IconBadge icon={d.icon} />} title={d.label} subtitle={d.hint} />
-        ))}
-      </List>
-    </nav>
+    <>
+      <nav aria-label="Browse">
+        <List>
+          {BROWSE.map((d) => (
+            <ListRow key={d.label} to={d.to} leading={<IconBadge icon={d.icon} />} title={d.label} subtitle={d.hint} />
+          ))}
+        </List>
+      </nav>
+      {children}
+    </>
   );
 }
 

@@ -1,4 +1,5 @@
 import { Ship } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { cn } from "../lib/cn";
 import { fileTitle, type Photo } from "../lib/media";
@@ -60,4 +61,21 @@ export function FleetCard({ card, photos, featured = false }: { card: FleetCardD
       )}
     </div>
   );
+}
+
+/** The named photos once they arrive, undefined until then; none if Commons did not answer. */
+export function usePhotos(promise: Promise<Record<string, Photo>>): Record<string, Photo> | undefined {
+  const [photos, setPhotos] = useState<Record<string, Photo>>();
+  useEffect(() => {
+    let current = true;
+    setPhotos(undefined);
+    promise.then(
+      (p) => current && setPhotos(p),
+      () => current && setPhotos({}),
+    );
+    return () => {
+      current = false;
+    };
+  }, [promise]);
+  return photos;
 }
