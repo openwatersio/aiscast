@@ -231,6 +231,13 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	created := v == nil
 	if created {
 		v = newVessel()
+		// A station back after the sweep or a restart is what the record knew it to be, so a buoy's first position
+		// report draws it as gear, not a vessel, until its static data comes. The mirror takes only its own lock.
+		if p.store != nil && p.store.mirror != nil {
+			if k := p.store.mirror.kind(ev.MMSI); k != "" {
+				v.Kind = k
+			}
+		}
 		p.vessels[ev.MMSI] = v
 	}
 	hadPrev, prevLat, prevLon := v.HasPos, v.Lat, v.Lon // before this report moves it, for whether it is moving
@@ -323,7 +330,7 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// brings what it decides by: a ship type after a buoy-like name, as a class B part B follows part A, makes gear a
 	// vessel again.
 	if (v.Kind == "vessel" || v.Kind == "gear" || v.Kind == "sar" && isBeaconMMSI(ev.MMSI)) &&
-		(created || u.Name != "" || u.ShipType != 0 || u.Length > 0 || u.Beam > 0 || hasPos && isBeaconMMSI(ev.MMSI)) {
+		(created && v.Kind == "vessel" || u.Name != "" || u.ShipType != 0 || u.Length > 0 || u.Beam > 0 || hasPos && isBeaconMMSI(ev.MMSI)) {
 		v.Kind = derivedKind(ev.MMSI, v)
 	}
 	ev.Name, ev.Lat, ev.Lon, ev.HasPos = v.Name, v.Lat, v.Lon, v.HasPos

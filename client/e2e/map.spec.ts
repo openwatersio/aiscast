@@ -44,14 +44,20 @@ test("no vessel is drawn by both the tiles and the stream", async ({ page }) => 
 test("fishing gear is drawn as its own square, not a vessel's arrow or dot", async ({ page }) => {
   // The buoy reports the course of its drift, which would turn a vessel's arrow.
   const { mmsi } = await heardGear();
-  await openMap(page);
   const layersOf = () =>
     page.evaluate((m) => {
       const ids = new Set<string>();
       for (const f of window.aiscastMap!.queryRenderedFeatures()) if (Number(f.properties?.mmsi) === m) ids.add(f.layer.id);
       return [...ids];
     }, mmsi);
-  await expect.poll(async () => (await layersOf()).some((id) => id.endsWith("-gear")), { timeout: 30_000 }).toBe(true);
+  // A volunteer's buoy no trusted source has heard is not streamed, so only a tile draws it, and the
+  // server shares a tile for 10 s: one another test had built before the buoy was heard can lack
+  // it, and a still view reloads its tiles only every few minutes. So the map opens again until a
+  // tile built after the buoy is in.
+  await expect(async () => {
+    await openMap(page);
+    await expect.poll(async () => (await layersOf()).some((id) => id.endsWith("-gear")), { timeout: 3_000 }).toBe(true);
+  }).toPass({ intervals: [11_000], timeout: 45_000 });
   expect((await layersOf()).filter((id) => /-(still|moving)$/.test(id))).toEqual([]);
 });
 

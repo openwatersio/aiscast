@@ -521,7 +521,8 @@ function VesselThumb({ row }: { row: Row }) {
     io.observe(el);
     return () => io.disconnect();
   }, [seen]);
-  const photo = useMedia(seen ? mediaKey(row.imo, row.mmsi) : undefined)?.photos[0];
+  // Fishing gear has no photos to look up.
+  const photo = useMedia(seen && row.kind !== "gear" ? mediaKey(row.imo, row.mmsi) : undefined)?.photos[0];
   return (
     <span ref={ref} className="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-surface-tile">
       <ClassDot kind={row.kind} type={row.shipType} />

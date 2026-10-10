@@ -438,7 +438,7 @@ func gzipBytes(b []byte) []byte {
 var tileFields = map[string]string{
 	"mmsi": "Number", "name": "String", "kind": "String: vessel, aton, base, sar (search and rescue aircraft or distress beacon), or gear", "class": "String: A or B",
 	"type": "Number: ITU ship and cargo type; the AtoN type for an aid to navigation", "flag": "String: ISO 3166 alpha-2 from the MMSI, never for gear",
-	"nav_status": "Number", "sog": "Number: knots", "cog": "Number: degrees", "heading": "Number: degrees",
+	"nav_status": "Number", "sog": "Number: knots", "cog": "Number: degrees", "heading": "Number: degrees; never for gear",
 	"hdg": "Number: heading, else course over ground, the angle to rotate an icon by; never for gear", "length": "Number: metres; never for gear",
 	"beam": "Number: metres; never for gear", "to_bow": "Number: metres from the AIS antenna to the bow; never for gear",
 	"to_stern": "Number: metres from the AIS antenna to the stern; never for gear", "to_port": "Number: metres from the AIS antenna to port; never for gear",

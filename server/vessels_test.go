@@ -571,3 +571,29 @@ func TestGearServesNoHull(t *testing.T) {
 		t.Errorf("the ship's tile: %v", s.props)
 	}
 }
+
+// A buoy back after the sweep or a restart is gear from its first position report, as the record knows it, not a
+// vessel with an arrow until its static data comes again.
+func TestReturningGearKeepsItsKind(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	p.ingestPacket("aishub", "aishub", now, now, posReport(233510227, 44.13, -125.03))
+	p.ingestPacket("aishub", "aishub", now.Add(time.Second), now.Add(time.Second), netBuoyStatic(233510227, "HSD-NET-88%"))
+	mustFlush(t, p)
+	p.vmu.Lock()
+	delete(p.vessels, 233510227)
+	p.vmu.Unlock()
+
+	later := now.Add(time.Hour)
+	buoy := posReport(233510227, 44.13, -125.03).(ais.PositionReport)
+	buoy.Cog, buoy.Sog = 245.3, 0.1
+	p.ingestPacket("aishub", "aishub", later, later, buoy)
+	mustFlush(t, p)
+	if k := p.vessels[233510227].Kind; k != "gear" {
+		t.Errorf("the returning buoy is %q, want gear", k)
+	}
+	x, y := tileOf(44.13, -125.03, 10)
+	if f := decodeTile(t, get(t, p, fmt.Sprintf("/v1/vessels/tiles/10/%d/%d", x, y)).Body.Bytes())[233510227]; f.props["kind"] != "gear" || f.props["hdg"] != nil {
+		t.Errorf("the returning buoy's tile feature: %v", f.props)
+	}
+}
