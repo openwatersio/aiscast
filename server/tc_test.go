@@ -33,6 +33,9 @@ func tcXlsx(t *testing.T, rows [][2]string) []byte {
 	for rn, row := range rows {
 		fmt.Fprintf(&sheet, `<row r="%d">`, rn+1)
 		for _, cell := range strings.Split(row[0], "|") {
+			if cell == "" {
+				continue
+			}
 			ref, kind, val := strings.SplitN(cell, ";", 3)[0], strings.SplitN(cell, ";", 3)[1], strings.SplitN(cell, ";", 3)[2]
 			if kind == "s" {
 				fmt.Fprintf(&sheet, `<c r="%s%d" t="s"><v>%d</v></c>`, ref, rn+1, sst(val))
@@ -66,6 +69,9 @@ func fakeTC(t *testing.T) string {
 	t.Helper()
 	header := "A;s;Official Number|B;s;Vessel Name|C;s;IMO Vessel Number|E;s;Year of Build|G;s;Port of Registry|I;s;Vessel Descriptor|J;s;Gross Tonnage|K;s;Net Tonnage|N;s;Length|O;s;Breadth|P;s;Depth"
 	rows := [][2]string{
+		// spacer rows above the header: the live export's has no cells, and a styled blank cell parses to ""
+		{"", ""},
+		{"A;n;", ""},
 		{header, ""},
 		// year 196000 is 1960; the official number arrives as a float
 		{"A;n;313730.0|B;s;OCEAN MASTER|C;s;5260423|E;n;196000|G;s;VANCOUVER|I;s;FISHING|J;n;500.77|K;n;340.2|N;n;36.48|O;n;9.48|P;n;4.2", ""},
