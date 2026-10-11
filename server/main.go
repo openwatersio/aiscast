@@ -276,6 +276,7 @@ func httpHandler(p *Pipeline) http.Handler {
 	for pat, h := range routes(p) {
 		mux.HandleFunc(pat, h)
 	}
-	mux.Handle("/{$}", http.RedirectHandler("https://openwaters.io/ais/", http.StatusFound))
+	// Permanent, so search engines credit openwaters.io/ais/ instead of indexing this root separately.
+	mux.Handle("/{$}", http.RedirectHandler("https://openwaters.io/ais/", http.StatusMovedPermanently))
 	return p.countRequests(mux)
 }

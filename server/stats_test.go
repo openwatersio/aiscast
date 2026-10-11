@@ -140,7 +140,7 @@ func TestRootRedirect(t *testing.T) {
 	defer srv.Close()
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	res, _ := c.Get(srv.URL + "/")
-	if res.StatusCode != http.StatusFound || res.Header.Get("Location") != "https://openwaters.io/ais/" {
+	if res.StatusCode != http.StatusMovedPermanently || res.Header.Get("Location") != "https://openwaters.io/ais/" {
 		t.Fatalf("got %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	if res, _ = c.Get(srv.URL + "/nope"); res.StatusCode != http.StatusNotFound {
