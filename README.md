@@ -1,6 +1,6 @@
 # aiscast
 
-Live AIS vessel traffic, streamed by bounding box, from open government feeds and volunteer receivers. Part of [Open Waters](https://openwaters.io). The public instance is `ais.openwaters.io`. A live map is at [openwaters.io/ais/vessels](https://openwaters.io/ais/vessels).
+Live AIS vessel traffic, streamed by bounding box, from community networks, open government feeds, and volunteer receivers. Part of [Open Waters](https://openwaters.io). The public instance is `ais.openwaters.io`. A live map is at [openwaters.io/ais/vessels](https://openwaters.io/ais/vessels).
 
 This is a beta. There is no SLA. Coverage is uneven. The terms for re-serving some sources are still unsettled (see [Coverage](#coverage)). Live status and uptime history are at [status.openwaters.io](https://status.openwaters.io).
 
@@ -24,7 +24,7 @@ Events carry a `source`, so you can tell a live volunteer receiver from a govern
 
 ## Contributing data
 
-If you run an AIS receiver, send its data here. aiscast re-serves it to everyone, deduplicates it against the open feeds and every other station, and forwards it to AISHub as part of our reciprocal feed. Only volunteer receptions go to AISHub, and aiscast never relays public feeds there, per their terms. The terms for contributing are the [contributor agreement](docs/contributor-agreement.md).
+If you run an AIS receiver, send its data here. aiscast re-serves it to everyone, deduplicates it against the open feeds and every other station, and shares volunteer receptions with AISHub as part of our contribution to its community network. Only data received directly by volunteer stations goes to AISHub; public feeds and synthesized messages stay out. You are welcome to keep contributing to other networks too. The terms for contributing are the [contributor agreement](docs/contributor-agreement.md).
 
 - **AIS-catcher** (preferred: authenticated, realtime, works behind any NAT): get a token at [openwaters.io/ais/token](https://openwaters.io/ais/token) (one click, stays in your browser), then `AIS-catcher ... -Q wssmqtt://x:<token>@ais.openwaters.io:443/v1/stream MSGFORMAT NMEA`. Each message is sent as it is decoded, over MQTT on the same WebSocket address the JSON stream uses. Your data appears as `source: station:<station id>`. Name your station on the token page; until you do, it is labeled by the town nearest the traffic it hears. AIS-catcher's HTTP output works too: `-H https://ais.openwaters.io/v1/receive USERPWD x:<token> GZIP on INTERVAL 5` posts a batch every five seconds under the same station.
 - **UDP** (no token): AIS-catcher `-u udp.ais.openwaters.io 10110`, [docker-shipfeeder](https://github.com/sdr-enthusiasts/docker-shipfeeder) with host `udp.ais.openwaters.io` port `10110`, or any NMEA forwarder sending plain `!AIVDM` / `!AIVDO` sentences (TAG blocks welcome). Your station appears as `udp:<id>`, a keyed hash of your address, never the address itself. If a sender's `!AIVDO` sentences identify the vessel, aiscast keys the station by that MMSI instead.
@@ -43,6 +43,8 @@ Your station page is `https://openwaters.io/ais/stations/<your id>`, and [the st
 | AISHub aggregate       | worldwide terrestrial, ~50k vessels                                       | about a minute behind     |
 | aisstream.io           | worldwide, when it is up                                                  | live, but frequently down |
 
+AISHub and its contributors make much of our worldwide terrestrial coverage possible. We contribute volunteer receptions in return and credit AISHub on every event from its aggregate.
+
 [`/v1/stats`](https://ais.openwaters.io/v1/stats) reports each source's current delay from broadcast to arrival (`delay.p50` and `delay.p99`, in seconds).
 
 Every event names the source it came from. [docs/policy.md](docs/policy.md#sources-deliberately-not-used) lists the sources this project leaves out on purpose, and why.
@@ -57,7 +59,7 @@ Licensing is per source. aiscast does not relicense the aggregate. aiscast re-se
 | BarentsWatch           | [NLOD](https://data.norge.no/nlod/en/2.0) per the [BarentsWatch API terms](https://www.barentswatch.no/en/articles/api-terms-and-conditions/)          | Credit: "Data delivered by BarentsWatch." It is the same AIS Norge data as Kystverket, so the Kystverket credit applies too.                                                                   |
 | Fintraffic Digitraffic | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)                                                                                             | Credit: "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY."                                                                                                                             |
 | Volunteer receivers    | The [contributor agreement](docs/contributor-agreement.md) dedicates receptions to the public domain under CC0 and publishes the aggregate under ODbL | Credit "Open Waters AIS (https://openwaters.io/ais/)". Individual receptions are CC0. The aggregate carries ODbL.                                                         |
-| AISHub aggregate       | AISHub membership: contributors "are allowed to use the aggregated data for free". No stated restriction on publication or commercial use             | Credit "AISHub" and keep the `source: aishub` value on the data.                                                                                                                              |
+| AISHub aggregate       | [AISHub terms](https://www.aishub.net/join-us) and any applicable written agreement | Credit [AISHub contributors](https://www.aishub.net/) and keep `source: aishub`. Reuse and redistribution must follow the applicable terms. |
 | aisstream.io           | no published terms                                                                                                                                    | Best effort, may disappear. `source: aisstream`.                                                                                                                                              |
 | Wikidata particulars   | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)                                                                                         | Nothing. The `wikidata` object on `/v1/vessels/{mmsi}` and in MCP `get_vessels` says so with `license: CC0-1.0`. The Commons photos its `image` and `commons_category` link to carry their own licenses. |
 | US Coast Guard PSIX    | Public domain (U.S. government work)                                                                                                                  | Nothing. The `uscg` object on `/v1/vessels/{mmsi}` and in MCP `get_vessels` says so in its `license`.                                                                                         |
