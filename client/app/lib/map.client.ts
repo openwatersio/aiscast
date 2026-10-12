@@ -19,6 +19,7 @@ import {
 import { GEAR_FILTER, MOVING_FILTER, STILL_FILTER } from "./vesselFilters";
 import { publicApiBase, type CoverageTiles } from "./api";
 import { coverageColor, coverageOpacity, coverageSummary, type CoverageMeasure } from "./coverage";
+import { PRIVACY } from "./links";
 import { reportError } from "./report";
 import type { BBox, Stream } from "./stream";
 import type { Theme } from "./theme";
@@ -587,6 +588,7 @@ export function createMap(
         (u) => `<a href="${u}" rel="noopener">${u}</a>`,
       ),
     );
+    custom.push(`<a href="${PRIVACY}">Privacy</a>`);
     attribution = new maplibregl.AttributionControl({
       compact: true,
       customAttribution: custom,
