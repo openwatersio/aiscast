@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { cn } from "../../lib/cn";
 import { Menu, MenuRadioGroup, MenuRadioItem } from "./Menu";
@@ -66,6 +66,17 @@ function ChipButton({ selected, children, className, ...props }: { selected: boo
     <button type="button" className={cn(chipClass(selected), className)} {...props}>
       {children}
       <ChevronDown className="size-3.5" aria-hidden />
+    </button>
+  );
+}
+
+/** A tinted chip for a filter in force, which clears it when pressed. */
+export function ClearChip({ children, onClear }: { children: ReactNode; onClear(): void }) {
+  return (
+    <button type="button" className={chipClass(true)} onClick={onClear}>
+      {children}
+      <span className="sr-only">, clear</span>
+      <X className="size-3.5" aria-hidden />
     </button>
   );
 }
