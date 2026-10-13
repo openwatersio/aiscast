@@ -81,3 +81,26 @@ test("fleets show on the home panel and open from it, list their vessels, and op
   await page.getByRole("link", { name: "Back" }).click();
   await expect(page).toHaveURL(/\/ais\/fleets\/superyachts\/tech-billionaires(#|$)/);
 });
+
+test("fleets and groups share their own address, through the share sheet or by copying it", async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { shared: string[]; copied: string[] };
+    w.shared = [];
+    w.copied = [];
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t: string) => void w.copied.push(t) } });
+    if (location.pathname.endsWith("/superyachts")) navigator.share = async (d?: ShareData) => void w.shared.push(d!.url!);
+    else Object.defineProperty(navigator, "share", { value: undefined });
+  });
+  const sent = (key: "shared" | "copied") => page.evaluate((k) => (window as unknown as Record<string, string[]>)[k], key);
+
+  // A group, where the device has a share sheet.
+  await page.goto("/ais/fleets/superyachts");
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await expect.poll(() => sent("shared")).toEqual(["https://openwaters.io/ais/fleets/superyachts"]);
+
+  // A fleet, where it has none: the link is copied and the button says so.
+  await page.goto("/ais/fleets/tall-ships");
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await expect.poll(() => sent("copied")).toEqual(["https://openwaters.io/ais/fleets/tall-ships"]);
+  await expect(page.getByRole("button", { name: "Link copied" })).toBeVisible();
+});

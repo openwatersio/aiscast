@@ -17,11 +17,12 @@ function stationRedirect(request: Request) {
 
 export function loader({ request }: Route.LoaderArgs) {
   stationRedirect(request);
-  // Two square cards, then a wide one. A fleet that is renamed drops out rather than failing the map.
-  const fleets = ["cruise-ships", "superyachts", "tall-ships"].flatMap((id) => getFleet(id) ?? []);
+  // Two square cards, then a wide one. A fleet that is renamed leaves its slot empty rather than
+  // failing the map or moving the others into a different shape.
+  const fleets = ["cruise-ships", "superyachts", "tall-ships"].map((id) => getFleet(id));
   return {
-    fleets: fleets.map(fleetCard),
-    photos: namedPhotos(fleets.flatMap((f) => coverPhoto(f) ?? []), request.url),
+    fleets: fleets.map((f) => (f ? fleetCard(f) : null)),
+    photos: namedPhotos(fleets.flatMap((f) => (f && coverPhoto(f)) || []), request.url),
   };
 }
 
@@ -56,12 +57,14 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   return (
     <Panel header={<SearchBox />}>
       <SearchResults>
-        {a && (
+        {(a || b || wide) && (
           <Section label="Fleets" aside={<Link to="/fleets">Browse all</Link>} bare className="mt-6">
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                {[a, b].map((c) => c && <FleetCard key={c.path} card={c} photos={photos} />)}
-              </div>
+              {(a || b) && (
+                <div className="grid grid-cols-2 gap-3">
+                  {[a, b].map((c) => c && <FleetCard key={c.path} card={c} photos={photos} />)}
+                </div>
+              )}
               {wide && <FleetCard card={wide} photos={photos} featured />}
             </div>
           </Section>
