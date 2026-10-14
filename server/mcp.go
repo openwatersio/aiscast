@@ -23,7 +23,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.17.0"
+const mcpVersion = "0.18.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -917,7 +917,7 @@ type mcpStation struct {
 	Vessels   int     `json:"vessels" jsonschema:"distinct vessels whose positions the station heard in the last 30 minutes, its own left out, up to about 7 minutes behind"`
 	Events24h int64   `json:"events_24h"`
 	LastAgeS  int64   `json:"last_age_s"`
-	BBox      *mcpBox `json:"bbox,omitempty" jsonschema:"extent of the positions this station has heard"`
+	BBox      *mcpBox `json:"bbox,omitempty" jsonschema:"extent of the positions this station has heard since the server last started; absent until it hears one"`
 }
 
 type mcpStationCounts struct {
@@ -1065,7 +1065,7 @@ func (p *Pipeline) mcpGetCoverage(_ context.Context, _ *mcp.CallToolRequest, in 
 			}
 		}
 		if out.Station == nil {
-			out.Note = fmt.Sprintf("station %q has not been heard since the server started", in.Station)
+			out.Note = fmt.Sprintf("station %q has not been heard in the last 30 days", in.Station)
 		}
 	}
 

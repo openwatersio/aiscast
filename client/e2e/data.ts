@@ -81,8 +81,9 @@ export async function heardFromVolunteer(): Promise<string> {
   );
   socket.close();
   for (let i = 0; i < 50; i++) {
-    const stations = await api<Array<{ station: string; source: string }>>("/v1/stations");
-    const volunteer = stations.find((s) => s.source.startsWith("udp:"));
+    const stations = await api<Array<{ station: string; source: string; last_age_s: number }>>("/v1/stations");
+    // A server kept running from an earlier run still lists the station before these lines arrive.
+    const volunteer = stations.find((s) => s.source.startsWith("udp:") && s.last_age_s < 10);
     if (volunteer) return volunteer.station;
     await new Promise((r) => setTimeout(r, 100));
   }

@@ -61,7 +61,7 @@ func TestStationRowsTakeTheSeries(t *testing.T) {
 	if f.reads != 1 {
 		t.Errorf("serving the list read the series: %d reads", f.reads)
 	}
-	// A station new since the totals' last read keeps its counts since the start, rather than reading 0, and has no
+	// A station new since the totals' last read keeps its own counts since first_seen, rather than reading 0, and has no
 	// uptime until its first hour is known.
 	f.counts["s2"] = stationCount{first: now.Truncate(time.Hour), now: true, day: 1}
 	p.refreshRollups(f, now.Add(time.Minute))
@@ -111,5 +111,119 @@ func TestOwnVesselWaitsForRestoredCandidates(t *testing.T) {
 	p.refreshOwn(now)
 	if r := rowOf(t, p.stationRows(now), "station:ed25519:k"); r.MMSI != 0 {
 		t.Errorf("two own vessels within the hour across the restart, yet one decided: %+v", r)
+	}
+}
+
+// A restart lists every station at once, as it stood at shutdown. Its extent is not saved, so it has no bbox until
+// it hears a position again.
+func TestStationsListedAfterRestart(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.stations.event(&Event{Station: "s1", Source: "src", Time: now.Add(-3 * time.Hour), MMSI: 366000001, HasPos: true, Lat: 41.5, Lon: -70.6, Type: "PositionReport"})
+	p.stations.event(&Event{Station: "s1", Source: "src", Time: now.Add(-time.Minute), MMSI: 366000002, HasPos: true, Lat: 41.6, Lon: -70.5, Type: "PositionReport"})
+	p.stations.dup(&Event{Station: "s1", Source: "src", Time: now.Add(-time.Minute), Packet: posReport(366000003, 41.7, -70.4)})
+	want := rowOf(t, p.stations.rows(now, nil), "s1")
+	path := t.TempDir() + "/usage.json"
+	if err := p.saveUsage(path); err != nil {
+		t.Fatal(err)
+	}
+	q := testPipeline(t)
+	if err := q.loadUsage(path); err != nil {
+		t.Fatal(err)
+	}
+	got := rowOf(t, q.stations.rows(now, nil), "s1")
+	if got.Source != "src" || !got.FirstSeen.Equal(want.FirstSeen) || !got.LastSeen.Equal(want.LastSeen) ||
+		got.Dups != 1 || got.Positions != 2 || got.Events["last_24h"] != 2 || got.BBox != nil {
+		t.Errorf("restored %+v, want %+v without a bbox", got, want)
+	}
+	q.stations.event(&Event{Station: "s1", Source: "src", Time: now, MMSI: 366000001, HasPos: true, Lat: 41.5, Lon: -70.6, Type: "PositionReport"})
+	if got := rowOf(t, q.stations.rows(now, nil), "s1"); got.BBox == nil || *got.BBox != [4]float64{41.5, -70.6, 41.5, -70.6} || got.Positions != 3 {
+		t.Errorf("after a position: %+v", got)
+	}
+}
+
+// Own-ship candidates read back from ClickHouse reach a station restored from the usage file, whichever comes first.
+func TestRestoredStationTakesOwnCandidates(t *testing.T) {
+	now := time.Now()
+	infos := map[string]stationInfo{"s1": {Source: "s1", First: now, Last: now}}
+	cands := map[string]map[uint32]int64{"s1": {227006760: now.Unix()}}
+	for _, usageFirst := range []bool{false, true} {
+		p := testPipeline(t)
+		if usageFirst {
+			p.stations.restore(nil, infos, now)
+			p.stations.restoreOwn(cands)
+		} else {
+			p.stations.restoreOwn(cands)
+			p.stations.restore(nil, infos, now)
+		}
+		if own := p.stations.ownShips(); own["s1"][227006760] != now.Unix() {
+			t.Errorf("usage first %v: own ships %v", usageFirst, own)
+		}
+	}
+}
+
+// A station silent for stationKeep is forgotten, by a running process and across a restart alike.
+func TestSilentStationsForgotten(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.stations.event(&Event{Station: "old", Source: "old", Time: now.Add(-stationKeep - time.Hour), MMSI: 366000001})
+	p.stations.event(&Event{Station: "new", Source: "new", Time: now.Add(-stationKeep + time.Hour), MMSI: 366000002})
+	if _, ok := p.stations.infos(now)["old"]; ok {
+		t.Error("silent station saved")
+	}
+	q := testPipeline(t)
+	q.stations.restore(nil, map[string]stationInfo{"old": {Source: "old", Last: now.Add(-stationKeep - time.Hour)}}, now)
+	if len(q.stations.m) != 0 {
+		t.Errorf("silent station restored: %+v", q.stations.m)
+	}
+	p.stations.sweep(now)
+	if _, ok := p.stations.m["old"]; ok {
+		t.Error("sweep kept a silent station")
+	}
+	if _, ok := p.stations.m["new"]; !ok {
+		t.Error("sweep dropped a station inside the window")
+	}
+}
+
+// A late copy leaves last_seen alone, so it cannot make sweep forget a station that is still reporting.
+func TestLateEventKeepsStation(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.stations.event(&Event{Station: "s1", Source: "s1", Time: now, MMSI: 366000001})
+	p.stations.event(&Event{Station: "s1", Source: "s1", Time: now.Add(-stationKeep - time.Hour), MMSI: 366000002})
+	p.stations.dup(&Event{Station: "s1", Source: "s1", Time: now.Add(-stationKeep - time.Hour), Packet: posReport(366000003, 41.7, -70.4)})
+	p.stations.sweep(now)
+	if st := p.stations.m["s1"]; st == nil || !st.Last.Equal(now) {
+		t.Errorf("late copy moved the station: %+v", st)
+	}
+}
+
+// A UDP station is kept across restarts only once it has delivered a message first in establishedHours, and stays kept after that
+// however quiet it goes. A station with a token is kept from its first message.
+func TestUDPStationsKeptOnceEstablished(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now().Truncate(time.Hour).Add(30 * time.Minute)
+	p.stations.event(&Event{Station: "udp:once", Source: "udp:once", Time: now, MMSI: 366000001})
+	p.stations.event(&Event{Station: "mmsi:366000009", Source: "mmsi:366000009", Time: now, MMSI: 366000001})
+	p.stations.event(&Event{Station: "station:ed25519:k", Source: "station:ed25519:k", Time: now, MMSI: 366000001})
+	for i := range establishedHours - 1 {
+		p.stations.event(&Event{Station: "udp:fed", Source: "udp:fed", Time: now.Add(-time.Duration(i) * time.Hour), MMSI: 366000001})
+	}
+	infos := p.stations.infos(now)
+	for id, want := range map[string]bool{"udp:once": false, "mmsi:366000009": false, "udp:fed": false, "station:ed25519:k": true} {
+		if _, ok := infos[id]; ok != want {
+			t.Errorf("%s saved %v, want %v", id, ok, want)
+		}
+	}
+	p.stations.event(&Event{Station: "udp:fed", Source: "udp:fed", Time: now.Add(-time.Duration(establishedHours-1) * time.Hour), MMSI: 366000001})
+	if in, ok := p.stations.infos(now)["udp:fed"]; !ok || !in.Established {
+		t.Fatalf("udp:fed not saved after %d hours: %+v", establishedHours, in)
+	}
+	// A week later its ring is empty, but it was established, so it is still saved and restored.
+	later := now.Add(8 * 24 * time.Hour)
+	q := testPipeline(t)
+	q.stations.restore(nil, p.stations.infos(later), later)
+	if in, ok := q.stations.infos(later)["udp:fed"]; !ok || !in.Established {
+		t.Errorf("established station dropped once its ring went quiet: %+v", in)
 	}
 }

@@ -19,19 +19,30 @@ import (
 // day, too much for a number read once a month. Own-ship candidates are forgotten after it too.
 const stationVesselTTL = 24 * time.Hour
 
+// stationKeep is how long a silent station stays listed, restarts included. It matches the client's sitemap,
+// so a station page it links still answers.
+const stationKeep = 30 * 24 * time.Hour
+
+// establishedHours is how many clock hours of the last 7 days a UDP station must have delivered a message first
+// in, by its event ring, before it is kept across restarts. Anyone can name one by sending a line to the UDP port,
+// so one-off senders, spoofed addresses, and the udp: row a sender leaves after each restart until its !AIVDO
+// re-keys it are forgotten at the next one.
+const establishedHours = 24
+
 type stationStat struct {
 	Source    string
 	First     time.Time
 	Last      time.Time
-	Events    int64
 	Dups      int64 // events dropped as duplicates that this station also heard (someone else was first)
 	Positions int64
-	MinLat    float64
+	MinLat    float64 // extent of the positions heard since the start; not saved, so it never spans more than one run
 	MinLon    float64
 	MaxLat    float64
 	MaxLon    float64
 	own       map[uint32]int64 // MMSIs this station sent as own ship (!AIVDO), unix seconds of the last
 	ring      hourRing         // events per clock hour over 7 days; feeds /v1/stations and the earned feeder tier
+
+	established bool // a low-trust station that has delivered first in establishedHours, so it is kept across restarts
 }
 
 // noteOwn records that the station sent mmsi as its own ship at t.
@@ -39,9 +50,9 @@ func (st *stationStat) noteOwn(mmsi uint32, t time.Time) {
 	st.own[mmsi] = t.Unix()
 }
 
-// events24h sums events over the given station ids in the 24 clock hours ending now. A station not heard
-// since a restart counts from its restored ring: its client reconnects before it publishes again, and the
-// tier that connection gets holds until it closes.
+// events24h sums events over the given station ids in the 24 clock hours ending now. A ring restored without
+// its station's info counts too: its client reconnects before it publishes again, and the tier that
+// connection gets holds until it closes.
 func (s *stationStats) events24h(ids []string, now time.Time) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -59,7 +70,7 @@ func (s *stationStats) events24h(ids []string, now time.Time) int64 {
 type stationStats struct {
 	mu          sync.Mutex
 	m           map[string]*stationStat
-	restored    map[string]ringState        // rings from the usage file, claimed when a station is heard again after a restart
+	restored    map[string]ringState        // rings from the usage file with no station info, claimed when their station reports
 	restoredOwn map[string]map[uint32]int64 // own-ship candidates read back from ClickHouse, claimed the same way
 	ownPending  atomic.Bool                 // set while candidates are still to be read back, so no own vessel is decided on part of them
 }
@@ -83,23 +94,46 @@ func (s *stationStats) get(station, source string, now time.Time) *stationStat {
 	return st
 }
 
-// rings returns every station's ring state (for the usage file), including restored ones not yet heard again.
+// rings returns every station's ring state, including restored ones not yet heard again.
 func (s *stationStats) rings(now time.Time) map[string]ringState {
-	h := now.Unix() / 3600
+	r, _ := s.saved(now)
+	return r
+}
+
+// infos returns every station heard within stationKeep, leaving out low-trust stations until they are established.
+func (s *stationStats) infos(now time.Time) map[string]stationInfo {
+	_, in := s.saved(now)
+	return in
+}
+
+// saved returns the stations' rings and infos for the usage file, both under one hold of the lock, so a station
+// first heard between the two is never saved with its info and without its ring.
+func (s *stationStats) saved(now time.Time) (map[string]ringState, map[string]stationInfo) {
+	h, cutoff := now.Unix()/3600, now.Add(-stationKeep)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := map[string]ringState{}
+	rings, infos := map[string]ringState{}, make(map[string]stationInfo, len(s.m))
 	for id, st := range s.m {
 		if r := st.ring.state(); h-r.At < int64(len(r.B)) {
-			out[id] = r
+			rings[id] = r
 		}
+		if st.Last.Before(cutoff) {
+			continue
+		}
+		if lowTrust(st.Source) && !st.established {
+			if st.ring.hours(now) < establishedHours {
+				continue
+			}
+			st.established = true
+		}
+		infos[id] = stationInfo{Source: st.Source, First: st.First, Last: st.Last, Dups: st.Dups, Positions: st.Positions, Established: st.established}
 	}
 	for id, r := range s.restored {
 		if h-r.At < int64(len(r.B)) {
-			out[id] = r
+			rings[id] = r
 		}
 	}
-	return out
+	return rings, infos
 }
 
 // ownPendingMax is how long own vessels wait for their candidates from before the start: past it, ClickHouse is
@@ -125,18 +159,39 @@ func (s *stationStats) restoreOwn(cands map[string]map[uint32]int64) {
 	}
 }
 
-func (s *stationStats) restoreRings(m map[string]ringState) {
+// stationInfo is a station's row on disk, saved with the usage file so a restart lists the station before it
+// reports again. Its ring is saved beside it.
+type stationInfo struct {
+	Source          string
+	First, Last     time.Time
+	Dups, Positions int64
+	Established     bool `json:",omitempty"`
+}
+
+// restore takes the usage file's stations. Each one with its info is listed again at once, with its ring and
+// any own-ship candidates already read back. A ring without info, from a file written before infos were
+// saved, waits for its station to report.
+func (s *stationStats) restore(rings map[string]ringState, infos map[string]stationInfo, now time.Time) {
+	cutoff := now.Add(-stationKeep)
 	s.mu.Lock()
-	s.restored = m
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	s.restored = rings
+	for id, in := range infos {
+		if s.m[id] != nil || in.Last.Before(cutoff) {
+			continue
+		}
+		st := s.get(id, in.Source, in.First)
+		st.Last, st.Dups, st.Positions, st.established = in.Last, in.Dups, in.Positions, in.Established
+	}
 }
 
 func (s *stationStats) event(ev *Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.get(ev.Station, ev.Source, ev.Time)
-	st.Last = ev.Time
-	st.Events++
+	if ev.Time.After(st.Last) { // a late copy must not age out a station that is still reporting
+		st.Last = ev.Time
+	}
 	st.ring.add(ev.Time)
 	if ev.Own {
 		st.noteOwn(ev.MMSI, ev.Time)
@@ -153,7 +208,9 @@ func (s *stationStats) event(ev *Event) {
 func (s *stationStats) dup(ev *Event) {
 	s.mu.Lock()
 	st := s.get(ev.Station, ev.Source, ev.Time)
-	st.Last = ev.Time // still heard, just beaten to it
+	if ev.Time.After(st.Last) { // still heard, just beaten to it
+		st.Last = ev.Time
+	}
 	st.Dups++
 	if ev.Own {
 		st.noteOwn(ev.Packet.GetHeader().UserID, ev.Time)
@@ -191,12 +248,17 @@ func (s *stationStats) ownShips() map[string]map[uint32]int64 {
 	return out
 }
 
-// sweep forgets own-ship candidates a station has not sent since cutoff.
-func (s *stationStats) sweep(cutoff time.Time) {
-	c := cutoff.Unix()
+// sweep forgets own-ship candidates a station has not sent within stationVesselTTL, and stations silent for
+// stationKeep, the window a restart keeps stations over. A restart also drops UDP stations not yet established.
+func (s *stationStats) sweep(now time.Time) {
+	c, keep := now.Add(-stationVesselTTL).Unix(), now.Add(-stationKeep)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, st := range s.m {
+	for id, st := range s.m {
+		if st.Last.Before(keep) {
+			delete(s.m, id)
+			continue
+		}
 		for m, t := range st.own {
 			if t < c {
 				delete(st.own, m)
@@ -234,8 +296,8 @@ type stationRow struct {
 	Near     string `json:"near,omitempty"`      // coverage label: the town or region nearest the traffic it hears
 }
 
-// rows is every station heard since the start, with the series' figures for those it has: vessels, uptime,
-// its first hour, and its receptions in place of the counts since the start.
+// rows is every station heard within stationKeep, with the series' figures for those it has: vessels, uptime,
+// its first hour, and its receptions in place of its own counts since first_seen.
 func (s *stationStats) rows(now time.Time, counts map[string]stationCount) []stationRow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -245,8 +307,8 @@ func (s *stationStats) rows(now time.Time, counts map[string]stationCount) []sta
 			FirstSeen: st.First.UTC(), LastSeen: st.Last.UTC(), LastAgeS: int64(now.Sub(st.Last).Seconds())}
 		if c, ok := counts[id]; ok {
 			r.Vessels, r.Vessels24, r.Exclusive = c.live, c.day, c.unique
-			// A station new since the totals' last read, or while they are unavailable, keeps the counts since the start
-			// and has no uptime. positions counts first copies, as the live count does, and duplicates the rest.
+			// A station new since the totals' last read, or while they are unavailable, keeps its own counts since
+			// first_seen and has no uptime. positions counts first copies, as the live count does, and duplicates the rest.
 			if c.totaled {
 				r.Uptime = &c.uptime
 				r.Positions, r.Dups = int64(c.firsts), int64(c.receptions-c.firsts)
@@ -255,7 +317,7 @@ func (s *stationStats) rows(now time.Time, counts map[string]stationCount) []sta
 				}
 			}
 		}
-		if st.Positions > 0 {
+		if st.MinLat <= st.MaxLat { // a restored station has its positions count but no extent until it hears one
 			r.BBox = &[4]float64{st.MinLat, st.MinLon, st.MaxLat, st.MaxLon}
 		}
 		rows = append(rows, r)
@@ -274,7 +336,7 @@ func (p *Pipeline) stationRows(now time.Time) []stationRow {
 	return rows
 }
 
-// serveStations: GET /v1/stations → every station heard since boot; GET /v1/stations/{id} → that station with
+// serveStations: GET /v1/stations → every station heard within stationKeep; GET /v1/stations/{id} → that station with
 // the vessels it last updated as GeoJSON. Volunteer UDP stations appear as keyed hashes, never addresses.
 func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
