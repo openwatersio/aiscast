@@ -247,6 +247,9 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		metricHead(w, "aiscast_clickhouse_own_dropped_total", "counter", "own-ship sightings not written: refused past a sender's 4 vessels an hour, or full past 10,000 senders an hour or 10,000 waiting for ClickHouse")
 		fmt.Fprintf(w, "aiscast_clickhouse_own_dropped_total{reason=\"refused\"} %d\n", c.ownRefused.Load())
 		fmt.Fprintf(w, "aiscast_clickhouse_own_dropped_total{reason=\"full\"} %d\n", c.ownDropped.Load())
+		metricHead(w, "aiscast_clickhouse_statics_dropped_total", "counter", "static states not written, past 100,000 waiting for ClickHouse")
+		fmt.Fprintf(w, "aiscast_clickhouse_statics_dropped_total %d\n", c.staticsDropped.Load())
+
 		metricHead(w, "aiscast_clickhouse_rebuilt_copies_total", "counter", "stale copies from rebuilt sources: matched to a transmission the vessel sent in the last five minutes, or kept as a late report of its own")
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"true\"} %d\n", c.rebuiltMatched.Load())
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"false\"} %d\n", c.rebuiltLate.Load())

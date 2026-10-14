@@ -185,7 +185,14 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		return err
 	}
 	defer c.exec(context.Background(), "DROP TABLE IF EXISTS {db}."+ownStage)
-	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}, own: &chConn{conn: c.conn, db: c.db, own: ownStage}}
+	// Static states too, so a day the live writer missed gets them; they merge with what live wrote.
+	staticsStage := stage + "_statics"
+	if err := c.exec(ctx, "CREATE TABLE {db}."+staticsStage+" AS {db}.statics"); err != nil {
+		return err
+	}
+	defer c.exec(context.Background(), "DROP TABLE IF EXISTS {db}."+staticsStage)
+	staging := &chStore{w: &chConn{conn: c.conn, db: c.db, table: stage}, own: &chConn{conn: c.conn, db: c.db, own: ownStage},
+		statics: &chConn{conn: c.conn, db: c.db, statics: staticsStage}}
 	p.attachClickHouse(staging)
 	var flushNow func() error
 	flush := func() error {
@@ -193,9 +200,9 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 		// at a third of its bound, which leaves room for any one record before a copy could be dropped.
 		// Own-ship sightings have a bound of their own, so either queue filling sends both.
 		p.chMu.Lock()
-		queued, owned := len(p.chQueue), len(p.chOwn)
+		queued, owned, states := len(p.chQueue), len(p.chOwn), len(p.chStatics)
 		p.chMu.Unlock()
-		if queued < maxPending/3 && owned < maxOwnPending/3 {
+		if queued < maxPending/3 && owned < maxOwnPending/3 && states < maxStaticsPending/3 {
 			return nil
 		}
 		return flushNow()
@@ -227,6 +234,9 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	// Sightings past a sender's allowance were refused live too; only ones lost to a full map leave the day short.
 	if d := staging.ownDropped.Load(); d > 0 {
 		return fmt.Errorf("%d own-ship sightings dropped from a full map", d)
+	}
+	if d := staging.staticsDropped.Load(); d > 0 {
+		return fmt.Errorf("%d static states dropped from a full map", d)
 	}
 
 	where, args := replayWindow(day, archives)
@@ -290,6 +300,10 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	}
 	if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".station_own (hour, station, mmsi, last_ts) SELECT hour, station, mmsi, last_ts FROM "+c.db+"."+ownStage); err != nil {
 		return fmt.Errorf("station_own: %w", err)
+	}
+	// Static states only add: min and max merge them with live's, and a replay never takes a state away.
+	if err := c.conn.Exec(ctx, "INSERT INTO "+c.db+".statics SELECT * FROM "+c.db+"."+staticsStage); err != nil {
+		return fmt.Errorf("statics: %w", err)
 	}
 	log.Printf("replay: %s: replaced, in %s", day.Format("2006-01-02"), time.Since(started).Round(time.Second))
 	return nil
