@@ -89,7 +89,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: mise.toml
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: mise.toml
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
@@ -128,7 +128,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: mise.toml
           cache: npm
           cache-dependency-path: package-lock.json
       - uses: actions/download-artifact@v8
