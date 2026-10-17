@@ -1020,7 +1020,7 @@
             "description": "Boxes every subscription must fit inside, each `[minLat, minLon, maxLat, maxLon]`.",
             "items": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }
           },
-          "cidr": { "type": "array", "description": "Source CIDRs/IPs the token may be used from. On a personal token, a single address is a UDP station claim like `udp` and does not limit where the token is used.", "items": { "type": "string" } },
+          "cidr": { "type": "array", "description": "Source CIDRs/IPs the token may be used from. On a personal token signed with the personal issuer's key (one minted by `POST /v1/keys`), a single address is a UDP station claim like `udp` and does not limit where the token is used. An operator-minted personal token with `cidr` is still limited to it.", "items": { "type": "string" } },
           "udp": { "type": "array", "description": "Addresses whose UDP stations the token owns, set by `bind_ip`. Not a limit on where the token is used from.", "items": { "type": "string" } },
           "conns": { "type": "integer", "description": "Concurrent WebSocket cap for this `sub`." },
           "rate": { "type": "integer", "description": "Messages per second per connection; excess is thinned." },

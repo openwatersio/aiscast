@@ -36,7 +36,8 @@ func personalClaims(kid, sub string, now time.Time) Claims {
 
 // effective applies the earned feeder tier to a connection from ip: feeder limits and the raw feed when the
 // token's own stations (personal only), or the UDP stations sending from ip's network (anonymous or personal),
-// delivered feederMinEvents24h in the last 24 h. Minted tokens are returned unchanged. A UDP station that sends
+// delivered feederMinEvents24h between them in the last 24 h. The network's stations are summed, so a receiver
+// whose IPv6 address rotates keeps its count. Minted tokens are returned unchanged. A UDP station that sends
 // !AIVDO has its events relabelled mmsi:<n> (see ownOf) and earns nothing here: that label is self-reported, so
 // counting it would let one spoofed VDO borrow another station's count. Such a station feeds with a token instead.
 func (p *Pipeline) effective(c *Claims, ip string) *Claims {
