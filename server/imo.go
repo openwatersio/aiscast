@@ -29,7 +29,7 @@ const limitsURL = "https://github.com/openwatersio/aiscast/blob/main/docs/limits
 
 // errIMOTier refuses lookup by IMO to the tiers that do not get the raw feed. Every tier still sees imo in the
 // vessels it gets back.
-var errIMOTier = errors.New("looking vessels up by IMO number needs a feeder or partner token; see " + limitsURL)
+var errIMOTier = errors.New("looking vessels up by IMO number needs the feeder tier or a partner token; see " + limitsURL)
 
 func imoGate(cl *Claims) error {
 	if cl.mayRaw() {

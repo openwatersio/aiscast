@@ -97,7 +97,8 @@ func envInt(k string, def int) int {
 }
 
 // trustCFHeaders: TRUST_CF_HEADERS=1 when Cloudflare proxies the hostname; otherwise CF-Connecting-IP is
-// client-controlled and must not drive rate limiting.
+// client-controlled and must not drive rate limiting or the network feeder tier (see effective). The origin is
+// reachable directly through the UDP name, so turning this on also needs the origin to accept only Cloudflare.
 var trustCFHeaders = os.Getenv("TRUST_CF_HEADERS") == "1"
 
 // clientIP is the rate-limit key: Cloudflare's header when trusted, else the last X-Forwarded-For hop when the

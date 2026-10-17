@@ -19,7 +19,7 @@
     { "name": "Authentication", "description": "Create a token over HTTP. Feeder, peer, partner, and admin tokens are issued by the operator." },
     { "name": "Vessels", "description": "Where vessels are and where they have been, for a map or a lookup. No token needed, 120 requests per minute per address. A token can carry its own limit. For continuous updates, use a stream instead of polling." },
     { "name": "Stations", "description": "The receivers that feed the network and the areas they cover. No token needed, 120 requests per minute per address. A token can carry its own limit." },
-    { "name": "Contributing", "description": "Send what your receiver hears. Everything you feed is credited to your station, and 1,000 messages a day earns a personal token the feeder tier." },
+    { "name": "Contributing", "description": "Send what your receiver hears. Everything you feed is credited to your station, and 1,000 messages a day earns a personal token the feeder tier. A UDP station that delivers as much earns it for every connection from its network." },
     { "name": "Status", "description": "For status pages and monitors. No token needed." }
   ],
   "paths": {
@@ -526,7 +526,7 @@
                   "bind_ip": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Bind the token to the requesting address, so a receiver sending UDP from that address counts toward this token's feeder tier, and takes this request's names. The token then only works from that address."
+                    "description": "Claim the UDP station at the requesting address, so a receiver sending UDP from that address counts toward this token's feeder tier from anywhere, and takes this request's names. The address goes in the token's `udp` claim. The token still works from every address."
                   },
                   "name": {
                     "type": "string",
@@ -635,8 +635,8 @@
         "operationId": "nmeaStream",
         "tags": ["Contributing"],
         "summary": "Deduplicated NMEA feed",
-        "description": "The raw NMEA WebSocket, documented at [openwaters.io/api/ais](https://openwaters.io/api/ais/). The responses below are what a request receives when it is refused before the WebSocket upgrade.",
-        "security": [{ "token": [] }],
+        "description": "The raw NMEA WebSocket, documented at [openwaters.io/api/ais](https://openwaters.io/api/ais/). It needs the feeder tier: a token that has it, or a connection from a network that feeds by UDP. The responses below are what a request receives when it is refused before the WebSocket upgrade.",
+        "security": [{ "token": [] }, {}],
         "parameters": [
           {
             "name": "bbox",
@@ -1020,7 +1020,8 @@
             "description": "Boxes every subscription must fit inside, each `[minLat, minLon, maxLat, maxLon]`.",
             "items": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }
           },
-          "cidr": { "type": "array", "description": "Source CIDRs/IPs the token may be used from.", "items": { "type": "string" } },
+          "cidr": { "type": "array", "description": "Source CIDRs/IPs the token may be used from. On a personal token, a single address is a UDP station claim like `udp` and does not limit where the token is used.", "items": { "type": "string" } },
+          "udp": { "type": "array", "description": "Addresses whose UDP stations the token owns, set by `bind_ip`. Not a limit on where the token is used from.", "items": { "type": "string" } },
           "conns": { "type": "integer", "description": "Concurrent WebSocket cap for this `sub`." },
           "rate": { "type": "integer", "description": "Messages per second per connection; excess is thinned." },
           "area": { "type": "integer", "description": "Total subscribed bounding-box area in square degrees. Negative means MMSI-only subscriptions." },

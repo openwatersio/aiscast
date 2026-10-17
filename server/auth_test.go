@@ -455,13 +455,13 @@ func TestTiersAndTrust(t *testing.T) {
 
 	// personal token earns the feeder tier once its station has fed enough in the last 24 h
 	personal := personalClaims(kid, "ed25519:dev1", now)
-	if e := p.effective(&personal); e.Feeder || e.Conns != personalConns || e.mayRaw() {
+	if e := p.effective(&personal, ""); e.Feeder || e.Conns != personalConns || e.mayRaw() {
 		t.Errorf("personal before feeding: %+v", e)
 	}
 	for i := 0; i < feederMinEvents24h; i++ {
 		p.stations.event(&Event{Station: "station:ed25519:dev1", Source: "station:ed25519:dev1", Time: now.Add(-time.Duration(i) * time.Minute), MMSI: 1})
 	}
-	if e := p.effective(&personal); !e.Feeder || e.Conns != feederConns || e.Rate != feederRate || e.Area != 0 || !e.mayRaw() {
+	if e := p.effective(&personal, ""); !e.Feeder || e.Conns != feederConns || e.Rate != feederRate || e.Area != 0 || !e.mayRaw() {
 		t.Errorf("personal after feeding: %+v", e)
 	}
 	// events older than 24 h do not count
@@ -469,7 +469,7 @@ func TestTiersAndTrust(t *testing.T) {
 	for i := 0; i < feederMinEvents24h; i++ {
 		p.stations.event(&Event{Station: "station:ed25519:dev2", Source: "station:ed25519:dev2", Time: now.Add(-30 * time.Hour), MMSI: 1})
 	}
-	if e := p.effective(&old); e.Feeder {
+	if e := p.effective(&old, ""); e.Feeder {
 		t.Error("stale contribution earned the tier")
 	}
 	// a UDP station bound by cidr counts
@@ -477,8 +477,65 @@ func TestTiersAndTrust(t *testing.T) {
 	for i := 0; i < feederMinEvents24h; i++ {
 		p.stations.event(&Event{Station: udpStation("203.0.113.9"), Source: udpStation("203.0.113.9"), Time: now, MMSI: 1})
 	}
-	if e := p.effective(&bound); !e.Feeder {
+	if e := p.effective(&bound, ""); !e.Feeder {
 		t.Error("bound UDP station did not count")
+	}
+	// ...and a bind_ip cidr (personal issuer's kid) is ownership, not a lock; an operator's cidr still locks
+	t.Setenv("PERSONAL_ISSUER_KEY", "p:x")
+	bound.Kid = "p"
+	if !bound.allowsIP("198.51.100.4") {
+		t.Error("bind_ip cidr locked a personal token to its address")
+	}
+	if (&Claims{Role: "peer", CIDR: []string{"203.0.113.9"}}).allowsIP("198.51.100.4") {
+		t.Error("operator cidr did not lock")
+	}
+	if (&Claims{Kid: kid, Role: "personal", CIDR: []string{"203.0.113.9"}}).allowsIP("198.51.100.4") {
+		t.Error("operator-minted personal cidr did not lock")
+	}
+	// the udp claim owns the station and locks nothing
+	owned := Claims{Sub: "ed25519:dev4", Role: "personal", UDP: []string{"203.0.113.9"}}
+	if e := p.effective(&owned, ""); !e.Feeder || !owned.allowsIP("198.51.100.4") {
+		t.Errorf("udp claim: %+v", e)
+	}
+
+	// a connection from a feeding UDP network earns the tier with or without a token; IPv6 matches by /64
+	for _, ip := range []string{"192.0.2.7", "2001:db8:1:2::a"} {
+		for i := 0; i < feederMinEvents24h; i++ {
+			p.stations.event(&Event{Station: udpStation(ip), Source: udpStation(ip), Time: now, MMSI: 1})
+		}
+		p.stations.noteNet(netKey(ip), udpStation(ip))
+	}
+	for ip, want := range map[string]bool{"192.0.2.7": true, "192.0.2.8": false, "2001:db8:1:2:ffff::1": true, "2001:db8:1:3::a": false, "": false} {
+		if e := p.effective(anonymousClaims(ip), ip); e.Feeder != want || (want && (e.Conns != feederConns || tierOf(e) != "anonymous_feeder")) {
+			t.Errorf("anonymous from %q: %+v, want feeder %v", ip, e, want)
+		}
+		if e := p.effective(&Claims{Sub: "ed25519:dev5", Role: "personal"}, ip); e.Feeder != want {
+			t.Errorf("personal from %q: feeder %v, want %v", ip, e.Feeder, want)
+		}
+	}
+	if e := p.effective(&Claims{Sub: "station-9", Role: "partner"}, "192.0.2.7"); e.Feeder {
+		t.Error("minted token changed by the address tier")
+	}
+	// IPv4 needs no recorded network, so the tier holds before a restarted server hears the station again
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: udpStation("192.0.2.20"), Source: udpStation("192.0.2.20"), Time: now, MMSI: 1})
+	}
+	if e := p.effective(anonymousClaims("192.0.2.20"), "192.0.2.20"); !e.Feeder {
+		t.Error("IPv4 feeder's own address needed a recorded network")
+	}
+	// a self-reported mmsi: label never counts: one spoofed !AIVDO must not borrow another station's count
+	vdo := "192.0.2.30"
+	p.ownOf[udpStation(vdo)] = "mmsi:368000001"
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: "mmsi:368000001", Source: "mmsi:368000001", Time: now, MMSI: 1})
+	}
+	if e := p.effective(anonymousClaims(vdo), vdo); e.Feeder {
+		t.Error("a borrowed mmsi: label earned the network tier")
+	}
+	// a datagram whose station never had an accepted event records nothing
+	p.stations.noteNet(netKey("2001:db8:9::1"), udpStation("2001:db8:9::1"))
+	if len(p.stations.byNet[netKey("2001:db8:9::1")]) != 0 {
+		t.Error("junk datagram recorded a network")
 	}
 
 	// per-address ceiling across tokens, with the refusal naming the cap that was hit
@@ -689,10 +746,10 @@ func TestFeederSurvivesRestart(t *testing.T) {
 	}
 	q := testPipeline(t)
 	q.stations.restoreRings(p.stations.rings(now))
-	if e := q.effective(&Claims{Sub: "ed25519:dev1", Role: "personal"}); !e.Feeder {
+	if e := q.effective(&Claims{Sub: "ed25519:dev1", Role: "personal"}, ""); !e.Feeder {
 		t.Error("restored station lost the feeder tier before it published")
 	}
-	if e := q.effective(&Claims{Sub: "ed25519:dev2", Role: "personal"}); e.Feeder {
+	if e := q.effective(&Claims{Sub: "ed25519:dev2", Role: "personal"}, ""); e.Feeder {
 		t.Error("unknown station earned the feeder tier")
 	}
 }

@@ -26,9 +26,7 @@ const (
 // the cap bounds the answer, and trackStep the step anonymous and personal requests read it at.
 func trackLimit(cl *Claims) int {
 	switch {
-	case cl.Role == "anonymous":
-		return 1000
-	case cl.Role == "personal" && !cl.Feeder:
+	case (cl.Role == "anonymous" || cl.Role == "personal") && !cl.Feeder:
 		return 1000
 	default:
 		return 5000
@@ -503,7 +501,7 @@ type mcpTrack struct {
 }
 
 func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest, in mcpTrackIn) (*mcp.CallToolResult, mcpTrack, error) {
-	cl := p.effective(mcpClaims(ctx))
+	cl := p.effective(mcpClaims(ctx), "")
 	limit := mcpTrackDefaultLimit
 	if in.Limit != 0 {
 		n, err := mcpLimit(in.Limit)

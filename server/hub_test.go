@@ -478,6 +478,18 @@ func TestNMEAFeed(t *testing.T) {
 	if _, res, err := websocket.Dial(ctx, base+"?key="+personal, nil); err == nil || res == nil || res.StatusCode != 401 {
 		t.Errorf("personal token accepted on /v1/nmea: %v", err)
 	}
+	if _, res, err := websocket.Dial(ctx, base, nil); err == nil || res == nil || res.StatusCode != 401 {
+		t.Errorf("tokenless caller accepted on /v1/nmea: %v", err)
+	}
+	// a tokenless caller from a network that feeds by UDP has the feeder tier, raw feed included
+	for i := 0; i < feederMinEvents24h; i++ {
+		p.stations.event(&Event{Station: udpStation("127.0.0.1"), Source: udpStation("127.0.0.1"), Time: time.Now(), MMSI: 1})
+	}
+	anon, _, err := websocket.Dial(ctx, base, nil)
+	if err != nil {
+		t.Fatalf("tokenless caller from a feeding network refused on /v1/nmea: %v", err)
+	}
+	anon.CloseNow()
 	c, _, err := websocket.Dial(ctx, base+"?key="+feeder+"&bbox=49,0,50,1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -959,5 +971,17 @@ func TestUDPListenersCountApart(t *testing.T) {
 	}
 	if a, b := p.udp[0].datagrams.Load(), p.udp[1].datagrams.Load(); a != 0 || b != 1 {
 		t.Errorf("datagrams legacy=%d udp=%d, want 0 and 1", a, b)
+	}
+	// the sender's network is recorded, so readers there can be credited with its station
+	for deadline := time.Now().Add(time.Second); ; time.Sleep(10 * time.Millisecond) {
+		p.stations.mu.Lock()
+		noted := p.stations.byNet["127.0.0.1"][udpStation("127.0.0.1")]
+		p.stations.mu.Unlock()
+		if noted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("UDP sender's network not recorded")
+		}
 	}
 }

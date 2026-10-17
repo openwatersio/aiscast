@@ -202,5 +202,6 @@ func serveUDP(p *Pipeline, l *udpListener, pc net.PacketConn) {
 			}
 			p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line})
 		}
+		p.stations.noteNet(netKey(ip), src)
 	}
 }
