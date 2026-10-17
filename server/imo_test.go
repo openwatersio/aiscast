@@ -130,7 +130,7 @@ func TestIMOLookupNeedsTheRawFeedTier(t *testing.T) {
 	}
 
 	// MCP
-	for who, cl := range map[string]*Claims{"anonymous": anonymousClaims(""), "personal": p.effective(&Claims{Sub: "ed25519:p", Role: "personal"})} {
+	for who, cl := range map[string]*Claims{"anonymous": anonymousClaims(""), "personal": p.effective(&Claims{Sub: "ed25519:p", Role: "personal"}, "")} {
 		cs := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, cl))
 		var out mcpVessels
 		var tr mcpTrack
@@ -144,7 +144,7 @@ func TestIMOLookupNeedsTheRawFeedTier(t *testing.T) {
 			}
 		}
 	}
-	cs := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, p.effective(&Claims{Sub: "ed25519:f", Role: "personal", MMSIs: personalMMSIs})))
+	cs := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, p.effective(&Claims{Sub: "ed25519:f", Role: "personal", MMSIs: personalMMSIs}, "")))
 	var out mcpVessels
 	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"imo": []uint32{9241061}}, &out); msg != "" || len(out.Vessels) != 2 {
 		t.Errorf("earned feeder get_vessels: %q %+v", msg, out)

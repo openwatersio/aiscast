@@ -95,7 +95,7 @@ func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	cl = orAnonymous(cl, r)
+	cl = p.orAnonymous(cl, r)
 	z, x, y, ok := tileCoords(r)
 	if !ok {
 		http.Error(w, "tile out of range", http.StatusBadRequest)
