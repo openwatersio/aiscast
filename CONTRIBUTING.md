@@ -53,6 +53,12 @@ To release the plugin:
 
 3. Watch the run. Before publishing it checks the tag against `package.json` and that the changelog has an entry under that version, so a tag pushed too early fails with nothing shipped. It then tests, publishes, and creates the GitHub release with that changelog entry as the notes.
 
+Title and notes follow the [Open Waters release notes guidance](https://github.com/openwatersio/.github/blob/main/docs/agents/releases.md#release-notes). The changelog entry is the release notes, so open it with a sentence or two on what changed and for whom, put breaking changes and upgrade steps first, and write each bullet for people installing the plugin, linking its pull request. The workflow titles the release `signalk-aiscast <version>`, which the updates page shows as a bare package and version. Once the run is green, give it a headline with the version left out, in sentence case with no period, and name any new requirement in it:
+
+```sh
+gh release edit signalk-plugin-v<version> --repo openwatersio/aiscast --title "<headline>"
+```
+
 The version lands before the tag, so a release tag always describes the tree it points at and the workflow never writes to `main`. Push the tag from a terminal rather than creating the release in the web UI, because the workflow triggers on the tag and makes the release itself.
 
 npm accepts a publish and then takes a few minutes to serve it, so `npm view signalk-aiscast version` can still answer with the previous version after a green run. The run is the signal; the registry catches up.
