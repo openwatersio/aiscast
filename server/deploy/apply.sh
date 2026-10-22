@@ -58,6 +58,11 @@ if ! sshd -t; then
 	exit 1
 fi
 rm -f "$drop.bak"
+# ops reaches only /metrics and pprof (ops-egress.nft), loaded before sshd lets it in.
+command -v nft >/dev/null || apt-get install -yq nftables
+systemctl daemon-reload
+systemctl enable ops-egress.service
+systemctl restart ops-egress.service
 systemctl reload ssh
 
 mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/alloy/textfile
