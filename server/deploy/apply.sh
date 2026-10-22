@@ -37,6 +37,9 @@ if ! command -v clickhouse-server >/dev/null; then
 fi
 
 id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
+# ops reads the journal for investigating alerts and changes nothing; its keys are in rootfs/etc/ssh/authorized_keys.d/ops.
+id ops >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash ops
+usermod -aG systemd-journal ops
 
 # The sshd drop-in is the one file that can lock everyone out of the box, and a bad one
 # only bites on the next reboot, so roll it back if it does not validate.

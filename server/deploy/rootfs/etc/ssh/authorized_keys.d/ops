@@ -1,0 +1,3 @@
+# Read-only ops access (journal, /metrics, systemctl status, a pprof tunnel); README: SSH.
+# restrict turns off forwarding, the agent, X11, and the pty; the tunnel to pprof is the one forward let back in.
+restrict,port-forwarding,permitopen="127.0.0.1:6060" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJmz6GSD/GuDjcWqh42VriUv4t/fkWrfsCzFT307NdUL eddy@openclaw aiscast-ops
