@@ -803,6 +803,69 @@ func TestV1SSESnapshotUnderLoad(t *testing.T) {
 	}
 }
 
+// A client that stops reading is closed as too slow, and counted and logged as such, so an alert on dropped
+// events can name the client that caused them.
+func TestSlowClientCounted(t *testing.T) {
+	p := testPipeline(t)
+	defer func(n int) { subBuffer = n }(subBuffer)
+	subBuffer = 8
+
+	w := &gatedWriter{h: http.Header{}, gate: make(chan struct{}), writes: make(chan string, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer close(w.gate)
+	r := httptest.NewRequest("GET", "/v1/stream?bbox=49,0,50,1", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() { p.serveV1SSE(w, r); close(done) }()
+
+	step := func() string {
+		t.Helper()
+		select {
+		case w.gate <- struct{}{}:
+		case <-time.After(5 * time.Second):
+			t.Fatal("handler never reached its next write")
+		}
+		return <-w.writes
+	}
+	slow := func() (n int64) {
+		for k, v := range p.streams.slowSnapshot() {
+			if k[0] == "sse" {
+				n += v
+			}
+		}
+		return n
+	}
+
+	if s := step(); !strings.Contains(s, `"type":"welcome"`) {
+		t.Fatalf("first frame %q", s)
+	}
+	ev := &Event{MMSI: 42, Time: time.Now(), Type: "PositionReport", Lat: 49.5, Lon: 0.5, HasPos: true}
+	p.broadcast(ev) // the handler takes this one and blocks writing it
+	if s := step(); !strings.Contains(s, `"type":"event"`) {
+		t.Fatalf("second frame %q", s)
+	}
+	if n := slow(); n != 0 {
+		t.Fatalf("slow disconnects before any overflow = %d", n)
+	}
+	for i := 0; i < 2*subBuffer; i++ { // the client reads nothing while these arrive
+		p.broadcast(ev)
+	}
+	// The handler may already hold one event mid-write; the frame after it is the close.
+	if s := step(); !strings.Contains(s, "client too slow") {
+		if s = step(); !strings.Contains(s, "client too slow") {
+			t.Fatalf("after overflow %q", s)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not exit after closing a slow client")
+	}
+	if n := slow(); n != 1 {
+		t.Fatalf("slow disconnects = %d, want 1", n)
+	}
+}
+
 // countingReader reports how many compressed bytes the gzip reader has consumed.
 type countingReader struct {
 	r io.Reader

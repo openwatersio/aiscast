@@ -44,8 +44,9 @@ func tierOf(c *Claims) string {
 
 // streamGauge counts open streams by protocol and tier.
 type streamGauge struct {
-	mu sync.Mutex
-	n  map[[2]string]int
+	mu   sync.Mutex
+	n    map[[2]string]int
+	slow map[[2]string]int64 // streams closed with their fan-out queue overflowed, ever
 }
 
 // open counts one stream and returns the call that uncounts it.
@@ -62,6 +63,32 @@ func (g *streamGauge) open(protocol string, c *Claims) func() {
 		g.n[k]--
 		g.mu.Unlock()
 	}
+}
+
+// closedSlow counts one stream that ended because its client fell behind the fan-out.
+func (g *streamGauge) closedSlow(protocol string, c *Claims) {
+	g.mu.Lock()
+	if g.slow == nil {
+		g.slow = map[[2]string]int64{}
+	}
+	g.slow[[2]string{protocol, tierOf(c)}]++
+	g.mu.Unlock()
+}
+
+// slowSnapshot copies the slow-close counts with every protocol × known tier present, as snapshot does.
+func (g *streamGauge) slowSnapshot() map[[2]string]int64 {
+	out := map[[2]string]int64{}
+	for _, p := range streamProtocols {
+		for _, t := range streamTiers {
+			out[[2]string{p, t}] = 0
+		}
+	}
+	g.mu.Lock()
+	for k, v := range g.slow {
+		out[k] = v
+	}
+	g.mu.Unlock()
+	return out
 }
 
 // snapshot copies the counts with every protocol × known tier present, so an idle series reads 0 rather than absent.
@@ -374,6 +401,11 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	slices.SortFunc(keys, func(a, b [2]string) int { return strings.Compare(a[0]+"\x00"+a[1], b[0]+"\x00"+b[1]) })
 	for _, k := range keys {
 		fmt.Fprintf(w, "aiscast_streams{protocol=%q,tier=%q} %d\n", k[0], k[1], streams[k])
+	}
+	metricHead(w, "aiscast_slow_disconnects_total", "counter", "streams closed because the client fell behind the fan-out; aiscast_client_drops_total counts the events this cost")
+	slow := p.streams.slowSnapshot()
+	for _, k := range keys {
+		fmt.Fprintf(w, "aiscast_slow_disconnects_total{protocol=%q,tier=%q} %d\n", k[0], k[1], slow[k])
 	}
 
 	fan := []struct {
