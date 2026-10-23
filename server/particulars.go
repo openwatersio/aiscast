@@ -53,16 +53,20 @@ type enrichment struct {
 	fd *fdirVessel
 	fc *fccShip
 	tc *tcVessel
+	am *amsaVessel
 	is *isedShip
+
+	callsign string // the call sign the vessel's AIS reports
 }
 
 // mergeParticulars folds the sources into the served document. Per field, deterministically: a flag
 // state outranks Wikidata for registered facts, an empty value never wins, and provenance records the
 // winner by the field's JSON name. The flag states never meet: a vessel flies one flag at a time.
 // An FCC license ranks below PSIX, the vessel registry proper, and above Wikidata for what it documents.
+// AMSA's free-text ship type is the one flag-state field that yields to Wikidata's.
 func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string]sourceRef) {
-	wd, cg, fd, fc, tcv, is := e.wd, e.cg, e.fd, e.fc, e.tc, e.is
-	if wd == nil && cg == nil && fd == nil && fc == nil && tcv == nil && is == nil {
+	wd, cg, fd, fc, tcv, am, is := e.wd, e.cg, e.fd, e.fc, e.tc, e.am, e.is
+	if wd == nil && cg == nil && fd == nil && fc == nil && tcv == nil && am == nil && is == nil {
 		return nil, nil, nil
 	}
 	m := &particulars{}
@@ -85,6 +89,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	if cg != nil {
 		str("registered_name", "uscg", cg.Name, &m.RegisteredName)
 		str("identification", "uscg", cg.Identification, &m.Identification)
+		str("callsign", "uscg", cg.callsign, &m.CallSign)
 		str("service", "uscg", cg.Service, &m.Service)
 		str("status", "uscg", cg.Status, &m.Status)
 		num("year_built", "uscg", &cg.YearBuilt, &m.YearBuilt)
@@ -107,6 +112,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	if fd != nil {
 		str("registered_name", "fiskeridir", fd.Name, &m.RegisteredName)
 		str("identification", "fiskeridir", fd.Registration, &m.Identification)
+		str("callsign", "fiskeridir", fd.CallSign, &m.CallSign)
 		num("year_built", "fiskeridir", &fd.YearBuilt, &m.YearBuilt)
 		flt("length", "fiskeridir", &fd.Length, &m.Length)
 		flt("beam", "fiskeridir", &fd.Beam, &m.Beam)
@@ -119,6 +125,7 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	if fc != nil {
 		str("registered_name", "fcc", fc.Name, &m.RegisteredName)
 		str("identification", "fcc", fc.Official, &m.Identification)
+		str("callsign", "fcc", fc.CallSign, &m.CallSign)
 		// A ship station license is a US license, so the match is itself the registry fact.
 		str("registry", "fcc", "United States", &m.Registry)
 	}
@@ -134,6 +141,15 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		flt("depth", "tc", &tcv.Depth, &m.Depth)
 		str("home_port", "tc", tcv.HomePort, &m.HomePort)
 		str("registry", "tc", "Canada", &m.Registry)
+	}
+	if am != nil {
+		str("registered_name", "amsa", am.Name, &m.RegisteredName)
+		str("identification", "amsa", am.Official, &m.Identification)
+		str("status", "amsa", am.Status, &m.Status)
+		num("year_built", "amsa", &am.YearBuilt, &m.YearBuilt)
+		flt("length", "amsa", &am.Length, &m.Length)
+		str("home_port", "amsa", am.HomePort, &m.HomePort)
+		str("registry", "amsa", "Australia", &m.Registry)
 	}
 	if is != nil {
 		// The MMSI registry's answer: thin, but it is the flag state's own name and call sign for the
@@ -154,6 +170,12 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		flt("draught", "wikidata", &wd.Draught, &m.Draught)
 		str("registry", "wikidata", wd.Registry, &m.Registry)
 		str("home_port", "wikidata", wd.HomePort, &m.HomePort)
+		// The call sign on an item is often one the ship gave up with an earlier flag: 70 of 231 heard ships
+		// in an October 2026 sample. Nothing on the item tells those apart, so it yields to a different call
+		// sign on AIS, as it does to a register's above, and fills in where AIS has none or junk.
+		if ais := wikidataCallSign(e.callsign); ais == "" || ais == wd.CallSign {
+			str("callsign", "wikidata", wd.CallSign, &m.CallSign)
+		}
 		str("owner", "wikidata", wd.Owner, &m.Owner)
 		str("operator", "wikidata", wd.Operator, &m.Operator)
 		if len(wd.FormerNames) > 0 {
@@ -162,6 +184,11 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 		str("wikipedia", "wikidata", wd.Wikipedia, &m.Wikipedia)
 		str("commons_category", "wikidata", wd.CommonsCategory, &m.CommonsCat)
 		str("image", "wikidata", wd.Image, &m.Image)
+	}
+	if am != nil {
+		// The list's type is free text with uneven spellings, Tug beside Tug Boat, and a use such as
+		// Passenger as often as a kind of ship, so it fills ship_type only when Wikidata has none.
+		str("ship_type", "amsa", am.ShipType, &m.ShipType)
 	}
 	sources := map[string]sourceRef{}
 	if wd != nil {
@@ -179,6 +206,9 @@ func mergeParticulars(e enrichment) (*particulars, map[string]string, map[string
 	}
 	if tcv != nil {
 		sources["tc"] = sourceRef{Credit: "Transport Canada vessel registry", License: tcLicense}
+	}
+	if am != nil {
+		sources["amsa"] = sourceRef{Credit: "© Australian Maritime Safety Authority", License: amsaLicense, URL: amsaSearch(am.IMO)}
 	}
 	if is != nil {
 		sources["ised"] = sourceRef{Credit: "ISED Canadian MMSI registry", License: isedLicense, URL: isedSearchPage}

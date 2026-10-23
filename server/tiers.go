@@ -14,9 +14,9 @@ import (
 const (
 	anonConns, anonRate, anonArea             = 2, 20, 100.0 // per address, subscribe only
 	personalConns, personalRate, personalArea = 2, 50, 400.0 // self-minted, no expiry
-	feederConns, feederRate                   = 5, 200       // earned: personal token whose station is feeding; area unlimited
-	feederMinEvents24h                        = 1000         // events credited to the token's stations in the last 24 h
-	anonMMSIs, personalMMSIs, feederMMSIs     = 10, 50, 200  // vessels that may be followed by MMSI per subscription
+	feederConns, feederRate                   = 5, 200       // earned: a personal token whose station is feeding, or a connection from a feeding UDP network; area unlimited
+	feederMinEvents24h                        = 1000         // events credited to the token's stations, or the network's UDP stations, in the last 24 h
+	anonMMSIs, personalMMSIs, feederMMSIs     = 10, 50, 200  // vessels that may be followed by MMSI or IMO per subscription
 	addrMaxStreams                            = 32           // concurrent streams per address across all tokens; roomy for a shared egress (CGNAT, marina wifi)
 	httpPerMinute, keysPerMinute              = 120, 10      // per address
 	tilesPerMinute                            = 600          // per address: a map view is ~20 tiles, refreshed every 10–30 s
@@ -34,10 +34,18 @@ func personalClaims(kid, sub string, now time.Time) Claims {
 	return Claims{Kid: kid, Sub: sub, Role: "personal", Iat: now.Unix(), Conns: personalConns, Rate: personalRate, Area: personalArea, MMSIs: personalMMSIs}
 }
 
-// effective applies the earned feeder tier: a personal token whose stations delivered feederMinEvents24h in the
-// last 24 h gets feeder limits and the raw feed for this connection. Minted tokens are returned unchanged.
-func (p *Pipeline) effective(c *Claims) *Claims {
-	if c == nil || c.Role != "personal" || p.contributed24h(c) < feederMinEvents24h {
+// effective applies the earned feeder tier to a connection from ip: feeder limits and the raw feed when the
+// token's own stations (personal only), or the UDP stations sending from ip's network (anonymous or personal),
+// delivered feederMinEvents24h between them in the last 24 h. The network's stations are summed, so a receiver
+// whose IPv6 address rotates keeps its count. Minted tokens are returned unchanged. A UDP station that sends
+// !AIVDO has its events relabelled mmsi:<n> (see ownOf) and earns nothing here: that label is self-reported, so
+// counting it would let one spoofed VDO borrow another station's count. Such a station feeds with a token instead.
+func (p *Pipeline) effective(c *Claims, ip string) *Claims {
+	if c == nil || c.Feeder || (c.Role != "personal" && c.Role != "anonymous") {
+		return c
+	}
+	if (c.Role != "personal" || p.contributed24h(c) < feederMinEvents24h) &&
+		p.stations.events24h(p.stations.netIDs(netKey(ip), udpStation(ip)), time.Now()) < feederMinEvents24h {
 		return c
 	}
 	e := *c
@@ -46,16 +54,29 @@ func (p *Pipeline) effective(c *Claims) *Claims {
 	return &e
 }
 
-// contributed24h sums the last 24 h of events over the stations a token can own: its own station, and the
-// UDP stations of any single addresses bound in its cidr claim.
+// contributed24h sums the last 24 h of events over the stations a token owns: its own station, and the UDP
+// stations of the addresses in its udp claim and of any single addresses in its cidr claim.
 func (p *Pipeline) contributed24h(c *Claims) int64 {
 	ids := []string{stationSource(c.Sub)}
-	for _, s := range c.CIDR {
+	for _, s := range append(c.UDP[:len(c.UDP):len(c.UDP)], c.CIDR...) {
 		if ip := net.ParseIP(strings.TrimSuffix(strings.TrimSuffix(s, "/32"), "/128")); ip != nil {
 			ids = append(ids, udpStation(ip.String()))
 		}
 	}
 	return p.stations.events24h(ids, time.Now())
+}
+
+// netKey is the network a reader shares with the receiver it feeds from: an IPv4 address, or an IPv6 /64, so
+// rotating privacy addresses still match. "" for anything unparseable.
+func netKey(ip string) string {
+	a := net.ParseIP(ip)
+	if a == nil {
+		return ""
+	}
+	if v4 := a.To4(); v4 != nil {
+		return v4.String()
+	}
+	return a.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 // lowTrust marks sources that cannot be authenticated: UDP senders, named by hash or by their own AIVDO.

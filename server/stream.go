@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,7 +111,7 @@ func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, strin
 		}
 		c = &Claims{Sub: "anon", Role: "admin"}
 	}
-	c = p.effective(c) // earned feeder tier applies on /v0 too
+	c = p.effective(c, ip) // earned feeder tier applies on /v0 too
 	if !c.may("subscribe") || !c.allowsIP(ip) {
 		return nil, nil, errBadKey
 	}
@@ -298,11 +300,12 @@ type v1Frame struct {
 	Type     string   `json:"type"`               // "subscribe" | "unsubscribe" | "publish" | "register"
 	BBox     []bbox   `json:"bbox,omitempty"`     // subscribe: [minLat,minLon,maxLat,maxLon]...; empty = everything
 	MMSI     []uint32 `json:"mmsi,omitempty"`     // subscribe: vessels to follow wherever they are (ORed with bbox)
+	IMO      []uint32 `json:"imo,omitempty"`      // subscribe: vessels to follow by IMO number, for the tiers mayRaw admits
 	NMEA     []string `json:"nmea,omitempty"`     // publish: tagged or bare sentences
 	Replay   bool     `json:"replay,omitempty"`   // publish: an offline backlog; stale TAG times are archived, not emitted
 	Snapshot bool     `json:"snapshot,omitempty"` // subscribe: first replay the last known events for vessels already tracked
 	Pubkey   string   `json:"pubkey,omitempty"`   // register: base64url ed25519 public key
-	BindIP   bool     `json:"bind_ip,omitempty"`  // register: bind the token to this connection's address (as /v1/keys bind_ip)
+	BindIP   bool     `json:"bind_ip,omitempty"`  // register: claim this connection's UDP station for the token (as /v1/keys bind_ip)
 
 	// register, as on /v1/keys: names for the station, and the signature proving the key
 	Name       *string `json:"name,omitempty"`
@@ -321,7 +324,7 @@ type v1Welcome struct {
 	Type   string   `json:"type"` // "welcome"
 	Sub    string   `json:"sub"`
 	Role   string   `json:"role"`
-	Feeder bool     `json:"feeder,omitempty"` // personal token currently earning the feeder tier
+	Feeder bool     `json:"feeder,omitempty"` // this connection is earning the feeder tier: its personal token's station, or its network's UDP station, is feeding
 	Terms  string   `json:"terms"`            // the contributor agreement; publishing data is acceptance
 	Limits v1Limits `json:"limits"`
 }
@@ -405,7 +408,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusPolicyViolation, "invalid token")
 		return
 	}
-	cl = orAnonymous(cl, r)
+	cl = p.orAnonymous(cl, r)
 	ip := clientIP(r)
 	relSub, relAddr, err := acquireStreamSlots(cl, ip)
 	if err != nil {
@@ -452,7 +455,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			switch f.Type {
 			case "subscribe":
 				b := f.BBox
-				everything := len(b) == 0 && len(f.MMSI) == 0
+				everything := len(b) == 0 && len(f.MMSI) == 0 && len(f.IMO) == 0
 				denied := (everything && cl.Area != 0) || (len(b) > 0 && !cl.allowsArea(b))
 				for _, x := range b {
 					if !cl.allowsBox(x) {
@@ -463,8 +466,23 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "bbox not allowed for this key"})
 					continue
 				}
-				if !cl.allowsMMSIs(len(f.MMSI)) {
-					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "too many mmsi for this key"})
+				if f.IMO != nil && len(f.IMO) == 0 { // as an empty imo= is refused: an empty list would widen to everything
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "imo needs at least one IMO number"})
+					continue
+				}
+				if len(f.IMO) > 0 {
+					f.IMO = slices.Compact(slices.Sorted(slices.Values(f.IMO))) // a repeated IMO counts once, as on SSE
+					if err := imoGate(cl); err != nil {
+						wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
+						continue
+					}
+					if msg := checkIMOs(f.IMO); msg != "" {
+						wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": msg})
+						continue
+					}
+				}
+				if !cl.allowsMMSIs(len(f.MMSI) + len(f.IMO)) {
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": tooManyVessels(len(f.IMO))})
 					continue
 				}
 				s := &v1Sub{boxes: b, everything: everything}
@@ -473,6 +491,16 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					for _, m := range f.MMSI {
 						s.mmsi[m] = true
 					}
+				}
+				if err := p.followIMOs(s, f.IMO); err != nil {
+					msg := "vessel record unavailable"
+					if errors.Is(err, errTooManyTerms) {
+						msg = err.Error()
+					} else {
+						log.Printf("store: %v", err)
+					}
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": msg})
+					continue
 				}
 				subscription.Store(s)
 				if f.Snapshot { // replay after storing the live sub: a duplicate is possible, a gap is not
@@ -519,7 +547,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					errf(err.Error())
 					continue
 				}
-				ncl := p.effective(&nc) // an already-feeding bound station earns the feeder tier now, as a reconnect would
+				ncl := p.effective(&nc, ip) // an already-feeding bound station earns the feeder tier now, as a reconnect would
 				// Only the sub slot is re-keyed; the addr slot is kept, since the upgrade adds no stream.
 				rel, ok := conns.acquire(ncl.Sub, ncl.Conns)
 				if !ok { // keep the anonymous claims and slot
@@ -590,10 +618,15 @@ type v1Sub struct {
 	everything bool
 	boxes      []bbox
 	mmsi       map[uint32]bool
+	// imo counts the vessels followed for each IMO asked for, and joined holds the ones that reported it after
+	// the subscription was made. Only the goroutine calling match may touch either.
+	imo    map[uint32]int
+	joined map[uint32]bool
+	cut    bool // maxMMSIsPerIMO left out vessels reporting an IMO asked for
 }
 
 func (s *v1Sub) match(ev *Event) bool {
-	if s.everything || s.mmsi[ev.MMSI] {
+	if s.everything || s.mmsi[ev.MMSI] || s.joined[ev.MMSI] || s.joins(ev) {
 		return true
 	}
 	if ev.HasPos {
@@ -604,6 +637,28 @@ func (s *v1Sub) match(ev *Event) bool {
 		}
 	}
 	return false
+}
+
+// joins follows the vessel a static report comes from when it names a followed IMO, up to maxMMSIsPerIMO for
+// each, so a vessel first heard after the subscription is followed from its first message 5.
+func (s *v1Sub) joins(ev *Event) bool {
+	if s.imo == nil {
+		return false
+	}
+	sd, ok := ev.Packet.(ais.ShipStaticData)
+	if !ok {
+		return false
+	}
+	n, ok := s.imo[sd.ImoNumber]
+	if !ok || n >= maxMMSIsPerIMO {
+		return false
+	}
+	s.imo[sd.ImoNumber] = n + 1
+	if s.joined == nil {
+		s.joined = map[uint32]bool{}
+	}
+	s.joined[ev.MMSI] = true
+	return true
 }
 
 // renderV1JSON is the event's /v1 frame, marshaled once per event on first use; every subscriber then
@@ -646,27 +701,37 @@ func welcomeFor(cl *Claims, canPublish bool) v1Welcome {
 // parseSSESub builds the fixed subscription from the query string, for /v1/stream over SSE and for
 // /v1/vessels. Malformed input is refused rather than dropped: on a connection held open for hours a typo'd
 // mmsi is indistinguishable from a subscription that legitimately never matches.
-func parseSSESub(r *http.Request, cl *Claims) (*v1Sub, string) {
-	return parseSub(r.URL.Query(), cl, true)
+func (p *Pipeline) parseSSESub(r *http.Request, cl *Claims) (*v1Sub, int, string) {
+	return p.parseSub(r.URL.Query(), cl, true)
 }
 
-// parseSub reads bbox and mmsi from a query string and checks them against the claims. needFilter refuses
-// a request with neither from a key with an area limit; a search, capped by its own row limit, passes false.
-func parseSub(vals url.Values, cl *Claims, needFilter bool) (*v1Sub, string) {
+// tooManyVessels is the refusal for a list of MMSIs and IMOs past the key's cap, which counts both.
+func tooManyVessels(imos int) string {
+	if imos > 0 {
+		return "too many mmsi and imo for this key"
+	}
+	return "too many mmsi for this key"
+}
+
+// parseSub reads bbox, mmsi, and imo from a query string, checks them against the claims, and resolves the IMOs
+// into the MMSIs followed. needFilter refuses a request with none from a key with an area limit; a search,
+// capped by its own row limit, passes false. A refusal comes with its HTTP status.
+func (p *Pipeline) parseSub(vals url.Values, cl *Claims, needFilter bool) (*v1Sub, int, string) {
+	bad := func(msg string) (*v1Sub, int, string) { return nil, http.StatusBadRequest, msg }
 	s := &v1Sub{}
 	for _, q := range vals["bbox"] {
 		var v [4]float64
 		if n, _ := fmt.Sscanf(q, "%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3]); n != 4 {
-			return nil, "bbox=minLat,minLon,maxLat,maxLon"
+			return bad("bbox=minLat,minLon,maxLat,maxLon")
 		}
 		// Corners are normalised, as /v0 normalises them: an inverted box has negative area and would
 		// otherwise subtract from the total the area claim is checked against.
 		b := bbox{min(v[0], v[2]), min(v[1], v[3]), max(v[0], v[2]), max(v[1], v[3])}
 		if b[0] < -90 || b[2] > 90 || b[1] < -180 || b[3] > 180 {
-			return nil, "bbox out of range"
+			return bad("bbox out of range")
 		}
 		if !cl.allowsBox(b) {
-			return nil, "bbox not allowed for this key"
+			return bad("bbox not allowed for this key")
 		}
 		s.boxes = append(s.boxes, b)
 	}
@@ -675,22 +740,44 @@ func parseSub(vals url.Values, cl *Claims, needFilter bool) (*v1Sub, string) {
 		for _, f := range strings.Split(q, ",") {
 			n, err := strconv.ParseUint(strings.TrimSpace(f), 10, 32)
 			if err != nil {
-				return nil, "mmsi=<mmsi>,<mmsi>,..."
+				return bad("mmsi=<mmsi>,<mmsi>,...")
 			}
 			s.mmsi[uint32(n)] = true
 		}
 	}
-	s.everything = len(s.boxes) == 0 && len(s.mmsi) == 0
+	var imos []uint32
+	for _, q := range vals["imo"] { // every value, and an empty one refused: a dropped imo would widen the answer
+		ids, msg := parseIMOs(q)
+		if msg != "" {
+			return bad(msg)
+		}
+		imos = append(imos, ids...)
+	}
+	if len(imos) > 0 {
+		if err := imoGate(cl); err != nil {
+			return nil, http.StatusForbidden, err.Error()
+		}
+		slices.Sort(imos)
+		imos = slices.Compact(imos) // a repeated IMO counts once, as a repeated MMSI does
+	}
+	s.everything = len(s.boxes) == 0 && len(s.mmsi) == 0 && len(imos) == 0
 	if s.everything && cl.Area != 0 && needFilter {
-		return nil, "bbox or mmsi required for this key"
+		return bad("bbox or mmsi required for this key")
 	}
 	if !cl.allowsArea(s.boxes) {
-		return nil, "bbox not allowed for this key"
+		return bad("bbox not allowed for this key")
 	}
-	if !cl.allowsMMSIs(len(s.mmsi)) {
-		return nil, "too many mmsi for this key"
+	if !cl.allowsMMSIs(len(s.mmsi) + len(imos)) {
+		return bad(tooManyVessels(len(imos)))
 	}
-	return s, ""
+	if err := p.followIMOs(s, imos); err != nil {
+		if errors.Is(err, errTooManyTerms) {
+			return bad(err.Error())
+		}
+		log.Printf("store: %v", err)
+		return nil, http.StatusInternalServerError, "vessel record unavailable"
+	}
+	return s, 0, ""
 }
 
 // serveV1SSE streams the same events as the socket to a plain GET. The subscription is fixed at connect time
@@ -704,11 +791,11 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, claimsErr.Error(), http.StatusUnauthorized)
 		return
 	}
-	cl = orAnonymous(cl, r)
+	cl = p.orAnonymous(cl, r)
 	// Parsed and checked before any slot or subscription is taken, so a rejected request is cheap.
-	s, msg := parseSSESub(r, cl)
+	s, status, msg := p.parseSSESub(r, cl)
 	if msg != "" {
-		http.Error(w, msg, http.StatusBadRequest)
+		http.Error(w, msg, status)
 		return
 	}
 	relSub, relAddr, err := acquireStreamSlots(cl, clientIP(r))

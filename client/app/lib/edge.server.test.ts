@@ -38,6 +38,18 @@ describe("edge cache", () => {
     expect(store.get("c")?.headers.get("cache-control")).toBe("public, max-age=300");
   });
 
+  it("keeps an answer that asks for less for its own shorter time", async () => {
+    const { cache, store } = fakeCache();
+    const pending: Promise<unknown>[] = [];
+    const short = async () => new Response("x", { headers: { "cache-control": "public, max-age=900" } });
+    const long = async () => new Response("x", { headers: { "cache-control": "public, max-age=99999" } });
+    await edgeCached(cache, "a", { 200: 3600 }, (p) => pending.push(p), short);
+    await edgeCached(cache, "b", { 200: 3600 }, (p) => pending.push(p), long);
+    await Promise.all(pending);
+    expect(store.get("a")?.headers.get("cache-control")).toBe("public, max-age=900");
+    expect(store.get("b")?.headers.get("cache-control")).toBe("public, max-age=3600");
+  });
+
   it("keys a page by theme and query, and nothing else from the request", () => {
     const url = new URL("https://openwaters.io/ais/vessels/257000001-first");
     expect(pageCacheKey(url, null)).toBe("https://openwaters.io/ais/__edge/system/vessels/257000001-first");

@@ -105,6 +105,13 @@ func main() {
 				p.tc.enabled.Store(true)
 				go p.runTC(env("TC_URL", tcEndpoint))
 			}
+			if err := p.loadAMSAStats(); err != nil {
+				log.Printf("amsa: %v", err)
+			}
+			if env("AMSA", "1") == "1" {
+				p.amsa.enabled.Store(true)
+				go p.runAMSA(env("AMSA_URL", amsaPage))
+			}
 			if err := p.loadISEDStats(); err != nil {
 				log.Printf("ised: %v", err)
 			}
@@ -117,12 +124,6 @@ func main() {
 	dedupe := env("DEDUPE", "dedupe.json")
 	if n, err := p.loadDedupe(dedupe); err == nil {
 		log.Printf("restored %d dedupe entries from %s", n, dedupe)
-	}
-	stationVessels := env("STATION_VESSELS", "station-vessels.json")
-	if err := p.stations.loadVessels(stationVessels); err == nil {
-		log.Printf("restored station vessels from %s", stationVessels)
-	} else if !os.IsNotExist(err) {
-		log.Printf("station vessels: %v (24-hour counts start empty)", err)
 	}
 	usage := env("USAGE", "vessels-usage.json")
 	if err := p.loadUsage(usage); err == nil {
@@ -175,6 +176,9 @@ func main() {
 		go runUDP(p, l)
 	}
 	if url := os.Getenv("CLICKHOUSE_URL"); url != "" {
+		// Until runStationSeries reads the candidates back, or ownPendingMax passes without ClickHouse answering.
+		p.stations.ownPending.Store(true)
+		time.AfterFunc(ownPendingMax, func() { p.stations.ownPending.Store(false) })
 		go p.runClickHouse(url)
 		var sources []historySource
 		if os.Getenv("MARINECADASTRE") != "" {
@@ -193,6 +197,7 @@ func main() {
 		}
 		p.coverage = newCoverageMap()
 		go p.runCoverage()
+		go p.runStationSeries()
 	}
 	go p.logStats()
 	go p.runStationNames()
@@ -211,9 +216,6 @@ func main() {
 		p.closeArchives() // state saves follow, so they see everything the archives saw
 		if err := p.saveUsage(usage); err != nil {
 			log.Printf("usage: %v", err)
-		}
-		if err := p.stations.saveVessels(stationVessels, time.Now()); err != nil {
-			log.Printf("station vessels: %v", err)
 		}
 		if err := p.saveDedupe(dedupe); err != nil {
 			log.Printf("dedupe: %v (the next process may re-accept copies inside the window)", err)
@@ -274,6 +276,7 @@ func httpHandler(p *Pipeline) http.Handler {
 	for pat, h := range routes(p) {
 		mux.HandleFunc(pat, h)
 	}
-	mux.Handle("/{$}", http.RedirectHandler("https://openwaters.io/ais/", http.StatusFound))
+	// Permanent, so search engines credit openwaters.io/ais/ instead of indexing this root separately.
+	mux.Handle("/{$}", http.RedirectHandler("https://openwaters.io/ais/", http.StatusMovedPermanently))
 	return p.countRequests(mux)
 }

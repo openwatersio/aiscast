@@ -1,0 +1,41 @@
+title: Disney Cruise Line
+summary: "Disney Cruise Line was founded in 1995, is based in Celebration and is part of The Walt Disney Company. Its 8 ships range from Disney Magic (1998) to Disney Destiny (2025)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q420947
+sections:
+  - title: Wish class
+    vessels:
+      - name: Disney Destiny
+        mmsi: 311001540
+        imo: 9834741
+        subtitle: "341 m · in service 2025"
+      - name: Disney Treasure
+        mmsi: 311001221
+        imo: 9834753
+        subtitle: "341 m · in service 2024"
+      - name: Disney Wish
+        mmsi: 311001098
+        imo: 9834739
+        subtitle: "341 m · in service 2022"
+  - title: Other ships
+    vessels:
+      - name: Disney Fantasy
+        mmsi: 311058700
+        imo: 9445590
+        subtitle: "340 m · in service 2012"
+      - name: Disney Dream
+        mmsi: 311042900
+        imo: 9434254
+        subtitle: "340 m · in service 2010"
+      - name: Disney Wonder
+        mmsi: 308457000
+        imo: 9126819
+        subtitle: "300 m · in service 1999"
+      - name: Disney Magic
+        mmsi: 308516000
+        imo: 9126807
+        subtitle: "300 m · in service 1998"
+      - name: Disney Adventure
+        mmsi: 311000934
+        imo: 9808986
+        subtitle: 342 m

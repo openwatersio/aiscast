@@ -12,6 +12,7 @@
     { "pattern": "openwaters.io/ais/vessels*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/stations*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/network*", "zone_name": "openwaters.io" },
+    { "pattern": "openwaters.io/ais/fleets*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/explore*", "zone_name": "openwaters.io" },
     { "pattern": "openwaters.io/ais/assets/*", "zone_name": "openwaters.io" },
     // sitemap.xml, the index, and the sitemap-*.xml files it lists (app/lib/sitemap.server.ts).
@@ -30,9 +31,11 @@
   },
   "observability": { "enabled": true },
   "env": {
-    // The browser tests' build, rendering against the aiscast server they start (e2e/).
+    // The browser tests' build. The aiscast server they start is on a port picked per run, and
+    // the .dev.vars.e2e that playwright.config.ts writes overrides this address with it. Nothing
+    // listens on port 0, so a render fails rather than reaching production if the override is lost.
     "e2e": {
-      "vars": { "AIS_API": "http://127.0.0.1:8787" },
+      "vars": { "AIS_API": "http://127.0.0.1:0" },
     },
   },
   "upload_source_maps": true,

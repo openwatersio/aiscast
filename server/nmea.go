@@ -15,16 +15,20 @@ import (
 // OpenCPN, a Signal K input). One WebSocket text frame per message, sentences joined by "\r\n", each prefixed
 // with a TAG block carrying the source (`s:`), the canonical time (`c:`), and the license tag (`t:`). Own-ship
 // sentences go out as VDM, since the vessel is someone else's own ship, not the consumer's (see ownShipToVDM).
-// Token required (feeder, peer, partner, admin); bbox via ?bbox=minLat,minLon,maxLat,maxLon (repeatable).
+// Feeder tier or above: a feeder, peer, partner, or admin token, or a connection from a network that feeds by
+// UDP (see effective); bbox via ?bbox=minLat,minLon,maxLat,maxLon (repeatable).
 
-// nmeaRoles: reciprocity. Feeders get the raw feed back; personal and anonymous do not (see PLAN, Stage 1).
+// nmeaRoles: reciprocity. Feeders get the raw feed back, personal and anonymous callers only once they earn the tier.
 func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 	cl, err := p.socketClaims(r)
 	if p.limited(w, wsConnectLimit, connectKey(cl, r)) {
 		return
 	}
-	if err == nil && (cl == nil || !cl.mayRaw()) {
-		err = fmt.Errorf("a feeder, peer, partner, or admin token is required (personal tokens earn it by feeding)")
+	if err == nil {
+		cl = p.orAnonymous(cl, r)
+	}
+	if err == nil && !cl.mayRaw() {
+		err = fmt.Errorf("the feeder tier is required: a feeder, peer, partner, or admin token, or feed from this network (see docs/limits.md)")
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)

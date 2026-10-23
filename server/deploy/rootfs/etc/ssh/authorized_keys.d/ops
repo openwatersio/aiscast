@@ -1,0 +1,5 @@
+# Read-only ops access (journal, /metrics, systemctl status, a pprof tunnel); README: SSH.
+# restrict turns off forwarding, the agent, X11, and the pty; port-forwarding lets the pprof tunnel back in and
+# permitopen limits -L to it. -R is refused by the Match block in sshd_config.d/10-hardening.conf: the key
+# options can't do it (sshd rejects the whole key for permitlisten="none").
+restrict,port-forwarding,permitopen="127.0.0.1:6060" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJmz6GSD/GuDjcWqh42VriUv4t/fkWrfsCzFT307NdUL eddy@openclaw aiscast-ops

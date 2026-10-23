@@ -41,7 +41,7 @@ const (
 
 // tileParams are the parameters a tile accepts. Anything else is refused, so a typo in a filter fails loudly
 // rather than returning every vessel, and a filter added later never changes an older client's tiles.
-var tileParams = map[string]bool{"mmsi": true, "max_age": true, "key": true}
+var tileParams = map[string]bool{"mmsi": true, "imo": true, "max_age": true, "key": true}
 
 func init() {
 	for k := range vesselFilterParams {
@@ -54,27 +54,28 @@ type tileFilter struct {
 	mmsi map[uint32]bool
 }
 
-func parseTileFilter(vals url.Values, cl *Claims) (*tileFilter, string) {
+// parseTileFilter reads a tile's filters. A refusal comes with its HTTP status.
+func (p *Pipeline) parseTileFilter(vals url.Values, cl *Claims) (*tileFilter, int, string) {
 	for k := range vals {
 		if !tileParams[k] {
-			return nil, "unknown parameter " + k
+			return nil, http.StatusBadRequest, "unknown parameter " + k
 		}
 	}
-	s, msg := parseSub(url.Values{"mmsi": vals["mmsi"]}, cl, false)
+	s, status, msg := p.parseSub(url.Values{"mmsi": vals["mmsi"], "imo": vals["imo"]}, cl, false)
 	if msg != "" {
-		return nil, msg
+		return nil, status, msg
 	}
-	if cl.Area < 0 && len(s.mmsi) == 0 {
-		return nil, "mmsi required for this key"
+	if cl.Area < 0 && s.mmsi == nil {
+		return nil, http.StatusBadRequest, "mmsi required for this key"
 	}
 	rules, msg := parseAgeRules(vals)
 	if msg != "" {
-		return nil, msg
+		return nil, http.StatusBadRequest, msg
 	}
-	return &tileFilter{ageRules: *rules, mmsi: s.mmsi}, ""
+	return &tileFilter{ageRules: *rules, mmsi: s.mmsi}, 0, ""
 }
 
-// match: a tile given mmsi shows only those vessels, and they are named ones.
+// match: a tile given mmsi or imo shows only those vessels, and they are named ones.
 func (f *tileFilter) match(mmsi uint32, v *vessel, now time.Time) bool {
 	return (f.mmsi == nil || f.mmsi[mmsi]) && f.ageRules.match(f.mmsi != nil, v, now)
 }
@@ -94,16 +95,16 @@ func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	cl = orAnonymous(cl, r)
+	cl = p.orAnonymous(cl, r)
 	z, x, y, ok := tileCoords(r)
 	if !ok {
 		http.Error(w, "tile out of range", http.StatusBadRequest)
 		return
 	}
 	vals := r.URL.Query()
-	f, msg := parseTileFilter(vals, cl)
+	f, status, msg := p.parseTileFilter(vals, cl)
 	if msg != "" {
-		http.Error(w, msg, http.StatusBadRequest)
+		http.Error(w, msg, status)
 		return
 	}
 	if len(cl.BBox) > 0 && !cl.allowsBox(tileBox(z, x, y)) {
@@ -116,7 +117,11 @@ func (p *Pipeline) serveVesselTile(w http.ResponseWriter, r *http.Request) {
 	b := p.tiles.get(fmt.Sprintf("%d/%d/%d?%s", z, x, y, vals.Encode()), now, func() []byte {
 		return gzipBytes(p.vesselTile(z, x, y, f, now))
 	})
-	writeTile(w, r, b, "public, max-age=10")
+	cache := "public, max-age=10"
+	if vals.Has("imo") { // the gate answers by the caller's token, which a shared cache does not key on
+		cache = "private, max-age=10"
+	}
+	writeTile(w, r, b, cache)
 }
 
 // writeTile answers a gzipped tile. It is gzipped once per build and served as is; Caddy's encoder leaves a
@@ -198,8 +203,8 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 	var recs []record
 	if age, vf := f.rule(f.mmsi != nil); p.store != nil && (age == 0 || age > vesselTTL) {
 		q := recordQuery{boxes: []bbox{box}, since: since(now, age), before: now.Add(-vesselTTL), hasPos: true, filter: vf, now: now}
-		if f.mmsi != nil {
-			q.mmsis = slices.Collect(maps.Keys(f.mmsi))
+		if f.mmsi != nil { // non-nil and empty when imo matched no vessel, which matches nothing
+			q.mmsis = append(make([]uint32, 0, len(f.mmsi)), slices.Collect(maps.Keys(f.mmsi))...)
 		}
 		var err error
 		if recs, err = p.tileRecords(q, z, x, y); err != nil {
@@ -261,7 +266,7 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.class != "" {
 			props = append(props, mvtProp{"class", pt.class})
 		}
-		if flag := flagOf(pt.mmsi); flag != "" {
+		if flag := servedFlag(pt.mmsi, pt.kind); flag != "" {
 			props = append(props, mvtProp{"flag", flag})
 		}
 		if pt.shipType != 0 {
@@ -270,17 +275,19 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.navStatus != 15 {
 			props = append(props, mvtProp{"nav_status", uint64(pt.navStatus)})
 		}
-		if pt.length > 0 {
-			props = append(props, mvtProp{"length", uint64(pt.length)})
-		}
-		if pt.lengthOffsets { // served whole, as the Feature serves them (hasLengthOffsets)
-			props = append(props, mvtProp{"to_bow", uint64(pt.dim.A)}, mvtProp{"to_stern", uint64(pt.dim.B)})
-		}
-		if pt.beam > 0 {
-			props = append(props, mvtProp{"beam", uint64(pt.beam)})
-		}
-		if pt.beamOffsets {
-			props = append(props, mvtProp{"to_port", uint64(pt.dim.C)}, mvtProp{"to_starboard", uint64(pt.dim.D)})
+		if hasHull(pt.kind) {
+			if pt.length > 0 {
+				props = append(props, mvtProp{"length", uint64(pt.length)})
+			}
+			if pt.lengthOffsets { // served whole, as the Feature serves them (hasLengthOffsets)
+				props = append(props, mvtProp{"to_bow", uint64(pt.dim.A)}, mvtProp{"to_stern", uint64(pt.dim.B)})
+			}
+			if pt.beam > 0 {
+				props = append(props, mvtProp{"beam", uint64(pt.beam)})
+			}
+			if pt.beamOffsets {
+				props = append(props, mvtProp{"to_port", uint64(pt.dim.C)}, mvtProp{"to_starboard", uint64(pt.dim.D)})
+			}
 		}
 		if pt.sog < 102.3 {
 			props = append(props, mvtProp{"sog", pt.sog})
@@ -288,9 +295,10 @@ func (p *Pipeline) vesselTile(z, x, y int, f *tileFilter, now time.Time) []byte 
 		if pt.cog < 360 {
 			props = append(props, mvtProp{"cog", pt.cog})
 		}
-		if pt.heading < 511 {
+		// hdg turns a vessel's arrow; gear is drawn without one, its course the drift of its net.
+		if validHeading(pt.heading) && hasHull(pt.kind) {
 			props = append(props, mvtProp{"heading", uint64(pt.heading)}, mvtProp{"hdg", float64(pt.heading)})
-		} else if pt.cog < 360 {
+		} else if pt.cog < 360 && hasHull(pt.kind) {
 			props = append(props, mvtProp{"hdg", pt.cog})
 		}
 		l.point(uint64(pt.mmsi), pt.x, pt.y, props)
@@ -428,13 +436,13 @@ func gzipBytes(b []byte) []byte {
 
 // tileFields describes the layer's attributes in TileJSON, as the vessel Feature describes them in openapi.json.
 var tileFields = map[string]string{
-	"mmsi": "Number", "name": "String", "kind": "String: vessel, aton, base, or sar", "class": "String: A or B",
-	"type": "Number: ITU ship and cargo type; the AtoN type for an aid to navigation", "flag": "String: ISO 3166 alpha-2 from the MMSI",
-	"nav_status": "Number", "sog": "Number: knots", "cog": "Number: degrees", "heading": "Number: degrees",
-	"hdg": "Number: heading, else course over ground, the angle to rotate an icon by", "length": "Number: metres",
-	"beam": "Number: metres", "to_bow": "Number: metres from the AIS antenna to the bow",
-	"to_stern": "Number: metres from the AIS antenna to the stern", "to_port": "Number: metres from the AIS antenna to port",
-	"to_starboard": "Number: metres from the AIS antenna to starboard", "source": "String: source kind", "station": "String: the station that heard the last message", "age_s": "Number: seconds since the last report when the tile was built",
+	"mmsi": "Number", "name": "String", "kind": "String: vessel, aton, base, sar (search and rescue aircraft or distress beacon), or gear", "class": "String: A or B",
+	"type": "Number: ITU ship and cargo type; the AtoN type for an aid to navigation", "flag": "String: ISO 3166 alpha-2 from the MMSI, never for gear",
+	"nav_status": "Number", "sog": "Number: knots", "cog": "Number: degrees", "heading": "Number: degrees; never for gear",
+	"hdg": "Number: heading, else course over ground, the angle to rotate an icon by; never for gear", "length": "Number: metres; never for gear",
+	"beam": "Number: metres; never for gear", "to_bow": "Number: metres from the AIS antenna to the bow; never for gear",
+	"to_stern": "Number: metres from the AIS antenna to the stern; never for gear", "to_port": "Number: metres from the AIS antenna to port; never for gear",
+	"to_starboard": "Number: metres from the AIS antenna to starboard; never for gear", "source": "String: source kind", "station": "String: the station that heard the last message", "age_s": "Number: seconds since the last report when the tile was built",
 }
 
 // tileAttribution is one linked credit, the web-map convention: a tile holds whichever sources heard its
@@ -451,8 +459,8 @@ func (p *Pipeline) serveTileJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if _, msg := parseTileFilter(r.URL.Query(), cl); msg != "" {
-		http.Error(w, msg, http.StatusBadRequest)
+	if _, status, msg := p.parseTileFilter(r.URL.Query(), cl); msg != "" {
+		http.Error(w, msg, status)
 		return
 	}
 	scheme := "http"
@@ -464,7 +472,11 @@ func (p *Pipeline) serveTileJSON(w http.ResponseWriter, r *http.Request) {
 		u += "?" + r.URL.RawQuery
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=300")
+	if r.URL.Query().Has("imo") { // as the tiles: the gate answers by the caller's token
+		w.Header().Set("Cache-Control", "private, max-age=300")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"tilejson":      "3.0.0",
 		"name":          "Open Waters AIS vessels",

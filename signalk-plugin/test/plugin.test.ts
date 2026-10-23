@@ -328,6 +328,59 @@ describe("configured token", () => {
   });
 });
 
+describe("refusals", () => {
+  it("mints a new token and reconnects with it when aiscast refuses the plugin's own", async () => {
+    await start();
+    expect(server.auth).toEqual(["Bearer ak1.test.token"]);
+    server.token = "ak1.fresh.token";
+    // What aiscast does with a token it no longer takes: an error frame, then a policy close.
+    server.send({ type: "error", error: "token revoked" });
+    server.clients[0].close(1008, "token revoked");
+    await until(() => server.auth.at(-1) === "Bearer ak1.fresh.token");
+    expect(app.errors[0]).toBe("aiscast refused the token: token revoked");
+    expect(server.keyRequests).toHaveLength(2);
+  });
+
+  it("stops sharing when aiscast refuses publishing, and says so", async () => {
+    await start();
+    server.send({ type: "error", error: "publish not allowed for this token" });
+    await until(() => app.errors.length > 0);
+    expect(app.errors[0]).toBe("aiscast refused publishing: publish not allowed for this token");
+    app.emit("nmea0183", VDM);
+    await sleep(100);
+    expect(server.frames.filter((f) => f.type === "publish")).toHaveLength(0);
+  });
+
+  it("says which limit a refused subscription ran into", async () => {
+    await start({ receive: { mode: "always" } });
+    server.send({ type: "error", error: "bbox too large" });
+    server.send({ type: "error", error: "too many mmsi" });
+    await until(() => app.errors.length === 2);
+    expect(app.errors).toEqual([
+      "aiscast refused the subscription: bbox too large (reduce the radius)",
+      "aiscast refused the buddy list: too many mmsi (trim the buddy list)",
+    ]);
+  });
+});
+
+describe("status line", () => {
+  it("shows the key, sending rate, queue, receive state, and connection, and why aiscast refused it", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval"] });
+    try {
+      await start({ receive: { mode: "off" } });
+      vi.advanceTimersByTime(5_000);
+      expect(app.status.at(-1)).toMatch(/^key \S{8}…  ↑ 0\/min \(queue 0\)  ↓ off  connected$/);
+      server.clients[0].close(1008, "station blocked");
+      await until(() => server.clients.length === 0);
+      await sleep(50); // the plugin's side of the close
+      vi.advanceTimersByTime(5_000);
+      expect(app.status.at(-1)).toMatch(/  refused: station blocked$/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("downlink", () => {
   it("auto mode subscribes around the vessel while no AIS is heard locally, and unsubscribes when it is", async () => {
     await start();

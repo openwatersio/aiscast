@@ -105,6 +105,9 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		stored = append(stored, at(day.Add(10*time.Hour+time.Duration(i)*time.Minute), 58.0, "kystverket"))
 	}
 	stored = append(stored, at(day.Add(-time.Hour), 57.0, "kystverket"))
+	// and one at 05:00 that no replayed copy refills, whose hour the station series must still rebuild
+	emptied := at(day.Add(5*time.Hour), 58.5, "kystverket")
+	stored = append(stored, emptied)
 	// A copy that arrived on the day 49 hours after its stamp, a reset clock's: past two days, so it stays.
 	late := at(day.Add(-26*time.Hour), 55.0, "kystverket")
 	late.recv = day.Add(23 * time.Hour)
@@ -160,6 +163,15 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if n := owned(); n != 1 {
 		t.Fatalf("a refused replay changed station_own: %d sightings, was 1", n)
 	}
+	marked := func() time.Time {
+		t.Helper()
+		m, err := chColumn[time.Time](ctx, c.conn, "SELECT max(marked) FROM "+db+".station_dirty WHERE hour = ?", emptied.ts.Truncate(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m[0]
+	}
+	insertMark := marked()
 	// Replayed twice, as after a fix that needs a second pass: the second replay's identical blocks land too.
 	for range 2 {
 		if err := c.replayDay(ctx, dir, day, warmup, false, true); err != nil {
@@ -181,6 +193,10 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 			network = append(network, r)
 		}
 	}
+	// The hour the replay emptied is marked once its copies are deleted, beside the mark their insert made.
+	if m := marked(); !m.After(insertMark) {
+		t.Errorf("the hour the replay emptied was not marked once its copies were deleted: newest mark %v, the insert's %v", m, insertMark)
+	}
 	if len(network) != 6 || network[0].lat6 != int32(59.90*600000) || network[5].lat6 != int32(59.95*600000) {
 		t.Errorf("the day's copies are the replayed six: %+v", network)
 	}
@@ -193,17 +209,19 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		t.Errorf("positions_1m holds the replayed track: %v %v", lats, err)
 	}
 	finest := coverageBands[len(coverageBands)-1].res
-	cell := func(lat float64) uint64 {
-		t.Helper()
-		var n uint64
-		if err := c.conn.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s.coverage WHERE day = ? AND res = %d AND cell = geoToH3(?, 10.7, %d)"+
-			" SETTINGS geotoh3_argument_order = 'lat_lon'", db, finest, finest), day, lat).Scan(&n); err != nil {
-			t.Fatal(err)
+	for _, table := range []string{"coverage", "station_coverage"} {
+		cell := func(lat float64) uint64 {
+			t.Helper()
+			var n uint64
+			if err := c.conn.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s.%s WHERE day = ? AND res = %d AND cell = geoToH3(?, 10.7, %d)"+
+				" SETTINGS geotoh3_argument_order = 'lat_lon'", db, table, finest, finest), day, lat).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
 		}
-		return n
-	}
-	if cell(58.0) != 0 || cell(59.90) == 0 {
-		t.Errorf("coverage drops the stored position's cell and has the replayed one's: %d %d", cell(58.0), cell(59.90))
+		if cell(58.0) != 0 || cell(59.90) == 0 {
+			t.Errorf("%s drops the stored position's cell and has the replayed one's: %d %d", table, cell(58.0), cell(59.90))
+		}
 	}
 	complete, err := chColumn[bool](ctx, c.conn, "SELECT complete FROM "+db+".history_loads FINAL WHERE file = 'f'")
 	if err != nil || len(complete) != 1 || complete[0] {

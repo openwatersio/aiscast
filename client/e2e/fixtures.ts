@@ -108,7 +108,7 @@ function findVessel(page: Page, exclude: number[]) {
     const canvas = map.getCanvas();
     const box = canvas.getBoundingClientRect();
     const drawn = map
-      .queryRenderedFeatures({ layers: ["vessel-still", "vessel-moving", "tile-still", "tile-moving"] })
+      .queryRenderedFeatures({ layers: ["vessel-still", "vessel-moving", "vessel-gear", "tile-still", "tile-moving", "tile-gear"] })
       // A tile's copy of a vessel the stream is drawing is there but hidden.
       .filter((f) => f.source === "vessels" || !f.state.live)
       .map((f) => ({

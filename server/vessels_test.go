@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +49,7 @@ func TestStaleEventNotBroadcast(t *testing.T) {
 	sub := p.subscribe()
 	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
 	report := func(lat float64) ais.Packet {
-		return ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 2}, Valid: true,
+		return ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 257000002}, Valid: true,
 			Latitude: ais.FieldLatLonFine(lat), Longitude: 10, Cog: 360, Sog: 102.3, TrueHeading: 511, NavigationalStatus: 15}
 	}
 	p.ingestPacket("kystverket", "kystverket", t0, t0, report(50))
@@ -89,7 +92,7 @@ func posReport(mmsi uint32, lat, lon float64) ais.Packet {
 func TestImplausibleJumpFromAnySource(t *testing.T) {
 	for i, src := range []string{"aishub", "aisstream", "kystverket"} {
 		p := testPipeline(t)
-		mmsi := uint32(3000 + i)
+		mmsi := uint32(257003000 + i)
 		t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
 		p.ingestPacket(src, src, t0, t0, posReport(mmsi, 49.48, 0.13))
 
@@ -130,20 +133,20 @@ func TestNullIslandIsNotAPosition(t *testing.T) {
 	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
 
 	// a vessel already tracked keeps the position it had
-	p.ingestPacket("aisstream", "aisstream", t0, t0, posReport(1, 49.48, 0.13))
-	p.ingestPacket("aisstream", "aisstream", t0.Add(time.Minute), t0.Add(time.Minute), posReport(1, 0, 0))
-	if !posAt(t, p.vessels[1], 49.48, 0.13) {
-		t.Errorf("null island folded into the cache: %+v", p.vessels[1])
+	p.ingestPacket("aisstream", "aisstream", t0, t0, posReport(257000001, 49.48, 0.13))
+	p.ingestPacket("aisstream", "aisstream", t0.Add(time.Minute), t0.Add(time.Minute), posReport(257000001, 0, 0))
+	if !posAt(t, p.vessels[257000001], 49.48, 0.13) {
+		t.Errorf("null island folded into the cache: %+v", p.vessels[257000001])
 	}
 	// a vessel seen only at (0,0) has no position at all, so it never reaches /v1/vessels
-	p.ingestPacket("aishub", "aishub", t0, t0, posReport(2, 0, 0))
-	if v := p.vessels[2]; v.HasPos {
+	p.ingestPacket("aishub", "aishub", t0, t0, posReport(257000002, 0, 0))
+	if v := p.vessels[257000002]; v.HasPos {
 		t.Errorf("vessel known only at (0,0) has a position: lat=%v lon=%v", v.Lat, v.Lon)
 	}
 	// the meridian and the equator on their own are ordinary water: Greenwich is on longitude 0
-	p.ingestPacket("aishub", "aishub", t0, t0, posReport(3, 51.5, 0))
-	if !posAt(t, p.vessels[3], 51.5, 0) {
-		t.Errorf("Greenwich position rejected: %+v", p.vessels[3])
+	p.ingestPacket("aishub", "aishub", t0, t0, posReport(257000003, 51.5, 0))
+	if !posAt(t, p.vessels[257000003], 51.5, 0) {
+		t.Errorf("Greenwich position rejected: %+v", p.vessels[257000003])
 	}
 }
 
@@ -208,5 +211,389 @@ func TestFlagOf(t *testing.T) {
 		if got := flagOf(mmsi); got != want {
 			t.Errorf("flagOf(%d) = %q, want %q", mmsi, got, want)
 		}
+	}
+}
+
+func TestValidMMSI(t *testing.T) {
+	for mmsi, want := range map[uint32]bool{
+		// ships, coast stations, groups, SAR aircraft, handhelds, craft, aids to navigation, SART/MOB/EPIRB
+		257000001: true, 2573104: true, 2190047: true, 25700001: true, 111257005: true, 825701381: true, 982570310: true,
+		992576072: true, 970123456: true, 974018432: true,
+		// unique numbers outside the M.585 formats name one transmitter, so they stay
+		109080372: true, 199000000: true, 900000000: true,
+		// the edges of the MID range in the zero-padded formats
+		2_000_000: true, 7_999_999: true, 20_000_000: true, 79_999_999: true,
+		1_999_999: false, 8_000_000: false, 19_999_999: false, 80_000_000: false, 99_999_999: false,
+		// no room for a MID
+		0: false, 1: false, 2: false, 1111: false, 3638: false, 1234567: false, 12345678: false,
+		// defaults
+		100_000_000: false, 111_111_111: false, 123_456_789: false, 555_555_555: false, 987_654_321: false, 999_999_999: false,
+		// past nine digits, which the 30-bit field allows
+		1_000_000_000: false, 1<<30 - 1: false,
+	} {
+		if got := validMMSI(mmsi); got != want {
+			t.Errorf("validMMSI(%d) = %v, want %v", mmsi, got, want)
+		}
+	}
+}
+
+// A message under an MMSI many transmitters share is counted and kept out of the cache, the record, history,
+// and the stream, while the vessels around it go on as before.
+func TestInvalidMMSIStaysOffTheMap(t *testing.T) {
+	p, written := recordingPipeline(t)
+	st, err := openStore(filepath.Join(t.TempDir(), "aiscast.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.close() })
+	if err := p.attachStore(st); err != nil {
+		t.Fatal(err)
+	}
+	sub := p.subscribe()
+	now := time.Now().Truncate(time.Second)
+	for _, mmsi := range []uint32{0, 123456789, 1234567} {
+		p.ingestPacket("aisstream", "aisstream", now, now, posReport(mmsi, 59.9, 10.7))
+		p.ingestPacket("aisstream", "aisstream", now, now, shipStatic(mmsi, "DATAHUB"))
+	}
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 59.9, 10.7))
+	mustFlush(t, p)
+	if got := p.stats.invalidMMSI.Load(); got != 6 {
+		t.Errorf("invalid MMSI messages counted %d, want 6", got)
+	}
+	// They skip dedupe, so crediting them would let a station repeat one line into the feeder tier.
+	for range 3 {
+		p.ingestPacket("station:k", "station:k", now, now, posReport(0, 59.9, 10.7))
+	}
+	if got := p.stations.events24h([]string{"station:k"}, now); got != 0 {
+		t.Errorf("a station is credited with %d messages under MMSI 0, want 0", got)
+	}
+	// AISHub repeats a row on every snapshot, and the cache that says whether it is news never holds these MMSIs,
+	// so the decoder skips the rows rather than send the same one again each time.
+	before := p.stats.invalidMMSI.Load()
+	for range 2 {
+		snap := `[[{"MMSI":123456789,"TIME":"` + fmt.Sprint(now.Add(-time.Minute).Unix()) + `","LONGITUDE":3022815,"LATITUDE":31476144}]]`
+		if n, err := p.aishubSnapshot([]byte(snap), now); err != nil || n != 0 {
+			t.Errorf("AISHub snapshot with a default MMSI: %d events, %v", n, err)
+		}
+	}
+	if got := p.stats.invalidMMSI.Load(); got != before {
+		t.Errorf("AISHub snapshot rows counted %d times", got-before)
+	}
+	if n := len(sub.ch); n != 1 {
+		t.Errorf("%d events streamed, want only the valid vessel's", n)
+	}
+	if n := p.vesselCount(); n != 1 {
+		t.Errorf("cache holds %d vessels, want 1", n)
+	}
+	for _, mmsi := range []uint32{0, 123456789, 1234567} {
+		if _, ok, _ := st.get(mmsi); ok {
+			t.Errorf("record has a row for %d", mmsi)
+		}
+	}
+	for _, pt := range written() {
+		if pt.mmsi != 257000001 {
+			t.Errorf("history got a copy for %d", pt.mmsi)
+		}
+	}
+}
+
+// A UDP sender claiming a default MMSI as its own keeps its address, so senders sharing the default are not
+// merged into one station.
+func TestUDPSenderKeepsItsAddressForADefaultOwnShip(t *testing.T) {
+	p := testPipeline(t)
+	sub := p.subscribe()
+	now := time.Now()
+	p.Ingest(Reception{Source: "udp:boat", Station: "udp:boat", RecvTime: now, Body: ownSentence(p, posReport(123456789, 41.5, -70.6))})
+	p.Ingest(Reception{Source: "udp:boat", Station: "udp:boat", RecvTime: now, Body: testSentence})
+	ev := <-sub.ch
+	if ev.Source != "udp:boat" || ev.Station != "udp:boat" {
+		t.Errorf("relabeled by a default own-ship MMSI: source %q station %q", ev.Source, ev.Station)
+	}
+}
+
+func TestDerivedKind(t *testing.T) {
+	// The cases the web client's copy of the rule is tested against too.
+	b, err := os.ReadFile("testdata/derived_kinds.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Cases []struct {
+			MMSI         uint32
+			Name         string
+			ShipType     uint8
+			Length, Beam uint16
+			NavStatus    uint8
+			Want         string
+		}
+	}
+	if err := json.Unmarshal(b, &fixture); err != nil || len(fixture.Cases) == 0 {
+		t.Fatalf("fixture: %v", err)
+	}
+	for _, c := range fixture.Cases {
+		v := newVessel()
+		v.Name, v.ShipType, v.Length, v.Beam, v.NavStatus = c.Name, c.ShipType, c.Length, c.Beam, c.NavStatus
+		if got := derivedKind(c.MMSI, v); got != c.Want {
+			t.Errorf("%d %q type %d %dx%d nav %d: %s, want %s", c.MMSI, c.Name, c.ShipType, c.Length, c.Beam, c.NavStatus, got, c.Want)
+		}
+	}
+}
+
+// netBuoyStatic is an HSD-NET buoy's static report as heard: its name and battery level, a 10 m square hull around
+// the antenna, and no ship type.
+func netBuoyStatic(mmsi uint32, name string) ais.Packet {
+	return ais.ShipStaticData{Header: ais.Header{MessageID: 5, UserID: mmsi}, Valid: true, Name: name,
+		Dimension: ais.FieldDimension{A: 5, B: 5, C: 5, D: 5}}
+}
+
+// A buoy is gear once its static data arrives, and shows no flag; a beacon is sar while it says AIS-SART active; a
+// ship on a beacon's number stays a vessel; and a kind a message sets wins, so an aid stays aton when a feed rebuilds
+// its report as a vessel's, in the cache, the record, and the lookup.
+func TestKindFromWhatAStationSays(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	// A row the record already holds as a vessel becomes gear, and loses its flag, when its static data arrives.
+	if _, err := p.store.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, seen, first_seen) VALUES (254301782, 'X', 'vessel', 'MC', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	p.ingestPacket("aishub", "aishub", now, now, posReport(254301782, 44.13, -125.03))
+	mustFlush(t, p)
+	if k := p.vessels[254301782].Kind; k != "vessel" {
+		t.Errorf("a buoy before its static data is %q, want vessel", k)
+	}
+	p.ingestPacket("aishub", "aishub", now.Add(time.Second), now.Add(time.Second), netBuoyStatic(254301782, "HSD-NET-84%"))
+	beacon := posReport(970123456, 59.9, 10.7).(ais.PositionReport)
+	beacon.NavigationalStatus = 14
+	p.ingestPacket("kystverket", "kystverket", now, now, beacon)
+	p.ingestPacket("aishub", "aishub", now, now, posReport(972168869, 10.1, 107.2))
+	p.ingestPacket("aishub", "aishub", now.Add(time.Second), now.Add(time.Second), shipStatic(972168869, "TRU0NG HUY A2"))
+	p.ingestPacket("kystverket", "kystverket", now, now, posReport(979123456, 59.92, 10.72))
+	p.ingestPacket("barentswatch", "barentswatch", now, now, ais.AidsToNavigationReport{Header: ais.Header{MessageID: 21, UserID: 992576072}, Valid: true,
+		Type: 30, Name: "AQUACULTURE 1", Latitude: 59.91, Longitude: 10.71, Timestamp: 60})
+	p.ingestPacket("aishub", "aishub", now.Add(time.Minute), now.Add(time.Minute), posReport(992576072, 59.91, 10.71))
+	p.ingestPacket("aishub", "aishub", now.Add(time.Minute), now.Add(time.Minute), netBuoyStatic(992576072, "AQUACULTURE BUOY 1"))
+	mustFlush(t, p)
+	want := map[uint32]string{254301782: "gear", 970123456: "sar", 972168869: "vessel", 979123456: "gear", 992576072: "aton"}
+	for m, k := range want {
+		if got := p.vessels[m].Kind; got != k {
+			t.Errorf("cache kind of %d = %q, want %q", m, got, k)
+		}
+		if rec, _, _ := p.store.get(m); rec.v.Kind != k {
+			t.Errorf("record kind of %d = %q, want %q", m, rec.v.Kind, k)
+		}
+	}
+	var flag string
+	if err := p.store.db.QueryRow(`SELECT flag FROM vessels WHERE mmsi = 254301782`).Scan(&flag); err != nil || flag != "" {
+		t.Errorf("gear's stored flag %q (%v), want none", flag, err)
+	}
+	if w := get(t, p, "/v1/vessels/254301782"); strings.Contains(w.Body.String(), `"flag"`) || !strings.Contains(w.Body.String(), `"kind":"gear"`) {
+		t.Errorf("gear's lookup: %s", w.Body)
+	}
+	if r := mcpRow(254301782, p.vessels[254301782], now); r.Flag != "" {
+		t.Errorf("gear's MCP row has flag %q", r.Flag)
+	}
+	if mcpMatch("", nil, "MC", 254301782, p.vessels[254301782]) {
+		t.Error("gear matches a flag filter by the MID it picked")
+	}
+	if w := get(t, p, "/v1/vessels/992576072"); !strings.Contains(w.Body.String(), `"flag":"NO"`) {
+		t.Errorf("the aid keeps its flag: %s", w.Body)
+	}
+	if w := get(t, p, "/v1/vessels?mmsi=970123456,254301782&kind=sar,gear"); !strings.Contains(w.Body.String(), "970123456") || !strings.Contains(w.Body.String(), "254301782") {
+		t.Errorf("kind=sar,gear does not find the beacon and the buoy: %s", w.Body)
+	}
+	// The beacon number's next report says it is under way, no longer active: a vessel again, in the cache and the record.
+	underWay := posReport(970123456, 59.9, 10.7).(ais.PositionReport)
+	underWay.NavigationalStatus = 0
+	p.ingestPacket("kystverket", "kystverket", now.Add(time.Minute), now.Add(time.Minute), underWay)
+	mustFlush(t, p)
+	if k := p.vessels[970123456].Kind; k != "vessel" {
+		t.Errorf("the beacon number after an ordinary report: cache %q, want vessel", k)
+	}
+	if rec, _, _ := p.store.get(970123456); rec.v.Kind != "vessel" {
+		t.Errorf("the beacon number after an ordinary report: record %q, want vessel", rec.v.Kind)
+	}
+	// Back after the cache forgot it, the aid's first report a rebuilt one with a buoy's name: the cache takes it for
+	// gear, the record keeps the aid and its flag, and its lookup answers aton.
+	forget(p)
+	later := now.Add(time.Hour)
+	p.ingestPacket("aishub", "aishub", later, later, netBuoyStatic(992576072, "AQUACULTURE BUOY 1"))
+	mustFlush(t, p)
+	if err := p.store.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = 992576072`).Scan(&flag); err != nil || flag != "aton NO" {
+		t.Errorf("the aid's record after a rebuilt report = %q (%v), want aton NO", flag, err)
+	}
+	if w := get(t, p, "/v1/vessels/992576072"); !strings.Contains(w.Body.String(), `"kind":"aton"`) {
+		t.Errorf("the aid's lookup: %s", w.Body)
+	}
+	// The buoy back after the sweep, its position before its static data: the cache does not know it yet, and the row
+	// keeps gear and no flag.
+	p.ingestPacket("aishub", "aishub", later, later, posReport(254301782, 44.13, -125.03))
+	mustFlush(t, p)
+	if err := p.store.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = 254301782`).Scan(&flag); err != nil || flag != "gear " {
+		t.Errorf("the buoy's row after a position report = %q (%v), want gear and no flag", flag, err)
+	}
+}
+
+// Gear's MMSI is whatever its maker or owner chose, so no register's facts are served for it: here a buoy on a
+// Canadian number that ISED once answered for.
+func TestGearHasNoRegisterFacts(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	if _, err := p.store.db.Exec(`INSERT INTO ised (mmsi, name, callsign, checked_at) VALUES (316123456, 'ATLANTIC STAR', 'CFA1234', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	p.ingestPacket("aishub", "aishub", now, now, posReport(316123456, 44.6, -63.5))
+	p.ingestPacket("aishub", "aishub", now.Add(time.Second), now.Add(time.Second), netBuoyStatic(316123456, "HSD-NET-71%"))
+	mustFlush(t, p)
+	if w := get(t, p, "/v1/vessels/316123456"); !strings.Contains(w.Body.String(), `"kind":"gear"`) || strings.Contains(w.Body.String(), "ATLANTIC STAR") {
+		t.Errorf("gear's lookup carries a register's facts: %s", w.Body)
+	}
+}
+
+// A class B yacht sends its name in part A of message 24 and its ship type in part B. A buoy-like name with no type
+// yet reads as gear; the type that follows makes it a vessel again, flag and all.
+func TestAShipTypeUndoesGear(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	partA := ais.StaticDataReport{Header: ais.Header{MessageID: 24, UserID: 368472570}, Valid: true,
+		ReportA: ais.StaticDataReportA{Valid: true, Name: "BUOY TIME"}}
+	partB := ais.StaticDataReport{Header: ais.Header{MessageID: 24, UserID: 368472570}, Valid: true, PartNumber: true,
+		ReportB: ais.StaticDataReportB{Valid: true, ShipType: 37, CallSign: "WDK1234"}}
+	p.ingestPacket("aisstream", "aisstream", now, now, partA)
+	mustFlush(t, p)
+	if k := p.vessels[368472570].Kind; k != "gear" {
+		t.Fatalf("after part A: %q, want gear", k)
+	}
+	p.ingestPacket("aisstream", "aisstream", now.Add(time.Second), now.Add(time.Second), partB)
+	mustFlush(t, p)
+	var row string
+	if err := p.store.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = 368472570`).Scan(&row); err != nil || row != "vessel US" {
+		t.Errorf("after part B the row is %q (%v), want vessel US", row, err)
+	}
+	if k := p.vessels[368472570].Kind; k != "vessel" {
+		t.Errorf("after part B the cache says %q, want vessel", k)
+	}
+}
+
+// A snapshot rebuilds a station as the report it sends: gear and beacons send a vessel's, and a SAR aircraft and an
+// aid their own.
+func TestSnapshotRebuildsTheReportTheStationSends(t *testing.T) {
+	for _, c := range []struct {
+		mmsi uint32
+		kind string
+		want string
+	}{
+		{970123456, "sar", "PositionReport"},
+		{111257005, "sar", "StandardSearchAndRescueAircraftReport"},
+		{994123456, "gear", "PositionReport"},
+		{992576072, "aton", "AidsToNavigationReport"},
+		{2573104, "base", "BaseStationReport"},
+	} {
+		v := newVessel()
+		v.Kind, v.HasPos, v.Lat, v.Lon, v.PosAt = c.kind, true, 59.9, 10.7, time.Now()
+		if got := v.synthPos(c.mmsi).Type; got != c.want {
+			t.Errorf("%d %s rebuilt as %s, want %s", c.mmsi, c.kind, got, c.want)
+		}
+	}
+}
+
+// Gear drifts with the nets it marks, so it ages out of an area like a vessel, its speed known or not; an aid stays.
+func TestGearAgesOutLikeAVessel(t *testing.T) {
+	p := storePipeline(t)
+	at := time.Now().Add(-5 * time.Hour).Truncate(time.Second)
+	drifting := posReport(979123456, 59.9, 10.7).(ais.PositionReport)
+	drifting.Sog = 2.5
+	p.ingestPacket("kystverket", "kystverket", at, at, drifting)
+	p.ingestPacket("kystverket", "kystverket", at, at, posReport(979123457, 59.92, 10.72)) // speed not available
+	p.ingestPacket("kystverket", "kystverket", at, at, ais.AidsToNavigationReport{Header: ais.Header{MessageID: 21, UserID: 992576072}, Valid: true,
+		Type: 30, Name: "AQUACULTURE 1", Latitude: 59.91, Longitude: 10.71, Timestamp: 60})
+	mustFlush(t, p)
+	forget(p)
+	if got := ids(getFC(t, p, "/v1/vessels?bbox=59,10,60,11")); len(got) != 1 || got[0] != 992576072 {
+		t.Errorf("an area five hours on holds %v, want only the aid", got)
+	}
+}
+
+func TestMCPNamesGearsTypeAsAShipType(t *testing.T) {
+	now := time.Now()
+	buoy := newVessel()
+	buoy.Kind, buoy.ShipType = "gear", 30
+	if got := mcpRow(994123456, buoy, now).TypeName; got != shipTypeName(30) {
+		t.Errorf("gear type named %q, want %q", got, shipTypeName(30))
+	}
+	aid := newVessel()
+	aid.Kind, aid.ShipType = "aton", 30
+	if got := mcpRow(992576072, aid, now).TypeName; got != atonTypeName(30) {
+		t.Errorf("aid type named %q, want %q", got, atonTypeName(30))
+	}
+}
+
+// Gear has no hull and no way it points: its lookup, MCP row, and tile serve no size and no heading, even one in range,
+// and its tile no angle to turn an arrow by. A heading out of range, as HSD-NET buoys send 456, is served for no station.
+func TestGearServesNoHull(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	buoy := posReport(233510227, 44.13, -125.03).(ais.PositionReport)
+	buoy.Cog, buoy.Sog, buoy.TrueHeading = 245.3, 0.1, 120 // in range, and still no way a buoy points
+	p.ingestPacket("aishub", "aishub", now, now, buoy)
+	p.ingestPacket("aishub", "aishub", now.Add(time.Second), now.Add(time.Second), netBuoyStatic(233510227, "HSD-NET-88%"))
+	ship := posReport(257000001, 44.14, -125.02).(ais.PositionReport)
+	ship.TrueHeading = 456
+	p.ingestPacket("kystverket", "kystverket", now, now, ship)
+	mustFlush(t, p)
+
+	body := get(t, p, "/v1/vessels/233510227").Body.String()
+	for _, field := range []string{`"length"`, `"beam"`, `"to_bow"`, `"to_port"`, `"draught"`, `"heading"`} {
+		if strings.Contains(body, field) {
+			t.Errorf("gear's lookup serves %s: %s", field, body)
+		}
+	}
+	if !strings.Contains(body, `"kind":"gear"`) || !strings.Contains(body, `"cog"`) {
+		t.Errorf("gear's lookup: %s", body)
+	}
+	if r := mcpRow(233510227, p.vessels[233510227], now); r.Length != nil || r.Beam != nil || r.Heading != nil {
+		t.Errorf("gear's MCP row serves a size or heading: %+v", r)
+	}
+	if body := get(t, p, "/v1/vessels/257000001").Body.String(); strings.Contains(body, `"heading"`) {
+		t.Errorf("a heading of 456 is served: %s", body)
+	}
+	x, y := tileOf(44.13, -125.03, 10)
+	fs := decodeTile(t, get(t, p, fmt.Sprintf("/v1/vessels/tiles/10/%d/%d", x, y)).Body.Bytes())
+	f, ok := fs[233510227]
+	if !ok {
+		t.Fatalf("the buoy is not on its tile: %v", fs)
+	}
+	for _, prop := range []string{"length", "beam", "to_bow", "to_port", "heading", "hdg"} {
+		if _, has := f.props[prop]; has {
+			t.Errorf("gear's tile carries %s: %v", prop, f.props)
+		}
+	}
+	if s, ok := fs[257000001]; !ok || s.props["heading"] != nil {
+		t.Errorf("the ship's tile: %v", s.props)
+	}
+}
+
+// A buoy back after the sweep or a restart is gear from its first position report, as the record knows it, not a
+// vessel with an arrow until its static data comes again.
+func TestReturningGearKeepsItsKind(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	p.ingestPacket("aishub", "aishub", now, now, posReport(233510227, 44.13, -125.03))
+	p.ingestPacket("aishub", "aishub", now.Add(time.Second), now.Add(time.Second), netBuoyStatic(233510227, "HSD-NET-88%"))
+	mustFlush(t, p)
+	p.vmu.Lock()
+	delete(p.vessels, 233510227)
+	p.vmu.Unlock()
+
+	later := now.Add(time.Hour)
+	buoy := posReport(233510227, 44.13, -125.03).(ais.PositionReport)
+	buoy.Cog, buoy.Sog = 245.3, 0.1
+	p.ingestPacket("aishub", "aishub", later, later, buoy)
+	mustFlush(t, p)
+	if k := p.vessels[233510227].Kind; k != "gear" {
+		t.Errorf("the returning buoy is %q, want gear", k)
+	}
+	x, y := tileOf(44.13, -125.03, 10)
+	if f := decodeTile(t, get(t, p, fmt.Sprintf("/v1/vessels/tiles/10/%d/%d", x, y)).Body.Bytes())[233510227]; f.props["kind"] != "gear" || f.props["hdg"] != nil {
+		t.Errorf("the returning buoy's tile feature: %v", f.props)
 	}
 }

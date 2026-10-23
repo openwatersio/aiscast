@@ -1,0 +1,45 @@
+title: Costa Cruises
+summary: "Costa Cruises was founded in 1854 by Giacomo Costa, is based in Genoa and is part of Carnival Corporation. Its 8 ships range from Costa Fortuna (2003) to Costa Toscana (2021)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q1136349
+sections:
+  - title: Dream class
+    vessels:
+      - name: Costa Diadema
+        mmsi: 247353700
+        imo: 9636888
+        subtitle: "304 m · in service 2014"
+  - title: Concordia class
+    vessels:
+      - name: Costa Fascinosa
+        mmsi: 247313500
+        imo: 9479864
+        subtitle: "290 m · in service 2012"
+      - name: Costa Pacifica
+        mmsi: 247258100
+        imo: 9378498
+        subtitle: "281 m · in service 2009"
+      - name: Costa Serena
+        mmsi: 247187600
+        imo: 9343132
+        subtitle: "290 m · in service 2007"
+  - title: Destiny class
+    vessels:
+      - name: Costa Fortuna
+        mmsi: 247094800
+        imo: 9239783
+        subtitle: "272 m · in service 2003"
+  - title: Other ships
+    vessels:
+      - name: Costa Toscana
+        mmsi: 247431200
+        imo: 9781891
+        subtitle: "337 m · in service 2021"
+      - name: Costa Deliziosa
+        mmsi: 247282900
+        imo: 9398917
+        subtitle: "294 m · in service 2010"
+      - name: Costa Smeralda
+        mmsi: 247391900
+        imo: 9781889
+        subtitle: "337 m · in service 2019"

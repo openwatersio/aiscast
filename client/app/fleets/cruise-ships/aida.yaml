@@ -1,0 +1,59 @@
+title: AIDA Cruises
+summary: "AIDA Cruises was founded in 1960, is based in Rostock and is part of Carnival Corporation. Its 12 ships range from AIDAcara (1996) to AIDAcosma (2021)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q293469
+sections:
+  - title: Excellence class
+    vessels:
+      - name: AIDAnova
+        mmsi: 247389200
+        imo: 9781865
+        subtitle: "337 m · in service 2018"
+  - title: Hyperion class
+    vessels:
+      - name: AIDAperla
+        mmsi: 247385300
+        imo: 9636967
+        subtitle: "300 m · in service 2017"
+      - name: Aidaprima
+        mmsi: 247353800
+        imo: 9636955
+        subtitle: "300 m · in service 2016"
+  - title: Sphinx class
+    vessels:
+      - name: AIDAstella
+        mmsi: 247322800
+        imo: 9601132
+        subtitle: "253 m · in service 2013"
+      - name: AIDAmar
+        mmsi: 247312900
+        imo: 9490052
+        subtitle: "253 m · in service 2012"
+      - name: AIDAsol
+        mmsi: 247302900
+        imo: 9490040
+        subtitle: "253 m · in service 2011"
+      - name: AIDAblu
+        mmsi: 247282500
+        imo: 9398888
+        subtitle: "252 m · in service 2010"
+      - name: AIDAbella
+        mmsi: 247229700
+        imo: 9362542
+        subtitle: "252 m · in service 2008"
+      - name: AIDAdiva
+        mmsi: 247187700
+        imo: 9334856
+        subtitle: "252 m · in service 2007"
+  - title: Other ships
+    vessels:
+      - name: AIDAcosma
+        mmsi: 247435300
+        imo: 9781877
+        subtitle: "337 m · in service 2021"
+      - name: AIDAvita
+        imo: 9221554
+        subtitle: "203 m · in service 2002"
+      - name: AIDAcara
+        imo: 9112789
+        subtitle: "193 m · in service 1996"

@@ -9,3 +9,5 @@
 /aiscast.db
 /aiscast.db-*
 /*.test
+/server
+/hub

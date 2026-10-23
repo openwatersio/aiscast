@@ -348,6 +348,16 @@ func (m *recordMirror) countFirstSeen(since time.Time) int {
 }
 
 // len is the number of vessels the mirror holds.
+// kind is the record's kind for mmsi, or "" for a vessel the record does not hold.
+func (m *recordMirror) kind(mmsi uint32) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e := m.entries[mmsi]; e != nil {
+		return e.v.Kind
+	}
+	return ""
+}
+
 func (m *recordMirror) len() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

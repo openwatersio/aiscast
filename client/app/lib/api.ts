@@ -1,4 +1,5 @@
 import { data } from "react-router";
+import { mmsiSegment } from "./ais";
 
 // The aiscast API this app is a client of. The Worker fetches from it to render a page, and
 // the browser fetches from it directly after that, so in-app navigation never waits on the
@@ -43,7 +44,7 @@ export function browserAuth(): ApiAuth {
 
 export interface VesselProps {
   mmsi: number;
-  kind: "vessel" | "aton" | "base" | "sar";
+  kind: "vessel" | "aton" | "base" | "sar" | "gear";
   name?: string;
   type?: number;
   cog?: number;
@@ -64,7 +65,7 @@ export interface VesselProps {
   to_port?: number;
   to_starboard?: number;
   first_seen?: string;
-  /** The town or region nearest the position, on search results only. */
+  /** The town or region nearest the position, on search results and /v1/vessels/{mmsi}. */
   near?: string;
   seen: string;
   source: string;
@@ -80,8 +81,8 @@ export interface VesselProps {
 
 /**
  * The vessel as registered, merged per field from the enrichment sources: a flag state outranks
- * Wikidata, an empty value never wins. Dimensions are in meters, deadweight in tonnes. Every field
- * is present only when a source has it.
+ * Wikidata, except for AMSA's free-text ship type, and an empty value never wins. Dimensions are
+ * in meters, deadweight in tonnes. Every field is present only when a source has it.
  */
 export interface VesselParticulars {
   /** Name as documented with the flag state, which can differ from the AIS name. */
@@ -220,7 +221,7 @@ export async function orUnavailable<T>(answer: Promise<T>): Promise<T> {
  * position the network has never heard, and an unknown MMSI is a 404.
  */
 export async function getVessel(auth: ApiAuth, mmsi: number): Promise<VesselFeature | undefined> {
-  return get<VesselFeature>(auth, `/v1/vessels/${mmsi}`);
+  return get<VesselFeature>(auth, `/v1/vessels/${mmsiSegment(mmsi)}`);
 }
 
 /**
@@ -264,7 +265,7 @@ export function trackPath(mmsi: number, q: { from?: number; to?: number; format?
   if (q.from != null) params.set("from", new Date(q.from).toISOString());
   if (q.to != null) params.set("to", new Date(q.to).toISOString());
   if (q.format) params.set("format", q.format);
-  return `/v1/vessels/${mmsi}/track?${params}`;
+  return `/v1/vessels/${mmsiSegment(mmsi)}/track?${params}`;
 }
 
 /** Where a vessel has been. The server thins the range to fit the token's limit. */
@@ -305,7 +306,11 @@ export async function getStation(
   auth: ApiAuth,
   id: string,
 ): Promise<{ station: Station; vessels: FeatureCollection } | undefined> {
-  return get(auth, `/v1/stations/${id.split("/").map(encodeURIComponent).join("/")}`);
+  const segments = id.split("/");
+  // encodeURIComponent leaves "." and "..", and the URL would resolve them into another endpoint,
+  // asked with the server's token. No station id has such a segment.
+  if (segments.some((s) => s === "." || s === "..")) return undefined;
+  return get(auth, `/v1/stations/${segments.map(encodeURIComponent).join("/")}`);
 }
 
 export interface Stats {

@@ -1,5 +1,6 @@
-import { vesselPath } from "../app/lib/ais";
-import { namedVessel } from "./data";
+import type { APIRequestContext } from "@playwright/test";
+import { vesselPath, vesselSlug } from "../app/lib/ais";
+import { heardGear, namedVessel } from "./data";
 import { expect, test } from "./fixtures";
 
 // With scripts off, whatever the page shows came from the Worker's render.
@@ -8,7 +9,7 @@ test.use({ javaScriptEnabled: false });
 /** An MMSI in no country's range, so no vessel has it. */
 const UNHEARD = 100000001;
 
-test("a vessel page renders the vessel, with its name in the head", async ({ page }) => {
+test("a vessel page renders the vessel, with its name in the head", async ({ page, request }) => {
   const { mmsi, name } = await namedVessel();
   const path = `/ais${vesselPath(mmsi, name)}`;
   const title = `${name} (${mmsi}) live position | Open Waters AIS`;
@@ -27,6 +28,10 @@ test("a vessel page renders the vessel, with its name in the head", async ({ pag
     url: `https://openwaters.io${path}`,
     identifier: expect.arrayContaining([{ "@type": "PropertyValue", propertyID: "MMSI", value: String(mmsi) }]),
   });
+  // Its photo when Wikimedia has one, else its card.
+  const image = await page.locator('meta[property="og:image"]').getAttribute("content");
+  expect(image === `https://openwaters.io/ais/vessels/${mmsi}.png` || image?.startsWith("https://thumb.wikimedia.org/") || image?.startsWith("https://upload.wikimedia.org/")).toBe(true);
+  await expectCard(request, `/ais/vessels/${mmsi}.png`);
   // One heading, the vessel's, in sight: not a fallback with the vessel hidden behind it.
   await expect(page.getByRole("heading", { level: 1, includeHidden: true })).toHaveText([name]);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
@@ -41,6 +46,36 @@ test("a vessel's address without its name, or with another, redirects to the can
   }
 });
 
+test("gear's address carries no name, and its page asks not to be indexed", async ({ page, request }) => {
+  const { mmsi, name } = await heardGear();
+  // A net buoy's name is its serial and battery level, so the address leaves it out.
+  const named = `/ais/vessels/${mmsi}-${vesselSlug(name)}`;
+  const res = await request.get(named, { maxRedirects: 0 });
+  expect(res.status(), named).toBe(301);
+  expect(new URL(res.headers().location!, res.url()).pathname).toBe(`/ais/vessels/${mmsi}`);
+
+  const doc = await page.goto(`/ais/vessels/${mmsi}`);
+  expect(doc?.status()).toBe(200);
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `https://openwaters.io/ais/vessels/${mmsi}`);
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
+  // The 10 m square it reports is a placeholder, so the page draws no hull for it.
+  await expect(page.getByText("Fishing gear").first()).toBeVisible();
+  await expect(page.getByText("AIS antenna position")).toHaveCount(0);
+  await expect(page.getByText("Dimensions", { exact: true })).toHaveCount(0);
+  // Nothing a vessel's page offers that gear has not got: photos, a heading, a status, a boat to own.
+  await expect(page.getByText("Share your photo of this vessel")).toHaveCount(0);
+  await expect(page.getByText("Add photo")).toHaveCount(0);
+  await expect(page.getByText("Drift", { exact: true })).toBeVisible();
+  await expect(page.getByText("Heading", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Is this your boat?")).toHaveCount(0);
+  await expect(page.locator('script[type="application/ld+json"]')).toHaveCount(0);
+  // With no photo to float over, the bar stands on the page and the title starts below it.
+  await expect(page.locator("[data-over-photo]")).toHaveCount(0);
+  const close = await page.getByRole("link", { name: "Close" }).boundingBox();
+  const title = await page.getByRole("heading", { level: 1 }).boundingBox();
+  expect(title!.y, "the title starts below the bar's buttons").toBeGreaterThanOrEqual(close!.y + close!.height);
+});
+
 test("a vessel the network has never heard is a 404 that asks not to be indexed", async ({ page }) => {
   const res = await page.goto(`/ais/vessels/${UNHEARD}`);
   expect(res?.status()).toBe(404);
@@ -50,6 +85,13 @@ test("a vessel the network has never heard is a 404 that asks not to be indexed"
   await expect(page.getByText("The network has never heard this vessel.")).toBeVisible();
 });
 
+test("a fleet that does not exist is a 404 in the app, asking not to be indexed", async ({ page }) => {
+  const res = await page.goto("/ais/fleets/nope");
+  expect(res?.status()).toBe(404);
+  await expect(page.getByText("There is nothing at this address.")).toBeVisible();
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", /noindex/);
+});
+
 test("an address that is not a vessel is a 404", async ({ page }) => {
   const res = await page.goto("/ais/vessels/not-a-vessel");
   expect(res?.status()).toBe(404);
@@ -57,15 +99,39 @@ test("an address that is not a vessel is a 404", async ({ page }) => {
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
 });
 
-test("a station page renders the station, with its id in the head", async ({ page }) => {
+test("the network and station list pages share their own cards", async ({ page, request }) => {
+  for (const name of ["network", "stations"]) {
+    await page.goto(`/ais/${name}`);
+    await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", `https://openwaters.io/ais/${name}.png`);
+    await expectCard(request, `/ais/${name}.png`);
+  }
+});
+
+test("a station page renders the station, with its id in the head", async ({ page, request }) => {
   const res = await page.goto("/ais/stations/digitraffic");
   expect(res?.status()).toBe(200);
   await expect(page).toHaveTitle("Digitraffic (Finland) receiving station | Open Waters AIS");
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://openwaters.io/ais/stations/digitraffic");
-  await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /^AIS receiving station Digitraffic \(Finland\): [\d,]+ messages in 24 hours/);
+  // Without ClickHouse, as this server runs, the station has no vessel counts, so its messages alone.
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /^AIS receiving station Digitraffic \(Finland\): ([\d,]+ vessels? and )?[\d,]+ messages? in 24 hours/);
   await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://openwaters.io/ais/stations/digitraffic.png");
+  const card = await request.get("/ais/stations/digitraffic.png");
+  expect(card.status()).toBe(200);
+  expect(card.headers()["content-type"]).toBe("image/png");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Digitraffic (Finland)");
   await expect(page.getByRole("link", { name: /MMSI \d+/ }).first()).toBeVisible();
+});
+
+test("station cards asked for at once each render whole", async ({ request }) => {
+  // Spellings of one station miss the edge cache together, so each is a render of its own.
+  const cards = await Promise.all(["digitraffic", "%64igitraffic", "digi%74raffic"].map((id) => request.get(`/ais/stations/${id}.png`)));
+  for (const card of cards) {
+    expect(card.status()).toBe(200);
+    const png = await card.body();
+    expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+  }
 });
 
 test("a station the network has not heard is a 404 that asks not to be indexed", async ({ page }) => {
@@ -105,11 +171,19 @@ test("a page kept at the edge carries no visitor's location but the current one'
   expect(await tags()).toBe(first);
 });
 
-test("old map and station links redirect to where those pages are now", async ({ request }) => {
+test("old map, station and explore links redirect to where those pages are now", async ({ request }) => {
   const redirects = {
     "/ais/map": "/ais/vessels",
     "/ais/map?station=digitraffic": "/ais/vessels?station=digitraffic",
     "/ais/vessels?station=digitraffic": "/ais/stations/digitraffic",
+    "/ais/explore": "/ais/fleets",
+    "/ais/explore/youtube": "/ais/fleets/youtube",
+    "/ais/explore/youtube/sailors": "/ais/fleets/youtube/sailors",
+    "/ais/explore/youtube/cruisers": "/ais/fleets/youtube/cruisers",
+    "/ais/explore/tech-yachts": "/ais/fleets/superyachts/tech-billionaires",
+    "/ais/explore/youtube/sailors/": "/ais/fleets/youtube/sailors",
+    // A name every object has is not a fleet.
+    "/ais/explore/constructor": "/ais/fleets",
   };
   for (const [from, to] of Object.entries(redirects)) {
     const res = await request.get(from, { maxRedirects: 0 });
@@ -118,3 +192,12 @@ test("old map and station links redirect to where those pages are now", async ({
     expect(location.pathname + location.search, from).toBe(to);
   }
 });
+
+/** A card at `path`: a whole 1200×630 PNG. */
+async function expectCard(request: APIRequestContext, path: string) {
+  const card = await request.get(path);
+  expect(card.status(), path).toBe(200);
+  const png = await card.body();
+  expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
+  expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+}

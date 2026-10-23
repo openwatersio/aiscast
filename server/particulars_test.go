@@ -87,4 +87,43 @@ func TestMergeParticulars(t *testing.T) {
 	if src["tc"].Credit != "Transport Canada vessel registry" || src["tc"].License != "OGL-Canada-2.0" {
 		t.Errorf("tc source: %+v", src["tc"])
 	}
+	// The Australian list serves its facts at the flag-state rank; Wikidata's ship type and the tonnage
+	// and beam the list lacks fill the rest, and the list's type serves only without Wikidata's.
+	amv := &amsaVessel{IMO: 9869447, Official: "862874", Name: "ABSOLUTE", ShipType: "Oil Tanker", Status: "Registered",
+		YearBuilt: 2019, Length: 114.99, HomePort: "Fremantle"}
+	m, prov, src = mergeParticulars(enrichment{wd: wd, am: amv})
+	if m.ShipType != "container ship" || m.Status != "Registered" || m.YearBuilt != 2019 || m.Length != 114.99 ||
+		m.Registry != "Australia" || m.GrossTonnage != wd.GrossTonnage || m.Beam != wd.Beam {
+		t.Errorf("amsa with wikidata: %+v", m)
+	}
+	if prov["ship_type"] != "wikidata" || prov["registry"] != "amsa" || prov["gross_tonnage"] != "wikidata" {
+		t.Errorf("amsa provenance: %v", prov)
+	}
+	if m, prov, _ = mergeParticulars(enrichment{am: amv}); m.ShipType != "Oil Tanker" || prov["ship_type"] != "amsa" {
+		t.Errorf("amsa alone: %+v %v", m, prov)
+	}
+	if src["amsa"].Credit != "© Australian Maritime Safety Authority" || src["amsa"].License != "CC-BY-4.0" {
+		t.Errorf("amsa source: %+v", src["amsa"])
+	}
+	// The call sign on a Wikidata item serves unless AIS reports a different one, and the flag state's
+	// outranks it.
+	signed := *wd
+	signed.CallSign = "9HXC9"
+	for _, c := range []struct{ ais, want string }{{"9HXC9", "9HXC9"}, {"9hxc9 ", "9HXC9"}, {"V7A3493", ""}, {"", "9HXC9"}, {"@@@@@@@", "9HXC9"}, {"0", "9HXC9"}} {
+		m, prov, _ = mergeParticulars(enrichment{wd: &signed, callsign: c.ais})
+		if m.CallSign != c.want || (c.want != "") != (prov["callsign"] == "wikidata") {
+			t.Errorf("wikidata call sign with %q on AIS: %q from %q", c.ais, m.CallSign, prov["callsign"])
+		}
+	}
+	for source, e := range map[string]enrichment{
+		"ised":       {is: &isedShip{MMSI: 316001234, Name: "OCEAN MASTER", CallSign: "CFA1234"}},
+		"uscg":       {cg: &uscgVessel{ID: 42, Name: "EXAMPLE", callsign: "CFA1234"}},
+		"fcc":        {fc: &fccShip{MMSI: 366000001, USI: 1, CallSign: "CFA1234"}},
+		"fiskeridir": {fd: &fdirVessel{ID: "1", Name: "EXAMPLE", CallSign: "CFA1234"}},
+	} {
+		e.wd, e.callsign = &signed, "9HXC9"
+		if m, prov, _ = mergeParticulars(e); m.CallSign != "CFA1234" || prov["callsign"] != source {
+			t.Errorf("%s with wikidata call sign: %q from %q", source, m.CallSign, prov["callsign"])
+		}
+	}
 }

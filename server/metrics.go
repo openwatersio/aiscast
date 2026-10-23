@@ -24,11 +24,15 @@ import (
 
 var (
 	streamProtocols = []string{"v0", "v1", "sse", "nmea", "mqtt"}
-	streamTiers     = []string{"anonymous", "personal", "feeder", "peer", "partner", "admin"}
+	streamTiers     = []string{"anonymous", "anonymous_feeder", "personal", "feeder", "peer", "partner", "admin"}
 )
 
-// tierOf is a connection's tier label: its role, or feeder for a personal token currently earning that tier.
+// tierOf is a connection's tier label: its role, or feeder for a connection currently earning that tier, kept
+// apart for anonymous connections so a shared address lifting its neighbours shows up.
 func tierOf(c *Claims) string {
+	if c.Feeder && c.Role == "anonymous" {
+		return "anonymous_feeder"
+	}
 	if c.Feeder {
 		return "feeder"
 	}
@@ -171,6 +175,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("aiscast_implausible_total", "positions dropped for implying an impossible speed", p.stats.implausible.Load())
 	counter("aiscast_stale_total", "events withheld from the stream for being older than the vessel's newest", p.stats.stale.Load())
 	counter("aiscast_uncorroborated_total", "low-trust events kept local because no trusted source has heard the vessel", p.stats.uncorroborated.Load())
+	counter("aiscast_invalid_mmsi_total", "messages archived but kept off the map because their MMSI cannot name one station", p.stats.invalidMMSI.Load())
 
 	p.vmu.RLock()
 	nv := len(p.vessels)
@@ -341,6 +346,16 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		if t := p.tc.lastSuccess.Load(); p.tc.enabled.Load() && t > 0 {
 			metricHead(w, "aiscast_tc_last_success_timestamp_seconds", "gauge", "when the register was last synced")
 			fmt.Fprintf(w, "aiscast_tc_last_success_timestamp_seconds %d\n", t)
+		}
+		metricHead(w, "aiscast_amsa_syncs_total", "counter", "weekly syncs of AMSA's list of registered ships")
+		fmt.Fprintf(w, "aiscast_amsa_syncs_total %d\n", p.amsa.runs.Load())
+		metricHead(w, "aiscast_amsa_sync_failures_total", "counter", "list syncs that failed; the next hourly check retries")
+		fmt.Fprintf(w, "aiscast_amsa_sync_failures_total %d\n", p.amsa.failures.Load())
+		metricHead(w, "aiscast_amsa_vessels", "gauge", "registered Australian vessels with an IMO stored")
+		fmt.Fprintf(w, "aiscast_amsa_vessels %d\n", p.amsa.vessels.Load())
+		if t := p.amsa.lastSuccess.Load(); p.amsa.enabled.Load() && t > 0 {
+			metricHead(w, "aiscast_amsa_last_success_timestamp_seconds", "gauge", "when the list was last synced")
+			fmt.Fprintf(w, "aiscast_amsa_last_success_timestamp_seconds %d\n", t)
 		}
 		metricHead(w, "aiscast_ised_checked_total", "counter", "Canadian vessels asked about in ISED's MMSI registry")
 		fmt.Fprintf(w, "aiscast_ised_checked_total %d\n", p.ised.checked.Load())

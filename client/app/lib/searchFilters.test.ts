@@ -63,11 +63,19 @@ describe("filterTest", () => {
   const seen = now.getTime();
   it("matches type ranges and the heard window", () => {
     const test = filterTest({ ...NO_FILTERS, type: "Tugs & pilots", heard: "today" }, now);
-    expect(test({ shipType: 52, seen })).toBe(true);
-    expect(test({ shipType: 31, seen })).toBe(true);
-    expect(test({ shipType: 80, seen })).toBe(false);
-    expect(test({ shipType: 50, seen: new Date(2026, 8, 29, 23).getTime() })).toBe(false);
-    expect(test({ seen })).toBe(false);
+    expect(test({ kind: "vessel", shipType: 52, seen })).toBe(true);
+    expect(test({ kind: "vessel", shipType: 31, seen })).toBe(true);
+    expect(test({ kind: "vessel", shipType: 80, seen })).toBe(false);
+    expect(test({ kind: "vessel", shipType: 50, seen: new Date(2026, 8, 29, 23).getTime() })).toBe(false);
+    expect(test({ kind: "vessel", seen })).toBe(false);
+  });
+  it("keeps a ship type to vessels: a net buoy sending fishing's 30 is gear, not a fishing boat", () => {
+    const test = filterTest({ ...NO_FILTERS, type: "Fishing" }, now);
+    expect(test({ kind: "vessel", shipType: 30, seen })).toBe(true);
+    expect(test({ kind: "gear", shipType: 30, seen })).toBe(false);
+    expect(test({ kind: "aton", shipType: 30, seen })).toBe(false);
+    expect(new URLSearchParams(filterParams({ ...NO_FILTERS, type: "Fishing" }, now)).get("kind")).toBe("vessel");
+    expect(new URLSearchParams(filterParams(NO_FILTERS, now)).get("kind")).toBeNull();
   });
   it("keeps to the view's boxes", () => {
     const view = { boxes: [[38, -77, 39, -76]] as Array<[number, number, number, number]> };

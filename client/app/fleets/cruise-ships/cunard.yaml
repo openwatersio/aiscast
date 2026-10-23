@@ -1,0 +1,25 @@
+title: Cunard Line
+summary: "Cunard Line was founded in 1840 by Samuel Cunard, is based in Southampton and is part of Carnival Corporation. Its 4 ships range from Queen Mary 2 (2004) to Queen Anne (2024)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q730587
+sections:
+  - title: Vista class
+    vessels:
+      - name: Queen Elizabeth
+        mmsi: 310625000
+        imo: 9477438
+        subtitle: "294 m · in service 2010"
+      - name: Queen Victoria
+        mmsi: 310624000
+        imo: 9320556
+        subtitle: "294 m · in service 2007"
+  - title: Other ships
+    vessels:
+      - name: Queen Anne
+        mmsi: 310835000
+        imo: 9839399
+        subtitle: "323 m · in service 2024"
+      - name: Queen Mary 2
+        mmsi: 310627000
+        imo: 9241061
+        subtitle: "345 m · in service 2004"

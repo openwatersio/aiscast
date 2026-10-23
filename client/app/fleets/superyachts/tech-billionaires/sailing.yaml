@@ -1,0 +1,38 @@
+title: Sailing yachts
+summary: Schooners and racing yachts of technology founders and leaders.
+description: Ownership reflects public reporting, with former connections labeled. Sources checked October 5, 2026.
+cover: Koru
+vessels:
+  - name: Koru
+    mmsi: 319225400
+    imo: 9857298
+    subtitle: Jeff Bezos · owner
+    note: Amazon founder. 125 m / 410 ft · Oceanco · Three-masted schooner. Delivered in 2023. Oceanco lists her length as 125 metres; many published accounts quote 127 metres.
+    links:
+      Yacht details: https://www.oceancoyacht.com/fleet/koru/
+      Ownership history: https://en.wikipedia.org/wiki/Koru_(yacht)
+      AIS identity: https://www.vesselfinder.com/vessels/details/9857298
+  - name: Athena
+    mmsi: 319012000
+    imo: 1007237
+    subtitle: Jim Clark · commissioned
+    note: Netscape co-founder. 90 m / 295 ft · Royal Huisman · Three-masted gaff schooner. Delivered in 2004, combining a classic schooner silhouette with modern construction.
+    links:
+      Yacht details: https://www.royalhuisman.com/en/yachts/athena/
+      Ownership history: https://www.royalhuisman.com/en/athena-inside-the-royal-huisman-flagship-yacht/
+      AIS identity: https://www.hafen-hamburg.de/de/schiffe/athena/
+  - name: Eos
+    mmsi: 319087000
+    imo: 9377456
+    subtitle: Barry Diller & Diane von Furstenberg · owners
+    note: IAC / Expedia and fashion. 93 m / 305 ft · Lürssen · Three-masted schooner. Delivered in 2006. Lürssen's rare sailing build remains one of the largest private sailing yachts.
+    links:
+      Yacht details: https://www.lurssen.com/en/new-build/yachts/eos/
+      Ownership history: https://www.yachtbuyer.com/en-gb/fleet/eos-304-lurssen
+      AIS identity: https://www.aisfriends.com/vessels/EOS/9377456/319087000/95672
+  - name: Rán VII
+    subtitle: Niklas & Catherine Zennström · commissioned
+    note: Skype co-founder and Rán Racing. 40 ft / 12.2 m class · Carkeek Design · Fast40+ racing yacht. Launched in 2018 for competitive racing, with electric auxiliary propulsion. She races under sail.
+    links:
+      Yacht details: https://www.sail-world.com/news/204562/Carkeeks-R%C3%A1n-Fast40-promises-electric-partnership
+      Ownership history: https://www.carkeekdesignpartners.com/?p=1339

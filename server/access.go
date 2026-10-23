@@ -116,7 +116,7 @@ func clientNet(ip string) (network, hash string) {
 // accessParams are the query parameters the access log keeps: those the server reads, less key.
 var accessParams = map[string]bool{"around": true, "bbox": true, "class": true, "format": true, "from": true,
 	"interval": true, "kind": true, "limit": true, "max_age": true, "max_age_moving": true, "min_sog": true,
-	"mmsi": true, "q": true, "snapshot": true, "to": true, "type": true}
+	"imo": true, "mmsi": true, "q": true, "snapshot": true, "to": true, "type": true}
 
 // tokenPattern is an access token wherever it turns up: a path segment, a pasted URL, a user agent.
 var tokenPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(tokenPrefix) + `[^\s/?&#"]*`)
@@ -156,7 +156,9 @@ func canonicalPath(r *http.Request, route string) (string, int) {
 	for i, p := range parts {
 		if name, ok := strings.CutPrefix(p, "{"); ok {
 			v := r.PathValue(strings.TrimSuffix(name, "}"))
-			if v == "" || strings.Trim(v, "0123456789") != "" {
+			if n, ok := strings.CutPrefix(strings.ToUpper(v), "IMO"); ok && n != "" && strings.Trim(n, "0123456789") == "" {
+				v = "IMO" + n // a vessel asked for by IMO number
+			} else if v == "" || strings.Trim(v, "0123456789") != "" {
 				v = "x"
 			}
 			parts[i] = v

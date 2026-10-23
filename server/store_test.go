@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -208,6 +209,10 @@ func TestVesselEndpoint(t *testing.T) {
 		f.Properties["imo"] != float64(9000001) || f.Properties["first_seen"] == nil || f.Attribution["kystverket"] == "" {
 		t.Errorf("from the record: %s", w.Body)
 	}
+	// The place nearest the position, as a search gives it.
+	if want := nearLabel(59.9, 10.7); want == "" || f.Properties["near"] != want {
+		t.Errorf("near %v, want %q", f.Properties["near"], want)
+	}
 	if seen, _ := time.Parse(time.RFC3339, f.Properties["seen"].(string)); time.Since(seen) < 119*time.Minute {
 		t.Errorf("seen %v is not the record's", seen)
 	}
@@ -227,7 +232,7 @@ func TestVesselEndpoint(t *testing.T) {
 	// Heard only in a static report ever: known, with no position.
 	p.ingestPacket("kystverket", "kystverket", now, now, shipStatic(257000009, "NO FIX"))
 	w = get(t, p, "/v1/vessels/257000009")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"geometry":null`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"geometry":null`) || strings.Contains(w.Body.String(), `"near"`) {
 		t.Errorf("positionless vessel: %d %s", w.Code, w.Body)
 	}
 
@@ -366,7 +371,8 @@ func TestMCPReachesTheRecord(t *testing.T) {
 		len(out.Vessels) != 1 || out.Vessels[0].Lat == nil || out.Vessels[0].AgeS < 7000 || len(out.Unknown) != 1 {
 		t.Errorf("get_vessels: %q %+v", msg, out)
 	}
-	if msg := mcpCall(t, cs, "get_vessels", map[string]any{"imo": []uint32{9000001, 9000002}}, &out); msg != "" || len(out.Vessels) != 2 {
+	feeder := mcpClientCtx(t, p, context.WithValue(context.Background(), mcpClaimsKey{}, &Claims{Sub: "f", Role: "feeder"}))
+	if msg := mcpCall(t, feeder, "get_vessels", map[string]any{"imo": []uint32{9000001, 9000002}}, &out); msg != "" || len(out.Vessels) != 2 {
 		t.Errorf("get_vessels by IMO, recorded and cached: %q %+v", msg, out)
 	}
 	if msg := mcpCall(t, cs, "search_vessels_by_name", map[string]any{"name": "star"}, &out); msg != "" ||

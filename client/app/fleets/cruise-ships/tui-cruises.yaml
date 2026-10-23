@@ -1,0 +1,41 @@
+title: TUI Cruises
+summary: "TUI Cruises was founded in 2008 and is based in Hamburg. Its 9 ships range from Mein Schiff 3 (2014) to Mein Schiff Flow (2026)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q325780
+vessels:
+  - name: Mein Schiff Flow
+    mmsi: 249712000
+    imo: 9862669
+    subtitle: "333 m · in service 2026"
+  - name: Mein Schiff Relax
+    mmsi: 249129000
+    imo: 9862657
+    subtitle: "333 m · in service 2025"
+  - name: Mein Schiff 7
+    mmsi: 256750000
+    imo: 9851189
+    subtitle: "316 m · in service 2024"
+  - name: Mein Schiff 2
+    mmsi: 248956000
+    imo: 9783576
+    subtitle: "316 m · in service 2019"
+  - name: Mein Schiff 1
+    mmsi: 248513000
+    imo: 9783564
+    subtitle: "316 m · in service 2018"
+  - name: Mein Schiff 6
+    mmsi: 249660000
+    imo: 9753208
+    subtitle: "295 m · in service 2017"
+  - name: Mein Schiff 5
+    mmsi: 256235000
+    imo: 9753193
+    subtitle: "295 m · in service 2016"
+  - name: Mein Schiff 4
+    mmsi: 229678000
+    imo: 9678408
+    subtitle: "294 m · in service 2015"
+  - name: Mein Schiff 3
+    mmsi: 229090000
+    imo: 9641730
+    subtitle: "294 m · in service 2014"

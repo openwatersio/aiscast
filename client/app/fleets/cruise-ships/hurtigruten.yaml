@@ -1,0 +1,45 @@
+title: Hurtigruten
+summary: "Hurtigruten was founded in 1866 by Richard With and is based in Oslo. Its 10 ships range from Vesterålen (1983) to Midnatsol (2003)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q838725
+vessels:
+  - name: Midnatsol
+    mmsi: 258595000
+    imo: 9247728
+    subtitle: "136 m · in service 2003"
+  - name: Finnmarken
+    mmsi: 259210000
+    imo: 9231951
+    subtitle: "139 m · in service 2002"
+  - name: Trollfjord
+    mmsi: 258465000
+    imo: 9233258
+    subtitle: "136 m · in service 2002"
+  - name: Nordnorge
+    mmsi: 259371000
+    imo: 9107784
+    subtitle: "123 m · in service 1997"
+  - name: Nordkapp
+    mmsi: 259330000
+    imo: 9107772
+    subtitle: "124 m · in service 1996"
+  - name: Polarlys
+    mmsi: 259322000
+    imo: 9107796
+    subtitle: "123 m · in service 1996"
+  - name: Nordlys
+    mmsi: 259139000
+    imo: 9048914
+    subtitle: "122 m · in service 1994"
+  - name: Kong Harald
+    mmsi: 257200000
+    imo: 9039119
+    subtitle: "122 m · in service 1993"
+  - name: Richard With
+    mmsi: 258500000
+    imo: 9040429
+    subtitle: "122 m · in service 1993"
+  - name: "Vesterålen"
+    mmsi: 258478000
+    imo: 8019368
+    subtitle: "109 m · in service 1983"

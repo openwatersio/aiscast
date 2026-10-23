@@ -36,10 +36,18 @@ export async function edgeCached(
   const hit = await cache.match(key);
   if (hit) return hit;
   const made = await make();
-  const ttl = ttls[made.status];
+  // An answer may ask to be kept for less, as a card drawn without the photo it should have does.
+  const own = /max-age=(\d+)/.exec(made.headers.get("Cache-Control") ?? "")?.[1];
+  const ttl = Math.min(ttls[made.status] ?? 0, own ? Number(own) : Infinity);
   if (!ttl) return made;
   const res = new Response(made.body, made);
   res.headers.set("Cache-Control", `public, max-age=${ttl}`);
   waitUntil(cache.put(key, res.clone()));
   return res;
+}
+
+/** A 405 for anything but GET or HEAD, for the paths the Worker answers itself; otherwise undefined. */
+export function notGetOrHead(request: Request): Response | undefined {
+  if (request.method === "GET" || request.method === "HEAD") return undefined;
+  return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
 }

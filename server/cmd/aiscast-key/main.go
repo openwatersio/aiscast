@@ -58,13 +58,18 @@ func main() {
 		conns := fs.Int("conns", 0, "max concurrent WebSockets (0 = unlimited)")
 		rate := fs.Int("rate", 0, "max messages per second per connection, excess thinned (0 = unlimited)")
 		area := fs.Float64("area", 0, "max total subscribed bbox area in square degrees (0 = unlimited, -1 = MMSI subscriptions only)")
-		mmsis := fs.Int("mmsis", 0, "max vessels followed by MMSI per subscription (0 = unlimited)")
+		mmsis := fs.Int("mmsis", 0, "max vessels followed by MMSI or IMO per subscription (0 = unlimited)")
 		rpm := fs.Int("rpm", 0, "HTTP requests per minute, counted per sub (0 = unlimited; omit for the per-address default)")
 		var boxes, cidrs multi
 		fs.Var(&boxes, "bbox", "allowed bbox minLat,minLon,maxLat,maxLon (repeatable)")
 		fs.Var(&cidrs, "cidr", "allowed source CIDR or IP (repeatable)")
 		fs.Parse(os.Args[2:])
 		sb, err := base64.RawURLEncoding.DecodeString(*seed)
+		if strings.HasSuffix(strings.ToLower(*sub), ".png") {
+			// The server refuses it: the web client serves station cards at a station's address plus ".png".
+			fmt.Fprintln(os.Stderr, "-sub may not end in .png")
+			os.Exit(2)
+		}
 		if err != nil || len(sb) != ed25519.SeedSize || *kid == "" || *sub == "" || *role == "" {
 			fmt.Fprintln(os.Stderr, "need -seed, -kid, -sub, -role")
 			os.Exit(2)

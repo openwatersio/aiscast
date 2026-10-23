@@ -1,9 +1,12 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -40,6 +43,109 @@ func TestImportReadsPastAShortPage(t *testing.T) {
 	p := historyPipeline(t, f)
 	if n, err := p.importVessels(context.Background()); err != nil || n != 5 {
 		t.Errorf("a source returning fewer rows than asked must not end the import: %d %v", n, err)
+	}
+}
+
+// History holds MMSIs the fold keeps out, and the import keeps them out of the record too, reading on past a page
+// that holds nothing else.
+func TestImportSkipsInvalidMMSIs(t *testing.T) {
+	month := time.Now().UTC().AddDate(0, -1, 0).Truncate(time.Second)
+	f := &fakeVesselHistory{}
+	for _, m := range []uint32{1, 123456789, 257000001, 970123456, 999999999} {
+		f.rows = append(f.rows, historyRow{mmsi: m, name: "DATAHUB", first: month, updated: month})
+	}
+	// Gear by what it said about itself: a net buoy only history knows, and one the record holds as a flagged vessel.
+	f.rows = append(f.rows, historyRow{mmsi: 233510227, name: "HSD-NET-88%", length: 10, beam: 10, first: month, updated: month},
+		historyRow{mmsi: 254301782, name: "HSD-NET-84%", length: 10, beam: 10, first: month, updated: month})
+	slices.SortFunc(f.rows, func(a, b historyRow) int { return cmp.Compare(a.mmsi, b.mmsi) })
+	p := historyPipeline(t, f)
+	if _, err := p.store.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, seen, first_seen) VALUES (254301782, 'X', 'vessel', 'MC', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	// A vessel the record knows by name and type, whose history holds an older blank state with a square hull: judged
+	// on the row as the merge leaves it, it stays a vessel.
+	if _, err := p.store.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, ship_type, seen, first_seen) VALUES (257000001, 'NORDIC STAR', 'vessel', 'NO', 70, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	for i := range f.rows {
+		if f.rows[i].mmsi == 257000001 {
+			f.rows[i].name, f.rows[i].length, f.rows[i].beam = "", 10, 10
+		}
+	}
+	importPage = 2
+	t.Cleanup(func() { importPage = 20_000 })
+	if n, err := p.importVessels(context.Background()); err != nil || n != 4 {
+		t.Errorf("merged %d: %v", n, err)
+	}
+	// History keeps no navigational status, so a beacon's number alone does not make it sar.
+	for m, want := range map[uint32]string{233510227: "gear ", 254301782: "gear ", 970123456: "vessel ", 257000001: "vessel NO"} {
+		var got string
+		if err := p.store.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = ?`, m).Scan(&got); err != nil || got != want {
+			t.Errorf("imported %d is %q (%v), want %q", m, got, err, want)
+		}
+	}
+	for _, m := range []uint32{1, 123456789, 999999999} {
+		if _, ok, _ := p.store.get(m); ok {
+			t.Errorf("record has a row for %d", m)
+		}
+	}
+	if _, ok, _ := p.store.get(257000001); !ok {
+		t.Error("the valid vessel after a page of invalid ones was not imported")
+	}
+}
+
+// Opening the record removes rows it already holds under MMSIs the fold keeps out.
+func TestOpenStoreRemovesInvalidMMSIs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The SQL and validMMSI must agree on every edge of every range and on every default.
+	all := []uint32{1234567, 2573104, 25700001, 257000001, 1 << 30}
+	for _, r := range invalidMMSIRanges {
+		all = append(all, r[0], r[1])
+		if r[0] > 0 {
+			all = append(all, r[0]-1)
+		}
+		if r[1] < math.MaxUint32 {
+			all = append(all, r[1]+1)
+		}
+	}
+	for m := range defaultMMSIs {
+		all = append(all, m, m+1)
+	}
+	slices.Sort(all)
+	all = slices.Compact(all)
+	for _, m := range all {
+		if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, seen, first_seen) VALUES (?, 'X', 1, 1)`, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, own := range map[string]uint32{"a": 555555555, "b": 257000001, "c": 0, "mmsi:123456789": 0, "mmsi:257000001": 0, "mmsi:2573104": 0} {
+		if _, err := st.db.Exec(`INSERT INTO stations (id, own) VALUES (?, ?)`, id, own); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	for id, want := range map[string]uint32{"a": 0, "b": 257000001, "c": 0, "mmsi:257000001": 0, "mmsi:2573104": 0} {
+		var own uint32
+		if err := st.db.QueryRow(`SELECT own FROM stations WHERE id = ?`, id).Scan(&own); err != nil || own != want {
+			t.Errorf("station %s own vessel %d (%v), want %d", id, own, err, want)
+		}
+	}
+	var merged int
+	if st.db.QueryRow(`SELECT count() FROM stations WHERE id = 'mmsi:123456789'`).Scan(&merged); merged != 0 {
+		t.Error("the station UDP senders were merged into under a default MMSI is kept")
+	}
+	for _, m := range all {
+		if _, ok, _ := st.get(m); ok != validMMSI(m) {
+			t.Errorf("row for %d kept=%v, want %v", m, ok, validMMSI(m))
+		}
 	}
 }
 
@@ -220,4 +326,79 @@ func TestImportReadsClickHouse(t *testing.T) {
 			t.Errorf("a vessel only vessel_statics knows: %+v", h)
 		}
 	}
+}
+
+// A row saved as a vessel before its kind was derived, and not heard since, takes the kind its stored name, size, and
+// status give it when the record opens, once per version of the rule.
+func TestOpenStoreDerivesStoredKinds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`DELETE FROM meta WHERE key = 'derived_kinds'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct {
+		mmsi       uint32
+		name, kind string
+		flag       string
+		shipType   int
+		length     int
+		beam       int
+		nav        int
+	}{
+		{233510227, "HSD-NET-88%", "vessel", "GB", 0, 10, 10, 15},
+		{970123456, "", "vessel", "", 0, 0, 0, 14},
+		{257000001, "NORDIC STAR", "vessel", "NO", 70, 120, 20, 0},
+		{992576072, "AQUACULTURE BUOY 1", "aton", "NO", 30, 0, 0, 15},
+		// A beacon's row whose status the import reset: a stored status cannot say the beacon stopped.
+		{972000001, "", "sar", "", 0, 0, 0, 15},
+	} {
+		if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, ship_type, length, beam, nav_status, seen, first_seen)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`, r.mmsi, r.name, r.kind, r.flag, r.shipType, r.length, r.beam, r.nav); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	for m, want := range map[uint32]string{233510227: "gear ", 970123456: "sar ", 257000001: "vessel NO", 992576072: "aton NO", 972000001: "sar "} {
+		var got string
+		if err := st.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = ?`, m).Scan(&got); err != nil || got != want {
+			t.Errorf("row %d after opening: %q (%v), want %q", m, got, err, want)
+		}
+	}
+	// The rule's version is recorded, so a later boot does not scan again.
+	if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, length, beam, seen, first_seen) VALUES (260400570, 'HSD-NET-33%', 'vessel', 'MC', 10, 10, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	var kind string
+	if err := st.db.QueryRow(`SELECT kind FROM vessels WHERE mmsi = 260400570`).Scan(&kind); err != nil || kind != "vessel" {
+		t.Errorf("a row added after the rule ran is %q (%v); the scan runs once per version", kind, err)
+	}
+	// A new version of the rule runs again, over gear too: a row the old rule called gear and the new one does not is
+	// a vessel again, with its flag.
+	if _, err := st.db.Exec(`UPDATE meta SET value = '0' WHERE key = 'derived_kinds'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, ship_type, seen, first_seen) VALUES (257000002, 'NORDIC STAR', 'gear', '', 70, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	for m, want := range map[uint32]string{260400570: "gear ", 257000002: "vessel NO"} {
+		var got string
+		if err := st.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = ?`, m).Scan(&got); err != nil || got != want {
+			t.Errorf("row %d after a new version: %q (%v), want %q", m, got, err, want)
+		}
+	}
+	st.close()
 }

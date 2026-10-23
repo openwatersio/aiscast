@@ -2,9 +2,9 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Frame, Link } from "../src/link.js";
-import { SEGMENT_MAX, Uplink } from "../src/uplink.js";
+import { QUEUE_MAX_BYTES, SEGMENT_MAX, Uplink } from "../src/uplink.js";
 
 const VDM = "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -21,15 +21,19 @@ async function until(cond: () => boolean | Promise<boolean>, ms = 5000): Promise
 class FakeLink extends EventEmitter {
   open = true;
   accept = Infinity;
+  ack = true;
+  reconnects = 0;
   published: Frame[] = [];
   send(frame: Frame): boolean {
     if (!this.open) return false;
     this.published.push(frame);
     const n = Math.min((frame.nmea as string[]).length, this.accept);
-    setImmediate(() => this.emit("frame", { type: "ack", n }));
+    if (this.ack) setImmediate(() => this.emit("frame", { type: "ack", n }));
     return true;
   }
-  reconnect(): void {}
+  reconnect(): void {
+    this.reconnects++;
+  }
   // Real connects deliver a welcome first; a generous limit keeps the pacer out of the way of the tests.
   connect(limits: Record<string, number> = { publish_per_min: 6_000_000 }): void {
     this.open = true;
@@ -287,6 +291,54 @@ describe("draining the queue", () => {
     expect(link.published).toHaveLength(1);
     expect(await files()).toHaveLength(3);
   });
+
+  it("requeues a live frame the server never acks, and reconnects", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "Date"] });
+    try {
+      link.ack = false;
+      await up.start();
+      link.connect();
+      await sleep(20); // the connect's drain finds nothing and lets live sending through
+      up.hear(VDM);
+      await until(() => link.published.length === 1);
+      expect(link.published[0].replay).toBeUndefined();
+      vi.advanceTimersByTime(25_000);
+      expect(link.reconnects).toBe(0);
+      vi.advanceTimersByTime(10_000); // past the 30 s the server has to ack
+      expect(link.reconnects).toBe(1);
+      expect(up.stats).toMatchObject({ queued: 1, inFlight: 0, sent: 0 });
+      await up.stop(); // the requeued sentence lands on disk, as it would across a restart
+      expect(await onDisk()).toEqual(sentences(link.published[0]));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("queue cap", () => {
+  it("drops the oldest segments once the queue outgrows its cap, and counts what it dropped", async () => {
+    const perSegment = Math.ceil(SEGMENT_MAX / (VDM.length + 1));
+    const segment = Buffer.from(asLines(Array(perSegment).fill(VDM)));
+    const count = Math.floor(QUEUE_MAX_BYTES / segment.length) + 2;
+    await mkdir(queue(), { recursive: true });
+    for (let i = 0; i < count; i++) await writeFile(join(queue(), `${1700000000000 + i}.log`), segment);
+    const over = Math.ceil((count * segment.length - QUEUE_MAX_BYTES) / segment.length);
+    vi.useFakeTimers({ toFake: ["setInterval"] });
+    try {
+      link.open = false; // nothing drains, so only the cap can shrink the queue
+      await up.start();
+      expect(up.stats.queued).toBe(count * perSegment);
+      vi.advanceTimersByTime(60_000);
+      await until(() => up.stats.dropped === over * perSegment); // every segment over the cap, not just the first
+      expect(up.stats.dropped).toBe(over * perSegment);
+      expect(up.stats.queued).toBe((count - over) * perSegment);
+      const left = await files();
+      expect(left).toHaveLength(count - over);
+      expect(left[0]).toBe(`${1700000000000 + over}.log`); // the oldest went
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 30_000);
 });
 
 describe("reading a queue off disk", () => {

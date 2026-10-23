@@ -1,0 +1,14 @@
+#!/usr/sbin/nft -f
+# The ops user may open two connections: aiscast's /metrics on 8080 and pprof on 6060 (its ssh tunnel).
+# Everything else it might reach on loopback can change the box: Caddy's admin API on 2019 loads any
+# config, ClickHouse's passwordless users drop tables, and services added later would be no different.
+# So ops gets an allow-list instead of a list of ports to block; it needs no outside network at all.
+table inet ops_egress
+delete table inet ops_egress
+table inet ops_egress {
+	chain output {
+		type filter hook output priority 0; policy accept;
+		meta skuid "ops" oifname "lo" tcp dport { 6060, 8080 } accept
+		meta skuid "ops" counter reject
+	}
+}

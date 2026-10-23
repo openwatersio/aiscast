@@ -1,0 +1,212 @@
+title: Largest motor yachts
+summary: The private motor yachts 100 metres long or more, from Azzam at 180 metres down. Many keep their AIS off, so plenty are listed without a position.
+cover: Octopus
+source:
+  Wikipedia: https://en.wikipedia.org/wiki/List_of_motor_yachts_by_length
+vessels:
+  - name: Azzam
+    imo: 9693367
+    subtitle: "180 m · Lürssen · 2013"
+  - name: Fulk Al Salamah
+    imo: 9714460
+    subtitle: "164 m · T. Mariotti · 2016"
+  - name: Eclipse
+    imo: 1009613
+    subtitle: "162.5 m · Blohm + Voss · 2009"
+  - name: Dubai
+    imo: 1006324
+    subtitle: "162 m · Blohm + Voss · 2006"
+  - name: Blue
+    mmsi: 319239400
+    imo: 9862231
+    subtitle: "160 m · Lürssen · 2022"
+  - name: Dilbar
+    imo: 9661792
+    subtitle: "156 m · Lürssen · 2016"
+  - name: Al Said
+    imo: 9463774
+    subtitle: "155 m · Lürssen · 2007"
+  - name: Prince Abdulaziz
+    imo: 1003308
+    subtitle: "147 m · 1984"
+  - name: "A+"
+    mmsi: 319054000
+    imo: 9551454
+    subtitle: "147 m · Lürssen · 2012"
+  - name: Opera
+    subtitle: "146.4 m · Lürssen · 2023"
+  - name: El Mahrousa
+    subtitle: "145.7 m · Samuda Brothers · 1865"
+  - name: Nord
+    subtitle: "142 m · Lürssen · 2019"
+  - name: Dragonfly
+    mmsi: 319296900
+    imo: 9907196
+    subtitle: "142 m · Lürssen · 2024"
+  - name: Yas
+    subtitle: "141 m · ADM Shipyards · 2015"
+  - name: Ocean Victory
+    imo: 1011850
+    subtitle: "140 m · Fincantieri · 2014"
+  - name: Scheherazade
+    mmsi: 367628060
+    imo: 9809980
+    subtitle: "140 m · Lürssen · 2020"
+  - name: Al Salamah
+    imo: 1007043
+    subtitle: "139 m · Lürssen · 1999"
+  - name: Solaris
+    imo: 9819820
+    subtitle: "139 m · Lloyd Werft · 2021"
+  - name: Luminance
+    subtitle: "138.8 m · Lürssen · 2024"
+  - name: Rising Sun
+    mmsi: 319011000
+    imo: 8982307
+    subtitle: "138 m · Lürssen · 2004"
+  - name: Savarona
+    imo: 5314810
+    subtitle: "136 m · Blohm + Voss · 1931"
+  - name: Flying Fox
+    subtitle: "136 m · Lürssen · 2018"
+  - name: Crescent
+    imo: 9785108
+    subtitle: "135.5 m · Lürssen · 2018"
+  - name: Serene
+    imo: 1010090
+    subtitle: "134 m · Fincantieri · 2010"
+  - name: Al Mirqab
+    imo: 1009223
+    subtitle: "133 m · Kusch Yachts · 2008"
+  - name: Octopus
+    mmsi: 319866000
+    imo: 1007213
+    subtitle: "126 m · Lürssen · 2003"
+  - name: Koru
+    mmsi: 319225400
+    imo: 9857298
+    subtitle: "125.8 m · Oceanco · 2023"
+  - name: Maryah
+    mmsi: 319068600
+    imo: 9044619
+    subtitle: "125 m · Elefsis Shipyard · 1990"
+  - name: Katara
+    subtitle: "124.4 m · Lürssen · 2010"
+  - name: Golden Odyssey
+    subtitle: "123.2 m · Lürssen · 2015"
+  - name: Al Lusail
+    mmsi: 466443000
+    imo: 9772929
+    subtitle: "123 m · Lürssen · 2017"
+  - name: Kismet
+    subtitle: "122 m · Lürssen · 2024"
+  - name: Alexander
+    mmsi: 215838000
+    imo: 6603012
+    subtitle: "122 m · Flender Werke · 1965"
+  - name: J7 Explorer
+    subtitle: "120 m · PT Bahtera Bahari shipyard · 2022"
+  - name: Motor Yacht A
+    imo: 1009340
+    subtitle: "119 m · Blohm + Voss · 2008"
+  - name: Breakthrough
+    subtitle: "118.8 m · Feadship · 2025"
+  - name: Liva O
+    subtitle: "118.2 m · Abeking & Rasmussen · 2023"
+  - name: Launchpad
+    subtitle: "118 m · Feadship · 2024"
+  - name: Infinity
+    mmsi: 319208000
+    imo: 9817896
+    subtitle: "117 m · Oceanco · 2022"
+  - name: Boardwalk
+    subtitle: "117 m · Lürssen · 2026"
+  - name: Turama
+    subtitle: "116.4 m · Rauma Shipyard · 1990"
+  - name: Multiverse
+    subtitle: "116 m · Kleven Maritime AS · 2017"
+  - name: Atlantis II
+    subtitle: "115.8 m · Hellenic Shipyards S.A. · 1981"
+  - name: Navtilvs
+    subtitle: "115.8 m · Hellenic Shipyards S.A. · 1973"
+  - name: Lady Jorgia
+    imo: 9855276
+    subtitle: "115.1 m · Lürssen · 2021"
+  - name: Pelorus
+    mmsi: 319328900
+    imo: 8977273
+    subtitle: "115 m · Lürssen · 2003"
+  - name: Luna
+    imo: 1010222
+    subtitle: "115 m · Lloyd Werft · 2010"
+  - name: Le Grand Bleu
+    mmsi: 533133683
+    imo: 1006829
+    subtitle: "113 m · Bremer Vulkan · 2000"
+  - name: Renaissance
+    subtitle: "111.8 m · Freire Shipyard · 2023"
+  - name: Alaiya
+    imo: 1013016
+    subtitle: "111.5 m · Lürssen · 2019"
+  - name: Leviathan
+    mmsi: 319324100
+    imo: 9921491
+    subtitle: "111 m · Oceanco · 2025"
+  - name: Al Raya
+    mmsi: 319150300
+    imo: 9526758
+    subtitle: "110 m · Lürssen · 2008"
+  - name: Radiant
+    mmsi: 319012900
+    imo: 9571105
+    subtitle: "110 m · Lürssen · 2010"
+  - name: Kaos
+    subtitle: "110 m · Oceanco · 2017"
+  - name: Anna
+    subtitle: "110 m · Feadship · 2018"
+  - name: Bravo Eugenia
+    mmsi: 319156800
+    imo: 1012921
+    subtitle: "109 m · Oceanco · 2019"
+  - name: Seven Seas
+    subtitle: "109 m · Oceanco · 2022"
+  - name: Shackleton
+    subtitle: "109 m · Lürssen · 2023"
+  - name: IJE
+    subtitle: "108 m · Benetti · 2019"
+  - name: Luminosity
+    subtitle: "107.6 m · Benetti · 2020"
+  - name: Andromeda
+    mmsi: 319879000
+    imo: 9692545
+    subtitle: "107 m · Kleven Maritime AS · 2016"
+  - name: Mar
+    subtitle: "107 m · Benetti · 2019"
+  - name: Amadea
+    imo: 1012531
+    subtitle: "106 m · Lürssen · 2016"
+  - name: Dream
+    subtitle: "106 m · Halkitis Shipyards S.A. · 2018"
+  - name: Lady Moura
+    mmsi: 309221000
+    imo: 1002380
+    subtitle: "105 m · Blohm + Voss · 1990"
+  - name: Quantum Blue
+    subtitle: "104 m · Lürssen · 2014"
+  - name: Loaloat Al Behar
+    imo: 7908433
+    subtitle: "103.8 m · Perini Navi · 1982"
+  - name: Ulysses
+    subtitle: "102.6 m · Feadship · 2024"
+  - name: Symphony
+    mmsi: 319076700
+    imo: 1012098
+    subtitle: "101.5 m · Feadship · 2015"
+  - name: I Dynasty
+    mmsi: 319077300
+    imo: 9657545
+    subtitle: "100.8 m · Kusch Yachts · 2015"
+  - name: Attessa IV
+    subtitle: "100 m · Hayashikane · 1999"
+  - name: Moonrise
+    subtitle: "100 m · Feadship · 2020"

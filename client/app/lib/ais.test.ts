@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  vesselActivity,
   bearing,
   distanceNM,
   formatDistance,
@@ -8,6 +10,7 @@ import {
   isVolunteer,
   stationName,
   stationStatus,
+  stationDescription,
   stationTitle,
   volunteerReceiver,
   stationTitles,
@@ -18,6 +21,9 @@ import {
   parseEta,
   parsePlace,
   parseVesselParam,
+  adoptedKind,
+  derivedKind,
+  mmsiSegment,
   shipClass,
   silences,
   speedAt,
@@ -75,6 +81,18 @@ describe("vesselPath", () => {
     expect(vesselPath(440468000)).toBe("/vessels/440468000");
     expect(vesselPath(440468000, "***")).toBe("/vessels/440468000");
   });
+
+  it("leaves gear's name out, which is a serial and a battery level", () => {
+    expect(vesselPath(994168892, "994168892-75%", "gear")).toBe("/vessels/994168892");
+    expect(vesselPath(992576072, "AQUACULTURE 1", "aton")).toBe("/vessels/992576072-aquaculture-1");
+  });
+});
+
+describe("mmsiSegment", () => {
+  it("writes nine digits, so a coast station is not read as an IMO number", () => {
+    expect(mmsiSegment(2573104)).toBe("002573104");
+    expect(mmsiSegment(440468000)).toBe("440468000");
+  });
 });
 
 describe("parseVesselParam", () => {
@@ -112,11 +130,44 @@ describe("parseVesselParam", () => {
   });
 });
 
+describe("derivedKind", () => {
+  it("decides as the server does, on the cases both are tested against", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../../../server/testdata/derived_kinds.json", import.meta.url), "utf8")) as {
+      cases: Array<{ mmsi: number; name: string; shipType: number; length: number; beam: number; navStatus: number; want: string }>;
+    };
+    expect(fixture.cases.length).toBeGreaterThan(0);
+    for (const c of fixture.cases) {
+      expect(derivedKind(c.mmsi, c), `${c.mmsi} ${c.name}`).toBe(c.want);
+    }
+  });
+});
+
+describe("adoptedKind", () => {
+  it("lets a ship type the stream missed make its gear a vessel", () => {
+    // Part A of message 24 heard, part B not; the tile knows type 37.
+    expect(adoptedKind(368472570, { kind: "gear", name: "BUOY TIME", shipType: 37 }, "vessel")).toBe("vessel");
+  });
+
+  it("keeps the server's gear for a hull the stream has not heard", () => {
+    expect(adoptedKind(260400999, { kind: "vessel" }, "gear")).toBe("gear");
+  });
+
+  it("takes an aid the server knows, and keeps what a message set", () => {
+    expect(adoptedKind(992576072, { kind: "gear", name: "AQUACULTURE BUOY 1" }, "aton")).toBe("aton");
+    expect(adoptedKind(992576072, { kind: "aton", name: "AQUACULTURE BUOY 1" }, "gear")).toBe("aton");
+  });
+
+  it("decides gear the stream can tell by name", () => {
+    expect(adoptedKind(254301782, { kind: "vessel", name: "HSD-NET-84%" }, "vessel")).toBe("gear");
+  });
+});
+
 describe("shipClass", () => {
   it("prefers the AIS kind over the ship type", () => {
     expect(shipClass("aton", 70)).toBe("aton");
     expect(shipClass("base", undefined)).toBe("base");
     expect(shipClass("sar", 0)).toBe("sar");
+    expect(shipClass("gear", 30)).toBe("gear");
   });
 
   it("maps ITU type ranges", () => {
@@ -557,5 +608,42 @@ describe("trackGap", () => {
     expect(splitTrack(coords, silences(times, trackGap(hour)))).toEqual([coords.slice(0, 3)]);
     expect(splitTrack(coords, silences(times))).toEqual([]);
     expect(trackGap(0)).toBe(TRACK_GAP_MS);
+  });
+});
+
+describe("stationDescription", () => {
+  const st = { vessels: 225, vessels_24h: 645, events: { last_24h: 873404 }, last_age_s: 2 };
+
+  it("counts vessels over the same 24 hours as messages, as the share card does", () => {
+    expect(stationDescription("Near Milazzo, Italy", st)).toMatch(
+      /^AIS receiving station Near Milazzo, Italy: 645 vessels and 873,404 messages in 24 hours, last message /,
+    );
+  });
+
+  it("leaves the vessels out while the station's counts are not in, as its card does", () => {
+    expect(stationDescription("x", { ...st, vessels: 0, vessels_24h: 0 })).toContain(": 873,404 messages in 24 hours");
+    // A station that sent nothing has 0 vessels, which is so.
+    expect(stationDescription("x", { ...st, vessels: 0, vessels_24h: 0, events: { last_24h: 0 } })).toContain(": 0 vessels and 0 messages");
+  });
+
+  it("counts one vessel or message in the singular", () => {
+    expect(stationDescription("x", { ...st, vessels_24h: 1, events: { last_24h: 1 } })).toContain(": 1 vessel and 1 message in 24 hours");
+  });
+
+  it("falls back to the 30-minute count from a server without the 24-hour one", () => {
+    expect(stationDescription("x", { ...st, vessels_24h: undefined })).toContain(": 225 vessels and");
+  });
+});
+
+describe("vesselActivity", () => {
+  it("says what a vessel is doing and where", () => {
+    expect(vesselActivity({ nav_status: 5, sog: 0, near: "Monaco" })).toBe("Moored near Monaco");
+    expect(vesselActivity({ nav_status: 0, sog: 11.4, near: "Antibes, France" })).toBe("Under way near Antibes, France");
+    expect(vesselActivity({ nav_status: 8, sog: 7 })).toBe("Sailing");
+    expect(vesselActivity({ nav_status: 1, sog: 0.8 })).toBe("At anchor");
+    // No status: moving reads as under way, still says only where.
+    expect(vesselActivity({ sog: 12 })).toBe("Under way");
+    expect(vesselActivity({ sog: 0, near: "Nassau" })).toBe("Near Nassau");
+    expect(vesselActivity({})).toBeUndefined();
   });
 });

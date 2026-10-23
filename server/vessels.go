@@ -34,7 +34,7 @@ type vessel struct {
 	Heading   uint16
 	NavStatus uint8
 	ShipType  uint8  // ITU ship/cargo type code; AtoN type for aids
-	Kind      string // vessel | aton | base | sar
+	Kind      string // vessel | aton | base | sar | gear
 	Class     string // A or B from the position report types, the truthful class signal; empty until one is heard
 	// Static particulars from type 5 and 24 messages, zero or empty until heard. Length and beam come
 	// from the dimension fields (reference point to bow plus to stern, port plus starboard), and Dim keeps
@@ -228,8 +228,16 @@ func (p *Pipeline) updateVessel(ev *Event) {
 		p.nextSweep = ev.RecvTime.Truncate(vesselSweep).Add(vesselSweep)
 	}
 	v := p.vessels[ev.MMSI]
-	if v == nil {
+	created := v == nil
+	if created {
 		v = newVessel()
+		// A station back after the sweep or a restart is what the record knew it to be, so a buoy's first position
+		// report draws it as gear, not a vessel, until its static data comes. The mirror takes only its own lock.
+		if p.store != nil && p.store.mirror != nil {
+			if k := p.store.mirror.kind(ev.MMSI); k != "" {
+				v.Kind = k
+			}
+		}
 		p.vessels[ev.MMSI] = v
 	}
 	hadPrev, prevLat, prevLon := v.HasPos, v.Lat, v.Lon // before this report moves it, for whether it is moving
@@ -316,6 +324,14 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	}
 	if !stale {
 		v.Seen, v.Source, v.Station, v.MsgType = ev.Time, ev.Source, ev.Station, ev.Type
+	}
+	// A kind a message type sets (aton, base, sar) wins, and stays, so an aid whose report a feed rebuilds as a
+	// vessel's stays an aid. What the station says about itself names the rest (kinds.go), again whenever a message
+	// brings what it decides by: a ship type after a buoy-like name, as a class B part B follows part A, makes gear a
+	// vessel again.
+	if (v.Kind == "vessel" || v.Kind == "gear" || v.Kind == "sar" && isBeaconMMSI(ev.MMSI)) &&
+		(created && v.Kind == "vessel" || u.Name != "" || u.ShipType != 0 || u.Length > 0 || u.Beam > 0 || hasPos && isBeaconMMSI(ev.MMSI)) {
+		v.Kind = derivedKind(ev.MMSI, v)
 	}
 	ev.Name, ev.Lat, ev.Lon, ev.HasPos = v.Name, v.Lat, v.Lon, v.HasPos
 	if stale && hasPos { // the event still carries its own position; only the cache ignores it
@@ -444,7 +460,7 @@ type vesselProps struct {
 	MsgType     string   `json:"msg_type"`
 	Name        string   `json:"name,omitempty"`
 	NavStatus   *uint8   `json:"nav_status,omitempty"`
-	Near        string   `json:"near,omitempty"` // the place nearest the position, on searches only
+	Near        string   `json:"near,omitempty"` // the place nearest the position, on searches and /v1/vessels/{mmsi}
 	Seen        string   `json:"seen"`
 	Sog         *float64 `json:"sog,omitempty"`
 	Source      string   `json:"source"`
@@ -465,14 +481,17 @@ func (v *vessel) feature(mmsi uint32) vesselFeature {
 	props := vesselProps{
 		MMSI: mmsi, Kind: v.Kind, Seen: v.Seen.UTC().Format(time.RFC3339),
 		Source: v.Source, Station: v.Station, MsgType: v.MsgType,
-		Name: v.Name, Type: v.ShipType, Flag: flagOf(mmsi), IMO: v.IMO, CallSign: v.CallSign,
-		Destination: v.Destination, ETA: etaString(v.ETA), Draught: v.Draught, Length: v.Length, Beam: v.Beam,
+		Name: v.Name, Type: v.ShipType, Flag: servedFlag(mmsi, v.Kind), IMO: v.IMO, CallSign: v.CallSign,
+		Destination: v.Destination, ETA: etaString(v.ETA),
 	}
-	if d := v.Dim; v.hasLengthOffsets() { // a copy, so the feature does not point into the live vessel
-		props.ToBow, props.ToStern = &d.A, &d.B
-	}
-	if d := v.Dim; v.hasBeamOffsets() {
-		props.ToPort, props.ToStarboard = &d.C, &d.D
+	if hasHull(v.Kind) {
+		props.Draught, props.Length, props.Beam = v.Draught, v.Length, v.Beam
+		if d := v.Dim; v.hasLengthOffsets() { // a copy, so the feature does not point into the live vessel
+			props.ToBow, props.ToStern = &d.A, &d.B
+		}
+		if d := v.Dim; v.hasBeamOffsets() {
+			props.ToPort, props.ToStarboard = &d.C, &d.D
+		}
 	}
 	if v.Cog < 360 {
 		cog := v.Cog
@@ -482,7 +501,7 @@ func (v *vessel) feature(mmsi uint32) vesselFeature {
 		sog := v.Sog
 		props.Sog = &sog
 	}
-	if v.Heading < 511 {
+	if validHeading(v.Heading) && hasHull(v.Kind) {
 		h := v.Heading
 		props.Heading = &h
 	}
@@ -517,10 +536,11 @@ var recordLimit = 500
 // searchLimit caps a search answer. A person picks from a short list, and a short prefix matches thousands.
 const searchLimit = 50
 
-// serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b&max_age= → GeoJSON of vessel
+// serveVessels: GET /v1/vessels?bbox=minLat,minLon,maxLat,maxLon&mmsi=a,b&imo=c&max_age= → GeoJSON of vessel
 // positions. The filters, the token, and the area and MMSI caps are exactly those of /v1/stream, and the
-// age rules those of the tiles (ageRules). The cache answers for the last 30 minutes and the record for
-// what it no longer holds. ?q= searches instead (serveVesselSearch).
+// age rules those of the tiles (ageRules), which treat a vessel named by IMO as one named by MMSI. The cache
+// answers for the last 30 minutes and the record for what it no longer holds. ?q= searches instead
+// (serveVesselSearch).
 func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 	cl, err := p.requestClaims(r)
 	if err != nil {
@@ -532,9 +552,13 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		p.serveVesselSearch(w, vals, cl)
 		return
 	}
-	s, msg := parseSub(vals, cl, true)
-	rules, rulesMsg := parseAgeRules(vals)
-	if msg = cmp.Or(msg, rulesMsg); msg != "" {
+	s, status, msg := p.parseSub(vals, cl, true)
+	if msg != "" {
+		http.Error(w, msg, status)
+		return
+	}
+	rules, msg := parseAgeRules(vals)
+	if msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
@@ -557,7 +581,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	p.vmu.RUnlock()
-	truncated := false
+	truncated := s.cut
 	if emitted != nil {
 		recs, more, err := p.recordVessels(s, rules, deep, now)
 		if errors.Is(err, errTooManyTerms) {
@@ -594,7 +618,7 @@ func (p *Pipeline) serveVessels(w http.ResponseWriter, r *http.Request) {
 			noteAttribution(attribution, source)
 		}
 		p.vmu.RUnlock()
-		truncated = more
+		truncated = truncated || more
 	}
 	w.Header().Set("Content-Type", "application/geo+json")
 	w.Write(append(featureCollection(features, attribution, truncated), '\n'))
@@ -661,7 +685,7 @@ func (p *Pipeline) newestState(rec record) (v *vessel, cached bool) {
 // searchParams are the parameters a search accepts. Search refuses any other, so a filter added later
 // never changes an answer an older client already received. The rest of /v1/vessels ignores unknown
 // parameters, as it always has.
-var searchParams = map[string]bool{"q": true, "bbox": true, "mmsi": true, "max_age": true, "around": true, "key": true}
+var searchParams = map[string]bool{"q": true, "bbox": true, "mmsi": true, "imo": true, "max_age": true, "around": true, "key": true}
 
 func init() {
 	for k := range vesselFilterParams {
@@ -670,8 +694,10 @@ func init() {
 }
 
 // serveVesselSearch: GET /v1/vessels?q= → vessels whose name starts with q, or whose MMSI does when q is
-// digits, most recently heard first, from the record, each labeled with the place nearest it. bbox, mmsi, and
-// max_age narrow it, and around=lat,lon orders it nearest first.
+// digits, most recently heard first, from the record, each labeled with the place nearest it. bbox, mmsi, imo,
+// and max_age narrow it, and around=lat,lon orders it nearest first. For the tiers mayRaw admits, q of
+// "IMO 9241061" finds the vessels reporting that IMO, and a bare seven-digit q finds them ahead of its MMSI
+// prefix matches.
 func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl *Claims) {
 	for k := range vals {
 		if !searchParams[k] {
@@ -684,11 +710,23 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 		http.Error(w, "q needs at least 2 characters", http.StatusBadRequest)
 		return
 	}
-	s, msg := parseSub(vals, cl, false)
+	imo, explicit := imoQuery(text)
+	if imoGate(cl) != nil {
+		if explicit {
+			http.Error(w, errIMOTier.Error(), http.StatusForbidden)
+			return
+		}
+		imo = 0 // a bare number stays an MMSI prefix
+	}
+	s, status, msg := p.parseSub(vals, cl, false)
+	if msg != "" {
+		http.Error(w, msg, status)
+		return
+	}
 	age, set, ageMsg := parseMaxAge(vals.Get("max_age"))
 	vf, filterMsg := parseVesselFilter(vals, 0)
 	around, aroundMsg := parseAround(vals.Get("around"))
-	msg = cmp.Or(msg, ageMsg, filterMsg, aroundMsg)
+	msg = cmp.Or(ageMsg, filterMsg, aroundMsg)
 	if msg != "" {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
@@ -701,7 +739,7 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	// past the cap and order by each vessel's newest seen before cutting.
 	now := time.Now()
 	q := recordQuery{prefix: text, boxes: s.boxes, hasPos: true, limit: 2*searchLimit + 1, filter: vf, now: now}
-	if len(s.mmsi) > 0 {
+	if s.mmsi != nil { // non-nil and empty when imo matched no vessel, which matches nothing
 		q.mmsis = make([]uint32, 0, len(s.mmsi))
 		for m := range s.mmsi {
 			q.mmsis = append(q.mmsis, m)
@@ -712,10 +750,30 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	}
 	var recs []record
 	var err error
-	if around != nil {
-		recs, err = p.nearestRecords(q, *around)
-	} else {
-		recs, err = p.store.find(q)
+	var imoCut bool
+	if imo != 0 { // resolved as every IMO lookup is, then narrowed by the search's own filters
+		var found map[uint32][]record
+		var mq *mirrorQuery
+		if found, imoCut, err = p.resolveIMOs([]uint32{imo}); err == nil {
+			mq, err = newMirrorQuery(q)
+		}
+		if err == nil {
+			for _, r := range found[imo] {
+				if mq.match(r.mmsi, r.v) {
+					recs = append(recs, r)
+				}
+			}
+		}
+	}
+	byIMO := len(recs) // the IMO's vessels come first, then the MMSI prefix matches
+	if err == nil && !explicit {
+		var rs []record
+		if around != nil {
+			rs, err = p.nearestRecords(q, *around)
+		} else {
+			rs, err = p.store.find(q)
+		}
+		recs = append(recs, rs...)
 	}
 	if errors.Is(err, errTooManyTerms) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -729,17 +787,23 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	type hit struct {
 		feature vesselFeature
 		source  string
+		byIMO   bool
 		seen    time.Time
 		dist    float64
 	}
 	hits := make([]hit, 0, len(recs))
+	taken := map[uint32]bool{}
 	p.vmu.RLock()
-	for _, rec := range recs {
+	for i, rec := range recs {
+		if taken[rec.mmsi] {
+			continue
+		}
+		taken[rec.mmsi] = true
 		v, _ := p.newestState(rec)
 		if !vf.match(v, now) { // the cache can be a report ahead of the row the filter passed
 			continue
 		}
-		h := hit{feature: v.feature(rec.mmsi), source: v.Source, seen: v.Seen}
+		h := hit{feature: v.feature(rec.mmsi), source: v.Source, byIMO: i < byIMO, seen: v.Seen}
 		if around != nil {
 			h.dist = nm(around[0], around[1], v.Lat, v.Lon)
 		}
@@ -748,13 +812,16 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 	p.vmu.RUnlock()
 	// Ordered again here because the cache's position and seen can be a report ahead of the record's.
 	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].byIMO != hits[j].byIMO {
+			return hits[i].byIMO
+		}
 		if hits[i].dist != hits[j].dist {
 			return hits[i].dist < hits[j].dist
 		}
 		return hits[i].seen.After(hits[j].seen)
 	})
-	truncated := len(hits) > searchLimit
-	if truncated {
+	truncated := imoCut || s.cut || len(hits) > searchLimit
+	if len(hits) > searchLimit {
 		hits = hits[:searchLimit]
 	}
 	var features [][]byte
@@ -773,23 +840,18 @@ func (p *Pipeline) serveVesselSearch(w http.ResponseWriter, vals url.Values, cl 
 // serveVessel: GET /v1/vessels/{mmsi} → one vessel's last known state as a GeoJSON Feature, from the cache
 // completed by the record, or from the record alone for a vessel the cache no longer holds, with its
 // particulars from Wikidata when its IMO has an item and from the Coast Guard when it is a documented US
-// vessel. geometry is null for a vessel whose position was never
-// heard. An unknown vessel is a 404.
+// vessel, and near naming the place nearest its position. geometry is null for a vessel whose position was
+// never heard. An unknown vessel is a 404.
+// /v1/vessels/{imo}, seven digits, answers for the vessel an IMO names (vesselPath).
 func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
-	if _, err := p.requestClaims(r); err != nil {
+	cl, err := p.requestClaims(r)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	n, err := strconv.ParseUint(r.PathValue("mmsi"), 10, 32)
-	if err != nil {
-		http.Error(w, "mmsi must be a number", http.StatusBadRequest)
+	mmsi, location, ok := p.vesselPath(w, r, cl, "")
+	if !ok {
 		return
-	}
-	mmsi := uint32(n)
-	notFound := func() {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound) // not http.Error: that would override the JSON Content-Type
-		json.NewEncoder(w).Encode(map[string]string{"error": "unknown vessel"})
 	}
 	var cur *vessel
 	p.vmu.RLock()
@@ -815,7 +877,7 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if cur == nil {
-		notFound()
+		unknownVessel(w)
 		return
 	}
 	// In the second before a vessel's first write the record has no row yet. That write will store the
@@ -827,23 +889,31 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	if !first.IsZero() {
 		f.Properties.FirstSeen = first.UTC().Format(time.RFC3339)
 	}
-	fc := p.fccOf(mmsi)[mmsi]
-	key := uscgKey{mmsi: mmsi, callsign: cur.CallSign, name: cur.Name}
-	if fc != nil {
-		key.official = fc.Official
-	}
-	e := enrichment{wd: p.wikidataOf(cur.IMO)[cur.IMO], cg: p.uscgOf(key)[mmsi],
-		fd: p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc: fc}
-	// The Canadian register speaks for CA-flag vessels; an IMO another flag carries may have left it,
-	// and the names must agree, as the other registries require, so a mistyped or copied IMO in AIS
-	// static data never serves another registered ship's facts.
-	if flagOf(mmsi) == "CA" {
-		if tcv := p.tcOf(cur.IMO)[cur.IMO]; tcv != nil && namesAgree(cur.Name, tcv.Name) {
-			e.tc = tcv
+	// Gear's MMSI is whatever its maker or owner chose, often the fishing boat's own, so no register speaks for it.
+	if cur.Kind != "gear" {
+		fc := p.fccOf(mmsi)[mmsi]
+		key := uscgKey{mmsi: mmsi, callsign: cur.CallSign, name: cur.Name}
+		if fc != nil {
+			key.official = fc.Official
 		}
-		e.is = p.isedOf(mmsi)[mmsi]
+		e := enrichment{wd: p.wikidataOf(cur.IMO)[cur.IMO], cg: p.uscgOf(key)[mmsi],
+			fd: p.fiskeridirOf(fdirKey{mmsi, cur.CallSign, cur.Name})[mmsi], fc: fc, callsign: cur.CallSign}
+		// The Canadian and Australian registers speak for their own flag's vessels; an IMO another flag
+		// carries may have left the register, and the names must agree, as the other registries require, so
+		// a mistyped or copied IMO in AIS static data never serves another registered ship's facts.
+		if flagOf(mmsi) == "CA" {
+			if tcv := p.tcOf(cur.IMO)[cur.IMO]; tcv != nil && namesAgree(cur.Name, tcv.Name) {
+				e.tc = tcv
+			}
+			e.is = p.isedOf(mmsi)[mmsi]
+		}
+		if flagOf(mmsi) == "AU" {
+			if am := p.amsaOf(cur.IMO)[cur.IMO]; am != nil && namesAgree(cur.Name, am.Name) {
+				e.am = am
+			}
+		}
+		f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources = mergeParticulars(e)
 	}
-	f.Properties.Particulars, f.Properties.Provenance, f.Properties.Sources = mergeParticulars(e)
 	// The Feature with attribution beside it, and geometry null for a vessel whose position was never
 	// heard. Its own type rather than a pointer in vesselFeature, which would cost every cached Feature an
 	// allocation.
@@ -856,8 +926,10 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 	}{Attribution: map[string]string{}, ID: f.ID, Properties: f.Properties, Type: f.Type}
 	if cur.HasPos {
 		out.Geometry = &f.Geometry
+		out.Properties.Near = nearLabel(f.Geometry.Coordinates[1], f.Geometry.Coordinates[0])
 	}
 	noteAttribution(out.Attribution, cur.Source)
+	setContentLocation(w, location)
 	w.Header().Set("Content-Type", "application/geo+json")
 	json.NewEncoder(w).Encode(out)
 }
@@ -865,7 +937,7 @@ func (p *Pipeline) serveVessel(w http.ResponseWriter, r *http.Request) {
 // vesselFilterParams are the filters /v1/vessels, its search, and the tiles share.
 var vesselFilterParams = map[string]bool{"kind": true, "class": true, "type": true, "min_sog": true, "max_age_moving": true}
 
-var vesselKinds = map[string]bool{"vessel": true, "aton": true, "base": true, "sar": true}
+var vesselKinds = map[string]bool{"vessel": true, "aton": true, "base": true, "sar": true, "gear": true}
 
 // vesselFilter narrows vessels by what they are and how they last reported. The zero value matches all.
 type vesselFilter struct {
@@ -884,7 +956,7 @@ func parseVesselFilter(vals url.Values, movingAge time.Duration) (*vesselFilter,
 		f.kinds = map[string]bool{}
 		for _, k := range strings.Split(q, ",") {
 			if !vesselKinds[k] {
-				return nil, "kind=vessel,aton,base,sar"
+				return nil, "kind=vessel,aton,base,sar,gear"
 			}
 			f.kinds[k] = true
 		}
@@ -928,7 +1000,7 @@ func parseVesselFilter(vals url.Values, movingAge time.Duration) (*vesselFilter,
 
 // stationary: the vessel's last report says it was not going anywhere. Aids to navigation and base stations
 // never move; a vessel counts when it was under a knot or reported itself moored, at anchor, or aground.
-// A vessel with neither speed nor status known counts as moving.
+// A vessel with neither speed nor status known counts as moving. Gear is judged as a vessel.
 func stationary(v *vessel) bool {
 	return v.Kind == "aton" || v.Kind == "base" || v.Sog < 1 || v.NavStatus == 1 || v.NavStatus == 5 || v.NavStatus == 6
 }
@@ -1166,7 +1238,7 @@ func (p *Pipeline) snapshotEvents(s *v1Sub) []*Event {
 		}
 		if v.lastStatic != nil {
 			out = append(out, v.lastStatic)
-		} else if (v.Kind == "vessel" || v.Kind == "sar") && (v.Name != "" || v.ShipType != 0) {
+		} else if k := v.reportKind(mmsi); (k == "vessel" || k == "sar") && (v.Name != "" || v.ShipType != 0) {
 			out = append(out, v.synthStatic(mmsi))
 		}
 	})
@@ -1178,7 +1250,7 @@ func (p *Pipeline) snapshotEvents(s *v1Sub) []*Event {
 func (v *vessel) synthPos(mmsi uint32) *Event {
 	lat, lon := ais.FieldLatLonFine(v.Lat), ais.FieldLatLonFine(v.Lon)
 	var pkt ais.Packet
-	switch v.Kind {
+	switch v.reportKind(mmsi) {
 	case "aton":
 		pkt = ais.AidsToNavigationReport{Header: ais.Header{MessageID: 21, UserID: mmsi}, Valid: true,
 			Type: v.ShipType, Name: v.Name, Latitude: lat, Longitude: lon, Timestamp: 60}
@@ -1202,6 +1274,15 @@ func (v *vessel) synthPos(mmsi uint32) *Event {
 			Timestamp: uint8(v.PosAt.Second())}
 	}
 	return v.synthEvent(mmsi, pkt, v.PosAt)
+}
+
+// reportKind is the kind of reports a station sends, which a snapshot rebuilds it as. Gear sends a vessel's reports,
+// and so does a beacon: a SAR aircraft's report comes from a 111MID MMSI, never a 970, 972, or 974 one.
+func (v *vessel) reportKind(mmsi uint32) string {
+	if v.Kind == "gear" || v.Kind == "sar" && isBeaconMMSI(mmsi) {
+		return "vessel"
+	}
+	return v.Kind
 }
 
 func (v *vessel) synthStatic(mmsi uint32) *Event {
