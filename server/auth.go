@@ -25,7 +25,7 @@ import (
 //
 // Roles: personal (subscribe, small limits), feeder (publish/receive), peer (publish+subscribe), partner
 // (subscribe, negotiated limits), admin (everything). bbox limits what may be subscribed; cidr limits where
-// from; conns caps concurrent WebSockets per sub; rate thins each connection to n msg/s; area caps the total
+// from; udp names the addresses whose UDP stations the token owns, without limiting where it is used from; conns caps concurrent WebSockets per sub; rate thins each connection to n msg/s; area caps the total
 // subscribed bbox area in square degrees (negative = no bbox subscriptions at all, only MMSI lists). Unset claims
 // are unlimited; personal tokens get 2/50/400. rpm is the exception: unset leaves the token's HTTP requests on the
 // per-address limit, a positive value counts them per sub at that many a minute, and 0 lifts the limit.
@@ -40,13 +40,14 @@ type Claims struct {
 	Iat   int64    `json:"iat,omitempty"`
 	BBox  []bbox   `json:"bbox,omitempty"`
 	CIDR  []string `json:"cidr,omitempty"`
+	UDP   []string `json:"udp,omitempty"` // addresses whose UDP stations this token owns (bind_ip); not a lock
 	Conns int      `json:"conns,omitempty"`
 	Rate  int      `json:"rate,omitempty"`  // messages per second per connection; excess is thinned, not disconnected
 	Area  float64  `json:"area,omitempty"`  // max total subscribed bbox area, square degrees; 0 = unlimited, <0 = MMSI-only
 	MMSIs int      `json:"mmsis,omitempty"` // max MMSIs and IMOs per subscription, an IMO following up to maxMMSIsPerIMO vessels (0 = unlimited)
 	RPM   *int     `json:"rpm,omitempty"`   // HTTP requests per minute per sub (nil = per-address default, 0 = unlimited)
 
-	Feeder bool `json:"-"` // earned for this connection: the token's station is feeding (see tiers.go)
+	Feeder bool `json:"-"` // earned for this connection: the token's station, or a UDP station on its network, is feeding (see tiers.go)
 }
 
 // allowsMMSIs: a subscription may follow at most this many vessels by MMSI or IMO (0 = unlimited).
@@ -121,8 +122,15 @@ func (c *Claims) allowsBox(b bbox) bool {
 	return false
 }
 
+// boundCIDR: a token from the personal issuer whose cidr is one plain address got it from bind_ip before the
+// udp claim existed. It proves ownership of that address's UDP station, like udp, and does not lock the token
+// there. An operator-minted cidr (aiscast-key -cidr) is signed by another kid and stays a lock.
+func (c *Claims) boundCIDR() bool {
+	return c.Role == "personal" && len(c.CIDR) == 1 && net.ParseIP(c.CIDR[0]) != nil && c.Kid != "" && c.Kid == personalKid()
+}
+
 func (c *Claims) allowsIP(ip string) bool {
-	if len(c.CIDR) == 0 {
+	if len(c.CIDR) == 0 || c.boundCIDR() {
 		return true
 	}
 	addr := net.ParseIP(ip)
@@ -137,7 +145,14 @@ func (c *Claims) allowsIP(ip string) bool {
 	return false
 }
 
-var validSub = regexp.MustCompile(`^[A-Za-z0-9_.:=/+-]{1,128}$`).MatchString
+var subShape = regexp.MustCompile(`^[A-Za-z0-9_.:=/+-]{1,128}$`).MatchString
+
+// validSub is a subject a token may carry. None ends in ".png": the web client serves a station's
+// share card at its page's address with ".png" added (client/app/lib/shareCard.server.tsx), so a
+// station named that way would lose its page to another station's card.
+func validSub(s string) bool {
+	return subShape(s) && !strings.HasSuffix(strings.ToLower(s), ".png")
+}
 
 func signToken(priv ed25519.PrivateKey, c Claims) (string, error) {
 	if !validSub(c.Sub) || c.Role == "" {
@@ -256,7 +271,7 @@ func (p *Pipeline) authorizeToken(tok, ip, action string) (*Claims, error) {
 		}
 		return nil, err
 	}
-	c = p.effective(c)
+	c = p.effective(c, ip)
 	if !c.may(action) {
 		return nil, forbiddenError{fmt.Sprintf("role %s may not %s", c.Role, action)}
 	}
@@ -295,19 +310,21 @@ func (p *Pipeline) socketClaims(r *http.Request) (*Claims, error) {
 	if !c.allowsIP(clientIP(r)) {
 		return nil, errors.New("token not valid from this address")
 	}
-	return p.effective(c), nil
+	return p.effective(c, clientIP(r)), nil
 }
 
-// orAnonymous fills in the anonymous tier for a tokenless request. Handlers with a connect limit apply it
-// after that check, so anonymous connects stay keyed by address across every endpoint.
-func orAnonymous(cl *Claims, r *http.Request) *Claims {
+// orAnonymous fills in the anonymous tier for a tokenless request, with the feeder tier when the request's
+// network feeds by UDP. Handlers with a connect limit apply it after that check, so anonymous connects stay
+// keyed by address across every endpoint.
+func (p *Pipeline) orAnonymous(cl *Claims, r *http.Request) *Claims {
 	if cl != nil {
 		return cl
 	}
 	if allowAnon {
 		return &Claims{Sub: "anon", Role: "admin"}
 	}
-	return anonymousClaims(clientIP(r))
+	ip := clientIP(r)
+	return p.effective(anonymousClaims(ip), ip)
 }
 
 // requestClaims is socketClaims with the anonymous tier filled in, for handlers without a connect limit.
@@ -316,12 +333,18 @@ func (p *Pipeline) requestClaims(r *http.Request) (*Claims, error) {
 	if err != nil {
 		return nil, err
 	}
-	return orAnonymous(cl, r), nil
+	return p.orAnonymous(cl, r), nil
 }
 
 // ---- personal tokens: POST /v1/keys {"pubkey": "<base64 ed25519 public key>"} ----
 // The server holds a separate personal-tier issuer key (PERSONAL_ISSUER_KEY, base64 seed); what it mints is
 // bounded by personalClaims, so a compromised box can only hand out personal-tier access.
+
+// personalKid is the personal issuer's kid, without deriving its key.
+func personalKid() string {
+	kid, _, _ := strings.Cut(os.Getenv("PERSONAL_ISSUER_KEY"), ":")
+	return kid
+}
 
 var personalIssuer = func() (string, ed25519.PrivateKey) {
 	kid, seed, ok := strings.Cut(os.Getenv("PERSONAL_ISSUER_KEY"), ":")
@@ -343,7 +366,7 @@ var keysLimit = newLimiter(keysPerMinute) // personal-token requests per address
 // signed, and once a key has signed, every later request for it must be too.
 type mintRequest struct {
 	Pubkey     string  `json:"pubkey"`
-	BindIP     bool    `json:"bind_ip"`               // also bind the requester's address, so its UDP station counts as this token's
+	BindIP     bool    `json:"bind_ip"`               // also claim the requester's address, so its UDP station counts as this token's
 	Name       *string `json:"name,omitempty"`        // the operator's name for the station; "" clears it
 	VesselName *string `json:"vessel_name,omitempty"` // the boat's name, from the Signal K plugin; "" clears it
 	TS         int64   `json:"ts,omitempty"`          // unix seconds
@@ -376,7 +399,7 @@ func (p *Pipeline) mintPersonal(ip string, req mintRequest) (token string, c Cla
 	}
 	c = personalClaims(kid, "ed25519:"+req.Pubkey, now)
 	if req.BindIP {
-		c.CIDR = []string{ip}
+		c.UDP = []string{ip}
 	}
 	if req.Sig != "" {
 		ids := []string{stationSource(c.Sub)}

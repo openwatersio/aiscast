@@ -40,8 +40,10 @@ type importStats struct {
 const importUpsertSQL = `
 INSERT INTO vessels (mmsi, name, search, kind, class, ship_type, flag, draught, callsign, imo, length, beam, has_pos,
 	lat, lon, cell, pos_at, seen, first_seen, source)
-VALUES (?, ?, ?, 'vessel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (mmsi) DO UPDATE SET
+	kind       = iif(vessels.kind IN ('vessel', 'gear'), excluded.kind, vessels.kind),
+	flag       = iif(vessels.kind IN ('vessel', 'gear'), excluded.flag, vessels.flag),
 	name       = iif(vessels.name = '', excluded.name, vessels.name),
 	search     = iif(vessels.name = '', excluded.search, vessels.search),
 	class      = iif(vessels.class = '', excluded.class, vessels.class),
@@ -86,6 +88,30 @@ type historyRow struct {
 	source   string // source kind of the last position
 }
 
+// importKind is the kind a vessel's row takes by what it said about itself (derivedKind), judged on the row as the
+// merge leaves it: the stored name, type, and dimensions, history filling the blanks, as the live fold sees them. A
+// kind a message type set stays (importUpsertSQL). History keeps no navigational status, so a beacon is sar only once
+// it is heard.
+func importKind(r historyRow, stored *vessel) string {
+	v := newVessel()
+	v.Name, v.ShipType, v.Length, v.Beam = strings.TrimSpace(r.name), r.shipType, r.length, r.beam
+	if stored != nil {
+		if stored.Name != "" {
+			v.Name = stored.Name
+		}
+		if stored.ShipType != 0 {
+			v.ShipType = stored.ShipType
+		}
+		if stored.Length != 0 {
+			v.Length = stored.Length
+		}
+		if stored.Beam != 0 {
+			v.Beam = stored.Beam
+		}
+	}
+	return derivedKind(r.mmsi, v)
+}
+
 func (s *store) importRows(rows []historyRow) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -97,7 +123,16 @@ func (s *store) importRows(rows []historyRow) error {
 		return err
 	}
 	defer st.Close()
+	get, err := tx.Prepare(`SELECT name, ship_type, length, beam FROM vessels WHERE mmsi = ?`)
+	if err != nil {
+		return err
+	}
+	defer get.Close()
 	for _, r := range rows {
+		var stored *vessel
+		if v := newVessel(); get.QueryRow(r.mmsi).Scan(&v.Name, &v.ShipType, &v.Length, &v.Beam) == nil {
+			stored = v
+		}
 		// seen is the time of the message that source, station, and msg_type describe. History knows the source
 		// of the last position only, so with a position seen is that position's time. A vessel without one is
 		// new to the record, with no source, and seen is its latest static update.
@@ -117,7 +152,8 @@ func (s *store) importRows(rows []historyRow) error {
 			cell = int64(cellOf(r.lat, r.lon))
 		}
 		name := strings.TrimSpace(r.name)
-		if _, err := st.Exec(r.mmsi, name, searchKey(name), r.class, r.shipType, flagOf(r.mmsi), r.draught, strings.TrimSpace(r.callsign),
+		kind := importKind(r, stored)
+		if _, err := st.Exec(r.mmsi, name, searchKey(name), kind, r.class, r.shipType, servedFlag(r.mmsi, kind), r.draught, strings.TrimSpace(r.callsign),
 			r.imo, r.length, r.beam, r.hasPos, r.lat, r.lon, cell, unixMs(r.last), unixMs(seen), unixMs(first), r.source); err != nil {
 			return err
 		}

@@ -1,0 +1,29 @@
+title: Oceania Cruises
+summary: "Oceania Cruises was founded in 2002, is based in Miami and is part of Norwegian Cruise Line Holdings Ltd. Its 5 ships range from Insignia (1998) to Allura (2025)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q379437
+sections:
+  - title: R class
+    vessels:
+      - name: Insignia
+        mmsi: 538001663
+        imo: 9156462
+        subtitle: "185 m · in service 1998"
+  - title: Other ships
+    vessels:
+      - name: Allura
+        mmsi: 538011254
+        imo: 9876969
+        subtitle: "246 m · in service 2025"
+      - name: Marina
+        mmsi: 538003668
+        imo: 9438066
+        subtitle: "238 m · in service 2011"
+      - name: Sirena
+        mmsi: 538006842
+        imo: 9187899
+        subtitle: "180 m · in service 1999"
+      - name: Regatta
+        mmsi: 538001664
+        imo: 9156474
+        subtitle: "180 m · in service 1998"

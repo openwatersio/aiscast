@@ -44,7 +44,7 @@ export function browserAuth(): ApiAuth {
 
 export interface VesselProps {
   mmsi: number;
-  kind: "vessel" | "aton" | "base" | "sar";
+  kind: "vessel" | "aton" | "base" | "sar" | "gear";
   name?: string;
   type?: number;
   cog?: number;
@@ -65,7 +65,7 @@ export interface VesselProps {
   to_port?: number;
   to_starboard?: number;
   first_seen?: string;
-  /** The town or region nearest the position, on search results only. */
+  /** The town or region nearest the position, on search results and /v1/vessels/{mmsi}. */
   near?: string;
   seen: string;
   source: string;
@@ -306,7 +306,11 @@ export async function getStation(
   auth: ApiAuth,
   id: string,
 ): Promise<{ station: Station; vessels: FeatureCollection } | undefined> {
-  return get(auth, `/v1/stations/${id.split("/").map(encodeURIComponent).join("/")}`);
+  const segments = id.split("/");
+  // encodeURIComponent leaves "." and "..", and the URL would resolve them into another endpoint,
+  // asked with the server's token. No station id has such a segment.
+  if (segments.some((s) => s === "." || s === "..")) return undefined;
+  return get(auth, `/v1/stations/${segments.map(encodeURIComponent).join("/")}`);
 }
 
 export interface Stats {

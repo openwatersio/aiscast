@@ -24,7 +24,7 @@ export function pageMeta({
    */
   path?: string;
   noindex?: boolean;
-  /** An absolute URL, for link previews. Pages without one share the network's card. */
+  /** An absolute URL, for link previews. Pages without one share the default card, DEFAULT_SHARE_IMAGE. */
   image?: string;
   jsonLd?: Record<string, unknown>;
 }): MetaDescriptor[] {

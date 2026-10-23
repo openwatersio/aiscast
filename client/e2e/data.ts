@@ -1,9 +1,10 @@
 import { createSocket } from "node:dgram";
 import { e2eAuth } from "./auth";
+import { e2ePorts } from "./ports";
 
 /** The e2e server, from e2e/server.sh, and the port it hears volunteer receivers on. */
-export const API = "http://127.0.0.1:8787";
-const UDP_PORT = 8788;
+export const API = `http://127.0.0.1:${e2ePorts().api}`;
+const UDP_PORT = e2ePorts().udp;
 
 /**
  * The Gulf of Finland between Helsinki and Tallinn, the busiest water Digitraffic reports on,
@@ -34,6 +35,35 @@ export async function namedVessel(): Promise<VesselRef> {
   const [vessel] = await namedVessels();
   if (!vessel) throw new Error("no named vessel in the test area");
   return vessel;
+}
+
+/**
+ * A fishing-net buoy under an aid's 99 MMSI, as a volunteer receiver hears one: a vessel's
+ * position report with the course of its drift and the out-of-range heading HSD-NET units send
+ * (456), its name, a serial and its battery level, and the 10 m square it reports as its size. Sends it over UDP and waits until the e2e server holds it as gear.
+ */
+export async function heardGear(): Promise<VesselRef> {
+  const mmsi = 994123456;
+  const sentences = [
+    "!AIVDM,1,1,,A,1>l4Nh?P011ivs0RCKl9UN@00000,0*30",
+    "!AIVDM,1,1,,A,H>l4Nh0pEB09DuV3NoOFD000000,2*5A",
+    "!AIVDM,1,1,,A,H>l4Nh40000000000000000`5550,0*7F",
+  ];
+  const socket = createSocket("udp4");
+  await new Promise<void>((resolve, reject) =>
+    socket.send(sentences.join("\n") + "\n", UDP_PORT, "127.0.0.1", (err) => (err ? reject(err) : resolve())),
+  );
+  socket.close();
+  for (let i = 0; i < 50; i++) {
+    const res = await fetch(`${API}/v1/vessels/${mmsi}`, { headers: { Authorization: `Bearer ${e2eAuth().token}` } });
+    if (res.ok) {
+      // The server serves no size for gear, so the name, sent beside it, says the static reports are in.
+      const { properties } = (await res.json()) as { properties: { kind: string; name?: string } };
+      if (properties.kind === "gear" && properties.name) return { mmsi, name: properties.name };
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("the e2e server never held the buoy as gear");
 }
 
 // Two position reports from gpsd's sample log, of ships Digitraffic will not also be reporting.

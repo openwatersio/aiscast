@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/BertoldVdb/go-ais"
 )
 
 // memCH is ClickHouse in memory: it keeps every copy it is sent, and reads history the way chConn reads the
@@ -121,6 +123,7 @@ type testTrack struct {
 		Name      string
 		Times     []string
 		Sog       []*float64
+		Heading   []*uint16
 	} `json:"properties"`
 	Attribution map[string]string `json:"attribution"`
 }
@@ -194,6 +197,25 @@ func TestTrackEndpoint(t *testing.T) {
 		if w := get(t, p, target); w.Code != code {
 			t.Errorf("%s: %d, want %d", target, w.Code, code)
 		}
+	}
+}
+
+// A heading outside 0 to 359 is null in a track, as AIS's 511 is.
+func TestTrackOmitsAnImpossibleHeading(t *testing.T) {
+	p, _ := trackPipeline(t)
+	for i, hdg := range []uint16{456, 90} {
+		at := time.Now().Add(-time.Duration(2-i) * time.Hour).Truncate(time.Second)
+		pr := posReport(257000001, 59.9+float64(i)/1000, 10.7).(ais.PositionReport)
+		pr.TrueHeading = hdg
+		p.ingestPacket("kystverket", "kystverket", at, at, pr)
+	}
+	mustFlush(t, p)
+	if err := p.flushClickHouse(); err != nil {
+		t.Fatal(err)
+	}
+	h := getTrack(t, p, "/v1/vessels/257000001/track?interval=0").Properties.Heading
+	if len(h) != 2 || h[0] != nil || h[1] == nil || *h[1] != 90 {
+		t.Errorf("headings: %v, want [null 90]", h)
 	}
 }
 

@@ -1,0 +1,129 @@
+title: Carnival Cruise Line
+summary: "Carnival Cruise Line was founded in 1972 by Ted Arison, is based in Doral and is part of Carnival Corporation. Its 27 ships range from Carnival Sunshine (1996) to Carnival Jubilee (2023)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q656554
+sections:
+  - title: Vista class
+    vessels:
+      - name: Carnival Panorama
+        mmsi: 374527000
+        imo: 9802384
+        subtitle: "324 m · in service 2019"
+      - name: Carnival Horizon
+        mmsi: 370039000
+        imo: 9767091
+        subtitle: "324 m · in service 2018"
+      - name: Carnival Vista
+        mmsi: 356883000
+        imo: 9692569
+        subtitle: "324 m · in service 2016"
+  - title: Dream class
+    vessels:
+      - name: Carnival Breeze
+        mmsi: 354842000
+        imo: 9555723
+        subtitle: "305 m · in service 2012"
+      - name: Carnival Magic
+        mmsi: 370491000
+        imo: 9378486
+        subtitle: "306 m · in service 2011"
+      - name: Carnival Dream
+        mmsi: 370490000
+        imo: 9378474
+        subtitle: "306 m · in service 2009"
+  - title: Concordia class
+    vessels:
+      - name: Carnival Splendor
+        mmsi: 372808000
+        imo: 9333163
+        subtitle: "291 m · in service 2008"
+  - title: Conquest class
+    vessels:
+      - name: Carnival Freedom
+        mmsi: 371154000
+        imo: 9333149
+        subtitle: "290 m · in service 2007"
+      - name: Carnival Liberty
+        mmsi: 371083000
+        imo: 9278181
+        subtitle: "291 m · in service 2005"
+      - name: Carnival Valor
+        mmsi: 354298000
+        imo: 9236389
+        subtitle: "290 m · in service 2004"
+      - name: Carnival Glory
+        mmsi: 357659000
+        imo: 9198367
+        subtitle: "290 m · in service 2003"
+      - name: Carnival Conquest
+        mmsi: 357657000
+        imo: 9198355
+        subtitle: "290 m · in service 2002"
+  - title: Spirit class
+    vessels:
+      - name: Carnival Miracle
+        mmsi: 354277000
+        imo: 9237357
+        subtitle: "292 m · in service 2004"
+      - name: Carnival Legend
+        mmsi: 311001094
+        imo: 9224726
+        subtitle: "293 m · in service 2002"
+      - name: Carnival Pride
+        mmsi: 354215000
+        imo: 9223954
+        subtitle: "292 m · in service 2001"
+  - title: Destiny class
+    vessels:
+      - name: Carnival Radiance
+        mmsi: 355263000
+        imo: 9172648
+        subtitle: "272 m · in service 2000"
+      - name: Carnival Sunrise
+        mmsi: 308045000
+        imo: 9138850
+        subtitle: "272 m · in service 1999"
+      - name: Carnival Sunshine
+        mmsi: 308017000
+        imo: 9070058
+        subtitle: "270 m · in service 1996"
+  - title: Fantasy class
+    vessels:
+      - name: Carnival Elation
+        mmsi: 355831000
+        imo: 9118721
+        subtitle: "261 m · in service 1998"
+      - name: Carnival Paradise
+        mmsi: 355833000
+        imo: 9120877
+        subtitle: "261 m · in service 1998"
+  - title: Other ships
+    vessels:
+      - name: Carnival Jubilee
+        mmsi: 311001390
+        imo: 9851737
+        subtitle: "345 m · in service 2023"
+      - name: Carnival Celebration
+        mmsi: 311001223
+        imo: 9837456
+        subtitle: "345 m · in service 2022"
+      - name: Carnival Firenze
+        mmsi: 352003546
+        imo: 9801691
+        subtitle: "321 m · in service 2020"
+      - name: Mardi Gras
+        mmsi: 311001049
+        imo: 9837444
+        subtitle: "345 m · in service 2020"
+      - name: Carnival Luminosa
+        mmsi: 311001201
+        imo: 9398905
+        subtitle: "294 m · in service 2009"
+      - name: Carnival Adventure
+        mmsi: 311001595
+        imo: 9192351
+        subtitle: "290 m · in service 2001"
+      - name: Carnival Encounter
+        mmsi: 311001596
+        imo: 9192363
+        subtitle: "290 m · in service 2001"

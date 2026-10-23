@@ -1,0 +1,29 @@
+title: Regent Seven Seas Cruises
+summary: "Regent Seven Seas Cruises was founded in 1990, is based in Miami and is part of Norwegian Cruise Line Holdings Ltd. Its 6 ships range from Seven Seas Navigator (1999) to Seven Seas Grandeur (2023)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q3247233
+vessels:
+  - name: Seven Seas Grandeur
+    mmsi: 538010706
+    imo: 9877444
+    subtitle: "224 m · in service 2023"
+  - name: Seven Seas Splendor
+    mmsi: 538007673
+    imo: 9807085
+    subtitle: "224 m · in service 2020"
+  - name: Seven Seas Explorer
+    mmsi: 538006712
+    imo: 9703150
+    subtitle: "224 m · in service 2016"
+  - name: Seven Seas Voyager
+    mmsi: 311513000
+    imo: 9247144
+    subtitle: "206 m · in service 2003"
+  - name: Seven Seas Mariner
+    mmsi: 311622000
+    imo: 9210139
+    subtitle: "216 m · in service 2001"
+  - name: Seven Seas Navigator
+    mmsi: 311050600
+    imo: 9064126
+    subtitle: "173 m · in service 1999"

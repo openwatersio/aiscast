@@ -78,7 +78,7 @@ function fromFeature(f: VesselFeature): Row {
 /** What tells one result from another of the same name: where it is, what it is, and whether it is moving. */
 function rowSubtitle(v: Row, byMMSI: boolean): string | undefined {
   const cls = shipClass(v.kind, v.shipType);
-  const what = [cls !== "other" ? CLASS_LABELS[cls] : undefined, v.length ? `${v.length} m` : undefined].filter(Boolean).join(", ");
+  const what = [cls !== "other" ? CLASS_LABELS[cls] : undefined, v.length && v.kind !== "gear" ? `${v.length} m` : undefined].filter(Boolean).join(", ");
   const parts = [
     // A vessel without a name is already titled by its MMSI.
     byMMSI && v.name ? `MMSI ${v.mmsi}` : undefined,
@@ -477,7 +477,7 @@ function ResultList({
         return (
           <ListRow
             key={v.mmsi}
-            to={vesselPath(v.mmsi, v.name)}
+            to={vesselPath(v.mmsi, v.name, v.kind)}
             onHover={(over) => setHovered(over ? v.mmsi : undefined)}
             leading={<VesselThumb row={v} />}
             title={
@@ -521,7 +521,8 @@ function VesselThumb({ row }: { row: Row }) {
     io.observe(el);
     return () => io.disconnect();
   }, [seen]);
-  const photo = useMedia(seen ? mediaKey(row.imo, row.mmsi) : undefined)?.photos[0];
+  // Fishing gear has no photos to look up.
+  const photo = useMedia(seen && row.kind !== "gear" ? mediaKey(row.imo, row.mmsi) : undefined)?.photos[0];
   return (
     <span ref={ref} className="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-surface-tile">
       <ClassDot kind={row.kind} type={row.shipType} />

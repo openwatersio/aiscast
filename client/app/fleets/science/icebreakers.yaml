@@ -1,0 +1,115 @@
+title: Icebreakers
+summary: The ships that keep Arctic routes, Baltic ports and polar research stations open, from Finland's oldest working icebreaker, Voima (1954), to Russia's nuclear fleet.
+cover: Polarstern
+source:
+  Wikipedia: https://en.wikipedia.org/wiki/List_of_icebreakers
+sections:
+  - title: Russia's nuclear icebreakers
+    vessels:
+      - name: Arktika
+        mmsi: 273210920
+        imo: 9694725
+        subtitle: "Project 22220 · 173 m · 2020"
+      - name: Sibir
+        mmsi: 273292320
+        imo: 9774422
+        subtitle: "Project 22220 · 173 m · 2022"
+      - name: Ural
+        subtitle: "Project 22220 · 173 m · 2022"
+      - name: Yakutia
+        subtitle: "Project 22220 · 173 m · 2024"
+      - name: "50 Let Pobedy"
+        mmsi: 273316240
+        subtitle: "Arktika class · 160 m · 2007"
+      - name: Yamal
+        subtitle: "Arktika class · 150 m · 1993"
+      - name: Taymyr
+        subtitle: "Taymyr class · 150 m · 1989"
+      - name: Vaygach
+        subtitle: "Taymyr class · 150 m · 1990"
+  - title: The Baltic
+    vessels:
+      - name: Polaris
+        subtitle: "Finland · 110 m · 2016"
+      - name: Otso
+        mmsi: 230252000
+        imo: 8405880
+        subtitle: "Finland · 99 m · 1986"
+      - name: Kontio
+        mmsi: 230251000
+        imo: 8518120
+        subtitle: "Finland · 99 m · 1987"
+      - name: Urho
+        mmsi: 230290000
+        imo: 7347615
+        subtitle: "Finland · 105 m · 1975"
+      - name: Voima
+        mmsi: 230291000
+        imo: 5383158
+        subtitle: "Finland · 84 m · 1954"
+      - name: Fennica
+        mmsi: 230245000
+        imo: 9043615
+        subtitle: "Finland · 116 m · 1993"
+      - name: Nordica
+        mmsi: 244201000
+        imo: 9483695
+        subtitle: "Finland · 116 m · 1994"
+      - name: Oden
+        mmsi: 265182000
+        imo: 8700876
+        subtitle: "Sweden · 107 m · 1989"
+      - name: Atle
+        mmsi: 265067000
+        imo: 7347627
+        subtitle: "Sweden · 105 m · 1974"
+      - name: Frej
+        mmsi: 265068000
+        imo: 7359668
+        subtitle: "Sweden · 105 m · 1975"
+      - name: Ymer
+        mmsi: 265066000
+        imo: 7505346
+        subtitle: "Sweden · 105 m · 1977"
+  - title: Polar research
+    vessels:
+      - name: Polarstern
+        mmsi: 211202460
+        imo: 8013132
+        subtitle: "Germany · 118 m · 1982"
+      - name: Sir David Attenborough
+        mmsi: 740405000
+        imo: 9798222
+        subtitle: "United Kingdom · 129 m · 2020"
+      - name: Nathaniel B. Palmer
+        mmsi: 366610000
+        imo: 9007257
+        subtitle: "United States · 94 m · 1992"
+      - name: Shirase
+        mmsi: 431999533
+        subtitle: "Japan · 138 m · 2009"
+      - name: S.A. Agulhas II
+        mmsi: 601986000
+        subtitle: "South Africa · 134 m · 2012"
+      - name: Nuyina
+        subtitle: "Australia · 160 m · 2021"
+      - name: Xue Long 2
+        subtitle: "China · 123 m · 2019"
+  - title: North America
+    vessels:
+      - name: Polar Star
+        mmsi: 367255000
+        imo: 7367471
+        subtitle: "United States Coast Guard · 122 m · 1976"
+      - name: Healy
+        mmsi: 303902000
+        imo: 9083380
+        subtitle: "United States Coast Guard · 128 m · 1999"
+      - name: Louis S. St-Laurent
+        subtitle: "Canadian Coast Guard · 120 m · 1969"
+      - name: Terry Fox
+        subtitle: "Canadian Coast Guard · 88 m · 1983"
+      - name: Amundsen
+        subtitle: "Canadian Coast Guard · 98 m · 1979"
+      - name: Henry Larsen
+        subtitle: "Canadian Coast Guard · 100 m · 1987"

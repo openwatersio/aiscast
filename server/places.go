@@ -31,7 +31,7 @@ const (
 	labelLargestKM = 10  // the most populous town this close wins: "Valencia", not its suburb
 	labelNearestKM = 25  // otherwise the nearest town this close: a harbor town, not a bigger one inland
 	labelRegionKM  = 100 // otherwise the nearest town's region: remote coasts have no town of 5,000 nearby
-	labelMinPoints = 5   // vessels with positions a station needs before its median means anything
+	labelMinPoints = 5   // coverage cells a station needs before their median means anything
 )
 
 // places are ordered by latitude, so a lookup reads only the band within a degree of its point.

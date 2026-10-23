@@ -17,6 +17,8 @@ import {
   isVolunteer,
   shipClass,
   shortAge,
+  stationCardPath,
+  stationDescription,
   stationStatus,
   stationName,
   stationTitle,
@@ -61,10 +63,12 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
   return pageMeta({
     title: `${title} receiving station | Open Waters AIS`,
     description: st
-      ? `AIS receiving station ${title}: ${n(st.events.last_24h)} messages in 24 hours, ${n(st.vessels)} vessels heard, last message ${formatAge(st.last_age_s)}.`
+      ? stationDescription(title, st)
       : `AIS receiving station ${id}.`,
     path: st ? `/stations/${id}` : undefined,
     noindex: !st,
+    // Drawn by the Worker (lib/shareCard.server.tsx).
+    ...(st ? { image: `${SITE}${stationCardPath(id)}` } : {}),
   });
 }
 
@@ -95,9 +99,9 @@ export default function Station({ loaderData }: Route.ComponentProps) {
 
   const extent = st?.bbox ? formatExtent(st.bbox) : undefined;
   // Vessels newest first, so what the station hears now leads and the order holds from one load to
-  // the next. Base stations and aids to navigation follow: they transmit every few seconds, and
-  // would otherwise always lead.
-  const fixed = (f: (typeof vessels)[number]) => (f.properties.kind === "base" || f.properties.kind === "aton" ? 1 : 0);
+  // the next. Base stations, aids to navigation, and fishing gear follow: they transmit every few
+  // seconds, and would otherwise always lead.
+  const fixed = (f: (typeof vessels)[number]) => (["base", "aton", "gear"].includes(f.properties.kind) ? 1 : 0);
   const heard = [...vessels].sort((a, b) => fixed(a) - fixed(b) || Date.parse(b.properties.seen) - Date.parse(a.properties.seen));
   const now = Date.now();
   const own = st?.mmsi != null && st.name_from === "vessel" && st.name ? st.name : undefined;
@@ -163,7 +167,7 @@ export default function Station({ loaderData }: Route.ComponentProps) {
                 return (
                   <ListRow
                     key={p.mmsi}
-                    to={vesselPath(p.mmsi, p.name)}
+                    to={vesselPath(p.mmsi, p.name, p.kind)}
                     leading={<ClassDot kind={p.kind} type={p.type} />}
                     title={
                       <>

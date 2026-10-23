@@ -136,6 +136,8 @@ func decodeCoverageTile(t *testing.T, b []byte) map[uint64]covFeature {
 				v := pbDecode(t, f.data)[0]
 				if v.num == 3 {
 					values = append(values, math.Float64frombits(v.v))
+				} else if v.num == 1 {
+					values = append(values, string(v.data))
 				} else {
 					values = append(values, v.v)
 				}
@@ -191,7 +193,7 @@ func TestCoverageTiles(t *testing.T) {
 	// The window is the 7 complete days before now: 2026-09-20 is before it, 2026-09-25 has no coverage, and
 	// 2026-09-30 is today and not over.
 	oslo3 := covRowOf(t, 3, osloRes3, 60, 6, osloRes3Outline)
-	oslo3.stations = 3
+	oslo3.stations, oslo3.ids = 3, []string{"station:b", "aishub", "station:a"}
 	f := &fakeCoverageSource{
 		days: []string{"2026-09-20", "2026-09-23", "2026-09-24", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29", "2026-09-30"},
 		cells: []covRow{
@@ -243,6 +245,13 @@ func TestCoverageTiles(t *testing.T) {
 	fs := tile(0, 0, 0)
 	if len(fs) != 2 || fs[osloRes3].props["vessels"] != 10.0 || fs[osloRes3].props["days"] != uint64(6) || fs[osloRes3].props["stations"] != uint64(3) {
 		t.Fatalf("z0: %v", fs)
+	}
+	// the stations that heard a cell, sorted, so the client can filter a list by them; a cell with none has none
+	if ids := fs[osloRes3].props["station_ids"]; ids != `["aishub","station:a","station:b"]` {
+		t.Fatalf("station_ids %v", ids)
+	}
+	if _, ok := fs[beringRes3].props["station_ids"]; ok {
+		t.Fatalf("bering: %v", fs[beringRes3].props)
 	}
 	if b := fs[beringRes3]; len(b.ring) != 6 {
 		t.Fatalf("antimeridian cell: %v", b)
@@ -467,7 +476,7 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no resolution-6 cell for Oslo among %d cells", when, len(got))
 		}
-		if oslo.res != 6 || oslo.vessels != 3 || oslo.days != 2 || oslo.stations != 2 {
+		if oslo.res != 6 || oslo.vessels != 3 || oslo.days != 2 || oslo.stations != 2 || !slices.Equal(slices.Sorted(slices.Values(oslo.ids)), []string{"kystverket", "station:other"}) {
 			t.Errorf("%s: Oslo at resolution 6 is %+v, want 2 + 1 vessels over 2 days from 2 stations", when, oslo)
 		}
 		if r := got[osloRes3]; r.res != 3 || r.vessels != 3 || r.stations != 2 {
@@ -486,7 +495,7 @@ func TestCoverageFromClickHouse(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if r.vessels != want.vessels || r.days != want.days || r.stations != 1 {
+			if r.vessels != want.vessels || r.days != want.days || r.stations != 1 || !slices.Equal(r.ids, []string{station}) {
 				t.Errorf("%s: %s's Oslo cell is %+v, want %d vessels over %d days", when, station, r, want.vessels, want.days)
 			}
 		}

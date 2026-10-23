@@ -306,7 +306,7 @@ func TestUSCGSync(t *testing.T) {
 	failDetails.Store(0)
 
 	got := vessel(366000004).Properties.Particulars
-	want := &particulars{RegisteredName: "MAERSK KENSINGTON", Identification: "1257726", Service: "Freight Ship",
+	want := &particulars{RegisteredName: "MAERSK KENSINGTON", Identification: "1257726", Service: "Freight Ship", CallSign: "WMKN",
 		Status: "Active", YearBuilt: 2007, Length: 286.88, Beam: 39.99, Depth: 20.3,
 		GrossTonnage: 74642, NetTonnage: 44243, TonnageMeasure: "Convention", Registry: "United States"}
 	if !reflect.DeepEqual(got, want) {

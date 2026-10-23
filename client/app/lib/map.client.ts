@@ -16,8 +16,9 @@ import {
   trackThenStream,
   viewBoxes,
 } from "./ais";
+import { GEAR_FILTER, MOVING_FILTER, STILL_FILTER } from "./vesselFilters";
 import { publicApiBase, type CoverageTiles } from "./api";
-import { coverageColor, coverageOpacity, coverageSummary, type CoverageMeasure } from "./coverage";
+import { coverageCellStations, coverageColor, coverageOpacity, coverageSummary, type CoverageMeasure } from "./coverage";
 import { PRIVACY } from "./links";
 import { reportError } from "./report";
 import type { BBox, Stream } from "./stream";
@@ -97,7 +98,7 @@ export interface MapController {
   flyToPoint(at: [number, number]): void;
   fitBBox(bbox: BBox): void;
   /** A vessel clicked on the map, with the name its feature carries for the URL slug. */
-  onSelect(fn: (mmsi: number, name?: string) => void): void;
+  onSelect(fn: (mmsi: number, name?: string, kind?: string) => void): void;
   /**
    * Keeps the open vessel centred as it moves. Dragging the map or opening another vessel
    * lets go; `onCameraFollow` hears every change, whichever side made it.
@@ -124,6 +125,13 @@ export interface MapController {
    * the vessels, until called with nothing.
    */
   setCoverage(tiles: CoverageTiles | undefined, measure?: CoverageMeasure): void;
+  /**
+   * Hears the stations that heard a clicked coverage cell, or nothing when a click lands off
+   * the cells. The clicked cell is outlined while anyone listens.
+   */
+  onCoverageSelect(fn: (stations: string[] | undefined) => void): () => void;
+  /** Lets go of the outlined cell. */
+  clearCoverageSelect(): void;
 }
 
 export interface MapView {
@@ -158,6 +166,17 @@ function shipIcon(): ImageData {
   g.closePath();
   g.fillStyle = "#000";
   g.fill();
+  return g.getImageData(0, 0, s, s);
+}
+
+/** Gear's marker: a small square, which reads as neither a vessel's arrow nor an aid's diamond. */
+function gearIcon(): ImageData {
+  const s = 24;
+  const c = document.createElement("canvas");
+  c.width = c.height = s;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#000";
+  g.fillRect(6, 6, s - 12, s - 12);
   return g.getImageData(0, 0, s, s);
 }
 
@@ -336,7 +355,7 @@ export function createMap(
 
   let focus: number | undefined;
   let attribution: maplibregl.AttributionControl | undefined;
-  const selectHandlers: Array<(mmsi: number, name?: string) => void> = [];
+  const selectHandlers: Array<(mmsi: number, name?: string, kind?: string) => void> = [];
   let ready = false;
 
   const viewBBoxes = (): BBox[] => {
@@ -350,7 +369,7 @@ export function createMap(
   const type: any = ["to-number", ["get", "type"], 0];
   const classExpr: any = [
     "case",
-    ["in", ["get", "kind"], ["literal", ["aton", "base", "sar"]]],
+    ["in", ["get", "kind"], ["literal", ["aton", "base", "sar", "gear"]]],
     ["get", "kind"],
     ["==", type, 30],
     "fishing",
@@ -382,7 +401,7 @@ export function createMap(
   const iconSize: any = ["interpolate", ["linear"], ["zoom"], 2, 0.3, 6, 0.55, 9, 0.7];
   const dotRadius: any = ["interpolate", ["linear"], ["zoom"], 2, 1.5, 6, 3, 9, 4];
 
-  /** The vessel layers for one source: dots for the stationary, arrows for the moving, names. */
+  /** The vessel layers for one source: dots for the stationary, arrows for the moving, squares for gear, names. */
   function vesselLayers(
     prefix: string,
     source: string,
@@ -395,7 +414,7 @@ export function createMap(
         id: `${prefix}-still`,
         type: "circle",
         ...from,
-        filter: ["!", ["has", "hdg"]],
+        filter: STILL_FILTER as maplibregl.FilterSpecification,
         paint: {
           "circle-radius": dotRadius,
           "circle-color": colorExpr,
@@ -409,12 +428,30 @@ export function createMap(
         id: `${prefix}-moving`,
         type: "symbol",
         ...from,
-        filter: ["has", "hdg"],
+        filter: MOVING_FILTER as maplibregl.FilterSpecification,
         layout: {
           "icon-image": "ship",
           "icon-size": iconSize,
           "icon-rotate": ["get", "hdg"],
           "icon-rotation-alignment": "map",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+        paint: {
+          "icon-color": colorExpr,
+          "icon-opacity": opacity,
+          "icon-halo-color": PALETTE[theme].outline,
+          "icon-halo-width": 1,
+        },
+      },
+      {
+        id: `${prefix}-gear`,
+        type: "symbol",
+        ...from,
+        filter: GEAR_FILTER as maplibregl.FilterSpecification,
+        layout: {
+          "icon-image": "gear",
+          "icon-size": iconSize,
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
@@ -793,10 +830,12 @@ export function createMap(
 
     const meta = el.appendChild(document.createElement("div"));
     meta.className = "meta";
+    // Gear's speed and course are the drift of its net, which says nothing a reader looking for vessels wants.
+    const underWay = v.kind !== "gear";
     meta.textContent = [
       CLASS_LABELS[shipClass(v.kind, v.shipType)],
-      v.sog != null ? `${v.sog.toFixed(1)} kn` : undefined,
-      v.cog != null ? `${Math.round(v.cog)}°` : undefined,
+      underWay && v.sog != null ? `${v.sog.toFixed(1)} kn` : undefined,
+      underWay && v.cog != null ? `${Math.round(v.cog)}°` : undefined,
     ]
       .filter(Boolean)
       .join(" · ");
@@ -809,7 +848,7 @@ export function createMap(
     hover.setLngLat([v.lon!, v.lat!]).setDOMContent(el).addTo(map);
   }
 
-  for (const layer of ["vessel-still", "vessel-moving", "tile-still", "tile-moving", "result-ring"]) {
+  for (const layer of ["vessel-still", "vessel-moving", "vessel-gear", "tile-still", "tile-moving", "tile-gear", "result-ring"]) {
     map.on("mousemove", layer, showHover);
     map.on("mouseleave", layer, () => {
       map.getCanvas().style.cursor = "";
@@ -819,7 +858,8 @@ export function createMap(
       const props = visible(e)?.properties;
       const mmsi = Number(props?.mmsi);
       const name = typeof props?.name === "string" && props.name ? props.name : undefined;
-      if (mmsi) for (const fn of selectHandlers) fn(mmsi, name);
+      const kind = typeof props?.kind === "string" ? props.kind : undefined;
+      if (mmsi) for (const fn of selectHandlers) fn(mmsi, name, kind);
     });
   }
 
@@ -852,13 +892,19 @@ export function createMap(
   // the cells they were counted in.
   let coverage: CoverageTiles | undefined;
   let measure: CoverageMeasure = "vessels";
+  // The clicked cell's feature id, its H3 index. Past 2^53 it loses its lowest bits, which H3 fills with
+  // unused digits at the resolutions drawn, so it still names one cell and matches every tile's copy.
+  let selectedCell: number | undefined;
+  const coverageSelectHandlers = new Set<(stations: string[] | undefined) => void>();
   const VESSEL_LAYERS = [
     "vessel-halo",
     "vessel-still",
     "vessel-moving",
+    "vessel-gear",
     "vessel-label",
     "tile-still",
     "tile-moving",
+    "tile-gear",
     "tile-label",
     "result-ring",
     "result-dot",
@@ -891,6 +937,22 @@ export function createMap(
         } as maplibregl.LayerSpecification,
         labels,
       );
+      map.addLayer(
+        {
+          id: "coverage-selected",
+          type: "line",
+          source: "coverage",
+          "source-layer": "coverage",
+          filter: ["==", ["id"], -1],
+          paint: { "line-color": PALETTE[theme].label, "line-width": 2 },
+        } as maplibregl.LayerSpecification,
+        labels,
+      );
+    }
+    if (map.getLayer("coverage-selected")) {
+      map.setLayoutProperty("coverage-selected", "visibility", coverage ? "visible" : "none");
+      map.setFilter("coverage-selected", ["==", ["id"], selectedCell ?? -1]);
+      map.setPaintProperty("coverage-selected", "line-color", PALETTE[theme].label);
     }
     if (map.getLayer("coverage")) {
       map.setLayoutProperty("coverage", "visibility", coverage ? "visible" : "none");
@@ -930,12 +992,21 @@ export function createMap(
   map.on("mousemove", "coverage", showCoverage);
   map.on("click", "coverage", showCoverage);
   map.on("mouseleave", "coverage", () => hover.remove());
+  map.on("click", (e) => {
+    if (!coverage || !coverageSelectHandlers.size) return;
+    const f = map.getLayer("coverage") ? map.queryRenderedFeatures(e.point, { layers: ["coverage"] })[0] : undefined;
+    const stations = coverageCellStations(f?.properties);
+    selectedCell = stations && typeof f?.id === "number" ? f.id : undefined;
+    applyCoverage();
+    for (const fn of coverageSelectHandlers) fn(stations);
+  });
 
   // Sources, layers, and images belong to the style, so swapping the basemap for a theme
   // removes them. This puts them back, on the first style and on every swap.
   map.on("style.load", () => {
     const c = PALETTE[theme];
     map.addImage("ship", shipIcon(), { sdf: true });
+    map.addImage("gear", gearIcon(), { sdf: true });
 
     map.addSource("track", { type: "geojson", data: emptyFC() });
     map.addSource("track-all", { type: "geojson", data: emptyFC() });
@@ -996,6 +1067,21 @@ export function createMap(
     // ring, and one too old for the map still shows its class in the dot.
     map.addSource("results", { type: "geojson", data: resultsFC(), promoteId: "mmsi" });
     const lit: any = ["boolean", ["feature-state", "lit"], false];
+    // The row under the pointer: a wide halo in the accent around its ring, so the mark it means
+    // stands out from the rest at any zoom.
+    map.addLayer({
+      id: "result-glow",
+      type: "circle",
+      source: "results",
+      paint: {
+        "circle-radius": ["case", lit, 24, 0],
+        "circle-color": c.track,
+        "circle-opacity": 0.22,
+        "circle-stroke-width": ["case", lit, 1.5, 0],
+        "circle-stroke-color": c.track,
+        "circle-radius-transition": { duration: 150 },
+      },
+    });
     map.addLayer({
       id: "result-ring",
       type: "circle",
@@ -1269,8 +1355,6 @@ export function createMap(
       requestCamera((animate) => map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 11), speed: 1.4, animate }));
     },
     fitBBox(bbox) {
-      // fitBounds' own padding replaces the camera padding rather than adding to it, so the
-      // panel insets have to be folded in here or the fitted box lands under a panel.
       requestCamera((animate) => fit(bbox, animate));
     },
     onSelect(fn) {
@@ -1285,8 +1369,17 @@ export function createMap(
         // A tapped cell's card has no mouseleave to close it, and the vessel tiles did not
         // reload while hidden.
         hover.remove();
+        selectedCell = undefined;
         refreshTiles();
       }
+    },
+    onCoverageSelect(fn) {
+      coverageSelectHandlers.add(fn);
+      return () => coverageSelectHandlers.delete(fn);
+    },
+    clearCoverageSelect() {
+      selectedCell = undefined;
+      applyCoverage();
     },
     followCamera: setCameraFollow,
     onCameraFollow(fn) {
@@ -1359,22 +1452,15 @@ export function createMap(
   }
 
   function fit(bbox: BBox, animate: boolean) {
-    const p = map.getPadding();
     map.fitBounds(
       [
         [bbox[1], bbox[0]],
         [bbox[3], bbox[2]],
       ],
-      {
-        padding: {
-          top: (p.top ?? 0) + 40,
-          right: (p.right ?? 0) + 40,
-          bottom: (p.bottom ?? 0) + 40,
-          left: (p.left ?? 0) + 40,
-        },
-        maxZoom: 11,
-        animate,
-      },
+      // A margin around the box. The camera padding, the panels' insets, is already left out of
+      // the room fitBounds fits into; counting it again here leaves a phone under its sheet no
+      // room at all, and the camera does not move.
+      { padding: 40, maxZoom: 11, animate },
     );
   }
 }

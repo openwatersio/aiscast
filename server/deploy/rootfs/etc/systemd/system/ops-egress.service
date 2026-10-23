@@ -1,0 +1,14 @@
+[Unit]
+Description=Limit the ops user's network access to /metrics and pprof
+# Before sshd, so no ops session ever runs without it.
+Before=ssh.service
+After=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/aiscast/ops-egress.nft
+ExecStop=/usr/sbin/nft delete table inet ops_egress
+
+[Install]
+WantedBy=multi-user.target

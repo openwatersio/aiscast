@@ -1,11 +1,11 @@
-import { Suspense } from "react";
+import { Suspense, type ReactNode } from "react";
 import { Await, data, redirect } from "react-router";
 import { X } from "lucide-react";
 import { Panel } from "../components/Panel";
 import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { IconLink } from "../components/ui/IconButton";
 import { VesselDetail } from "../components/VesselDetail";
-import { CLASS_LABELS, flagName, parseVesselParam, shipClass, vesselPath, vesselSlug } from "../lib/ais";
+import { CLASS_LABELS, flagName, parseVesselParam, pathSlug, shipClass, vesselCardPath, vesselPath } from "../lib/ais";
 import { browserAuth, getVessel, orUnavailable, type VesselFeature } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { liveInstance } from "../lib/live";
@@ -32,11 +32,13 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
   const { mmsi, slug } = parse(params.param);
   const feature = await orUnavailable(getVessel(context.get(serverEnv), mmsi));
   const name = feature?.properties.name;
+  const kind = feature?.properties.kind;
   // The MMSI is canonical and the slug is cosmetic, so a stale or absent slug is corrected
   // with one permanent redirect rather than served as a second URL for the same vessel.
-  if (feature && slug !== vesselSlug(name)) throw redirect(vesselPath(mmsi, name), 301);
+  if (feature && slug !== pathSlug(name, kind)) throw redirect(vesselPath(mmsi, name, kind), 301);
   const record: VesselRecord = feature;
-  const key = feature && mediaKey(feature.properties.imo, mmsi);
+  // Gear has no photo: its MMSI is one a maker or owner chose, often a ship's, whose photo a link would unfurl with.
+  const key = feature && kind !== "gear" && mediaKey(feature.properties.imo, mmsi);
   const photo = key ? await firstPhoto(key, request.url) : undefined;
   return data({ mmsi, name, feature: record, photo }, feature ? undefined : { status: 404 });
 }
@@ -54,14 +56,15 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const heard = liveInstance()?.stream.vessels.get(mmsi);
   const record = getVessel(browserAuth(), mmsi);
   if (heard?.name) {
-    if (slug !== vesselSlug(heard.name)) throw redirect(vesselPath(mmsi, heard.name));
+    if (slug !== pathSlug(heard.name, heard.kind)) throw redirect(vesselPath(mmsi, heard.name, heard.kind));
     // The pane is already open from the stream's copy, which stands if the record fails.
     const feature: VesselRecord = record.catch(() => undefined);
-    return { mmsi, name: heard.name, feature };
+    return { mmsi, name: heard.name, kind: heard.kind, feature };
   }
   const feature = await orUnavailable(record);
   const name = feature?.properties.name;
-  if (feature && slug !== vesselSlug(name)) throw redirect(vesselPath(mmsi, name));
+  const kind = feature?.properties.kind;
+  if (feature && slug !== pathSlug(name, kind)) throw redirect(vesselPath(mmsi, name, kind));
   return { mmsi, name, feature: feature as VesselRecord };
 }
 
@@ -80,7 +83,8 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
     ? `Live AIS position for ${label}${country ? `, ${country}` : ""}. ${CLASS_LABELS[shipClass(props.kind, props.type)]}. ` +
       `Last heard ${new Date(props.seen).toUTCString()}.`
     : `AIS vessel ${label}.`;
-  const path = vesselPath(mmsi, name);
+  const kind = props?.kind ?? ("kind" in loaderData ? loaderData.kind : undefined);
+  const path = vesselPath(mmsi, name, kind);
   const photo = "photo" in loaderData ? loaderData.photo : undefined;
   return pageMeta({
     title: `${label}${name ? ` (${mmsi})` : ""} live position | Open Waters AIS`,
@@ -88,12 +92,15 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
     // An MMSI the network has never heard has no page of its own to point at.
     path: feature || loading ? path : undefined,
     // A vessel that has never sent its name is a page about a bare MMSI, and the sitemap
-    // leaves it out for the same reason. Its links are still worth following.
-    noindex: !loading && !name,
-    image: photo,
+    // leaves it out for the same reason. So is gear: a fishing-net buoy, named by its serial.
+    // Their links are still worth following.
+    noindex: (!loading && !name) || kind === "gear",
+    // A photo when Wikimedia has one, else the vessel's card, drawn by the Worker (lib/shareCard.server.tsx).
+    image: photo ?? (feature || loading ? `${SITE}${vesselCardPath(mmsi)}` : undefined),
     // schema.org has no ship, and Vehicle covers transport over water. The flag is not
     // countryOfOrigin, which is where a thing was made, so it is left out.
-    jsonLd: feature && name
+    // Fishing gear is not a vehicle, and its page is not indexed.
+    jsonLd: feature && name && kind !== "gear"
       ? {
           "@context": "https://schema.org",
           "@type": "Vehicle",
@@ -111,17 +118,20 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
 
 export default function Vessel({ loaderData }: Route.ComponentProps) {
   const { mmsi, feature, name } = loaderData;
-  const detail = (
-    <Suspense fallback={<VesselDetail mmsi={mmsi} feature={undefined} loading />}>
-      <Await resolve={feature}>{(f) => <VesselDetail mmsi={mmsi} feature={f} />}</Await>
-    </Suspense>
-  );
+  const heardKind = "kind" in loaderData ? loaderData.kind : undefined;
   // Back pops to whatever pushed this vessel; close always returns to the map, as a place
-  // card's does in a maps app.
-  return (
-    <Panel back="/vessels" title={name ?? `MMSI ${mmsi}`} hero actions={<IconLink icon={X} label="Close" to="/vessels" small />}>
+  // card's does in a maps app. A vessel's page opens with its photos under the bar; gear has
+  // none, so its bar stands on the page as any other panel's does, and the title starts below it.
+  // The record's kind decides once it is in, the stream's until then.
+  const panel = (kind: string | undefined, detail: ReactNode) => (
+    <Panel back="/vessels" title={name ?? `MMSI ${mmsi}`} hero={kind !== "gear"} actions={<IconLink icon={X} label="Close" to="/vessels" small />}>
       {detail}
     </Panel>
+  );
+  return (
+    <Suspense fallback={panel(heardKind, <VesselDetail mmsi={mmsi} feature={undefined} loading />)}>
+      <Await resolve={feature}>{(f) => panel(f?.properties.kind ?? heardKind, <VesselDetail mmsi={mmsi} feature={f} />)}</Await>
+    </Suspense>
   );
 }
 

@@ -1,0 +1,43 @@
+title: P&O Cruises
+summary: "P&O Cruises was founded in 1837, is based in Southampton and is part of Carnival Corporation. Its 7 ships range from Aurora (2000) to Arvia (2022)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q1759468
+sections:
+  - title: Excellence class
+    vessels:
+      - name: Iona
+        mmsi: 310857000
+        imo: 9826548
+        subtitle: "344 m · in service 2020"
+  - title: Royal class
+    vessels:
+      - name: Britannia
+        mmsi: 310858000
+        imo: 9614036
+        subtitle: "330 m · in service 2015"
+  - title: Grand class
+    vessels:
+      - name: Azura
+        mmsi: 310610000
+        imo: 9424883
+        subtitle: "288 m · in service 2010"
+  - title: Vista class
+    vessels:
+      - name: Arcadia
+        mmsi: 310459000
+        imo: 9226906
+        subtitle: "285 m · in service 2005"
+  - title: Other ships
+    vessels:
+      - name: Arvia
+        mmsi: 310856000
+        imo: 9849693
+        subtitle: "344 m · in service 2022"
+      - name: Aurora
+        mmsi: 310556000
+        imo: 9169524
+        subtitle: "272 m · in service 2000"
+      - name: Queen of the Oceans
+        mmsi: 310473000
+        imo: 9169550
+        subtitle: "260 m · in service 2000"

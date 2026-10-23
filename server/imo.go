@@ -29,7 +29,7 @@ const limitsURL = "https://github.com/openwatersio/aiscast/blob/main/docs/limits
 
 // errIMOTier refuses lookup by IMO to the tiers that do not get the raw feed. Every tier still sees imo in the
 // vessels it gets back.
-var errIMOTier = errors.New("looking vessels up by IMO number needs a feeder or partner token; see " + limitsURL)
+var errIMOTier = errors.New("looking vessels up by IMO number needs the feeder tier or a partner token; see " + limitsURL)
 
 func imoGate(cl *Claims) error {
 	if cl.mayRaw() {
@@ -276,6 +276,8 @@ func (p *Pipeline) vesselPath(w http.ResponseWriter, r *http.Request, cl *Claims
 		}{Href: href(rec.mmsi), ID: f.ID, Properties: f.Properties, Type: f.Type}
 		if v.HasPos {
 			c.Geometry = &f.Geometry
+			// As a resolved answer names where its vessel is, so does each candidate.
+			c.Properties.Near = nearLabel(f.Geometry.Coordinates[1], f.Geometry.Coordinates[0])
 		}
 		b, _ := json.Marshal(c)
 		features = append(features, b)

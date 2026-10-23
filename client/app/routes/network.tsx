@@ -10,7 +10,7 @@ import { browserAuth, getCoverage, getStats, publicApiBase, type ApiAuth } from 
 import { serverEnv } from "../lib/context";
 import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS } from "../lib/links";
 import { useLive } from "../lib/live";
-import { pageMeta } from "../lib/meta";
+import { pageMeta, SITE } from "../lib/meta";
 import type { Route } from "./+types/network";
 
 async function load(auth: ApiAuth) {
@@ -32,13 +32,15 @@ export const meta = () =>
     description:
       "What the Open Waters AIS network is receiving right now and where it hears vessels: a coverage map, sources, message rates, delivery delay, vessels tracked, and stations feeding.",
     path: "/network",
+    // Drawn by the Worker (lib/shareCard.server.tsx).
+    image: `${SITE}/network.png`,
   });
 
 const n = (v: number) => v.toLocaleString("en-US");
 // For a column that has to fit a panel: 42,961,771 reads as 43M.
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
-const KINDS: Record<string, string> = { vessel: "Vessels", aton: "Aids to navigation", base: "Base stations", sar: "Search and rescue aircraft" };
+const KINDS: Record<string, string> = { vessel: "Vessels", aton: "Aids to navigation", base: "Base stations", sar: "Search and rescue", gear: "Fishing gear" };
 
 export default function Network({ loaderData }: Route.ComponentProps) {
   const { stats, coverage } = loaderData;

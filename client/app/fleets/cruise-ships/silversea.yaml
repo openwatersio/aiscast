@@ -1,0 +1,36 @@
+title: Silversea Cruises
+summary: "Silversea Cruises was founded in 1994 by Antonio Lefebvre d'Ovidio, is based in Monaco and is part of Royal Caribbean Group. Its 7 ships range from Silver Cloud (1994) to Silver Endeavour (2021)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q2286599
+sections:
+  - title: Endeavor class
+    vessels:
+      - name: Silver Endeavour
+        mmsi: 311000932
+        imo: 9821873
+        subtitle: "164 m · in service 2021"
+  - title: Other ships
+    vessels:
+      - name: Silver Origin
+        imo: 9837937
+        subtitle: "110 m · in service 2020"
+      - name: Silver Muse
+        mmsi: 311000637
+        imo: 9784350
+        subtitle: "213 m · in service 2017"
+      - name: Silver Whisper
+        mmsi: 308322000
+        imo: 9192179
+        subtitle: "186 m · in service 2001"
+      - name: Silver Shadow
+        mmsi: 308628000
+        imo: 9192167
+        subtitle: "186 m · in service 2000"
+      - name: Silver Wind
+        mmsi: 308814000
+        imo: 8903935
+        subtitle: "162 m · in service 1995"
+      - name: Silver Cloud
+        mmsi: 309027000
+        imo: 8903923
+        subtitle: "157 m · in service 1994"

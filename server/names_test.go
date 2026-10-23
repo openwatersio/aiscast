@@ -88,45 +88,29 @@ func TestMedianPointAntimeridian(t *testing.T) {
 	}
 }
 
+// A volunteer station is labeled by the place nearest the median of its coverage cells, once it has enough of
+// them; a feed is not labeled, since the series lists only volunteers' points.
 func TestCoverageLabel(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Now()
+	var near [][2]float64
 	for i := range 5 {
-		p.ingestPacket("udp:abc", "udp:abc", now, now, posReport(uint32(366000001+i), 34.0+float64(i)*0.002, -118.51))
+		near = append(near, [2]float64{34.0 + float64(i)*0.002, -118.51})
 	}
-	p.ingestPacket("udp:few", "udp:few", now, now, posReport(366000010, 34.0, -118.51))
-	p.ingestPacket("kystverket", "kystverket", now, now, posReport(257000001, 59.9, 10.7))
+	p.attachClickHouse(&chStore{w: &fakeCH{}, series: &fakeSeries{points: map[string][][2]float64{"udp:abc": near, "udp:few": near[:1]}}})
+	for _, id := range []string{"udp:abc", "udp:few", "kystverket"} {
+		p.ingestPacket(id, id, now, now, posReport(366000001, 34.0, -118.51))
+	}
 	p.refreshLabels(now)
 	rows := p.stationRows(now)
 	if r := rowOf(t, rows, "udp:abc"); r.Near != "Santa Monica, CA" {
 		t.Errorf("label: %+v", r)
 	}
 	if r := rowOf(t, rows, "udp:few"); r.Near != "" {
-		t.Errorf("labeled from one vessel: %+v", r)
+		t.Errorf("labeled from one cell: %+v", r)
 	}
 	if r := rowOf(t, rows, "kystverket"); r.Near != "" {
 		t.Errorf("feed labeled: %+v", r)
-	}
-}
-
-// Rows of one receiver that heard the same vessel contribute its newest position, whichever row heard it.
-func TestCoveragePointUsesNewestPositionAcrossRows(t *testing.T) {
-	p := testPipeline(t)
-	now := time.Now()
-	for i := range 2 {
-		p.stations.event(&Event{Station: "station:ed25519:x", Source: "station:ed25519:x", Time: now, MMSI: uint32(366000001 + i), HasPos: true, Lat: 34.0, Lon: -118.5, Type: "PositionReport"})
-	}
-	moved := uint32(366000009) // heard first on the base row far away, then on /n2k near the others
-	p.stations.event(&Event{Station: "station:ed25519:x", Source: "station:ed25519:x", Time: now.Add(-time.Hour), MMSI: moved, HasPos: true, Lat: 10, Lon: 10, Type: "PositionReport"})
-	p.stations.event(&Event{Station: "station:ed25519:x/n2k", Source: "station:ed25519:x", Time: now, MMSI: moved, HasPos: true, Lat: 34.0, Lon: -118.5, Type: "PositionReport"})
-	for _, m := range []uint32{366000010, 366000011} { // so the moved vessel decides the median
-		p.stations.event(&Event{Station: "station:ed25519:x/n2k", Source: "station:ed25519:x", Time: now, MMSI: m, HasPos: true, Lat: 10, Lon: 10, Type: "PositionReport"})
-	}
-	for range 20 { // map order must not matter
-		pt := p.stations.coveragePoints(now)["station:ed25519:x"]
-		if pt != [2]float64{34.0, -118.5} {
-			t.Fatalf("point %v", pt)
-		}
 	}
 }
 
@@ -304,7 +288,7 @@ func TestNameOrderAndLock(t *testing.T) {
 	n.m["station:ed25519:d"] = &stationMeta{Name: "Rude", Near: "Bangor, ME"}
 	n.locked["station:ed25519:d"] = true
 	for id, want := range map[string]string{"a": "Chosen", "b": "SERENITY", "c": "SERENITY II", "d": ""} {
-		r := stationRow{Station: "station:ed25519:" + id + "/n2k"}
+		r := stationRow{Station: "station:ed25519:" + id}
 		n.decorate(&r)
 		if r.Name != want {
 			t.Errorf("%s: %+v", id, r)

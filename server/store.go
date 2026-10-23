@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS wikidata (
 	operator         TEXT    NOT NULL DEFAULT '',
 	wikipedia        TEXT    NOT NULL DEFAULT '', -- URLs
 	commons_category TEXT    NOT NULL DEFAULT '',
-	image            TEXT    NOT NULL DEFAULT ''
+	image            TEXT    NOT NULL DEFAULT '',
+	callsign         TEXT    NOT NULL DEFAULT ''
 );
 -- US-flag vessels with a call sign or an official number from the Coast Guard's PSIX, listed weekly, with
 -- dimensions and tonnage read for the vessels AIS matches to them (uscg.go)
@@ -181,6 +182,18 @@ var storeAddedCols = []string{
 	"to_starboard INTEGER NOT NULL DEFAULT 0",
 }
 
+// upsertKind is the kind a row takes from the cache's. A kind a message type sets (aton, base, sar) wins and stays.
+// Between vessel and gear the cache decides, unless it does not yet know the station's name or type, as when a buoy
+// the sweep forgot reports its position before its static data: then the row keeps gear. A beacon number is sar only
+// while it says AIS-SART active, so once the cache has heard its position the cache decides that too.
+const upsertKind = `CASE
+		WHEN excluded.kind NOT IN ('vessel', 'gear') THEN excluded.kind
+		WHEN vessels.kind = 'sar' AND excluded.mmsi / 1000000 IN (970, 972, 974) AND excluded.has_pos THEN excluded.kind
+		WHEN vessels.kind NOT IN ('vessel', 'gear') THEN vessels.kind
+		WHEN excluded.kind = 'vessel' AND vessels.kind = 'gear' AND excluded.name = '' AND excluded.ship_type = 0 THEN 'gear'
+		ELSE excluded.kind
+	END`
+
 // upsertSQL merges a cache state into its row with the fold's own rules, because a vessel the cache swept
 // comes back blank: its name, particulars, and position arrive over the next minutes. A blank field keeps
 // the stored value, a position replaces the stored one only when it is newer, and seen never moves back.
@@ -193,10 +206,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 ON CONFLICT (mmsi) DO UPDATE SET
 	name        = iif(excluded.name != '', excluded.name, vessels.name),
 	search      = iif(excluded.name != '', excluded.search, vessels.search),
-	kind        = iif(excluded.kind != 'vessel', excluded.kind, vessels.kind),
+	kind        = ` + upsertKind + `,
 	class       = iif(excluded.class != '', excluded.class, vessels.class),
 	ship_type   = iif(excluded.ship_type != 0, excluded.ship_type, vessels.ship_type),
-	flag        = excluded.flag,
+	flag        = iif(` + upsertKind + ` = 'gear', '', iif(excluded.kind = 'gear', vessels.flag, excluded.flag)),
 	imo         = iif(excluded.imo != 0, excluded.imo, vessels.imo),
 	callsign    = iif(excluded.callsign != '', excluded.callsign, vessels.callsign),
 	destination = iif(excluded.destination != '', excluded.destination, vessels.destination),
@@ -282,6 +295,21 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	// A file from before the Wikidata call sign gains the column. While its ships have no call signs and the
+	// last sync did not record finding none, as before the first sync that reads them or after an older
+	// build's sync in a rollback, the sync stamp is cleared so the next hourly check fills them rather than
+	// waiting out the week.
+	if _, err := db.Exec("ALTER TABLE wikidata ADD COLUMN callsign TEXT NOT NULL DEFAULT ''"); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if _, err := db.Exec(`DELETE FROM meta WHERE key = 'wikidata_sync' AND EXISTS (SELECT 1 FROM wikidata)
+		AND NOT EXISTS (SELECT 1 FROM wikidata WHERE callsign != '')
+		AND coalesce((SELECT value FROM meta WHERE key = 'wikidata_no_callsigns'), '') != value`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	for _, stmt := range []string{
 		"DROP INDEX IF EXISTS uscg_identification",
 		"CREATE INDEX IF NOT EXISTS uscg_official_key ON uscg (official_key) WHERE official_key != ''",
@@ -363,12 +391,68 @@ func openStore(path string) (*store, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
+	if err := deriveStoredKinds(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	s := &store{db: db, path: path}
 	if s.mirror, err = loadMirror(s); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return s, nil
+}
+
+// derivedKindsVersion names the rule deriveStoredKinds last applied; a change to derivedKind bumps it, so the next
+// boot applies the new rule to the rows the fold has not heard since.
+const derivedKindsVersion = "1"
+
+// deriveStoredKinds gives every row saved as a vessel or gear the kind its stored name, type, size, and status give
+// it (derivedKind), and the flag that goes with it, once per version of the rule. The fold decides a station's kind
+// as it is heard and the daily import as history merges in, but a station not heard since keeps the row it had. A
+// beacon's sar row is left to the fold: the import resets a row's status to not available when history brings a
+// newer position, so a stored status cannot say a beacon has stopped. A full scan, under a second for 300,000 rows,
+// then a write per row that changes.
+func deriveStoredKinds(db *sql.DB) error {
+	var done string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'derived_kinds'`).Scan(&done); err == nil && done == derivedKindsVersion {
+		return nil
+	}
+	rows, err := db.Query(`SELECT mmsi, kind, name, ship_type, length, beam, nav_status FROM vessels WHERE kind IN ('vessel', 'gear')`)
+	if err != nil {
+		return err
+	}
+	changed := map[uint32]string{}
+	for rows.Next() {
+		var mmsi uint32
+		v := newVessel()
+		if err := rows.Scan(&mmsi, &v.Kind, &v.Name, &v.ShipType, &v.Length, &v.Beam, &v.NavStatus); err != nil {
+			rows.Close()
+			return err
+		}
+		if k := derivedKind(mmsi, v); k != v.Kind {
+			changed[mmsi] = k
+		}
+	}
+	rows.Close()
+	// An iteration error would leave rows unread, and the version below would mark them done for good.
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for mmsi, kind := range changed {
+		if _, err := tx.Exec(`UPDATE vessels SET kind = ?, flag = ? WHERE mmsi = ?`, kind, servedFlag(mmsi, kind), mmsi); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('derived_kinds', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, derivedKindsVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // storeConns bounds the vessel record's connections: the writer and the requests reading beside it.
@@ -444,7 +528,7 @@ func (s *store) upsert(rows []record) error {
 		}
 		seen := unixMs(v.Seen)
 		if _, err := st.Exec(r.mmsi, v.Name, searchKey(v.Name), v.Kind, v.Class, v.ShipType,
-			flagOf(r.mmsi), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
+			servedFlag(r.mmsi, v.Kind), v.IMO, v.CallSign, v.Destination, packETA(v.ETA), v.Draught, v.Length, v.Beam,
 			v.Dim.A, v.Dim.B, v.Dim.C, v.Dim.D,
 			v.HasPos, v.Lat, v.Lon, cell, v.Cog, v.Sog, v.Heading, v.NavStatus, unixMs(v.PosAt),
 			unixMs(v.TrustedAt), unixMs(v.StaticAt), seen, seen, v.Source, v.Station, v.MsgType); err != nil {
@@ -958,7 +1042,7 @@ func (v *vessel) merge(o *vessel) (changed bool) {
 		}
 	}
 	fill(v.Name == "", o.Name != "", func() { v.Name = o.Name })
-	fill(v.Kind == "vessel", o.Kind != "vessel", func() { v.Kind = o.Kind })
+	fill(v.Kind == "vessel" || v.Kind == "gear" && o.Kind != "gear", o.Kind != "vessel", func() { v.Kind = o.Kind }) // gear only fills in for vessel
 	fill(v.Class == "", o.Class != "", func() { v.Class = o.Class })
 	fill(v.ShipType == 0, o.ShipType != 0, func() { v.ShipType = o.ShipType })
 	fill(v.IMO == 0, o.IMO != 0, func() { v.IMO = o.IMO })

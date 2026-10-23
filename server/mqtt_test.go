@@ -307,7 +307,7 @@ func TestMQTTConnectAuth(t *testing.T) {
 	for i := 0; i < feederMinEvents24h; i++ {
 		p.stations.event(&Event{Station: "station:ed25519:mq", Source: "station:ed25519:mq", Time: time.Now(), MMSI: 1})
 	}
-	if e := p.effective(&personal); !e.Feeder {
+	if e := p.effective(&personal, ""); !e.Feeder {
 		t.Error("MQTT contribution did not earn the feeder tier")
 	}
 }

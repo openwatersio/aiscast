@@ -1,3 +1,4 @@
+import { adoptedKind, derivedKind, isBeacon } from "./ais";
 import { publicApiBase, storedToken, type VesselProps } from "./api";
 import { reportError } from "./report";
 import { Hub, HUB_HEARTBEAT, type HubState, type Limits, type Port, type ToHub, type ToTab } from "./streamHub";
@@ -202,7 +203,7 @@ export class Stream {
     if (!v) return;
     if (!v.name && from.name) v.name = from.name;
     if (!v.shipType && from.shipType) v.shipType = from.shipType;
-    if (v.kind === "vessel" && from.kind) v.kind = from.kind;
+    v.kind = adoptedKind(mmsi, v, from.kind) as Vessel["kind"];
     this.#dirty = true;
   }
 
@@ -308,6 +309,7 @@ export class Stream {
 
   #fold(ev: StreamEvent) {
     const m = ev.message ?? {};
+    const seenFirst = !this.vessels.has(ev.mmsi);
     const v: Vessel = this.vessels.get(ev.mmsi) ?? {
       mmsi: ev.mmsi,
       kind: "vessel",
@@ -336,7 +338,8 @@ export class Stream {
       const lr = ev.msg_type === "LongRangeAisBroadcastMessage";
       v.cog = m.Cog != null && m.Cog < (lr ? 511 : 360) ? m.Cog : undefined;
       v.sog = m.Sog != null && m.Sog < (lr ? 63 : 102.3) ? m.Sog : undefined;
-      v.heading = m.TrueHeading != null && m.TrueHeading < 511 ? m.TrueHeading : undefined;
+      // 0 to 359; 511 is not available, and some transmitters send other values out of range (HSD-NET buoys send 456).
+      v.heading = m.TrueHeading != null && m.TrueHeading < 360 ? m.TrueHeading : undefined;
     }
     if (m.NavigationalStatus != null && m.NavigationalStatus !== 15 && !stale) {
       v.navStatus = m.NavigationalStatus;
@@ -356,6 +359,21 @@ export class Stream {
     if (ev.msg_type === "AidsToNavigationReport") v.kind = "aton";
     else if (ev.msg_type === "BaseStationReport") v.kind = "base";
     else if (ev.msg_type === "StandardSearchAndRescueAircraftReport") v.kind = "sar";
+    // Decided again only on a message that brings what it decides by, as the server does, so a buoy a tile named
+    // gear by its hull stays gear through the position reports between its static ones.
+    else if (
+      (v.kind === "vessel" || v.kind === "gear" || (v.kind === "sar" && isBeacon(ev.mmsi))) &&
+      (seenFirst || name || type || m.Dimension || (ev.lat != null && isBeacon(ev.mmsi)))
+    ) {
+      const d = v.dimension;
+      v.kind = derivedKind(ev.mmsi, {
+        name: v.name,
+        shipType: v.shipType,
+        length: d && d.A + d.B,
+        beam: d && d.C + d.D,
+        navStatus: v.navStatus,
+      });
+    }
 
     if (!stale) {
       v.seen = t;

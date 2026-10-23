@@ -257,7 +257,7 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	stations := map[string]any{}
 	var active int
 	bySource := map[string]int{}
-	rows := p.stations.rows(now)
+	rows := p.stations.rows(now, nil)
 	for _, s := range rows {
 		if now.Sub(s.LastSeen) < stationActive {
 			active++
@@ -291,7 +291,7 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	clients := map[string]any{"streams": streams, "streams_opened": p.usage.streams.windows(now), "requests": p.usage.requests.windows(now)}
 
 	sources := map[string]any{}
-	vbs := p.stations.vesselsBySource(now)
+	_, vbs := p.rollups(now)
 	names := map[string]bool{}
 	for _, k := range p.usage.sourceNames(now) {
 		names[k] = true
