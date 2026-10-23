@@ -42,6 +42,7 @@ func init() {
 	// A stream write blocks only when the client has stopped draining its socket. The fan-out queue holds
 	// subBuffer global events, about 1.5 s at production rates, so a client stalled longer than that has
 	// already overflowed and is closed on its next event; waiting past it only drops more of its events.
+	// MQTT keeps its own 10 s deadline: it only ingests, so its writes are acknowledgements, never fan-out.
 	writeTimeout.Store(int64(2 * time.Second))
 }
 
@@ -294,7 +295,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 
 	sub := p.subscribe()
 	defer p.unsubscribe(sub)
-	defer p.noteSlow(sub, "v0", owner, r)
+	defer func() { p.noteSlow(sub, "v0", owner, r) }() // owner read at exit, not when deferred
 	for {
 		select {
 		case <-ctx.Done():

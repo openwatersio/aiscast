@@ -866,6 +866,53 @@ func TestSlowClientCounted(t *testing.T) {
 	}
 }
 
+// The v0 handler learns its claims from the first subscription frame, after the socket opens; the slow
+// close must still be counted under them.
+func TestV0SlowClientCounted(t *testing.T) {
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v0/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	c.Write(ctx, websocket.MessageText, []byte(`{"APIKey":"k","BoundingBoxes":[[[-90,-180],[90,180]]]}`))
+
+	var sub *subscriber
+	for sub == nil && ctx.Err() == nil {
+		p.smu.RLock()
+		for s := range p.subs {
+			sub = s
+		}
+		p.smu.RUnlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if sub == nil {
+		t.Fatal("handler never subscribed")
+	}
+	sub.overflow.Store(true) // as broadcast does when this client's queue is full
+	p.broadcast(&Event{MMSI: 42, Time: time.Now(), Type: "PositionReport", Lat: 49.5, Lon: 0.5, HasPos: true})
+	if _, _, err := c.Read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+		t.Fatalf("read after overflow: %v", err)
+	}
+	for ctx.Err() == nil {
+		var n int64
+		for k, v := range p.streams.slowSnapshot() {
+			if k[0] == "v0" {
+				n += v
+			}
+		}
+		if n == 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("v0 slow close not counted")
+}
+
 // countingReader reports how many compressed bytes the gzip reader has consumed.
 type countingReader struct {
 	r io.Reader
