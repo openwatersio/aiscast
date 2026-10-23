@@ -236,7 +236,9 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		"(257000001, toDate('"+d(time.Minute)+"'), 'aishub', 'aishub', '5', 0, '"+d(time.Minute)+"', '"+d(time.Minute)+"'), "+
 		// the record's seed and a state older than the window statics is read over, neither of which counts
 		"(257000001, toDate('"+d(time.Minute)+"'), 'record', 'record', 'record', 99, '"+d(time.Minute)+"', '"+d(time.Minute)+"'), "+
-		"(257000002, toDate('"+d(40*24*time.Hour)+"'), 'kystverket', 'kystverket', '5', 50, '"+d(40*24*time.Hour)+"', '"+d(40*24*time.Hour)+"')"); err != nil {
+		"(257000002, toDate('"+d(40*24*time.Hour)+"'), 'kystverket', 'kystverket', '5', 50, '"+d(40*24*time.Hour)+"', '"+d(40*24*time.Hour)+"'), "+
+		// on the window's first day, but before its start
+		"(257000002, toDate('"+d(35*24*time.Hour)+"'), 'kystverket', 'kystverket', '5', 60, '"+d(35*24*time.Hour+time.Minute)+"', '"+d(35*24*time.Hour+time.Minute)+"')"); err != nil {
 		t.Fatal(err)
 	}
 	if v, err := conn.stationVessels(ctx, "station:s1", now); err != nil || fmt.Sprint(v) != fmt.Sprint(map[uint32]heardVessel{257000001: {true, 30, "station"}, 257000002: {}}) {
