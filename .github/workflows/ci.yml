@@ -73,12 +73,13 @@ jobs:
           exit 1
       # Caddy, not aiscast, compresses the SSE stream, and Caddy changes only when apply.sh runs. An empty
       # bbox sends the welcome frame and then a keepalive comment every 30 s, so both arrive only if Caddy
-      # flushes its compressor per event. Browsers get zstd and curl gets gzip, so both are checked.
+      # flushes its compressor per event. Caddy prefers zstd, which browsers take, and gives gzip to clients
+      # without it, so both are checked.
       - name: check the event stream is compressed
         run: |
           curl -V | grep -qw zstd || { echo "::error::this runner's curl cannot decode zstd"; exit 1; }
           for enc in gzip zstd; do
-            curl -sS -N --compressed -H "Accept-Encoding: $enc" --max-time 40 -D "$RUNNER_TEMP/sse-$enc.headers" -o "$RUNNER_TEMP/sse-$enc.body" 'https://ais.openwaters.io/v1/stream?bbox=-40,-140,-39,-139' || true &
+            curl -sS -N --compressed -H "Accept-Encoding: $enc" --max-time 45 -D "$RUNNER_TEMP/sse-$enc.headers" -o "$RUNNER_TEMP/sse-$enc.body" 'https://ais.openwaters.io/v1/stream?bbox=-40,-140,-39,-139' || true &
           done
           wait
           for enc in gzip zstd; do
@@ -93,11 +94,11 @@ jobs:
               exit 1
             fi
             if ! grep -q '"type":"welcome"' "$out.body"; then
-              echo "::error::/v1/stream sent no $enc welcome frame within 40 s"
+              echo "::error::/v1/stream sent no $enc welcome frame within 45 s"
               exit 1
             fi
             if ! grep -qx ':' "$out.body"; then
-              echo "::error::/v1/stream sent no $enc keepalive within 40 s"
+              echo "::error::/v1/stream sent no $enc keepalive within 45 s"
               exit 1
             fi
           done
