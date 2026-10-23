@@ -309,7 +309,7 @@
         "operationId": "listStations",
         "tags": ["Stations"],
         "summary": "List stations",
-        "description": "Every receiving station heard since the server started, with what it contributes. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes and `vessels_24h` in the last 24 hours. `vessels_exclusive_24h` counts the vessels no other station heard in those 24 hours, the gap a station fills. `bbox` is the extent of positions heard, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
+        "description": "Every receiving station heard in the last 30 days, with what it contributes, across restarts on a server that keeps its history in ClickHouse. A UDP station (`udp:` or `mmsi:`) is listed only once heard since the server last started. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes and `vessels_24h` in the last 24 hours. `vessels_exclusive_24h` counts the vessels no other station heard in those 24 hours, the gap a station fills. `bbox` is the extent of positions heard since the server last started, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
         "security": [],
         "responses": {
           "200": {
@@ -391,6 +391,11 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The station is not heard since the server started, and the history that lists stations heard before it has not answered: after a start until its first read, or once its reads have failed for 10 minutes. Retry after `Retry-After` seconds.",
+            "headers": { "Retry-After": { "schema": { "type": "integer" } } },
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } } } }
           },
           "404": {
             "description": "Unknown station id.",
@@ -904,12 +909,12 @@
           "mmsi": { "type": "integer", "description": "The station's own vessel, from the `!AIVDO` sentences it sends." },
           "near": { "type": "string", "description": "The town or region nearest the traffic the station hears, such as `Santa Monica, CA` or `Munster, Ireland`. Volunteer stations only. Place names from GeoNames, CC BY 4.0." },
           "positions": { "type": "integer", "description": "Position messages the station delivered first, over the station's history, up to an hour behind; since the last restart while `uptime_7d` is null." },
-          "first_seen": { "type": "string", "format": "date-time", "description": "The station's first hour in its history, or when this server first heard it if earlier, or while `uptime_7d` is null. During the first backfill the history is partial, so the first hour can read later than it was." },
-          "last_seen": { "type": "string", "format": "date-time" },
-          "last_age_s": { "type": "integer", "description": "Seconds since the last message." },
+          "first_seen": { "type": "string", "format": "date-time", "description": "The station's first hour in its history, or when this server first heard it if earlier, or while `uptime_7d` is null; for a station not heard since the server started, its first hour in the last 30 days until its history is read. During the first backfill the history is partial, so the first hour can read later than it was." },
+          "last_seen": { "type": "string", "format": "date-time", "description": "The last message. For a station not heard since the server started, its last position reception the history holds, up to about 7 minutes behind, or the start of its last hour when that hour held only stale copies or the read of its last reception failed." },
+          "last_age_s": { "type": "integer", "description": "Seconds since `last_seen`." },
           "bbox": {
             "type": "array",
-            "description": "`[minLat, minLon, maxLat, maxLon]` extent of positions heard, a rough coverage footprint. Absent until a position has been heard.",
+            "description": "`[minLat, minLon, maxLat, maxLon]` extent of positions heard since the server last started, a rough coverage footprint. Absent until the station hears one.",
             "items": { "type": "number" },
             "minItems": 4,
             "maxItems": 4
@@ -933,7 +938,7 @@
           "stations": {
             "type": "object",
             "properties": {
-              "total": { "type": "integer", "description": "Stations heard since the server started." },
+              "total": { "type": "integer", "description": "Stations heard in the last 30 days; only those heard since the server started in the first minute after a start, or while the history is unavailable." },
               "active": { "type": "integer", "description": "Stations heard in the last 5 minutes." },
               "by_source": {
                 "type": "object",
