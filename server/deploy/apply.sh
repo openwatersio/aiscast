@@ -32,10 +32,10 @@ echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=$(dpkg --pr
 # Refresh the lists and install the packages, getting past a vendor repository that refuses its index.
 . ./apt-update.sh
 # Caddy compresses /v1/stream, which it sends uncompressed before 2.11.6; 2.11.6 can panic proxying HTTP/2 request bodies.
+# A warning, not a stop: apt-update.sh deploys without upgrading while Caddy's repository refuses its index.
 caddy_version=$(dpkg-query -W -f='${Version}' caddy)
 if ! dpkg --compare-versions "$caddy_version" ge 2.11.7; then
-	echo "caddy $caddy_version is older than 2.11.7; check the Caddy apt source in /etc/apt/sources.list.d/caddy-stable.list" >&2
-	exit 1
+	echo "::warning title=caddy::apply.sh: caddy $caddy_version is older than 2.11.7; check the Caddy apt source in /etc/apt/sources.list.d/caddy-stable.list"
 fi
 # ClickHouse is installed once and upgraded by hand, so a deploy never changes the database under live data.
 if ! command -v clickhouse-server >/dev/null; then
