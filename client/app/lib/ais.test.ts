@@ -14,6 +14,10 @@ import {
   stationTitle,
   volunteerReceiver,
   stationTitles,
+  uptimePercent,
+  fitBox,
+  creditLine,
+  vesselMix,
   indexAt,
   interpolateAt,
   mergeTrack,
@@ -645,5 +649,51 @@ describe("vesselActivity", () => {
     expect(vesselActivity({ sog: 12 })).toBe("Under way");
     expect(vesselActivity({ sog: 0, near: "Nassau" })).toBe("Near Nassau");
     expect(vesselActivity({})).toBeUndefined();
+  });
+});
+
+describe("fitBox", () => {
+  it("turns the TileJSON's west, south, east, north into the map's south, west, north, east", () => {
+    expect(fitBox([15.1, 37.2, 16.4, 38.9])).toEqual([37.2, 15.1, 38.9, 16.4]);
+    expect(fitBox(undefined)).toBeUndefined();
+    expect(fitBox([1, 2])).toBeUndefined();
+  });
+});
+
+describe("creditLine", () => {
+  const own = "Open Waters AIS (https://openwaters.io/ais/)";
+  const kystverket = "Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration.";
+  it("says the network's own credit once and each source's as the source words it", () => {
+    expect(
+      creditLine(
+        { station: own, aisstream: `${own}. aisstream.io`, kystverket: `${own}. ${kystverket}` },
+        { kystverket: `${own}. ${kystverket}` },
+      ),
+    ).toBe(`${own}. aisstream.io. ${kystverket}`);
+    expect(creditLine({ station: own })).toBe(own);
+    expect(creditLine(undefined, {})).toBe("");
+  });
+});
+
+describe("uptimePercent", () => {
+  it("rounds down, so only every hour reads 100, and has none while unknown", () => {
+    expect(uptimePercent(167 / 168)).toBe(99);
+    expect(uptimePercent(1)).toBe(100);
+    expect(uptimePercent(0.29)).toBe(29);
+    expect(uptimePercent(0)).toBe(0);
+    expect(uptimePercent(null)).toBeUndefined();
+    expect(uptimePercent(undefined)).toBeUndefined();
+  });
+});
+
+describe("vesselMix", () => {
+  it("adds ship types up into the map's classes, most first and other last", () => {
+    expect(vesselMix({ "70": [5, 1], "79": [2, 2], "0": [9, 0], "36": [3, 3], base: [1, 0] })).toEqual([
+      { cls: "cargo", vessels: 7, only: 3 },
+      { cls: "pleasure", vessels: 3, only: 3 },
+      { cls: "base", vessels: 1, only: 0 },
+      { cls: "other", vessels: 9, only: 0 },
+    ]);
+    expect(vesselMix(undefined)).toEqual([]);
   });
 });
