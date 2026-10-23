@@ -157,6 +157,17 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if n := owned(); n != 1 {
 		t.Fatalf("a dry run changed station_own: %d sightings, was 1", n)
 	}
+	states := func() uint64 {
+		t.Helper()
+		n, err := chColumn[uint64](ctx, c.conn, "SELECT count() FROM "+db+".statics WHERE source = 'kystverket'")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n[0]
+	}
+	if n := states(); n != 0 {
+		t.Fatalf("a dry run wrote %d static states", n)
+	}
 	if err := c.replayDay(ctx, dir, day, warmup, false, false); err == nil || !strings.Contains(err.Error(), "-force") {
 		t.Fatalf("six replayed copies against seven stored replaced the day without -force: %v", err)
 	}
@@ -177,6 +188,9 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		if err := c.replayDay(ctx, dir, day, warmup, false, true); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if n := states(); n == 0 {
+		t.Error("a replay swapped in wrote no static states")
 	}
 	if n := owned(); n != maxOwnPerStation {
 		t.Errorf("a replay swapped in wrote %d own-ship sightings, want the allowance %d", n, maxOwnPerStation)
