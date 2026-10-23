@@ -31,12 +31,21 @@ fi
 echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=$(dpkg --print-architecture)] https://packages.clickhouse.com/deb lts main" >/etc/apt/sources.list.d/clickhouse.list
 # Refresh the lists and install the packages, getting past a vendor repository that refuses its index.
 . ./apt-update.sh
+# Caddy compresses /v1/stream, which it sends uncompressed before 2.11.6; 2.11.6 can panic proxying HTTP/2 request bodies.
+# A warning, not a stop: apt-update.sh deploys without upgrading while Caddy's repository refuses its index.
+caddy_version=$(dpkg-query -W -f='${Version}' caddy)
+if ! dpkg --compare-versions "$caddy_version" ge 2.11.7; then
+	echo "::warning title=caddy::apply.sh: caddy $caddy_version is older than 2.11.7; check the Caddy apt source in /etc/apt/sources.list.d/caddy-stable.list"
+fi
 # ClickHouse is installed once and upgraded by hand, so a deploy never changes the database under live data.
 if ! command -v clickhouse-server >/dev/null; then
 	apt-get install -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold clickhouse-client clickhouse-server
 fi
 
 id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
+# ops reads the journal for investigating alerts and changes nothing; its keys are in rootfs/etc/ssh/authorized_keys.d/ops.
+id ops >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash ops
+usermod -aG systemd-journal ops
 
 # The sshd drop-in is the one file that can lock everyone out of the box, and a bad one
 # only bites on the next reboot, so roll it back if it does not validate.
@@ -55,6 +64,11 @@ if ! sshd -t; then
 	exit 1
 fi
 rm -f "$drop.bak"
+# ops reaches only /metrics and pprof (ops-egress.nft), loaded before sshd lets it in.
+command -v nft >/dev/null || apt-get install -yq nftables
+systemctl daemon-reload
+systemctl enable ops-egress.service
+systemctl restart ops-egress.service
 systemctl reload ssh
 
 mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/alloy/textfile
