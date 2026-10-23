@@ -35,7 +35,7 @@ Every source here is published for anyone to download, and none forbids storing 
 
 ## Where it lands
 
-ClickHouse is the source of truth for history: what it holds is the network's history, and no second decoded copy is kept beside it. This is the one place the specs say so. The raw archive on R2 is what live ingest received, and `aiscast replay -clickhouse` rebuilds days of the record from it; it is not the record. Every copy of every transmission is a row in `receptions`, from live feeds and archives alike. An archive row is a reception like any other, delivered days or months late by a feed the network does not run, just as AISHub delivers its rows a minute late. `positions` is a view that keeps the earliest copy of each transmission. Static data goes to `vessel_statics`.
+ClickHouse is the source of truth for history: what it holds is the network's history, and no second decoded copy is kept beside it. This is the one place the specs say so. The raw archive on R2 is what live ingest received, and `aiscast replay -clickhouse` rebuilds days of the record from it; it is not the record. Every copy of every transmission is a row in `receptions`, from live feeds and archives alike. An archive row is a reception like any other, delivered days or months late by a feed the network does not run, just as AISHub delivers its rows a minute late. `positions` is a view that keeps the earliest copy of each transmission. Static data goes to `vessel_statics`, and each distinct state to `statics`.
 
 ```
 live writer ────────────────────────────────────────────────┐
