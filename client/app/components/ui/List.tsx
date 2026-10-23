@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import { CLASS_COLORS, shipClass, type StationName, type StationStatus } from "../../lib/ais";
+import { CLASS_COLORS, shipClass, type ShipClass, type StationName, type StationStatus } from "../../lib/ais";
 import { cn } from "../../lib/cn";
 
 export function List({ children, className }: { children: ReactNode; className?: string }) {
@@ -56,28 +56,55 @@ export function ListRow({
   );
 }
 
-/** A vessel's ship-type class, as the dot the map colours it with; gear is the map's square, not a vessel's dot. */
-export function ClassDot({ kind, type }: { kind?: string; type?: number }) {
-  const color = CLASS_COLORS[shipClass(kind, type)];
+/**
+ * A vessel's ship-type class, as the dot the map colours it with: from its kind and type, or the class itself. Gear is
+ * the map's square, not a vessel's dot.
+ */
+export function ClassDot({ kind, type, cls }: { kind?: string; type?: number; cls?: ShipClass }) {
+  const c = cls ?? shipClass(kind, type);
   // The colour is data, not a design token: it is the one inline style components may set.
-  return <span className={cn("size-2.5 shrink-0", kind === "gear" ? "rounded-[1px]" : "rounded-full")} style={{ background: color }} aria-hidden />;
+  return <span className={cn("size-2.5 shrink-0", c === "gear" ? "rounded-[1px]" : "rounded-full")} style={{ background: CLASS_COLORS[c] }} aria-hidden />;
 }
 
 const STATUS_DOT: Record<StationStatus, { className: string; label: string }> = {
-  live: { className: "bg-positive", label: "Live" },
-  quiet: { className: "bg-caution", label: "Quiet" },
-  offline: { className: "bg-fg-muted", label: "Offline" },
+  live: { className: "fill-positive", label: "Live" },
+  quiet: { className: "fill-caution", label: "Quiet" },
+  offline: { className: "fill-fg-muted", label: "Offline" },
 };
 
 /**
- * Whether a station is sending, as a dot in the colors of the status chip over the map. In a row it
- * is centred in the width of an IconBadge so rows with either line up; `inline`, it sits in text.
- * Hidden from screen readers, which hear a quiet or offline station's age beside it instead.
+ * Whether a station is sending, as a dot in the colors of the status chip over the map, ringed by a
+ * gauge of its uptime: green for the share of hours it sent in, filled clockwise from the top, and
+ * faint gray for the rest. `className` sizes it. Hidden from screen readers, which hear the status
+ * and uptime beside it instead.
  */
-export function StatusDot({ status, inline = false }: { status: StationStatus; inline?: boolean }) {
-  const { className, label } = STATUS_DOT[status];
-  const dot = <span className={cn("shrink-0 rounded-full", inline ? "size-2" : "size-2.5", className)} title={label} aria-hidden />;
-  return inline ? dot : <span className="flex w-9 shrink-0 justify-center">{dot}</span>;
+export function StatusDot({ status, uptime, className = "size-5" }: { status: StationStatus; uptime?: number; className?: string }) {
+  const { className: fill, label } = STATUS_DOT[status];
+  const R = 8; // the gauge's radius in a 20-unit box; the dot inside is 3.5
+  const C = 2 * Math.PI * R;
+  // The tooltip is an attribute on a wrapper, not an SVG <title>, which would join the text of a heading.
+  return (
+    <span className="inline-flex shrink-0" title={uptime == null ? label : `${label} · ${uptime}% uptime`} aria-hidden>
+      <svg viewBox="0 0 20 20" className={className}>
+        {uptime != null && (
+          <>
+            <circle cx={10} cy={10} r={R} fill="none" strokeWidth={2} className="stroke-line" />
+            <circle
+              cx={10}
+              cy={10}
+              r={R}
+              fill="none"
+              strokeWidth={2}
+              strokeDasharray={`${(uptime / 100) * C} ${C}`}
+              transform="rotate(-90 10 10)"
+              className="stroke-positive"
+            />
+          </>
+        )}
+        <circle cx={10} cy={10} r={uptime == null ? 5 : 3.5} className={fill} />
+      </svg>
+    </span>
+  );
 }
 
 /**

@@ -696,6 +696,62 @@ export function stationTitles(sts: Array<{ station: string; name?: string; near?
   );
 }
 
+/** One class of vessel a station heard: how many, and how many of them no other station heard. */
+export interface MixSlice {
+  cls: ShipClass;
+  vessels: number;
+  only: number;
+}
+
+/**
+ * A station's vessels by class, from its counts by ITU ship type or kind, most first and "other"
+ * last, so the classes read as the map colors them.
+ */
+export function vesselMix(types: Record<string, [number, number]> | undefined): MixSlice[] {
+  const by = new Map<ShipClass, MixSlice>();
+  for (const [key, [vessels, only]] of Object.entries(types ?? {})) {
+    const cls = /^\d+$/.test(key) ? shipClass("vessel", Number(key)) : shipClass(key);
+    const slice = by.get(cls) ?? { cls, vessels: 0, only: 0 };
+    slice.vessels += vessels;
+    slice.only += only;
+    by.set(cls, slice);
+  }
+  const rank = (m: MixSlice) => (m.cls === "other" ? -1 : m.vessels);
+  return [...by.values()].sort((a, b) => rank(b) - rank(a));
+}
+
+/**
+ * A station's coverage TileJSON `fit`, [west, south, east, north], as the map's box, [south, west, north,
+ * east]. Undefined without one, as from a server that does not frame one station's cells.
+ */
+export function fitBox(fit: number[] | undefined): [number, number, number, number] | undefined {
+  return fit?.length === 4 ? [fit[1]!, fit[0]!, fit[3]!, fit[2]!] : undefined;
+}
+
+/** The network's own credit, which the server's every credit line opens with. */
+const OWN_CREDIT = "Open Waters AIS (https://openwaters.io/ais/)";
+
+/**
+ * The credit lines a response gives per source, as one: the network's own credit once, then each source's
+ * own as the source words it.
+ */
+export function creditLine(...credits: Array<Record<string, string> | undefined>): string {
+  const lines = credits.flatMap((m) => Object.values(m ?? {}));
+  if (!lines.length) return "";
+  const theirs = new Set(lines.map((c) => (c.startsWith(OWN_CREDIT) ? c.slice(OWN_CREDIT.length).replace(/^\. /, "") : c)));
+  theirs.delete("");
+  return [OWN_CREDIT, ...theirs].join(". ");
+}
+
+/**
+ * A station's uptime, a share from 0 to 1, as a whole percent, rounded down so only a station that sent in
+ * every hour reads 100. Undefined while the server does not know it.
+ */
+export function uptimePercent(u: number | null | undefined): number | undefined {
+  // The nudge keeps a share like 0.29, stored as 0.28999…, from reading 28.
+  return u == null ? undefined : Math.floor(u * 100 + 1e-9);
+}
+
 /**
  * Returns the receiver for a volunteer station id that ends in a TAG path: `station:mmsi:368168720`
  * for `station:mmsi:368168720/n2k`. A volunteer receiver is one station, but links to its paths are

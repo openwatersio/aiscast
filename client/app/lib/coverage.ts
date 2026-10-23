@@ -48,11 +48,13 @@ export const COVERAGE_OPACITY = { min: 0.2, max: 0.55 } as const;
 /**
  * The fill-opacity expression for a window of this many days: faintest for a cell heard on one
  * day, strongest for one heard on all of them. A one-day window has nothing to fade between, and every
- * cell in it was heard on every day there is.
+ * cell in it was heard on every day there is. `scale` dims the whole ramp, as a station's footprint does
+ * under the vessels.
  */
-export function coverageOpacity(windowDays: number): number | unknown[] {
-  if (windowDays <= 1) return COVERAGE_OPACITY.max;
-  return ["interpolate", ["linear"], ["get", "days"], 1, COVERAGE_OPACITY.min, windowDays, COVERAGE_OPACITY.max];
+export function coverageOpacity(windowDays: number, scale = 1): number | unknown[] {
+  const { min, max } = COVERAGE_OPACITY;
+  if (windowDays <= 1) return max * scale;
+  return ["interpolate", ["linear"], ["get", "days"], 1, min * scale, windowDays, max * scale];
 }
 
 /** The fill-color expression: each step's color for a cell at or under its `max` of the measure. */

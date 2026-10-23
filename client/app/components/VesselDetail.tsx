@@ -1,4 +1,4 @@
-import { Antenna, ArrowRight, Check, ImagePlus, LocateFixed, MapPin, Route, Sailboat, Share } from "lucide-react";
+import { ArrowRight, Check, ImagePlus, LocateFixed, MapPin, Route, Share } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
@@ -17,7 +17,7 @@ import {
 } from "../lib/ais";
 import { publicApiBase, type SourceRef, type VesselFeature, type VesselParticulars } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
-import { CONTRIBUTE, CONTRIBUTE_PROMPT, DEVELOPERS, SIGNALK_PLUGIN } from "../lib/links";
+import { DEVELOPERS, SIGNALK_PLUGIN } from "../lib/links";
 import { SITE } from "../lib/meta";
 import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
@@ -31,7 +31,7 @@ import { FleetCard, type FleetCardData } from "./FleetCard";
 import { PageTitle } from "./Panel";
 import { ActionButton, ActionLink, ActionRow } from "./ui/ActionButton";
 import { Facts } from "./ui/Facts";
-import { Prompt } from "./ui/Prompt";
+import { ReceiverLink } from "./ui/Prompt";
 import { Section } from "./ui/Section";
 import { ShipDiagram } from "./ui/ShipDiagram";
 import { StatGrid } from "./ui/StatGrid";
@@ -145,11 +145,7 @@ export function VesselDetail({
         <p className="mt-2 text-body text-fg-secondary">
           {loading ? "Loading…" : "The network has never heard this vessel."}
         </p>
-        {!loading && (
-          <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-4">
-            The network hears what its receivers hear. One where this vessel sails would pick it up.
-          </Prompt>
-        )}
+        {!loading && <ReceiverLink className="mt-4" />}
       </article>
     );
   }
@@ -275,7 +271,6 @@ export function VesselDetail({
       <ContributePrompt
         ownBoat={!gear && (cls === "pleasure" || /ClassB/.test(p?.msg_type ?? ""))}
         volunteer={isVolunteer(source)}
-        what={gear ? "this fishing gear" : "this vessel"}
       />
 
       <Section label="Use this data">
@@ -400,20 +395,16 @@ function VesselActions({
  * or a class B set is often its owner, who has the antenna already. Otherwise it is shown when
  * a volunteer's receiver heard the vessel, which is the network working as it should.
  */
-function ContributePrompt({ ownBoat, volunteer, what }: { ownBoat: boolean; volunteer: boolean; what: string }) {
+function ContributePrompt({ ownBoat, volunteer }: { ownBoat: boolean; volunteer: boolean }) {
   if (ownBoat) {
     return (
-      <Prompt icon={Sailboat} href={SIGNALK_PLUGIN} action="Signal K plugin" className="mt-5">
-        Is this your boat? Share what its AIS hears with the network, and see traffic beyond its range.
-      </Prompt>
+      <ReceiverLink href={SIGNALK_PLUGIN} className="mt-5">
+        Is this your boat? Share its AIS with the network
+      </ReceiverLink>
     );
   }
   if (!volunteer) return null;
-  return (
-    <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-5">
-      A volunteer&rsquo;s receiver heard {what}.
-    </Prompt>
-  );
+  return <ReceiverLink className="mt-5" />;
 }
 
 /** The fleets this vessel is in, as their cards, from routes/vessel-fleets.ts. Nothing until they come, or if none. */
