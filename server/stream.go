@@ -113,7 +113,7 @@ func (p *Pipeline) parseV0Sub(data []byte, ip string) (*v0Filter, *Claims, strin
 		}
 		c = &Claims{Sub: "anon", Role: "admin"}
 	}
-	c = p.effective(c) // earned feeder tier applies on /v0 too
+	c = p.effective(c, ip) // earned feeder tier applies on /v0 too
 	if !c.may("subscribe") || !c.allowsIP(ip) {
 		return nil, nil, errBadKey
 	}
@@ -307,7 +307,7 @@ type v1Frame struct {
 	Replay   bool     `json:"replay,omitempty"`   // publish: an offline backlog; stale TAG times are archived, not emitted
 	Snapshot bool     `json:"snapshot,omitempty"` // subscribe: first replay the last known events for vessels already tracked
 	Pubkey   string   `json:"pubkey,omitempty"`   // register: base64url ed25519 public key
-	BindIP   bool     `json:"bind_ip,omitempty"`  // register: bind the token to this connection's address (as /v1/keys bind_ip)
+	BindIP   bool     `json:"bind_ip,omitempty"`  // register: claim this connection's UDP station for the token (as /v1/keys bind_ip)
 
 	// register, as on /v1/keys: names for the station, and the signature proving the key
 	Name       *string `json:"name,omitempty"`
@@ -326,7 +326,7 @@ type v1Welcome struct {
 	Type   string   `json:"type"` // "welcome"
 	Sub    string   `json:"sub"`
 	Role   string   `json:"role"`
-	Feeder bool     `json:"feeder,omitempty"` // personal token currently earning the feeder tier
+	Feeder bool     `json:"feeder,omitempty"` // this connection is earning the feeder tier: its personal token's station, or its network's UDP station, is feeding
 	Terms  string   `json:"terms"`            // the contributor agreement; publishing data is acceptance
 	Limits v1Limits `json:"limits"`
 }
@@ -410,7 +410,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusPolicyViolation, "invalid token")
 		return
 	}
-	cl = orAnonymous(cl, r)
+	cl = p.orAnonymous(cl, r)
 	ip := clientIP(r)
 	relSub, relAddr, err := acquireStreamSlots(cl, ip)
 	if err != nil {
@@ -549,7 +549,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 					errf(err.Error())
 					continue
 				}
-				ncl := p.effective(&nc) // an already-feeding bound station earns the feeder tier now, as a reconnect would
+				ncl := p.effective(&nc, ip) // an already-feeding bound station earns the feeder tier now, as a reconnect would
 				// Only the sub slot is re-keyed; the addr slot is kept, since the upgrade adds no stream.
 				rel, ok := conns.acquire(ncl.Sub, ncl.Conns)
 				if !ok { // keep the anonymous claims and slot
@@ -793,7 +793,7 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, claimsErr.Error(), http.StatusUnauthorized)
 		return
 	}
-	cl = orAnonymous(cl, r)
+	cl = p.orAnonymous(cl, r)
 	// Parsed and checked before any slot or subscription is taken, so a rejected request is cheap.
 	s, status, msg := p.parseSSESub(r, cl)
 	if msg != "" {

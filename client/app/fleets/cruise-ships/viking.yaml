@@ -1,0 +1,25 @@
+title: Viking Ocean Cruises
+summary: "Viking Ocean Cruises was founded in 2013 by Torstein Hagen and is based in Los Angeles. Its 4 ships range from Viking Star (2015) to Viking Vesta (2025)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q17091043
+sections:
+  - title: Viking Star class
+    vessels:
+      - name: Viking Star
+        mmsi: 257903000
+        imo: 9650418
+        subtitle: "228 m · in service 2015"
+  - title: Other ships
+    vessels:
+      - name: Viking Vesta
+        mmsi: 257944000
+        imo: 9852444
+        subtitle: "240 m · in service 2025"
+      - name: Viking Sky
+        mmsi: 259186000
+        imo: 9650420
+        subtitle: "228 m · in service 2017"
+      - name: Viking Sea
+        mmsi: 258215000
+        imo: 9725421
+        subtitle: "228 m · in service 2016"

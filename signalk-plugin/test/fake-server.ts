@@ -7,6 +7,8 @@ export interface FakeServer {
   frames: Record<string, unknown>[]; // every frame any client sent
   keyRequests: { pubkey: string; [k: string]: unknown }[];
   clients: WebSocket[]; // sockets the client side has confirmed open (it answered our ping)
+  auth: string[]; // the Authorization header of every stream connection, in order
+  token: string; // what POST /v1/keys hands out
   ack: boolean; // answer publish frames with ack (default true)
   keysStatus: number; // response code for POST /v1/keys
   keysSigned: boolean; // whether POST /v1/keys confirms a signed request, as a server that checks signatures does
@@ -20,6 +22,7 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
   const frames: Record<string, unknown>[] = [];
   const keyRequests: { pubkey: string; [k: string]: unknown }[] = [];
   const clients: WebSocket[] = [];
+  const auth: string[] = [];
   const waiters: { pred: (f: Record<string, unknown>) => boolean; resolve: (f: Record<string, unknown>) => void }[] = [];
 
   const http: Server = createServer((req, res) => {
@@ -33,7 +36,7 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
         res.end(
           fake.keysStatus === 200
             ? JSON.stringify({
-                token: "ak1.test.token",
+                token: fake.token,
                 claims: { exp: Math.floor(Date.now() / 1000) + 30 * 86400 },
                 ...(fake.keysSigned && keyRequests.at(-1)?.sig ? { signed: true } : {}),
               })
@@ -46,7 +49,8 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
     res.end();
   });
   const wss = new WebSocketServer({ server: http, path: "/v1/stream" });
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    auth.push(req.headers.authorization ?? "");
     // The client's readyState flips to OPEN after the server sees the connection; a pong proves it has.
     ws.ping();
     ws.once("pong", () => clients.push(ws));
@@ -70,6 +74,8 @@ export function startFakeServer(port = 0): Promise<FakeServer> {
     frames,
     keyRequests,
     clients,
+    auth,
+    token: "ak1.test.token",
     ack: true,
     keysStatus: 200,
     keysSigned: true,

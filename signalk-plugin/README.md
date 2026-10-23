@@ -1,11 +1,13 @@
-# signalk-aiscast
+# Open Waters AIS for Signal K
 
-Signal K plugin for [aiscast](https://github.com/openwatersio/aiscast), the [Open Waters](https://openwaters.io) AIS network. It does two things over one connection:
+Signal K plugin for [Open Waters AIS](https://openwaters.io/ais/), the open AIS network that runs on [aiscast](https://github.com/openwatersio/aiscast). It does two things over one connection:
 
 - **Share**: the plugin sends every AIS sentence your receiver hears to aiscast as it arrives (`!AIVDM` on NMEA 0183, or NMEA 2000 AIS PGNs re-encoded as sentences), so the places only boats can hear get coverage. The plugin also shares your own transponder's position (`!AIVDO`). When an AIS transponder is not available, the plugin builds class B reports from the Signal K position and marks them self-reported. Each part has its own checkbox.
 - **Receive**: when the boat hears no AIS of its own (no receiver, receiver off, server running ashore), the plugin subscribes to aiscast around your position. It injects the traffic as Signal K targets with `$source` `signalk-aiscast.net`, so Freeboard and friends show them. `Always` mode also adds traffic beyond VHF range, and locally heard targets win.
 
 It also follows your buddy boats worldwide: see [Buddy boats](#buddy-boats).
+
+[openwaters.io/ais/signalk](https://openwaters.io/ais/signalk/) has the fuller picture: sending traffic to a chartplotter, what the plugin works with, including a fixed-mount VHF and Venus OS Large, its settings, and answers to common questions.
 
 No account. On first start the plugin generates an Ed25519 keypair in its data directory and requests its own access token from aiscast, signing the request with that key so nobody else can get a token for it. The token is sent as an `Authorization: Bearer` header and works from any network address, and aiscast credits receptions to that key. Advanced → Access token shows the address of the boat's station page on openwaters.io, as text to copy into a browser. Paste an operator-issued token into the config to publish as a named station with higher limits.
 

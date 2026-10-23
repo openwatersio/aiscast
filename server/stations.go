@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -59,12 +60,46 @@ func (s *stationStats) events24h(ids []string, now time.Time) int64 {
 type stationStats struct {
 	mu          sync.Mutex
 	m           map[string]*stationStat
+	byNet       map[string]map[string]bool  // netKey → UDP station ids sending from that network, for the feeder tier
 	restored    map[string]ringState        // rings from the usage file, claimed when a station is heard again after a restart
 	restoredOwn map[string]map[uint32]int64 // own-ship candidates read back from ClickHouse, claimed the same way
 	ownPending  atomic.Bool                 // set while candidates are still to be read back, so no own vessel is decided on part of them
 }
 
-func newStationStats() *stationStats { return &stationStats{m: map[string]*stationStat{}} }
+func newStationStats() *stationStats {
+	return &stationStats{m: map[string]*stationStat{}, byNet: map[string]map[string]bool{}}
+}
+
+// noteNet records that UDP station id sends from network key. Only a station already in m (one that delivered
+// an event, accepted or a duplicate) is noted, so datagrams the pipeline rejects add nothing; the tier itself
+// counts only accepted events. ponytail: never pruned, like m, which it is bounded by.
+func (s *stationStats) noteNet(key, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if key == "" || s.m[id] == nil || s.byNet[key][id] {
+		return
+	}
+	if s.byNet[key] == nil {
+		s.byNet[key] = map[string]bool{}
+	}
+	s.byNet[key][id] = true
+}
+
+// netIDs is the UDP stations sending from network key. own is the station at the reader's exact address:
+// byNet is not saved, so own is what keeps the tier through a restart (for IPv4, the whole network). The rest
+// of an IPv6 /64 comes back with each station's next accepted event.
+func (s *stationStats) netIDs(key, own string) []string {
+	if key == "" {
+		return nil
+	}
+	s.mu.Lock()
+	ids := slices.Collect(maps.Keys(s.byNet[key]))
+	s.mu.Unlock()
+	if !slices.Contains(ids, own) {
+		ids = append(ids, own)
+	}
+	return ids
+}
 
 func (s *stationStats) get(station, source string, now time.Time) *stationStat {
 	st := s.m[station]

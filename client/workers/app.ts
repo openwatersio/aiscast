@@ -1,7 +1,7 @@
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { serverEnv } from "../app/lib/context";
 import { edgeCached, isSharedPage, notGetOrHead, pageCacheKey } from "../app/lib/edge.server";
-import { serveStationCard } from "../app/lib/shareCard.server";
+import { serveCard } from "../app/lib/shareCard.server";
 import { isSitemap, sitemap } from "../app/lib/sitemap.server";
 import { visitorMeta } from "../app/lib/visitor";
 import { REPORT_PATH } from "../app/lib/report";
@@ -69,7 +69,7 @@ export default {
       const key = `${url.origin}${url.pathname}`;
       return notGetOrHead(request) ?? edgeCached(cache, key, SITEMAP_TTLS, waitUntil, () => sitemap(url.pathname, auth));
     }
-    const card = serveStationCard(request, url, auth, cache, waitUntil);
+    const card = serveCard(request, url, auth, cache, waitUntil);
     if (card) return card;
     if (!isSharedPage(request, url)) return withVisitor(await render(), request);
 

@@ -1,0 +1,128 @@
+title: Cruisers
+summary: Trawlers, motor yachts, and life on the water.
+description: A previous boat's position follows that vessel, even after its creators move on.
+sections:
+  - title: The 71 Percent
+    avatar: https://yt3.ggpht.com/DL6K9HwtomZ28FU7vdd5QCln7XZB4-B0zcXrBtdZu2dj68BKPC_wXBsxc9pVW7fxxpzkWR4EfBI=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Nathan & Lindsey
+    links:
+      YouTube: https://www.youtube.com/@The71Percent
+    vessels:
+      - name: Ruth Pearl II
+        mmsi: 503190280
+        subtitle: Selene 49 Classic Explorer
+        note: Pacific crossing boat
+        links:
+          Boat details: https://www.seleneamericas.com/news/pacific-crossing-celebration-for-the-71-percent
+          AIS identity: https://www.vesselfinder.com/vessels/details/503190280
+      - name: Nordhavn 41
+        subtitle: Nordhavn 41 trawler
+        note: Previous boat
+        links:
+          Boat details: https://nordhavn.com/the-new-generation-world-cruisers/
+      - name: Ruth Pearl
+        subtitle: 57-foot Riviera
+        note: Earlier boat
+        links:
+          Boat details: https://nordhavn.com/the-new-generation-world-cruisers/
+  - title: Henk | Cruising MV Lady Liselot
+    avatar: https://yt3.ggpht.com/0QTqxhquxxhjTmIpG89xFGOdn1nT4sxbDM22-5pC0vWnvhvIPtD_1Cf83zFaU3CbW7wSA5Pt=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Henk-Jan van Essen
+    links:
+      YouTube: https://www.youtube.com/channel/UCpAMwM1Am9g5bCWCY01lJ4g
+    vessels:
+      - name: Lady Liselot
+        mmsi: 244129609
+        subtitle: 1980 Blue Ocean 49 trawler
+        note: Solo cruising
+        links:
+          Boat details: https://www.youtube.com/watch?v=H-N9thCrP-4
+          AIS identity: https://www.vesselfinder.com/vessels/details/244129609
+  - title: MV Freedom
+    avatar: https://yt3.ggpht.com/ytc/AIdro_lNiqJi7y64TFTOWL78VUGJtPsVfkQNfGykLLVYgc9uWw=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Shawn & Elizabeth
+    links:
+      YouTube: https://www.youtube.com/mvfreedom
+    vessels:
+      - name: Freedom
+        subtitle: Nordhavn 43
+        note: Liveaboard cruising
+        links:
+          Boat details: https://www.mvfreedomseattle.com/theboat
+  - title: Argonaut II
+    avatar: https://yt3.ggpht.com/dhl1FqYdcRtmkt8uYgCPsrpsN9JNVjuKNXbaMt5w3FkdCb23Qx0qKxM98CM20rDY7_DxrEU2=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Nicholas Verrochi
+    links:
+      YouTube: https://www.youtube.com/@MV_Argonaut
+    vessels:
+      - name: Argonaut II
+        subtitle: 1922 wooden motor yacht, 73 feet
+        note: Restoration & cruising
+        links:
+          Boat details: https://woodenboat.org/boat/argonaut-ii2025verrochi/
+  - title: Aboard Mermaid Monster
+    avatar: https://yt3.ggpht.com/7HLunRmJYlA6kPWNRxb-bbNHKXTvX-ndKd5bqY981XlXTKnz7T-bL2geXMwmD2QBi1CVBeWqaw=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Brooke & Braden Palmer and family
+    links:
+      YouTube: https://www.youtube.com/@ABOARDMERMAIDMONSTER
+    vessels:
+      - name: Mermaid Monster
+        subtitle: Nordhavn 55
+        note: Family cruising
+        links:
+          Boat details: https://www.highfieldboats.com/story/aboard-mermaid-monster/
+  - title: Tony Fleming
+    avatar: https://yt3.ggpht.com/ytc/AIdro_mk4ywurzPbHFaU7GgA0qSmPw2Z8EmcTIkfEHZ3U1FK9A=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Tony Fleming & crew
+    links:
+      YouTube: https://www.youtube.com/user/FlemingYachts
+    vessels:
+      - name: Venture
+        subtitle: Fleming 65
+        note: Voyages of discovery
+        links:
+          Boat details: https://www.flemingyachts.com/team/tony-fleming/
+      - name: Venture II
+        subtitle: Fleming 65
+        note: European cruising boat
+        links:
+          Boat details: https://www.flemingyachts.com/our-history/
+  - title: Adventures of Motor Yacht OLOH
+    avatar: https://yt3.ggpht.com/hc4K5uuKEeOpXFiMiiHsp2Le1FF7JsDuqdw3Bz_gGRJxvAWJ94KLfQUxCFNur_b4w9hwiOB7kg=s240-c-k-c0x00ffffff-no-rj
+    subtitle: A.J. Hammer & Tim
+    links:
+      YouTube: https://www.youtube.com/channel/UCQRGZ0uIupYv-NxUEE5Ax3Q
+    vessels:
+      - name: OLOH
+        mmsi: 368003760
+        subtitle: Jefferson Marquessa 60 motor yacht
+        note: Motor yacht cruising
+        links:
+          Boat details: https://myoloh.com/the-boat/
+          AIS identity: https://www.myshiptracking.com/vessels/oloh-mmsi-368003760-imo-
+  - title: Tula’s Endless Summer
+    avatar: https://yt3.ggpht.com/ytc/AIdro_lXmuJjAwicNc7869jVEjyf-eWUd_0LG5C_8EQdkPiOv9g=s240-c-k-c0x00ffffff-no-rj
+    subtitle: Billy & Sierra
+    links:
+      YouTube: https://www.youtube.com/@Tulasendlesssummer
+    vessels:
+      - name: Sunset
+        subtitle: 76-foot Desco expedition trawler
+        note: Current boat & refit
+        links:
+          Boat details: https://www.youtube.com/watch?v=H7sf1kjiw78
+      - name: LaurieSue
+        subtitle: Seawind 1170 sailing catamaran
+        note: Previous boat
+        links:
+          Boat details: https://tulasendlesssummer.com/seawind-1170-catamaran-for-sale/
+      - name: Neverland
+        subtitle: 1973 Marine Trader trawler
+        note: Earlier boat
+        links:
+          Boat details: https://tulasendlesssummer.com/about/
+      - name: Tula
+        subtitle: Victoria Frances 26 sailboat
+        note: First boat
+        links:
+          Boat details: https://tulasendlesssummer.com/about/

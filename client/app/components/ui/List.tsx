@@ -56,11 +56,11 @@ export function ListRow({
   );
 }
 
-/** A vessel's ship-type class, as the dot the map colours it with. */
+/** A vessel's ship-type class, as the dot the map colours it with; gear is the map's square, not a vessel's dot. */
 export function ClassDot({ kind, type }: { kind?: string; type?: number }) {
   const color = CLASS_COLORS[shipClass(kind, type)];
   // The colour is data, not a design token: it is the one inline style components may set.
-  return <span className="size-2.5 shrink-0 rounded-full" style={{ background: color }} aria-hidden />;
+  return <span className={cn("size-2.5 shrink-0", kind === "gear" ? "rounded-[1px]" : "rounded-full")} style={{ background: color }} aria-hidden />;
 }
 
 const STATUS_DOT: Record<StationStatus, { className: string; label: string }> = {

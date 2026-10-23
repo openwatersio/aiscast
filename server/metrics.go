@@ -24,11 +24,15 @@ import (
 
 var (
 	streamProtocols = []string{"v0", "v1", "sse", "nmea", "mqtt"}
-	streamTiers     = []string{"anonymous", "personal", "feeder", "peer", "partner", "admin"}
+	streamTiers     = []string{"anonymous", "anonymous_feeder", "personal", "feeder", "peer", "partner", "admin"}
 )
 
-// tierOf is a connection's tier label: its role, or feeder for a personal token currently earning that tier.
+// tierOf is a connection's tier label: its role, or feeder for a connection currently earning that tier, kept
+// apart for anonymous connections so a shared address lifting its neighbours shows up.
 func tierOf(c *Claims) string {
+	if c.Feeder && c.Role == "anonymous" {
+		return "anonymous_feeder"
+	}
 	if c.Feeder {
 		return "feeder"
 	}

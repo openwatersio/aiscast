@@ -1,0 +1,73 @@
+title: Largest container ships
+summary: The 400-metre container ships, the longest cargo ships at sea, and Emma Maersk, the largest of 2006.
+cover: Ever Given
+sections:
+  - title: MSC
+    vessels:
+      - name: MSC Irina
+        mmsi: 636022601
+        imo: 9929429
+        subtitle: 400 m · in service 2023
+        note: The largest container ship by capacity when delivered, at 24,346 containers.
+      - name: MSC Loreto
+        mmsi: 636022600
+        imo: 9934735
+        subtitle: 399 m · in service 2023
+      - name: MSC Celestino Maresca
+        mmsi: 636022516
+        imo: 9930040
+        subtitle: 399 m · in service 2023
+  - title: Evergreen
+    vessels:
+      - name: Ever Given
+        mmsi: 636026627
+        imo: 9811000
+        subtitle: 400 m · in service 2018
+        note: Ran aground in the Suez Canal in March 2021 and blocked it for six days.
+      - name: Ever Ace
+        mmsi: 352986146
+        imo: 9893890
+        subtitle: 400 m · in service 2021
+        note: The largest container ship by capacity when delivered.
+      - name: Ever Alot
+        mmsi: 352001259
+        imo: 9893955
+        subtitle: 399 m · in service 2022
+      - name: Ever Apex
+        mmsi: 563155500
+        imo: 9893979
+        subtitle: 399 m · in service 2022
+  - title: HMM
+    vessels:
+      - name: HMM Algeciras
+        mmsi: 440326000
+        imo: 9863297
+        subtitle: 400 m · in service 2020
+        note: The largest container ship by capacity when delivered.
+      - name: HMM Oslo
+        mmsi: 440489000
+        imo: 9868326
+        subtitle: 400 m · in service 2020
+  - title: OOCL
+    vessels:
+      - name: OOCL Spain
+        mmsi: 477871600
+        imo: 9908126
+        subtitle: 399 m · in service 2023
+  - title: ONE
+    vessels:
+      - name: ONE Innovation
+        mmsi: 636022889
+        imo: 9939137
+        subtitle: 400 m · in service 2023
+  - title: Maersk
+    vessels:
+      - name: Madrid Maersk
+        mmsi: 219836000
+        imo: 9778791
+        subtitle: 399 m · in service 2017
+      - name: Emma Maersk
+        mmsi: 563254800
+        imo: 9321483
+        subtitle: 399 m · in service 2006
+        note: The largest container ship in the world when delivered in 2006.

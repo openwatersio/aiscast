@@ -1,0 +1,69 @@
+title: Celebrity Cruises
+summary: "Celebrity Cruises was founded in 1988 by Chandris Line, is based in Miami and is part of Royal Caribbean Group. Its 14 ships range from Celebrity Millennium (2000) to Celebrity Xcel (2025)."
+source:
+  Wikidata: https://www.wikidata.org/wiki/Q1052823
+sections:
+  - title: Edge class
+    vessels:
+      - name: Celebrity Beyond
+        mmsi: 215808000
+        imo: 9838395
+        subtitle: "327 m · in service 2022"
+      - name: Celebrity Apex
+        mmsi: 215105000
+        imo: 9838383
+        subtitle: "306 m · in service 2020"
+      - name: Celebrity Edge
+        mmsi: 248325000
+        imo: 9812705
+        subtitle: "306 m · in service 2018"
+  - title: Solstice class
+    vessels:
+      - name: Celebrity Reflection
+        mmsi: 229074000
+        imo: 9506459
+        subtitle: "319 m · in service 2012"
+      - name: Celebrity Silhouette
+        mmsi: 248939000
+        imo: 9451094
+        subtitle: "319 m · in service 2011"
+      - name: Celebrity Eclipse
+        mmsi: 249666000
+        imo: 9404314
+        subtitle: "317 m · in service 2010"
+      - name: Celebrity Equinox
+        mmsi: 249667000
+        imo: 9372456
+        subtitle: "317 m · in service 2009"
+      - name: Celebrity Solstice
+        mmsi: 249409000
+        imo: 9362530
+        subtitle: "319 m · in service 2008"
+  - title: Millennium class
+    vessels:
+      - name: Celebrity Constellation
+        mmsi: 249046000
+        imo: 9192399
+        subtitle: "294 m · in service 2002"
+      - name: Celebrity Infinity
+        mmsi: 249048000
+        imo: 9189421
+        subtitle: "294 m · in service 2001"
+      - name: Celebrity Summit
+        mmsi: 249047000
+        imo: 9192387
+        subtitle: "294 m · in service 2001"
+      - name: Celebrity Millennium
+        mmsi: 249055000
+        imo: 9189419
+        subtitle: "294 m · in service 2000"
+  - title: Other ships
+    vessels:
+      - name: Celebrity Xcel
+        mmsi: 249457000
+        imo: 9884136
+        subtitle: "327 m · in service 2025"
+      - name: Celebrity Ascent
+        mmsi: 256191000
+        imo: 9838400
+        subtitle: "327 m · in service 2023"

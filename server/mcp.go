@@ -23,7 +23,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.15.0"
+const mcpVersion = "0.17.0"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -143,24 +143,24 @@ func (b mcpBox) bbox() bbox {
 type mcpVessel struct {
 	MMSI          uint32               `json:"mmsi"`
 	Name          string               `json:"name,omitempty" jsonschema:"name from the vessel's static data, when heard"`
-	Kind          string               `json:"kind" jsonschema:"vessel, aton (aid to navigation), base (base station), or sar (search and rescue aircraft)"`
+	Kind          string               `json:"kind" jsonschema:"vessel, aton (aid to navigation), base (base station), sar (search and rescue aircraft or active distress beacon: AIS-SART, man-overboard, EPIRB-AIS), or gear (fishing gear, usually a net buoy, which has no flag)"`
 	Type          uint8                `json:"type,omitempty" jsonschema:"ITU ship and cargo type code, or the aid type for an aton"`
 	TypeName      string               `json:"type_name,omitempty"`
 	Lat           *float64             `json:"lat,omitempty" jsonschema:"latitude of the last position, degrees; absent when no position has been heard"`
 	Lon           *float64             `json:"lon,omitempty" jsonschema:"longitude of the last position, degrees"`
 	Cog           *float64             `json:"cog,omitempty" jsonschema:"course over ground, degrees true"`
 	Sog           *float64             `json:"sog,omitempty" jsonschema:"speed over ground, knots"`
-	Heading       *uint16              `json:"heading,omitempty" jsonschema:"true heading, degrees"`
+	Heading       *uint16              `json:"heading,omitempty" jsonschema:"true heading, degrees, 0 to 359; never for gear"`
 	NavStatus     *uint8               `json:"nav_status,omitempty" jsonschema:"AIS navigational status code"`
 	NavStatusName string               `json:"nav_status_name,omitempty"`
-	Flag          string               `json:"flag,omitempty" jsonschema:"ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits"`
+	Flag          string               `json:"flag,omitempty" jsonschema:"ISO 3166-1 alpha-2 code of the flag state, from the MMSI's maritime identification digits; never set for gear"`
 	IMO           uint32               `json:"imo,omitempty" jsonschema:"IMO number, once the vessel's static data has been heard"`
 	CallSign      string               `json:"callsign,omitempty"`
 	Destination   string               `json:"destination,omitempty" jsonschema:"destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful"`
 	ETA           string               `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD; AIS carries no year, so read it as the next occurrence"`
-	Draught       *float64             `json:"draught,omitempty" jsonschema:"maximum static draught, metres"`
-	Length        *uint16              `json:"length,omitempty" jsonschema:"overall length, metres"`
-	Beam          *uint16              `json:"beam,omitempty" jsonschema:"beam, metres"`
+	Draught       *float64             `json:"draught,omitempty" jsonschema:"maximum static draught, metres; never for gear"`
+	Length        *uint16              `json:"length,omitempty" jsonschema:"overall length, metres; never for gear, whose size is a placeholder"`
+	Beam          *uint16              `json:"beam,omitempty" jsonschema:"beam, metres; never for gear"`
 	Seen          string               `json:"seen" jsonschema:"time of the last message heard, RFC 3339 UTC"`
 	AgeS          int64                `json:"age_s" jsonschema:"seconds since seen"`
 	Source        string               `json:"source" jsonschema:"feed or station kind the last message came from"`
@@ -200,21 +200,23 @@ func mcpRow(mmsi uint32, v *vessel, now time.Time) mcpVessel {
 	if v.Sog < 102.3 {
 		r.Sog = mcpPtr(v.Sog)
 	}
-	if v.Heading < 511 {
+	if validHeading(v.Heading) && hasHull(v.Kind) {
 		r.Heading = mcpPtr(v.Heading)
 	}
 	if v.NavStatus != 15 {
 		r.NavStatus, r.NavStatusName = mcpPtr(v.NavStatus), navStatusName(v.NavStatus)
 	}
-	r.Flag, r.IMO, r.CallSign, r.Destination, r.ETA = flagOf(mmsi), v.IMO, v.CallSign, v.Destination, etaString(v.ETA)
-	if v.Draught > 0 {
-		r.Draught = mcpPtr(v.Draught)
-	}
-	if v.Length > 0 {
-		r.Length = mcpPtr(v.Length)
-	}
-	if v.Beam > 0 {
-		r.Beam = mcpPtr(v.Beam)
+	r.Flag, r.IMO, r.CallSign, r.Destination, r.ETA = servedFlag(mmsi, v.Kind), v.IMO, v.CallSign, v.Destination, etaString(v.ETA)
+	if hasHull(v.Kind) {
+		if v.Draught > 0 {
+			r.Draught = mcpPtr(v.Draught)
+		}
+		if v.Length > 0 {
+			r.Length = mcpPtr(v.Length)
+		}
+		if v.Beam > 0 {
+			r.Beam = mcpPtr(v.Beam)
+		}
 	}
 	return r
 }
@@ -319,10 +321,10 @@ func mcpLimit(n int) (int, error) {
 
 func mcpKind(kind string) error {
 	switch kind {
-	case "", "vessel", "aton", "base", "sar":
+	case "", "vessel", "aton", "base", "sar", "gear":
 		return nil
 	}
-	return fmt.Errorf("kind %q is not one of vessel, aton, base, sar", kind)
+	return fmt.Errorf("kind %q is not one of vessel, aton, base, sar, gear", kind)
 }
 
 // mcpFlag normalises a flag filter: empty, or two letters upper-cased.
@@ -340,7 +342,7 @@ func mcpMatch(kind string, types []uint8, flag string, mmsi uint32, v *vessel) b
 	if kind != "" && v.Kind != kind {
 		return false
 	}
-	if flag != "" && flagOf(mmsi) != flag {
+	if flag != "" && servedFlag(mmsi, v.Kind) != flag {
 		return false
 	}
 	if len(types) == 0 {
@@ -514,6 +516,9 @@ func (p *Pipeline) mcpGetVessels(ctx context.Context, _ *mcp.CallToolRequest, in
 	am := p.amsaOf(auIMOs...)
 	is := p.isedOf(caMMSIs...)
 	for i, r := range out.Vessels {
+		if r.Kind == "gear" {
+			continue // no register speaks for gear (serveVessel)
+		}
 		e := enrichment{wd: wd[r.IMO], cg: cg[r.MMSI], fd: fd[r.MMSI], fc: fc[r.MMSI], callsign: r.CallSign}
 		if flagOf(r.MMSI) == "CA" {
 			if tcv := tc[r.IMO]; tcv != nil && namesAgree(r.Name, tcv.Name) {
@@ -584,7 +589,7 @@ func (p *Pipeline) mcpByIMO(now time.Time, imo uint32, flag string, box *bbox) (
 	defer p.vmu.RUnlock()
 	for _, rec := range byIMO[imo] {
 		v, _ := p.newestState(rec)
-		if (flag == "" || flagOf(rec.mmsi) == flag) && (box == nil || v.HasPos && box.contains(v.Lat, v.Lon)) {
+		if (flag == "" || servedFlag(rec.mmsi, v.Kind) == flag) && (box == nil || v.HasPos && box.contains(v.Lat, v.Lon)) {
 			rows = append(rows, mcpRow(rec.mmsi, v, now))
 		}
 	}
@@ -617,7 +622,7 @@ func mcpIMOFirst(byIMO []mcpVessel, out mcpVessels, limit int) mcpVessels {
 
 type mcpAreaIn struct {
 	BBox  mcpBox  `json:"bbox"`
-	Kind  string  `json:"kind,omitempty" jsonschema:"only this kind: vessel, aton (aid to navigation), base (base station), or sar (search and rescue aircraft)"`
+	Kind  string  `json:"kind,omitempty" jsonschema:"only this kind: vessel, aton (aid to navigation), base (base station), sar (search and rescue aircraft or distress beacon), or gear (fishing gear); vessel leaves out distress beacons and gear"`
 	Flag  string  `json:"flag,omitempty" jsonschema:"only vessels flying this flag: ISO 3166-1 alpha-2, e.g. NO, FI, MH"`
 	Types []uint8 `json:"types,omitempty" jsonschema:"only these ITU ship type codes, e.g. 30 fishing, 36 sailing, 37 pleasure craft, 52 tug, 60 passenger, 70 cargo, 80 tanker; a code ending in 0 matches its decade, so 70 matches 70 to 79"`
 	Limit int     `json:"limit,omitempty" jsonschema:"rows to return: default 50, maximum 200"`
@@ -651,7 +656,7 @@ type mcpNearIn struct {
 	Lon      *float64 `json:"lon,omitempty" jsonschema:"centre longitude, degrees"`
 	MMSI     uint32   `json:"mmsi,omitempty" jsonschema:"centre on this vessel's last position instead of lat and lon; the vessel itself is left out of the results"`
 	RadiusNM float64  `json:"radius_nm,omitempty" jsonschema:"search radius in nautical miles: default 10, maximum 50"`
-	Kind     string   `json:"kind,omitempty" jsonschema:"only this kind: vessel, aton, base, or sar"`
+	Kind     string   `json:"kind,omitempty" jsonschema:"only this kind: vessel, aton, base, sar, or gear; vessel leaves out distress beacons and gear"`
 	Flag     string   `json:"flag,omitempty" jsonschema:"only vessels flying this flag: ISO 3166-1 alpha-2, e.g. NO, FI, MH"`
 	Types    []uint8  `json:"types,omitempty" jsonschema:"only these ITU ship type codes; a code ending in 0 matches its decade"`
 	Limit    int      `json:"limit,omitempty" jsonschema:"rows to return: default 50, maximum 200"`
@@ -838,7 +843,7 @@ func (p *Pipeline) mcpSearchByName(ctx context.Context, _ *mcp.CallToolRequest, 
 		// would; a punctuation-only query matches nothing there too.
 		key := searchKey(q)
 		rows := p.mcpCollect(now, func(m uint32, v *vessel) bool {
-			if key == "" || !strings.Contains(searchKey(v.Name), key) || (flag != "" && flagOf(m) != flag) {
+			if key == "" || !strings.Contains(searchKey(v.Name), key) || (flag != "" && servedFlag(m, v.Kind) != flag) {
 				return false
 			}
 			return box == nil || (v.HasPos && box.contains(v.Lat, v.Lon))

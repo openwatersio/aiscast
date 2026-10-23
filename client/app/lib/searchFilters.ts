@@ -117,13 +117,22 @@ function heardSeconds(f: SearchFilters, now: Date, weekStart?: number): string |
   return since && String(Math.max(60, Math.round((now.getTime() - since.getTime()) / 60_000) * 60));
 }
 
+/**
+ * A Type choice as parameters. A ship type is a vessel's: gear sends one too, fishing (30) among
+ * others, and an aid's type number means something else, so the choice keeps to vessels.
+ */
+function setTypes(params: URLSearchParams, types: string) {
+  params.set("type", types);
+  params.set("kind", "vessel");
+}
+
 /** The filters as `/v1/vessels` search parameters, with no leading `&`. Without a view, there is no order by distance or area. */
 export function filterParams(f: SearchFilters, now: Date, weekStart?: number, view?: SearchView): string {
   const params = new URLSearchParams();
   if (view?.origin && sortOf(f) === "nearest") params.set("around", view.origin.join(","));
   if (view?.boxes && f.where === "view") for (const b of view.boxes) params.append("bbox", b.join(","));
   const types = typesOf(f);
-  if (types) params.set("type", types);
+  if (types) setTypes(params, types);
   const age = heardSeconds(f, now, weekStart);
   if (age) params.set("max_age", age);
   return params.toString();
@@ -138,7 +147,7 @@ export function areaParams(f: SearchFilters, now: Date, weekStart: number | unde
   const params = new URLSearchParams();
   for (const b of boxes) params.append("bbox", b.join(","));
   const types = typesOf(f);
-  if (types) params.set("type", types);
+  if (types) setTypes(params, types);
   const age = heardSeconds(f, now, weekStart);
   if (age) {
     params.set("max_age", age);
@@ -156,7 +165,7 @@ export function filterTest(
   now: Date,
   weekStart?: number,
   view?: SearchView,
-): (v: { shipType?: number; seen: number; lat?: number; lon?: number }) => boolean {
+): (v: { kind?: string; shipType?: number; seen: number; lat?: number; lon?: number }) => boolean {
   const types = typesOf(f);
   const typeOk = types ? typeTest(types) : () => true;
   const since = heardSince(f.heard, now, weekStart)?.getTime() ?? -Infinity;
@@ -164,5 +173,5 @@ export function filterTest(
   const inView = (v: { lat?: number; lon?: number }) =>
     !boxes ||
     (v.lat != null && v.lon != null && boxes.some(([s, w, n, e]) => v.lat! >= s && v.lat! <= n && v.lon! >= w && v.lon! <= e));
-  return (v) => typeOk(v.shipType) && v.seen >= since && inView(v);
+  return (v) => (!types || v.kind === "vessel") && typeOk(v.shipType) && v.seen >= since && inView(v);
 }

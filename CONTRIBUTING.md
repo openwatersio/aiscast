@@ -17,7 +17,7 @@ ALLOW_ANON=1 go run .   # Kystverket + Digitraffic in, WebSocket on :8080, UDP N
 
 `ALLOW_ANON=1` disables tokens; never set it on a public host. Kystverket allows one TCP connection per source IP, so if another server is already running on your network set `KYSTVERKET=0`. Then put `AIS_API=http://localhost:8080` in `client/.dev.vars`, run `npm run dev -w client`, and open http://localhost:5173/ais/vessels, or point any aisstream.io client at `ws://localhost:8080/v0/stream` with any non-empty `APIKey`.
 
-Go 1.27 and Node 24 (`mise.toml`, derived from CI; `server/go.mod` is the authoritative Go version). `go test ./...` runs unit tests, the aisstream golden envelope, and the GPSD/libais public fixtures in `server/testdata/`. `go run ./cmd/loadtest -clients 1000 -duration 30s` against a server started with `WS_CONNECTS_PER_MIN=100000` measures fan-out. `go run ./cmd/aiscast-key` mints and inspects access tokens. `server/deploy/deploy.sh` builds the Linux binary in the Go container when run from macOS.
+Go 1.27 and Node 24 (`mise.toml` supplies Node to local development and CI; `server/go.mod` is the authoritative Go version). `go test ./...` runs unit tests, the aisstream golden envelope, and the GPSD/libais public fixtures in `server/testdata/`. `go run ./cmd/loadtest -clients 1000 -duration 30s` against a server started with `WS_CONNECTS_PER_MIN=100000` measures fan-out. `go run ./cmd/aiscast-key` mints and inspects access tokens. `server/deploy/deploy.sh` builds the Linux binary in the Go container when run from macOS.
 
 ## Changes
 
@@ -52,6 +52,12 @@ To release the plugin:
    ```
 
 3. Watch the run. Before publishing it checks the tag against `package.json` and that the changelog has an entry under that version, so a tag pushed too early fails with nothing shipped. It then tests, publishes, and creates the GitHub release with that changelog entry as the notes.
+
+Title and notes follow the [Open Waters release notes guidance](https://github.com/openwatersio/.github/blob/main/docs/agents/releases.md#release-notes). The changelog entry is the release notes, so open it with a sentence or two on what changed and for whom, put breaking changes and upgrade steps first, and write each bullet for people installing the plugin, linking its pull request. The workflow titles the release `signalk-aiscast <version>`, which the updates page shows as a bare package and version. Once the run is green, give it a headline with the version left out, in sentence case with no period, and name any new requirement in it:
+
+```sh
+gh release edit signalk-plugin-v<version> --repo openwatersio/aiscast --title "<headline>"
+```
 
 The version lands before the tag, so a release tag always describes the tree it points at and the workflow never writes to `main`. Push the tag from a terminal rather than creating the release in the web UI, because the workflow triggers on the tag and makes the release itself.
 

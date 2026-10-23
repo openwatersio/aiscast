@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COVERAGE_COLORS, COVERAGE_OPACITY, COVERAGE_STEPS, coverageColor, coverageDay, coverageOpacity, coverageSummary } from "./coverage";
+import { COVERAGE_COLORS, COVERAGE_OPACITY, COVERAGE_STEPS, coverageCellStations, coverageColor, coverageDay, coverageOpacity, coverageSummary } from "./coverage";
 
 describe("coverageOpacity", () => {
   it("draws a one-day window at full strength, since its cells were heard on every day there is", () => {
@@ -72,4 +72,15 @@ it("has a color for every key step of every measure in both themes", () => {
     expect(COVERAGE_COLORS.light).toHaveLength(steps.length);
     expect(COVERAGE_COLORS.dark).toHaveLength(steps.length);
   }
+});
+
+describe("coverageCellStations", () => {
+  it("reads the stations a cell's tile names", () => {
+    expect(coverageCellStations({ stations: 2, station_ids: '["aishub","station:a"]' })).toEqual(["aishub", "station:a"]);
+  });
+  it("selects nothing off the cells, or for a tile from a server that does not name them", () => {
+    expect(coverageCellStations(undefined)).toBeUndefined();
+    expect(coverageCellStations({ vessels: 3, days: 7, stations: 4 })).toBeUndefined();
+    expect(coverageCellStations({ station_ids: "not json" })).toBeUndefined();
+  });
 });

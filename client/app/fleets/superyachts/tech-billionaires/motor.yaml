@@ -1,0 +1,130 @@
+title: Motor yachts
+summary: Superyachts and expedition yachts of technology founders and leaders.
+description: Ownership reflects public reporting, with former connections labeled. Sources checked October 5, 2026.
+vessels:
+  - name: Launchpad
+    mmsi: 538072122
+    imo: 9857511
+    subtitle: Mark Zuckerberg · owner
+    note: Facebook / Meta co-founder. 118 m / 387 ft · Feadship · Motor yacht. Delivered in 2024, with exterior design by Espen Øino and interiors by Zuretti.
+    links:
+      Yacht details: https://feadship.nl/fleet/launchpad
+      Ownership history: https://www.yachtbuyer.com/en-gb/fleet/launchpad-387-feadship
+      AIS identity: https://www.vesselfinder.com/nl/vessels/details/9857511
+  - name: Dragonfly
+    mmsi: 319296900
+    imo: 9907196
+    subtitle: Sergey Brin · owner
+    note: Google co-founder. 142 m / 466 ft · Lürssen · Motor yacht. The 2024 Lürssen build, formerly Project Alibaba, uses diesel-electric propulsion. This is a different hull from Brin's earlier 73-metre Dragonfly.
+    links:
+      Yacht details: https://www.lurssen.com/en/new-build/yachts/dragonfly/
+      Ownership history: https://www.superyachtfan.com/yacht/dragonfly/
+      AIS identity: https://www.vesselfinder.com/vessels/details/9907196
+  - name: Ahpo
+    mmsi: 538071653
+    imo: 9855276
+    subtitle: Dmitry Bukhman · owner
+    note: Playrix co-founder. 115 m / 378 ft · Lürssen · Motor yacht. Delivered in 2021 for Michael Lee-Chin, then sold to Patrick Dovigi. Public reports associate her with Bukhman following a later sale.
+    links:
+      Yacht details: https://www.lurssen.com/en/new-build/yachts/ahpo/
+      Ownership history: https://en.wikipedia.org/wiki/Ahpo
+      AIS identity: https://www.vesselfinder.com/vessels/details/9855276
+  - name: Rising Sun
+    mmsi: 319011000
+    imo: 8982307
+    subtitle: Larry Ellison · former owner
+    note: Oracle co-founder. 138 m / 453 ft · Lürssen · Motor yacht. Built for Ellison in 2004. David Geffen bought a half share in 2006 and the remaining share in 2010.
+    links:
+      Yacht details: https://www.lurssen.com/en/new-build/yachts/rising-sun/
+      Ownership history: https://boattest.com/article/20-rising-sun-top-largest-yachts-world
+      AIS identity: https://www.vesselfinder.com/vessels/details/8982307
+  - name: Norn
+    mmsi: 319261700
+    imo: 9869758
+    subtitle: Charles Simonyi · owner
+    note: Microsoft software pioneer. 90 m / 295 ft · Lürssen · Motor yacht. Delivered in 2023, with angular styling by Espen Øino and a pool floor that lifts to become a dance floor.
+    links:
+      Yacht details: https://www.lurssen.com/en/new-build/yachts/norn/
+      Ownership history: https://en.wikipedia.org/wiki/Charles_Simonyi
+      AIS identity: https://www.marineradar.com/vessel/mmsi-319261700/norn
+  - name: Skat
+    mmsi: 319741000
+    imo: 1007287
+    subtitle: Charles Simonyi · former owner
+    note: Microsoft software pioneer. 71 m / 233 ft · Lürssen · Motor yacht. Delivered in 2002 with a distinctive grey, angular exterior. Simonyi sold her in 2021 before Norn arrived.
+    links:
+      Yacht details: https://www.lurssen.com/en/new-build/yachts/skat/
+      Ownership history: https://en.wikipedia.org/wiki/Charles_Simonyi
+      AIS identity: https://www.vesselfinder.com/vessels/details/1007287
+  - name: Senses
+    mmsi: 319833000
+    imo: 1006673
+    subtitle: Larry Page · former owner
+    note: Google co-founder. 59.22 m / 194 ft · Fr. Schweers · Explorer yacht. Built in 1999. Page bought her in 2011 and later sold her; her AIS position follows the vessel through changes of ownership.
+    links:
+      Yacht details: https://iyc.com/charter/senses/
+      Ownership history: https://www.superyachtfan.com/yacht/senses/owner/
+      AIS identity: https://www.vesselfinder.com/vessels/details/1006673
+  - name: Whisper
+    mmsi: 538072792
+    imo: 1012000
+    subtitle: Eric Schmidt · owner
+    note: Former Google CEO. 95.2 m / 312 ft · Lürssen · Motor yacht. Delivered as Kismet in 2014 and renamed after her 2023 sale to Schmidt. Listed for sale again in 2026.
+    links:
+      Yacht details: https://www.vesselfinder.com/vessels/details/1012000
+      Ownership history: https://luxurylaunches.com/transport/whisper-superyacht-sale-08172026.php
+      AIS identity: https://www.vesselfinder.com/vessels/details/1012000
+  - name: Bliss
+    mmsi: 538071599
+    imo: 9835707
+    subtitle: Evan Spiegel · owner
+    note: Snap co-founder. 94.75 m / 311 ft · Feadship · Motor yacht. Delivered in 2021, with hybrid propulsion and polar certification for remote cruising.
+    links:
+      Yacht details: https://feadship.nl/fleet/bliss
+      Ownership history: https://www.seapixonline.com/nsphoto.php?cat=&catn=&hit=1224&mid=0&pid=13167&tot=11711&typ=&wds=
+      AIS identity: https://www.shipxplorer.com/data/vessels/bliss-IMO-9835707-MMSI-538071599
+  - name: Leviathan
+    mmsi: 319324100
+    imo: 9921491
+    subtitle: Gabe Newell · commissioned
+    note: Valve co-founder. 111 m / 364 ft · Oceanco · Explorer yacht. Delivered in 2025 with diesel-electric propulsion, a dive center, laboratory and hospital. Newell also acquired Oceanco in August 2025.
+    links:
+      Yacht details: https://www.oceancoyacht.com/fleet/leviathan/
+      Ownership history: https://swzmaritime.nl/news/2025/11/24/oceanco-delivers-111-metre-yacht-to-owner-newell/
+      AIS identity: https://www.vesselfinder.com/vessels/details/9921491
+  - name: Rocinante
+    mmsi: 319840000
+    imo: 1009699
+    subtitle: Gabe Newell · owner
+    note: Valve co-founder. 78.4 m / 257 ft · Lürssen · Motor yacht. Delivered in 2008 as Madsummer, before taking the names TV and Rocinante.
+    links:
+      Yacht details: https://www.lurssen.com/en/new-build/yachts/rocinante/
+      Ownership history: https://www.superyachtfan.com/es/yacht/rocinante/
+      AIS identity: https://www.vesselfinder.com/vessels/details/1009699
+  - name: Octopus
+    mmsi: 319866000
+    imo: 1007213
+    subtitle: Paul Allen · former owner
+    note: Late Microsoft co-founder. 126.2 m / 414 ft · Lürssen · Explorer yacht. Delivered in 2003 for remote cruising and research. Sold in 2021 after Allen's death.
+    links:
+      Yacht details: https://www.lurssen.com/en/new-build/yachts/octopus/
+      Ownership history: https://www.geekwire.com/2022/tatoosh-a-superyacht-owned-by-paul-allen-is-sold-after-being-listed-for-90m/
+      AIS identity: https://www.vesselfinder.com/vessels/details/1007213
+  - name: Tatoosh
+    mmsi: 319801000
+    imo: 1006336
+    subtitle: Paul Allen · former owner
+    note: Late Microsoft co-founder. 92.4 m / 303 ft · Nobiskrug · Motor yacht. Built in 2000 and bought by Allen in 2001. Sold by his estate in 2022.
+    links:
+      Yacht details: https://en.wikipedia.org/wiki/Tatoosh_(yacht)
+      Ownership history: https://www.geekwire.com/2022/tatoosh-a-superyacht-owned-by-paul-allen-is-sold-after-being-listed-for-90m/
+      AIS identity: https://www.vesselfinder.com/vessels/details/1006336
+  - name: Venus
+    mmsi: 319327000
+    imo: 1011836
+    subtitle: Steve Jobs · commissioned
+    note: Late Apple co-founder. 78.2 m / 257 ft · Feadship · Motor yacht. Launched in 2012 after Jobs' death, with Philippe Starck's glass-rich, minimalist design. Owned by Laurene Powell Jobs.
+    links:
+      Yacht details: https://feadship.nl/fleet/venus
+      Ownership history: https://en.wikipedia.org/wiki/Venus_(yacht)
+      AIS identity: https://www.vesselfinder.com/vessels/details/1011836

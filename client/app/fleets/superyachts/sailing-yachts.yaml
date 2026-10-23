@@ -1,0 +1,41 @@
+title: Largest sailing yachts
+summary: The private sailing yachts 60 metres long or more, led by the 143-metre Sailing Yacht A.
+cover: Maltese Falcon
+source:
+  Wikipedia: https://en.wikipedia.org/wiki/List_of_large_sailing_yachts
+vessels:
+  - name: Sailing Yacht A
+    imo: 1012141
+    subtitle: "142.8 m · Nobiskrug · 2015"
+  - name: Koru
+    mmsi: 319225400
+    imo: 9857298
+    subtitle: "127 m · Oceanco · 2023"
+  - name: Black Pearl
+    mmsi: 319113100
+    imo: 1012490
+    subtitle: "106.7 m · Oceanco · 2018"
+  - name: Eos
+    mmsi: 319087000
+    imo: 9377456
+    subtitle: "92.9 m · Lürssen · 2006"
+  - name: Athena
+    mmsi: 319012000
+    imo: 1007237
+    subtitle: "90 m · Royal Huisman · 2004"
+  - name: Maltese Falcon
+    mmsi: 249555000
+    imo: 9384552
+    subtitle: "88.1 m · Perini Navi · 2006"
+  - name: Aquijo
+    imo: 1012529
+    subtitle: "85.9 m · Oceanco · 2016"
+  - name: Mirabella V
+    imo: 8979374
+    subtitle: "77.6 m · VT Group · 2003"
+  - name: Creole
+    subtitle: "65.3 m"
+  - name: Adix
+    subtitle: "64.8 m"
+  - name: Baboon
+    subtitle: "62 m"

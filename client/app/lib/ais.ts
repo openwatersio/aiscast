@@ -23,6 +23,7 @@ export type ShipClass =
   | "aton"
   | "base"
   | "sar"
+  | "gear"
   | "other";
 
 /** Matches the palette on openwaters.io/ais, tuned for the dark basemap. */
@@ -36,6 +37,7 @@ export const CLASS_COLORS: Record<ShipClass, string> = {
   aton: "#6d4c41",
   base: "#37474f",
   sar: "#d81b60",
+  gear: "#9e9d24",
   other: "#f9a825",
 };
 
@@ -49,11 +51,71 @@ export const CLASS_LABELS: Record<ShipClass, string> = {
   aton: "Aid to navigation",
   base: "Base station",
   sar: "Search and rescue",
+  gear: "Fishing gear",
   other: "Other",
 };
 
+/** An AIS-SART (970), man-overboard (972), or EPIRB-AIS (974) number. */
+export function isBeacon(mmsi: number): boolean {
+  const prefix = Math.floor(mmsi / 1_000_000);
+  return prefix === 970 || prefix === 972 || prefix === 974;
+}
+
+/**
+ * The kind a station's own state gives it when its message types set none, as the server's
+ * derivedKind (server/kinds.go) decides it, against the same cases
+ * (server/testdata/derived_kinds.json): a 970, 972, or 974 MMSI saying AIS-SART active is a
+ * distress beacon, and a 979 MMSI, a name ending in a battery level, or a voltage, a buoy's name,
+ * or a 10 m square hull from a station sending no ship type, is fishing gear. The stream has no
+ * tile to ask for a buoy that sends a name and a type, so it decides here.
+ */
+export function derivedKind(
+  mmsi: number,
+  s: { name?: string; shipType?: number; length?: number; beam?: number; navStatus?: number },
+): "vessel" | "gear" | "sar" {
+  const prefix = Math.floor(mmsi / 1_000_000);
+  const name = (s.name ?? "").trim();
+  const shipType = s.shipType !== undefined && s.shipType >= 20 && s.shipType <= 99;
+  if (isBeacon(mmsi) && s.navStatus === 14) return "sar";
+  if (prefix === 979) return "gear";
+  if (/[0-9]\s*%$/.test(name)) return "gear";
+  if (
+    !shipType &&
+    (/[0-9]\s*V[0-9]?$|[0-9]\.[0-9]V|@[0-9]+V/.test(name) ||
+      /BUOY|BOUY|NET ?MARK|NET ?FISH/.test(name) ||
+      (s.length === 10 && s.beam === 10))
+  )
+    return "gear";
+  return "vessel";
+}
+
+/**
+ * The kind a stream vessel takes when a tile or the record lends it what it has not heard. An aid,
+ * base station, or SAR craft they know wins. Otherwise the rule decides again on the merged state:
+ * a ship type the stream missed, as when it heard a yacht's name in part A of message 24 but not
+ * its type in part B, makes its gear a vessel; and their gear stands for a hull the stream has not
+ * heard.
+ */
+export function adoptedKind(
+  mmsi: number,
+  v: { kind: string; name?: string; shipType?: number; dimension?: { A: number; B: number; C: number; D: number }; navStatus?: number },
+  from?: string,
+): string {
+  if (v.kind !== "vessel" && v.kind !== "gear") return v.kind;
+  if (from && from !== "vessel" && from !== "gear") return from;
+  const d = v.dimension;
+  const derived = derivedKind(mmsi, {
+    name: v.name,
+    shipType: v.shipType,
+    length: d && d.A + d.B,
+    beam: d && d.C + d.D,
+    navStatus: v.navStatus,
+  });
+  return derived === "vessel" && from === "gear" ? "gear" : derived;
+}
+
 export function shipClass(kind?: string, type?: number): ShipClass {
-  if (kind === "aton" || kind === "base" || kind === "sar") return kind;
+  if (kind === "aton" || kind === "base" || kind === "sar" || kind === "gear") return kind;
   if (!type) return "other";
   if (type === 30) return "fishing";
   if (type === 36 || type === 37) return "pleasure";
@@ -104,13 +166,26 @@ export function mmsiSegment(mmsi: number): string {
   return String(mmsi).padStart(9, "0");
 }
 
+/** A vessel's card, the PNG its page shares when it has no photo. */
+export function vesselCardPath(mmsi: number): string {
+  return `/vessels/${mmsi}.png`;
+}
+
 /** A station's card, the PNG its page shares, with each segment of the id encoded. */
 export function stationCardPath(id: string): string {
   return `/stations/${id.split("/").map(encodeURIComponent).join("/")}.png`;
 }
 
-export function vesselPath(mmsi: number, name?: string): string {
-  const slug = vesselSlug(name);
+/**
+ * The slug a vessel's address carries. Gear has none: a net buoy's name is a serial and its
+ * battery level, which changes, and would move the address with it.
+ */
+export function pathSlug(name?: string, kind?: string): string {
+  return kind === "gear" ? "" : vesselSlug(name);
+}
+
+export function vesselPath(mmsi: number, name?: string, kind?: string): string {
+  const slug = pathSlug(name, kind);
   return slug ? `/vessels/${mmsi}-${slug}` : `/vessels/${mmsi}`;
 }
 
@@ -561,6 +636,30 @@ export function stationName(st: { station: string; name?: string; near?: string 
   return isVolunteer(base) ? { title: "Anonymous", suffix: `…${base.slice(-4)}` } : { title: st.station };
 }
 
+/**
+ * Whether a station's vessel counts are in. A station that sent messages but reads 0 vessels has
+ * none yet: just connected, its counts are minutes behind, and a server without ClickHouse, or
+ * unable to read it, has none at all. A boat that hears only itself reads the same, and is told by
+ * its messages too.
+ */
+export function stationCounted(st: { vessels: number; vessels_24h?: number; events: { last_24h: number } }): boolean {
+  return (st.vessels_24h ?? st.vessels) > 0 || st.events.last_24h === 0;
+}
+
+/**
+ * A station page's description: its vessels and messages over the same 24 hours, or its messages
+ * alone while its vessel counts are not in, as its share card does. `vessels` alone is the last 30
+ * minutes, the fallback for a server without the 24-hour count.
+ */
+export function stationDescription(
+  title: string,
+  st: { vessels: number; vessels_24h?: number; events: { last_24h: number }; last_age_s: number },
+): string {
+  const count = (v: number, one: string) => `${v.toLocaleString("en-US")} ${v === 1 ? one : `${one}s`}`;
+  const vessels = stationCounted(st) ? `${count(st.vessels_24h ?? st.vessels, "vessel")} and ` : "";
+  return `AIS receiving station ${title}: ${vessels}${count(st.events.last_24h, "message")} in 24 hours, last message ${formatAge(st.last_age_s)}.`;
+}
+
 /** stationName as one line of text, for where it cannot be styled: "Anonymous …bCro". */
 export function stationTitle(st: { station: string; name?: string; near?: string }): string {
   const { title, suffix } = stationName(st);
@@ -607,3 +706,19 @@ export function volunteerReceiver(id: string): string | undefined {
   const [base, path] = id.split("/", 2);
   return path != null && isVolunteer(base) ? base : undefined;
 }
+
+/**
+ * What a vessel is doing and where, in a line: "Moored near Monaco", "Under way near Antibes".
+ * Its status in a word or two, and the place nearest it when the API names one; the vessel's
+ * page has the speed. Undefined when there is nothing to say.
+ */
+export function vesselActivity(p: { nav_status?: number; sog?: number; near?: string }): string | undefined {
+  const moving = p.sog != null && p.sog >= 0.5;
+  const status = p.nav_status != null ? SHORT_STATUS[p.nav_status] ?? NAV_STATUS[p.nav_status] : moving ? "Under way" : undefined;
+  const what = status;
+  if (what && p.near) return `${what} near ${p.near}`;
+  return what ?? (p.near ? `Near ${p.near}` : undefined);
+}
+
+// The vessel page spells the status out; a card has a line for it.
+const SHORT_STATUS: Record<number, string> = { 0: "Under way", 7: "Fishing", 8: "Sailing" };

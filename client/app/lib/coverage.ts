@@ -78,6 +78,20 @@ export function coverageSummary(
   return [`Heard by ${cell.stations} ${cell.stations === 1 ? "station" : "stations"}`, count, heard];
 }
 
+/**
+ * The stations behind a clicked cell, from its `station_ids`. Undefined for no cell, and for a cell
+ * from a server that does not name them, so the click selects nothing rather than a cell nobody heard.
+ */
+export function coverageCellStations(props: Record<string, unknown> | undefined): string[] | undefined {
+  if (props?.station_ids == null) return undefined;
+  try {
+    const ids: unknown = JSON.parse(String(props.station_ids));
+    return Array.isArray(ids) ? ids.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** A day of the window as the key shows it: "Sep 29". */
 export function coverageDay(day: string): string {
   return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });

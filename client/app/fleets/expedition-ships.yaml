@@ -1,0 +1,128 @@
+title: Expedition ships
+summary: Small, ice-strengthened ships that carry travellers to Antarctica, the Arctic and other remote coasts, with zodiacs, kayaks and naturalists aboard.
+cover: Le Commandant Charcot
+sections:
+  - title: Lindblad Expeditions
+    vessels:
+      - name: National Geographic Endurance
+        mmsi: 311000929
+        imo: 9842554
+        subtitle: "125 m · in service 2020"
+      - name: National Geographic Resolution
+        mmsi: 311000893
+        imo: 9880685
+        subtitle: "125 m · in service 2021"
+      - name: National Geographic Explorer
+        mmsi: 309336000
+        imo: 8019356
+        subtitle: "112 m · in service 1982"
+  - title: Quark Expeditions
+    vessels:
+      - name: Ultramarine
+        mmsi: 538009302
+        imo: 9861017
+        subtitle: "128 m · in service 2021"
+      - name: Ocean Explorer
+        mmsi: 255806393
+        imo: 9883194
+        subtitle: "104 m · in service 2021"
+  - title: HX Expeditions
+    vessels:
+      - name: Roald Amundsen
+        mmsi: 257425000
+        imo: 9813072
+        subtitle: "143 m · in service 2019"
+      - name: Fridtjof Nansen
+        mmsi: 257088070
+        imo: 9813084
+        subtitle: "140 m · in service 2019"
+      - name: Spitsbergen
+        mmsi: 310871000
+        imo: 9434060
+        subtitle: "101 m · in service 2009"
+  - title: Ponant
+    vessels:
+      - name: Le Commandant Charcot
+        mmsi: 578001700
+        imo: 9846249
+        subtitle: "151 m · in service 2021"
+  - title: Aurora Expeditions
+    vessels:
+      - name: Greg Mortimer
+        mmsi: 255806396
+        imo: 9834648
+        subtitle: "106 m · in service 2019"
+      - name: Sylvia Earle
+        mmsi: 311000867
+        imo: 9872327
+        subtitle: "104 m · in service 2022"
+      - name: Douglas Mawson
+        mmsi: 311000951
+        imo: 9992713
+        subtitle: "104 m · in service 2025"
+  - title: Swan Hellenic
+    vessels:
+      - name: SH Minerva
+        mmsi: 636093399
+        imo: 9895240
+        subtitle: "113 m · in service 2021"
+      - name: SH Vega
+        mmsi: 636093187
+        imo: 9895252
+        subtitle: "113 m · in service 2022"
+      - name: SH Diana
+        mmsi: 636093228
+        imo: 9921740
+        subtitle: "125 m · in service 2023"
+  - title: Oceanwide Expeditions
+    vessels:
+      - name: Hondius
+        mmsi: 244327000
+        imo: 9818709
+        subtitle: "108 m · in service 2019"
+      - name: Plancius
+        mmsi: 246573000
+        imo: 7432044
+        subtitle: "89 m · in service 1976"
+      - name: Ortelius
+        mmsi: 253662000
+        imo: 9861835
+        subtitle: "112 m · in service 2020"
+  - title: Scenic
+    vessels:
+      - name: Scenic Eclipse
+        mmsi: 311000995
+        imo: 9797371
+        subtitle: "168 m · in service 2019"
+      - name: Scenic Eclipse II
+        mmsi: 311001061
+        imo: 9850460
+        subtitle: "168 m · in service 2023"
+  - title: Atlas Ocean Voyages
+    vessels:
+      - name: World Navigator
+        mmsi: 255806207
+        imo: 9871531
+        subtitle: "126 m · in service 2021"
+      - name: World Explorer
+        subtitle: "126 m · in service 2019"
+  - title: Seabourn
+    vessels:
+      - name: Seabourn Venture
+        mmsi: 311000930
+        imo: 9862023
+        subtitle: "172 m · in service 2022"
+      - name: Seabourn Pursuit
+        mmsi: 311001081
+        imo: 9862035
+        subtitle: "172 m · in service 2023"
+  - title: Viking
+    vessels:
+      - name: Viking Octantis
+        mmsi: 259070000
+        imo: 9863194
+        subtitle: "204 m · in service 2021"
+      - name: Viking Polaris
+        mmsi: 259144000
+        imo: 9863209
+        subtitle: "204 m · in service 2022"

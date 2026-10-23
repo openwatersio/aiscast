@@ -186,7 +186,7 @@ func xlsxSheet(path string) ([]map[string]string, error) {
 // fetchXlsx downloads a spreadsheet to a temporary file in dir, the vessel record's directory in
 // production, where ProtectSystem=strict leaves the one writable path, and reads its first worksheet.
 // pattern names the temporary file, as os.CreateTemp takes it; a file a crash left behind is removed
-// first.
+// first. Blank rows above the header are dropped, so rows[0] is the header.
 func fetchXlsx(ctx context.Context, endpoint, dir, pattern string) ([]map[string]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -227,10 +227,24 @@ func fetchXlsx(ctx context.Context, endpoint, dir, pattern string) ([]map[string
 	if err != nil {
 		return nil, err
 	}
+	// Transport Canada's export opens with an empty spacer row above the header.
+	for len(rows) > 0 && blankRow(rows[0]) {
+		rows = rows[1:]
+	}
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("empty sheet")
 	}
 	return rows, nil
+}
+
+// blankRow reports whether a row has no cell with a value; a styled empty cell still parses to "".
+func blankRow(row map[string]string) bool {
+	for _, v := range row {
+		if strings.TrimSpace(v) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // xlsxColumns maps each lowercased header in a sheet's first row to its column letter. Registers have
