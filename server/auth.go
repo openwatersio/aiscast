@@ -198,6 +198,12 @@ func verifierFromEnv() *verifier {
 
 var errBadToken = errors.New("invalid token")
 
+// revokedStation is whether id is the station of a token subject in REVOKED_SUBS.
+func (v *verifier) revokedStation(id string) bool {
+	sub, ok := strings.CutPrefix(id, "station:")
+	return ok && v != nil && v.revoked[sub]
+}
+
 func (v *verifier) verify(token string, now time.Time) (*Claims, error) {
 	rest, ok := strings.CutPrefix(token, tokenPrefix)
 	if !ok {

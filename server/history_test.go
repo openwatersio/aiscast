@@ -199,6 +199,23 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	s.list = func(context.Context) ([]historyFile, error) {
 		return []historyFile{{name: "csv2/csv2026/ais-2026-06-30.csv.zst", day: day, size: 101, etag: "0x2"}}, nil
 	}
+	// The day's static states, one per distinct state the file gives a vessel.
+	states := func() []string {
+		t.Helper()
+		got, err := chColumn[string](ctx, conn.conn, "SELECT concat(toString(mmsi), ' ', name, ' ', callsign) FROM "+db+
+			".statics FINAL WHERE source = 'marinecadastre' AND message = 'archive' AND mmsi = 367567110 ORDER BY 1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := states(); len(got) != 1 || got[0] != "367567110 CETACEA WDG7421" {
+		t.Errorf("static states from the file: %q", got)
+	}
+	// and one the changed file no longer has
+	if err := conn.exec(ctx, "INSERT INTO {db}.statics (mmsi, day, source, message, name, first_ts, last_ts) VALUES (367567110, '2026-06-30', 'marinecadastre', 'archive', 'OLD NAME', '2026-06-30 01:00:00', '2026-06-30 01:00:00')"); err != nil {
+		t.Fatal(err)
+	}
 	// a cell the earlier load counted that the changed file no longer has, in each coverage table
 	if err := conn.exec(ctx,
 		"INSERT INTO {db}.station_coverage (day, station, res, cell, source, vessels) SELECT toDate('2026-06-30'), 'marinecadastre', 6, 1, 'marinecadastre', uniqExactState(toUInt32(1))",
@@ -211,6 +228,9 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	// The reload's delete marks the whole day for the station series, not only the hours its rows land in again.
 	if hours, err := chColumn[uint64](ctx, conn.conn, "SELECT uniqExact(hour) FROM "+db+".station_dirty WHERE toDate(hour) = '2026-06-30'"); err != nil || hours[0] != 24 {
 		t.Errorf("the reloaded day's hours marked: %v %v", hours, err)
+	}
+	if got := states(); len(got) != 1 || got[0] != "367567110 CETACEA WDG7421" {
+		t.Errorf("a reload replaces its day's static states: %q", got)
 	}
 	for _, table := range []string{"coverage", "station_coverage"} {
 		if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+"."+table+" WHERE cell = 1"); err != nil || len(n) != 1 || n[0] != 0 {
