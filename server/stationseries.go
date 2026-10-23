@@ -86,7 +86,7 @@ type stationSeries interface {
 	rebuildStationSeries(ctx context.Context, now time.Time) error
 	// backfillStationSeries bins the days receptions held before the view, newest first, until every one is done.
 	backfillStationSeries(ctx context.Context, now time.Time) error
-	// stationCounts is each station's hours and vessels in the window.
+	// stationCounts is each station heard within stationKeep, with its hours and vessels in the window.
 	stationCounts(ctx context.Context, now time.Time) (map[string]stationCount, error)
 	// stationHours is one station's receptions in each hour of the window, oldest first, the current hour last.
 	stationHours(ctx context.Context, station string, now time.Time) ([]uint64, error)
@@ -105,7 +105,9 @@ type stationSeries interface {
 
 // stationCount is one station's figures from the series.
 type stationCount struct {
-	first              time.Time // its first hour: in the window from stationCounts, ever from stationTotals
+	source             string    // its source kind, as the series keeps it
+	last               time.Time // its latest reception, within stationKeep; zero for a station only the totals have
+	first              time.Time // its first hour: within stationKeep from stationCounts, ever from stationTotals
 	receptions, firsts uint64    // ever, from stationTotals
 	totaled            bool      // whether the totals ever have the station, which a station new since their read does not
 	past               int       // hours of the window before the current one with a reception
@@ -471,9 +473,12 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 	out := map[string]stationCount{}
 	cur := now.UTC().Truncate(time.Hour)
 	start := cur.Add(-(stationWindow - 1) * time.Hour)
-	rows, err := c.conn.Query(ctx, `SELECT station, min(hour), uniqExactIf(hour, hour < ?), max(hour = ?) FROM `+c.db+`.station_hours
-		WHERE hour >= ? AND `+strings.ReplaceAll(chNewestFrom, "{db}", c.db)+`
-		GROUP BY station`, cur, cur, start, start)
+	keep := now.Add(-stationKeep)
+	rows, err := c.conn.Query(ctx, `SELECT station, argMax(source, hour), min(hour), max(hour), uniqExactIf(hour, hour >= ? AND hour < ?),
+			max(hour = ?) FROM `+c.db+`.station_hours
+		WHERE hour >= toStartOfHour(?) AND `+strings.ReplaceAll(chNewestFrom, "{db}", c.db)+`
+			AND source NOT IN (SELECT DISTINCT source FROM `+c.db+`.history_loads)
+		GROUP BY station`, start, cur, cur, keep, keep)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +487,7 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 		var s stationCount
 		var past uint64
 		var heard uint8
-		if err := rows.Scan(&id, &s.first, &past, &heard); err != nil {
+		if err := rows.Scan(&id, &s.source, &s.first, &s.last, &past, &heard); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -492,6 +497,12 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	lctx, cancel := context.WithTimeout(ctx, 5*time.Second) // at most 5 s of the read; it takes under 0.1 s on production data
+	err = c.lastReceptions(lctx, keep, out)
+	cancel()
+	if err != nil {
+		log.Printf("station series: last receptions: %v", err) // each station keeps its last hour
 	}
 	live, day := now.Add(-vesselTTL), now.Add(-stationVesselTTL)
 	rows, err = c.conn.Query(ctx, strings.ReplaceAll(`SELECT station, countIf(last > ?), count(), countIf(hearers = 1) FROM (
@@ -550,8 +561,9 @@ type heardVessel struct {
 // stationVessels reads the window and uniqueness as stationCounts does, counting other stations' rows only for
 // this station's vessels, and each vessel's type as its latest non-zero ship_type in statics over
 // chStationVesselDays, whichever source sent it. The record's seed is left out: its rows carry the record's own
-// source, and vesselTypes falls back to the cache and the record, crediting the vessel's source as /v1/vessels does. The vessels stay in ClickHouse for the join: a
-// feed hears tens of thousands a day, past what a query may list.
+// source, and vesselTypes falls back to the cache and the record, crediting the vessel's source as /v1/vessels
+// does. The vessels stay in ClickHouse for the join: a feed hears tens of thousands a day, past what a query may
+// list.
 func (c *chConn) stationVessels(ctx context.Context, station string, now time.Time) (map[uint32]heardVessel, error) {
 	day := now.Add(-stationVesselTTL)
 	mine := `(SELECT mmsi FROM {db}.station_vessels WHERE station = ? AND hour >= toStartOfHour(?) AND last_ts > ?)`
@@ -580,6 +592,31 @@ func (c *chConn) stationVessels(ctx context.Context, station string, now time.Ti
 		out[mmsi] = h
 	}
 	return out, rows.Err()
+}
+
+// lastReceptions sets each station's last to its latest reception, read from its last hour. The hour stands in
+// when that hour held only stale copies, or when this read fails: listing never waits on it.
+func (c *chConn) lastReceptions(ctx context.Context, keep time.Time, out map[string]stationCount) error {
+	rows, err := c.conn.Query(ctx, strings.ReplaceAll(`SELECT station, max(last_ts) FROM {db}.station_vessels
+		WHERE hour >= toStartOfHour(?) AND `+chNewestFrom+` AND (station, hour) IN (
+			SELECT station, max(hour) FROM {db}.station_hours WHERE hour >= toStartOfHour(?) AND `+chNewestFrom+` GROUP BY station)
+		GROUP BY station`, "{db}", c.db), keep, keep, keep, keep)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var last time.Time
+		if err := rows.Scan(&id, &last); err != nil {
+			return err
+		}
+		if s, ok := out[id]; ok {
+			s.last = last
+			out[id] = s
+		}
+	}
+	return rows.Err()
 }
 
 func (c *chConn) sourceCounts(ctx context.Context, now time.Time) (map[string][2]int, error) {
@@ -702,6 +739,7 @@ func (p *Pipeline) runStationSeries() {
 
 // stationRollups is the series' figures, read once a minute in the background for every caller.
 type stationRollups struct {
+	expected atomic.Bool // set when the server runs with ClickHouse, so a station missing from the list may be one the series has yet to answer for
 	mu       sync.Mutex
 	ok       time.Time // the last read that succeeded
 	counts   map[string]stationCount
@@ -769,7 +807,13 @@ func (p *Pipeline) refreshRollups(s stationSeries, now time.Time) {
 		log.Printf("station series: %v %v", err1, err2)
 		return
 	}
-	r.ok, r.counts, r.sources = now, mergeCounts(counts, totals, now), sources
+	merged := mergeCounts(counts, totals, now)
+	for id := range merged { // a revoked token's station leaves the list at the restart that revokes it
+		if p.auth.revokedStation(id) {
+			delete(merged, id)
+		}
+	}
+	r.ok, r.counts, r.sources = now, merged, sources
 }
 
 // fresh is the last figures while they are within stationRollupsStale of their read; the caller holds mu.

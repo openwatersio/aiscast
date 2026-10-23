@@ -1,12 +1,10 @@
 package main
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -34,9 +32,17 @@ var v1Opts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}, Compression
 
 // Vars so tests can shrink them; atomic because a handler's pingLoop can outlive its test and read while
 // the next test writes.
-var pingEvery, pingTimeout atomic.Int64
+var pingEvery, pingTimeout, writeTimeout atomic.Int64
 
-func init() { pingEvery.Store(int64(30 * time.Second)); pingTimeout.Store(int64(10 * time.Second)) }
+func init() {
+	pingEvery.Store(int64(30 * time.Second))
+	pingTimeout.Store(int64(10 * time.Second))
+	// A stream write blocks only when the client has stopped draining its socket. The fan-out queue holds
+	// subBuffer global events, about 1.5 s at production rates, so a client stalled longer than that has
+	// already overflowed and is closed on its next event; waiting past it only drops more of its events.
+	// MQTT keeps its own 10 s deadline: it only ingests, so its writes are acknowledgements, never fan-out.
+	writeTimeout.Store(int64(2 * time.Second))
+}
 
 // pingLoop ends the handler when the peer stops answering pings, so a dropped link (NAT/VPN timeout, half-open
 // socket behind a proxy) releases its stream slots instead of holding them until TCP gives up. Ping only
@@ -62,6 +68,22 @@ func (p *Pipeline) pingLoop(ctx context.Context, c *websocket.Conn, cancel conte
 			}
 		}
 	}
+}
+
+// noteSlow records a stream that ended with its fan-out queue overflowed, whether the overflow check or a
+// write deadline closed it. aiscast_client_drops_total counts events, so one stalled link reads as dozens
+// a second; this counts the clients and names them, so a flaky feeder can be told from a stall shared by many.
+func (p *Pipeline) noteSlow(sub *subscriber, protocol string, c *Claims, r *http.Request) {
+	if !sub.overflow.Load() {
+		return
+	}
+	p.streams.closedSlow(protocol, c)
+	who := c.Sub
+	if c.Role == "anonymous" {
+		who = "anon" // its sub carries the full address
+	}
+	network, _ := clientNet(clientIP(r))
+	log.Printf("stream: %s %s client too slow: sub=%q net=%s", protocol, tierOf(c), who, network)
 }
 
 // ---- /v0/stream: aisstream.io wire protocol. Frozen; nothing here may deviate. ----
@@ -197,7 +219,7 @@ func wsWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 }
 
 func wsWrite(ctx context.Context, c *websocket.Conn, b []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(writeTimeout.Load()))
 	defer cancel()
 	return c.Write(ctx, websocket.MessageText, b)
 }
@@ -219,6 +241,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 	var filter atomic.Pointer[v0Filter]
 	var pace pacer
 	var release func()
+	var owner *Claims // set with release, on the first subscription, before the resend reader starts
 	defer func() {
 		if release != nil {
 			release()
@@ -247,6 +270,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 			} else {
 				untrack, rel := p.streams.open("v0", cl), release
 				release = func() { rel(); untrack() }
+				owner = cl
 			}
 			pace.n = cl.Rate
 		}
@@ -269,6 +293,7 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 
 	sub := p.subscribe()
 	defer p.unsubscribe(sub)
+	defer func() { p.noteSlow(sub, "v0", owner, r) }() // owner read at exit, not when deferred
 	for {
 		select {
 		case <-ctx.Done():
@@ -420,11 +445,16 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	// The exit release runs before cancel()/CloseNow() (defer LIFO), so the reader can be mid-register;
 	// the mutex + closed flag make release-old and release-at-exit exactly-once.
 	untrack := p.streams.open("v1", cl)
+	owner := cl // the claims untrack counts under; the reader swaps both under slotMu
 	var slotMu sync.Mutex
 	closed := false
+	var sub *subscriber
 	defer func() {
 		slotMu.Lock()
 		closed = true
+		if sub != nil {
+			p.noteSlow(sub, "v1", owner, r)
+		}
 		relSub()
 		relAddr()
 		untrack()
@@ -440,7 +470,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	var subscription atomic.Pointer[v1Sub] // nil = not subscribed
 	// Register with the fan-out before frames are read: an event broadcast between a snapshot replay
 	// and a later registration would be in neither.
-	sub := p.subscribe()
+	sub = p.subscribe()
 	defer p.unsubscribe(sub)
 	go func() {
 		defer cancel()
@@ -566,6 +596,7 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				relSub = rel
 				untrack()
 				untrack = p.streams.open("v1", ncl)
+				owner = ncl
 				slotMu.Unlock()
 				cl, canPublish = ncl, ncl.may("publish")
 				pace.Store(&pacer{n: cl.Rate})
@@ -813,33 +844,13 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Access-Control-Allow-Origin", "*")
 	rc := http.NewResponseController(w)
-	// Compressed here rather than at the proxy: Caddy's encode skips text/event-stream, so a stream left
-	// to it goes out plain. AIS JSON repeats heavily between events (field names, source, timestamp
-	// prefixes), and one HTTP response is one deflate stream, so each event compresses against the ones
-	// before it.
-	out, gz := io.Writer(w), (*gzip.Writer)(nil)
-	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-		h.Set("Content-Encoding", "gzip") // Caddy leaves an already-encoded response alone
-		h.Set("Vary", "Accept-Encoding")
-		gz = gzip.NewWriter(w)
-		defer gz.Close()
-		out = gz
-	}
 	// Every write is deadlined. A client that stops reading fills its socket buffer, and an undeadlined
 	// write to it never returns: the handler would never see overflow, never fire a keepalive, and never
 	// run the releases above. The deadline turns that into a write error, which unwinds the handler.
 	write := func(prefix string, b []byte) error {
-		rc.SetWriteDeadline(time.Now().Add(time.Duration(pingTimeout.Load()))) // ErrNotSupported only off a real conn
-		if _, err := fmt.Fprintf(out, "%s%s\n\n", prefix, b); err != nil {
+		rc.SetWriteDeadline(time.Now().Add(time.Duration(writeTimeout.Load()))) // ErrNotSupported only off a real conn
+		if _, err := fmt.Fprintf(w, "%s%s\n\n", prefix, b); err != nil {
 			return err
-		}
-		// Compressor first, then the socket. gzip's Flush is a deflate sync flush: it emits this frame
-		// and keeps the window, so the next event still compresses against the previous ones. Without it
-		// events sit in the compressor until a block fills, which is minutes on a quiet subscription.
-		if gz != nil {
-			if err := gz.Flush(); err != nil {
-				return err
-			}
 		}
 		return rc.Flush()
 	}
@@ -853,6 +864,7 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 	// later registration would be in neither.
 	fan := p.subscribe()
 	defer p.unsubscribe(fan)
+	defer p.noteSlow(fan, "sse", cl, r)
 	if send(welcomeFor(cl, false)) != nil {
 		return
 	}

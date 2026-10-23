@@ -2,12 +2,10 @@ package main
 
 import (
 	"bufio"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -932,119 +930,114 @@ func TestV1SSESnapshotUnderLoad(t *testing.T) {
 	}
 }
 
-// countingReader reports how many compressed bytes the gzip reader has consumed.
-type countingReader struct {
-	r io.Reader
-	n int
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += n
-	return n, err
-}
-
-func TestV1SSEGzip(t *testing.T) {
+// A client that stops reading is closed as too slow, and counted and logged as such, so an alert on dropped
+// events can name the client that caused them.
+func TestSlowClientCounted(t *testing.T) {
 	p := testPipeline(t)
-	srv := httptest.NewServer(httpHandler(p))
-	defer srv.Close()
+	defer func(n int) { subBuffer = n }(subBuffer)
+	subBuffer = 8
 
-	// Set by hand: Go's transport only decompresses transparently when it added the header itself, so
-	// this leaves res.Body as the raw gzip stream the handler produced.
-	// Bounded so an unflushed compressor fails here in seconds instead of hanging until the suite timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	w := &gatedWriter{h: http.Header{}, gate: make(chan struct{}), writes: make(chan string, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/v1/stream?bbox=49,0,50,1", nil)
-	req.Header.Set("Accept-Encoding", "gzip")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	if got := res.Header.Get("Content-Encoding"); got != "gzip" {
-		t.Fatalf("content-encoding %q", got)
-	}
-	if got := res.Header.Get("Vary"); got != "Accept-Encoding" {
-		t.Fatalf("vary %q", got)
-	}
+	defer close(w.gate)
+	r := httptest.NewRequest("GET", "/v1/stream?bbox=49,0,50,1", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() { p.serveV1SSE(w, r); close(done) }()
 
-	// Reaching this line at all is the flush assertion: gzip.NewReader needs the header, and a compressor
-	// that was not flushed per frame holds everything until a deflate block fills, so this would block.
-	counted := &countingReader{r: res.Body}
-	zr, err := gzip.NewReader(counted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sc := bufio.NewScanner(zr)
-	read := func() map[string]any {
+	step := func() string {
 		t.Helper()
-		for sc.Scan() {
-			if !strings.HasPrefix(sc.Text(), "data: ") {
-				continue
-			}
-			var m map[string]any
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(sc.Text(), "data: ")), &m); err != nil {
-				t.Fatalf("bad frame %q: %v", sc.Text(), err)
-			}
-			return m
+		select {
+		case w.gate <- struct{}{}:
+		case <-time.After(5 * time.Second):
+			t.Fatal("handler never reached its next write")
 		}
-		t.Fatalf("stream ended: %v", sc.Err())
-		return nil
+		return <-w.writes
 	}
-	if m := read(); m["type"] != "welcome" {
-		t.Fatalf("want welcome, got %v", m)
-	}
-	// Ingested only now: the welcome was already readable, so each frame is flushed as it is written
-	// rather than batched with later ones.
-	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
-	if m := read(); m["type"] != "event" || m["mmsi"] != float64(227006760) {
-		t.Fatalf("want event, got %v", m)
+	slow := func() (n int64) {
+		for k, v := range p.streams.slowSnapshot() {
+			if k[0] == "sse" {
+				n += v
+			}
+		}
+		return n
 	}
 
-	// One deflate stream for the whole response, not one per frame: similar events after the first cost a
-	// fraction of their plain size. Per-frame gzip members would lose the window and cost more than plain.
-	const n = 100
-	now := time.Now()
-	before, plain := counted.n, 0
-	for i := 0; i < n; i++ {
-		p.broadcast(&Event{MMSI: uint32(200000000 + i), Time: now, Type: "PositionReport", Lat: 49.5, Lon: 0.5, HasPos: true})
+	if s := step(); !strings.Contains(s, `"type":"welcome"`) {
+		t.Fatalf("first frame %q", s)
 	}
-	for i := 0; i < n; i++ {
-		b, _ := json.Marshal(read())
-		plain += len(b)
+	ev := &Event{MMSI: 42, Time: time.Now(), Type: "PositionReport", Lat: 49.5, Lon: 0.5, HasPos: true}
+	p.broadcast(ev) // the handler takes this one and blocks writing it
+	if s := step(); !strings.Contains(s, `"type":"event"`) {
+		t.Fatalf("second frame %q", s)
 	}
-	if got := counted.n - before; got > plain/2 {
-		t.Errorf("compressed %d bytes for %d plain: window not retained across frames", got, plain)
-	} else {
-		t.Logf("%d compressed bytes for %d plain (%.1fx)", got, plain, float64(plain)/float64(got))
+	if n := slow(); n != 0 {
+		t.Fatalf("slow disconnects before any overflow = %d", n)
+	}
+	for i := 0; i < 2*subBuffer; i++ { // the client reads nothing while these arrive
+		p.broadcast(ev)
+	}
+	// The handler may already hold one event mid-write; the frame after it is the close.
+	if s := step(); !strings.Contains(s, "client too slow") {
+		if s = step(); !strings.Contains(s, "client too slow") {
+			t.Fatalf("after overflow %q", s)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not exit after closing a slow client")
+	}
+	if n := slow(); n != 1 {
+		t.Fatalf("slow disconnects = %d, want 1", n)
 	}
 }
 
-func TestV1SSEIdentityWhenNotRequested(t *testing.T) {
+// The v0 handler learns its claims from the first subscription frame, after the socket opens; the slow
+// close must still be counted under them.
+func TestV0SlowClientCounted(t *testing.T) {
 	p := testPipeline(t)
 	srv := httptest.NewServer(httpHandler(p))
 	defer srv.Close()
-
-	req, _ := http.NewRequest("GET", srv.URL+"/v1/stream?bbox=49,0,50,1", nil)
-	req.Header.Set("Accept-Encoding", "identity")
-	res, err := http.DefaultClient.Do(req)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v0/stream", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
-	if got := res.Header.Get("Content-Encoding"); got != "" {
-		t.Fatalf("content-encoding %q on an identity request", got)
+	defer c.CloseNow()
+	c.Write(ctx, websocket.MessageText, []byte(`{"APIKey":"k","BoundingBoxes":[[[-90,-180],[90,180]]]}`))
+
+	var sub *subscriber
+	for sub == nil && ctx.Err() == nil {
+		p.smu.RLock()
+		for s := range p.subs {
+			sub = s
+		}
+		p.smu.RUnlock()
+		time.Sleep(5 * time.Millisecond)
 	}
-	sc := bufio.NewScanner(res.Body)
-	for sc.Scan() {
-		if strings.HasPrefix(sc.Text(), "data: ") {
-			if !strings.Contains(sc.Text(), `"type":"welcome"`) {
-				t.Fatalf("want plain welcome, got %q", sc.Text())
+	if sub == nil {
+		t.Fatal("handler never subscribed")
+	}
+	sub.overflow.Store(true) // as broadcast does when this client's queue is full
+	p.broadcast(&Event{MMSI: 42, Time: time.Now(), Type: "PositionReport", Lat: 49.5, Lon: 0.5, HasPos: true})
+	if _, _, err := c.Read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+		t.Fatalf("read after overflow: %v", err)
+	}
+	for ctx.Err() == nil {
+		var n int64
+		for k, v := range p.streams.slowSnapshot() {
+			if k[0] == "v0" {
+				n += v
 			}
+		}
+		if n == 1 {
 			return
 		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("no frame: %v", sc.Err())
+	t.Fatal("v0 slow close not counted")
 }
 
 func TestParseUDPAddrs(t *testing.T) {

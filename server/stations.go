@@ -20,14 +20,18 @@ import (
 // day, too much for a number read once a month. Own-ship candidates are forgotten after it too.
 const stationVesselTTL = 24 * time.Hour
 
+// stationKeep is how long a silent station stays listed. With the station series, a restart lists every station
+// it heard in that time; without it, only those heard since the start. It matches the client's sitemap, so a
+// station page it links still answers.
+const stationKeep = 30 * 24 * time.Hour
+
 type stationStat struct {
 	Source    string
 	First     time.Time
 	Last      time.Time
-	Events    int64
 	Dups      int64 // events dropped as duplicates that this station also heard (someone else was first)
 	Positions int64
-	MinLat    float64
+	MinLat    float64 // extent of the positions heard since the start
 	MinLon    float64
 	MaxLat    float64
 	MaxLon    float64
@@ -170,8 +174,9 @@ func (s *stationStats) event(ev *Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.get(ev.Station, ev.Source, ev.Time)
-	st.Last = ev.Time
-	st.Events++
+	if ev.Time.After(st.Last) { // a late copy must not age out a station that is still reporting
+		st.Last = ev.Time
+	}
 	st.ring.add(ev.Time)
 	if ev.Own {
 		st.noteOwn(ev.MMSI, ev.Time)
@@ -188,7 +193,9 @@ func (s *stationStats) event(ev *Event) {
 func (s *stationStats) dup(ev *Event) {
 	s.mu.Lock()
 	st := s.get(ev.Station, ev.Source, ev.Time)
-	st.Last = ev.Time // still heard, just beaten to it
+	if ev.Time.After(st.Last) { // still heard, just beaten to it
+		st.Last = ev.Time
+	}
 	st.Dups++
 	if ev.Own {
 		st.noteOwn(ev.Packet.GetHeader().UserID, ev.Time)
@@ -218,6 +225,9 @@ func (s *stationStats) ownShips() map[string]map[uint32]int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]map[uint32]int64{}
+	for id, own := range s.restoredOwn { // a station listed from the series decides on what it sent before the start
+		out[id] = maps.Clone(own)
+	}
 	for id, st := range s.m {
 		if len(st.own) > 0 {
 			out[id] = maps.Clone(st.own)
@@ -271,39 +281,90 @@ type stationRow struct {
 	Near     string `json:"near,omitempty"`      // coverage label: the town or region nearest the traffic it hears
 }
 
-// rows is every station heard since the start, with the series' figures for those it has: vessels, uptime,
-// its first hour, and its receptions in place of the counts since the start.
+// rows is every station heard within stationKeep: those heard since the start, and from the series those heard
+// only before it, a UDP station once established. The series' figures fill in vessels, uptime, the first hour,
+// and the receptions in place of the counts since the start.
 func (s *stationStats) rows(now time.Time, counts map[string]stationCount) []stationRow {
+	keep := now.Add(-stationKeep)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows := make([]stationRow, 0, len(s.m))
+	rows := make([]stationRow, 0, max(len(s.m), len(counts)))
 	for id, st := range s.m {
-		r := stationRow{Station: id, Source: st.Source, Events: st.ring.windows(now), Dups: st.Dups, Positions: st.Positions,
-			FirstSeen: st.First.UTC(), LastSeen: st.Last.UTC(), LastAgeS: int64(now.Sub(st.Last).Seconds())}
-		if c, ok := counts[id]; ok {
-			r.Vessels, r.Vessels24, r.Exclusive = c.live, c.day, c.unique
-			// A station new since the totals' last read, or while they are unavailable, keeps the counts since the start
-			// and has no uptime. positions counts first copies, as the live count does, and duplicates the rest.
-			if c.totaled {
-				r.Uptime = &c.uptime
-				r.Positions, r.Dups = int64(c.firsts), int64(c.receptions-c.firsts)
-				if c.first.Before(r.FirstSeen) {
-					r.FirstSeen = c.first.UTC()
-				}
-			}
+		last := st.Last
+		if c := counts[id].last; c.After(last) { // the first copies after a start can be a backlog, older than the series' last
+			last = c
 		}
-		if st.Positions > 0 {
+		if last.Before(keep) {
+			continue
+		}
+		r := stationRow{Station: id, Source: st.Source, Events: st.ring.windows(now), Dups: st.Dups, Positions: st.Positions,
+			FirstSeen: st.First.UTC(), LastSeen: last.UTC(), LastAgeS: int64(now.Sub(last).Seconds())}
+		if st.MinLat <= st.MaxLat { // a station that has sent no position has no extent
 			r.BBox = &[4]float64{st.MinLat, st.MinLon, st.MaxLat, st.MaxLon}
 		}
-		rows = append(rows, r)
+		rows = append(rows, withSeries(r, counts[id]))
+	}
+	for id, c := range counts {
+		if s.m[id] != nil || c.last.Before(keep) {
+			continue // listed live above, or silent too long
+		}
+		// A UDP station, udp: or mmsi:, is listed only while the process that heard it runs. Anyone can name one with a
+		// line to the UDP port or claim any MMSI with !AIVDO, and a re-keyed sender leaves a udp: row at every restart
+		// until its next own-ship sentence, so nothing in the series tells a real one from these.
+		if c.source == "udp" || c.source == "mmsi" || retiredStation(c.source) {
+			continue
+		}
+		src := seriesSource(id, c.source)
+		r := stationRow{Station: id, Source: src, Events: (&hourRing{ringState: s.restored[id]}).windows(now),
+			FirstSeen: c.first.UTC(), LastSeen: c.last.UTC(), LastAgeS: int64(now.Sub(c.last).Seconds())}
+		rows = append(rows, withSeries(r, c))
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Station < rows[j].Station })
 	return rows
 }
 
+// withSeries is r with the series' figures for its station. A station new since the totals' last read, or while they
+// are unavailable, keeps the counts since the start and has no uptime. positions counts first copies, as the live
+// count does, and duplicates the rest.
+func withSeries(r stationRow, c stationCount) stationRow {
+	r.Vessels, r.Vessels24, r.Exclusive = c.live, c.day, c.unique
+	if c.totaled {
+		r.Uptime = &c.uptime
+		r.Positions, r.Dups = int64(c.firsts), int64(c.receptions-c.firsts)
+		if c.first.Before(r.FirstSeen) {
+			r.FirstSeen = c.first.UTC()
+		}
+	}
+	return r
+}
+
+// seriesPending is whether the series has yet to answer for the stations heard before the start, given the figures
+// read: nil while the server runs with ClickHouse, before the first read and once reads have failed for a while.
+func (p *Pipeline) seriesPending(counts map[string]stationCount) bool {
+	return counts == nil && p.series.expected.Load()
+}
+
+// retiredStation is a kind the series can still hold that live ingest no longer names a station by: a token's
+// volunteer under the v1: and http: kinds it had before station:.
+func retiredStation(kind string) bool { return kind == "v1" || kind == "http" }
+
+// seriesSource is a station's source from the kind the series keeps: a volunteer's station is named by its source,
+// and a feed's receivers by the feed.
+func seriesSource(id, kind string) string {
+	if strings.HasPrefix(id, kind+":") {
+		return id
+	}
+	return kind
+}
+
 // stationRows is every station's row with its name fields filled in.
 func (p *Pipeline) stationRows(now time.Time) []stationRow {
 	counts, _ := p.rollups(now)
+	return p.stationRowsFrom(now, counts)
+}
+
+// stationRowsFrom is stationRows from series figures the caller already holds.
+func (p *Pipeline) stationRowsFrom(now time.Time, counts map[string]stationCount) []stationRow {
 	rows := p.stations.rows(now, counts)
 	for i := range rows {
 		p.names.decorate(&rows[i])
@@ -311,18 +372,19 @@ func (p *Pipeline) stationRows(now time.Time) []stationRow {
 	return rows
 }
 
-// serveStations: GET /v1/stations → every station heard since boot; GET /v1/stations/{id} → that station with
+// serveStations: GET /v1/stations → every station heard within stationKeep; GET /v1/stations/{id} → that station with
 // the vessels it last updated as GeoJSON. Volunteer UDP stations appear as keyed hashes, never addresses.
 func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	now := time.Now()
 	id := strings.TrimPrefix(r.URL.Path, "/v1/stations")
 	id = strings.TrimPrefix(id, "/")
+	counts, _ := p.rollups(now) // read once, so the list and the answer for a missing station agree
 	if id == "" {
-		json.NewEncoder(w).Encode(p.stationRows(now))
+		json.NewEncoder(w).Encode(p.stationRowsFrom(now, counts))
 		return
 	}
-	for _, row := range p.stationRows(now) {
+	for _, row := range p.stationRowsFrom(now, counts) {
 		if row.Station != id {
 			continue
 		}
@@ -343,6 +405,13 @@ func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 			out["attribution"] = d.credits // credits for the ship types in station.types, beside the vessels' own
 		}
 		json.NewEncoder(w).Encode(out)
+		return
+	}
+	if p.seriesPending(counts) {
+		// The series lists the stations heard before the start; until it answers, an absent station may be one of them.
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "station list not loaded yet"})
 		return
 	}
 	w.WriteHeader(http.StatusNotFound) // not http.Error: that would override the JSON Content-Type set above
