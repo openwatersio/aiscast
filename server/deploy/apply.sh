@@ -37,6 +37,9 @@ if ! command -v clickhouse-server >/dev/null; then
 fi
 
 id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
+# ops reads the journal for investigating alerts and changes nothing; its keys are in rootfs/etc/ssh/authorized_keys.d/ops.
+id ops >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash ops
+usermod -aG systemd-journal ops
 
 # The sshd drop-in is the one file that can lock everyone out of the box, and a bad one
 # only bites on the next reboot, so roll it back if it does not validate.
@@ -55,6 +58,11 @@ if ! sshd -t; then
 	exit 1
 fi
 rm -f "$drop.bak"
+# ops reaches only /metrics and pprof (ops-egress.nft), loaded before sshd lets it in.
+command -v nft >/dev/null || apt-get install -yq nftables
+systemctl daemon-reload
+systemctl enable ops-egress.service
+systemctl restart ops-egress.service
 systemctl reload ssh
 
 mkdir -p /opt/aiscast /var/lib/aiscast/archive /var/lib/alloy/textfile
