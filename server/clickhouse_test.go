@@ -1158,6 +1158,29 @@ func TestConvertReceptionsMatchesTheLiveWriter(t *testing.T) {
 	if err := conn.conn.QueryRow(ctx, "SELECT count() FROM "+db+".positions(mmsi = 257000001, from = '2026-09-01 00:00:00', to = '2026-09-02 00:00:00')").Scan(&served); err != nil || served != 2 {
 		t.Errorf("after cleanup the view serves each transmission once: %d %v", served, err)
 	}
+	// It drops the old coverage table, its view, and its ledger, again harmlessly, and receptions still take inserts,
+	// which station_coverage's view bins.
+	if err := conn.cleanup(ctx, func(string) {}); err != nil {
+		t.Fatal("cleanup run again:", err)
+	}
+	tables, err := chColumn[string](ctx, conn.conn, "SELECT name FROM system.tables WHERE database = ? AND name LIKE '%coverage%' ORDER BY name", db)
+	if err != nil || !slices.Equal(tables, []string{"station_coverage", "station_coverage_backfilled", "station_coverage_mv"}) {
+		t.Errorf("coverage tables after cleanup: %v %v", tables, err)
+	}
+	if err := conn.insert(ctx, "after", []trackPoint{{mmsi: 257000001, ts: time.Now(), lat6: 1, lon6: 1, sog10: 1023, cog10: 3600, heading: 511, navStatus: 15, source: "aishub", station: "aishub"}}); err != nil {
+		t.Errorf("an insert after cleanup: %v", err)
+	}
+	if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+".station_coverage WHERE day = today()"); err != nil || len(n) != 1 || n[0] == 0 {
+		t.Errorf("station_coverage after cleanup: %v %v; want today's insert binned", n, err)
+	}
+	// The backfill and a day's rebuild, which replay, archive reloads, and rebuild-positions-1m run, need nothing dropped.
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	if err := conn.coverageBackfill(ctx, today); err != nil {
+		t.Errorf("backfill after cleanup: %v", err)
+	}
+	if err := conn.rebuildCoverage(ctx, today); err != nil {
+		t.Errorf("rebuild after cleanup: %v", err)
+	}
 }
 
 // A report that arrives a day or more after its stamp is kept out of positions_1m, so it must not move the
