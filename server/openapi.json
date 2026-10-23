@@ -913,6 +913,13 @@
             "items": { "type": "number" },
             "minItems": 4,
             "maxItems": 4
+          },
+          "hours": {
+            "type": "array",
+            "description": "`GET /v1/stations/{id}` only: the station's position receptions in each hour of the last 7 days, UTC, 168 counts oldest first, the current hour last. An hour with none is 0. Up to about 7 minutes behind, and read at most once a minute per station. Absent without ClickHouse or when its read fails.",
+            "items": { "type": "integer" },
+            "minItems": 168,
+            "maxItems": 168
           }
         }
       },

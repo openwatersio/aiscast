@@ -15,6 +15,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -87,6 +88,11 @@ type stationSeries interface {
 	backfillStationSeries(ctx context.Context, now time.Time) error
 	// stationCounts is each station's hours and vessels in the window.
 	stationCounts(ctx context.Context, now time.Time) (map[string]stationCount, error)
+	// stationHours is one station's receptions in each hour of the window, oldest first, the current hour last.
+	stationHours(ctx context.Context, station string, now time.Time) ([]uint64, error)
+	// stationVessels is the vessels one station heard within stationVesselTTL, its own aside, each with whether no
+	// other station heard it and its latest ITU ship type, 0 when none is known.
+	stationVessels(ctx context.Context, station string, now time.Time) (map[uint32]heardVessel, error)
 	// stationTotals is each station's first hour and receptions ever, a read of its whole history.
 	stationTotals(ctx context.Context) (map[string]stationCount, error)
 	// sourceCounts is, per source kind, the vessels its stations heard within vesselTTL and how many no other kind did.
@@ -510,6 +516,82 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 	return out, rows.Err()
 }
 
+// stationHours counts every usable reception, as uptime does, so an hour with any is never 0.
+func (c *chConn) stationHours(ctx context.Context, station string, now time.Time) ([]uint64, error) {
+	cur := now.UTC().Truncate(time.Hour)
+	start := cur.Add(-(stationWindow - 1) * time.Hour)
+	rows, err := c.conn.Query(ctx, `SELECT hour, sum(receptions) FROM `+c.db+`.station_hours
+		WHERE station = ? AND hour >= ? AND hour <= ? AND `+strings.ReplaceAll(chNewestFrom, "{db}", c.db)+`
+		GROUP BY hour`, station, start, cur, start)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]uint64, stationWindow)
+	for rows.Next() {
+		var hour time.Time
+		var n uint64
+		if err := rows.Scan(&hour, &n); err != nil {
+			return nil, err
+		}
+		out[int(hour.Sub(start)/time.Hour)] = n
+	}
+	return out, rows.Err()
+}
+
+// heardVessel is one vessel a station heard: whether no other station did, and its latest ITU ship type.
+type heardVessel struct {
+	only     bool
+	shipType uint8
+}
+
+// stationVessels reads the window and uniqueness as stationCounts does, and each vessel's type as its latest
+// non-zero ship_type in statics, whichever source sent it.
+func (c *chConn) stationVessels(ctx context.Context, station string, now time.Time) (map[uint32]heardVessel, error) {
+	day := now.Add(-stationVesselTTL)
+	rows, err := c.conn.Query(ctx, strings.ReplaceAll(`SELECT mmsi, hearers = 1 FROM (
+			SELECT station, mmsi, count() OVER (PARTITION BY mmsi) AS hearers FROM (
+				SELECT station, mmsi FROM {db}.station_vessels
+				WHERE hour >= toStartOfHour(?) AND last_ts > ? AND `+chNewestFrom+` AND `+chOwnIn+` GROUP BY station, mmsi))
+		WHERE station = ?`, "{db}", c.db), day, day, day, day, day, station)
+	if err != nil {
+		return nil, err
+	}
+	out := map[uint32]heardVessel{}
+	var mmsis []uint32
+	for rows.Next() {
+		var mmsi uint32
+		var only bool
+		if err := rows.Scan(&mmsi, &only); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[mmsi] = heardVessel{only: only}
+		mmsis = append(mmsis, mmsi)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(mmsis) == 0 {
+		return out, err
+	}
+	rows, err = c.conn.Query(ctx, `SELECT mmsi, argMax(ship_type, last_ts) FROM `+c.db+`.statics
+		WHERE mmsi IN ? AND ship_type != 0 GROUP BY mmsi`, mmsis)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mmsi uint32
+		var t uint8
+		if err := rows.Scan(&mmsi, &t); err != nil {
+			return nil, err
+		}
+		h := out[mmsi]
+		h.shipType = t
+		out[mmsi] = h
+	}
+	return out, rows.Err()
+}
+
 func (c *chConn) sourceCounts(ctx context.Context, now time.Time) (map[string][2]int, error) {
 	since := now.Add(-vesselTTL)
 	rows, err := c.conn.Query(ctx, `SELECT source, count(), countIf(kinds = 1) FROM (
@@ -706,4 +788,104 @@ func (r *stationRollups) fresh(now time.Time) (map[string]stationCount, map[stri
 		return nil, nil
 	}
 	return r.counts, r.sources
+}
+
+// stationDetails is each station page's figures, kept a minute from their read.
+type stationDetails struct {
+	mu sync.Mutex
+	m  map[string]stationDetail
+}
+
+type stationDetail struct {
+	at    time.Time
+	hours []uint64          // nil when the read failed
+	types map[string][2]int // nil when the read failed
+}
+
+// stationDetail is a station's figures for its page, empty without ClickHouse. A failed read is kept for the
+// minute too, so a struggling ClickHouse is asked once a minute per station, not once a request.
+func (p *Pipeline) stationDetail(id string, now time.Time) stationDetail {
+	var s stationSeries
+	p.vmu.RLock()
+	if p.ch != nil {
+		s = p.ch.series
+	}
+	p.vmu.RUnlock()
+	if s == nil {
+		return stationDetail{}
+	}
+	d := &p.details
+	d.mu.Lock()
+	e, ok := d.m[id]
+	d.mu.Unlock()
+	if ok && now.Sub(e.at) < time.Minute {
+		return e
+	}
+	e = stationDetail{at: now}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var err error
+	if e.hours, err = s.stationHours(ctx, id, now); err != nil {
+		log.Printf("station series: hours for %s: %v", id, err)
+		e.hours = nil
+	}
+	if heard, err := s.stationVessels(ctx, id, now); err != nil {
+		log.Printf("station series: vessels for %s: %v", id, err)
+	} else {
+		e.types = p.vesselTypes(heard)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for k, old := range d.m {
+		if now.Sub(old.at) >= time.Minute {
+			delete(d.m, k)
+		}
+	}
+	if d.m == nil {
+		d.m = map[string]stationDetail{}
+	}
+	d.m[id] = e
+	return e
+}
+
+// vesselTypes counts vessels by type, as [vessels, of them heard only here]: an aid to navigation, base station,
+// SAR aircraft, or fishing gear by its kind, from the vessel cache or else the record; any other by its ITU ship
+// type; "0" when unknown.
+func (p *Pipeline) vesselTypes(heard map[uint32]heardVessel) map[string][2]int {
+	kinds := make(map[uint32]string, len(heard))
+	var rest []uint32
+	p.vmu.RLock()
+	for m := range heard {
+		if v := p.vessels[m]; v != nil {
+			kinds[m] = v.Kind
+		} else {
+			rest = append(rest, m)
+		}
+	}
+	p.vmu.RUnlock()
+	for p.store != nil && len(rest) > 0 {
+		n := min(len(rest), maxParams)
+		recs, err := p.store.find(recordQuery{mmsis: rest[:n]})
+		if err != nil {
+			log.Printf("station series: vessel kinds: %v", err)
+		}
+		for _, r := range recs {
+			kinds[r.mmsi] = r.v.Kind
+		}
+		rest = rest[n:]
+	}
+	out := map[string][2]int{}
+	for m, h := range heard {
+		k := kinds[m]
+		if k == "" || k == "vessel" {
+			k = strconv.Itoa(int(h.shipType))
+		}
+		c := out[k]
+		c[0]++
+		if h.only {
+			c[1]++
+		}
+		out[k] = c
+	}
+	return out
 }

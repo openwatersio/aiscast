@@ -463,6 +463,63 @@ func TestStationStats(t *testing.T) {
 	}
 }
 
+// TestStationDetail checks a station page's hours and types: absent without ClickHouse, read once a minute per
+// station with ClickHouse, and a failed read held for the minute rather than retried each request.
+func TestStationDetail(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.Ingest(Reception{Source: "s1", Station: "s1", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	detail := func() map[string]any {
+		res, err := http.Get(srv.URL + "/v1/stations/s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out struct{ Station map[string]any }
+		json.NewDecoder(res.Body).Decode(&out)
+		return out.Station
+	}
+	if st := detail(); st["hours"] != nil || st["types"] != nil {
+		t.Fatalf("hours and types without ClickHouse: %v", st)
+	}
+	// An aid the cache knows by its kind, whatever ship type it sent, two cargo ships, and a vessel with no type.
+	const aid = 992571234
+	p.vmu.Lock()
+	p.vessels[aid] = &vessel{Kind: "aton"}
+	p.vmu.Unlock()
+
+	hours := make([]uint64, stationWindow)
+	hours[stationWindow-1] = 5
+	series := &fakeSeries{hours: map[string][]uint64{"s1": hours},
+		vessels: map[string]map[uint32]heardVessel{"s1": {aid: {only: true, shipType: 70}, 257000001: {only: true, shipType: 70}, 257000002: {}, 257000003: {shipType: 70}}}}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, series: series})
+	st := detail()
+	h, _ := st["hours"].([]any)
+	if len(h) != stationWindow || h[stationWindow-1] != 5.0 || h[0] != 0.0 {
+		t.Fatalf("hours: %v", h)
+	}
+	if got := fmt.Sprint(st["types"]); got != "map[0:[1 0] 70:[2 1] aton:[1 1]]" {
+		t.Fatalf("types: %s", got)
+	}
+	detail()
+	if series.hoursReads != 1 {
+		t.Fatalf("reads within the minute: %d", series.hoursReads)
+	}
+	if got := p.stationDetail("s1", now.Add(time.Minute+5*time.Second)).hours; series.hoursReads != 2 || len(got) != stationWindow {
+		t.Fatalf("a minute on: %d reads, %v", series.hoursReads, got)
+	}
+
+	series.hoursErr = errors.New("down")
+	if got := p.stationDetail("s1", now.Add(3*time.Minute)).hours; got != nil || series.hoursReads != 3 {
+		t.Fatalf("failed read: %d reads, %v", series.hoursReads, got)
+	}
+	if got := p.stationDetail("s1", now.Add(3*time.Minute+30*time.Second)).hours; got != nil || series.hoursReads != 3 {
+		t.Fatalf("failure not held for the minute: %d reads, %v", series.hoursReads, got)
+	}
+}
+
 func TestNMEAFeed(t *testing.T) {
 	p := testPipeline(t)
 	allowAnon = false
