@@ -487,11 +487,11 @@ func TestStationDetail(t *testing.T) {
 	if st, credits := detail(); st["hours"] != nil || st["types"] != nil || credits != nil {
 		t.Fatalf("hours, types, or credits without ClickHouse: %v %v", st, credits)
 	}
-	// An aid the cache knows by its kind, whatever type it sent; two cargo ships whose type Kystverket sent; a vessel
+	// An aid the cache knows by its kind, whatever type it sent, credited to its source; two cargo ships whose type Kystverket sent; a vessel
 	// statics has no type for, which takes the cache's and its source's credit; and one with no type anywhere.
 	const aid, fallback = 992571234, 257000004
 	p.vmu.Lock()
-	p.vessels[aid] = &vessel{Kind: "aton"}
+	p.vessels[aid] = &vessel{Kind: "aton", Source: "barentswatch"}
 	p.vessels[fallback] = &vessel{Kind: "vessel", ShipType: 30, Source: "digitraffic"}
 	p.vmu.Unlock()
 
@@ -509,7 +509,8 @@ func TestStationDetail(t *testing.T) {
 	if got := fmt.Sprint(st["types"]); got != "map[0:[1 0] 30:[1 0] 70:[2 1] aton:[1 1]]" {
 		t.Fatalf("types: %s", got)
 	}
-	if credits["kystverket"] != attributionOf("kystverket") || credits["digitraffic"] != attributionOf("digitraffic") || len(credits) != 2 {
+	if credits["kystverket"] != attributionOf("kystverket") || credits["digitraffic"] != attributionOf("digitraffic") ||
+		credits["barentswatch"] != attributionOf("barentswatch") || len(credits) != 3 {
 		t.Fatalf("credits: %v", credits)
 	}
 	detail()

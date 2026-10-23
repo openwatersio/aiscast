@@ -389,7 +389,7 @@
                     "vessels": { "$ref": "#/components/schemas/FeatureCollection" },
                     "attribution": {
                       "type": "object",
-                      "description": "Per source kind whose ship types `station.types` counts, the credit line to display with it. Absent when `types` is, or when it counts no source's type.",
+                      "description": "Per source kind whose ship types or kinds `station.types` counts, the credit line to display with it. Absent when `types` is, or when it counts no source's type.",
                       "additionalProperties": { "type": "string" }
                     }
                   }

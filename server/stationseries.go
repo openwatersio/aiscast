@@ -565,7 +565,7 @@ type heardVessel struct {
 // does. The vessels stay in ClickHouse for the join: a feed hears tens of thousands a day, past what a query may
 // list.
 func (c *chConn) stationVessels(ctx context.Context, station string, now time.Time) (map[uint32]heardVessel, error) {
-	day := now.Add(-stationVesselTTL)
+	day, typed := now.Add(-stationVesselTTL), now.Add(-chStationVesselDays*24*time.Hour)
 	mine := `(SELECT mmsi FROM {db}.station_vessels WHERE station = ? AND hour >= toStartOfHour(?) AND last_ts > ?)`
 	rows, err := c.conn.Query(ctx, strings.ReplaceAll(`SELECT v.mmsi, v.hearers = 1, ifNull(s.t, 0), ifNull(s.src, '') FROM (
 			SELECT mmsi, hearers FROM (
@@ -575,9 +575,9 @@ func (c *chConn) stationVessels(ctx context.Context, station string, now time.Ti
 			WHERE station = ?) AS v
 		LEFT JOIN (
 			SELECT mmsi, argMax((ship_type, toString(source)), last_ts) AS latest, latest.1 AS t, latest.2 AS src FROM {db}.statics
-			WHERE day >= toDate(?) AND ship_type != 0 AND source != 'record' AND mmsi IN `+mine+`
+			WHERE day >= toDate(?) AND last_ts > ? AND ship_type != 0 AND source != 'record' AND mmsi IN `+mine+`
 			GROUP BY mmsi) AS s ON v.mmsi = s.mmsi`, "{db}", c.db),
-		day, day, station, day, day, day, day, day, station, now.Add(-chStationVesselDays*24*time.Hour), station, day, day)
+		day, day, station, day, day, day, day, day, station, typed, typed, station, day, day)
 	if err != nil {
 		return nil, err
 	}
@@ -954,7 +954,10 @@ func (p *Pipeline) vesselTypes(heard map[uint32]heardVessel) (map[string][2]int,
 		v := known[m]
 		k := v.kind
 		switch {
-		case k != "" && k != "vessel":
+		case k != "" && k != "vessel": // a kind the vessel's own messages set, credited as /v1/vessels credits it
+			if v.source != "" {
+				noteAttribution(credits, v.source)
+			}
 		case h.shipType != 0:
 			k = strconv.Itoa(int(h.shipType))
 			noteAttribution(credits, h.source)
