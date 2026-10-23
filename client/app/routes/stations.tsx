@@ -48,7 +48,7 @@ type Sort = "unique" | "vessels" | "uptime";
 const SORTS: Array<{ value: Sort; label: string; chip: string; of(s: Station): number }> = [
   { value: "unique", label: "Most unique vessels", chip: "Unique vessels", of: unique },
   { value: "vessels", label: "Most vessels in 24 hours", chip: "Vessels", of: vessels },
-  { value: "uptime", label: "Highest uptime over 7 days", chip: "Uptime", of: (s) => uptime(s) ?? -1 },
+  { value: "uptime", label: "Highest uptime over 7 days", chip: "Uptime", of: (s) => s.uptime_7d ?? -1 },
 ];
 
 /** How many of a section's stations are live, of all of them: "29/35". */
