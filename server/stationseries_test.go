@@ -89,6 +89,13 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	pts := []trackPoint{at("station:s1", 1, cur.Add(-2*time.Hour+10*time.Minute)), at("station:s1", 2, recent), at("station:s1", 9, recent),
 		shared, at("station:s2", 3, recent), echo, wild, old, stream,
 		at("station:s1", 123456789, recent)} // a default MMSI from before ingest kept them out, which counts as no vessel
+	// Listing reaches back stationKeep: a station heard 10 days ago is listed, one heard 31 days ago is not, one whose last hour held only a stale copy is last heard at that hour's
+	// start, and a historical archive is no station.
+	tenDays, monthAgo := now.Add(-10*24*time.Hour).Truncate(time.Second), now.Add(-31*24*time.Hour)
+	staleOnly := at("station:stale", 11, recent)
+	staleOnly.stale = true
+	archived := at("dma", 12, now.Add(-3*24*time.Hour))
+	pts = append(pts, at("station:s10", 10, tenDays), at("station:s31", 10, monthAgo), at("station:stale", 11, cur.Add(-3*time.Hour)), staleOnly, archived)
 	// The receptions were written before the series existed, as on a database at step 17: its tables and view
 	// come with the upgrade, and the backfill bins what came before.
 	if err := conn.exec(ctx, "DROP VIEW {db}.station_dirty_mv", "DROP TABLE {db}.station_dirty", "DROP TABLE {db}.station_hours",
@@ -97,6 +104,9 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := conn.insert(ctx, "series", pts); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.exec(ctx, "INSERT INTO {db}.history_loads (source, file, day, loaded) VALUES ('dma', 'aisdk.zip', today(), now64(3))"); err != nil {
 		t.Fatal(err)
 	}
 	conn.conn.Close()
@@ -168,8 +178,23 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if s := counts["station:s2"]; s.day != 2 || s.unique != 1 || s.receptions != 2 || s.firsts != 1 {
 		t.Errorf("s2: %+v; want the shared and its own vessel, the implausible copy left out, and 1 of 2 receptions first", s)
 	}
-	if s := counts["station:s3"]; s.day != 0 || s.receptions != 1 {
-		t.Errorf("s3, heard 30 hours ago: %+v", s)
+	if s := counts["station:s3"]; s.day != 0 || s.receptions != 1 || s.source != "station" || !s.last.Equal(old.ts.Truncate(time.Millisecond)) {
+		t.Errorf("s3, heard 30 hours ago: %+v; want it listed with its source and last reception", s)
+	}
+	if s := counts["station:s10"]; s.source != "station" || !s.last.Equal(tenDays) {
+		t.Errorf("s10, heard 10 days ago: %+v; want it listed", s)
+	}
+	if s := counts["station:s31"]; !s.last.IsZero() {
+		t.Errorf("s31, heard 31 days ago: %+v; want it only in the totals", s)
+	}
+	if s := counts["station:stale"]; !s.last.Equal(cur) {
+		t.Errorf("station:stale: last %v; want %v, the start of its last hour, which held only a stale copy", s.last, cur)
+	}
+	if s := counts["dma"]; !s.last.IsZero() {
+		t.Errorf("the DMA archive is listed as a station: %+v", s)
+	}
+	if s := counts["station:s1"]; !s.last.Equal(recent.Truncate(time.Millisecond)) {
+		t.Errorf("s1: last %v; want %v", s.last, recent)
 	}
 	if _, ok := counts["station:old"]; !ok {
 		t.Errorf("the stream before the fold is not under its receiver: %v", counts)

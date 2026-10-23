@@ -9,7 +9,7 @@ This replaces step 2 of [clickhouse.md](clickhouse.md#after-a-go), station serie
 | Part | Window | Source |
 | --- | --- | --- |
 | Name, nearby place, own vessel | | SQLite station names |
-| Status dot, on the "Last heard" line under the title | live | server memory |
+| Status dot, on the "Last heard" line under the title | live | server memory, or `station_vessels` for a station not heard since the start |
 | Messages per hour chart, headed by the uptime gauge and percent | 7 days | `station_hours` |
 | Vessels, unique vessels, and vessels by type | rolling 24 hours | `station_vessels`, `statics` |
 | Footprint on the map, and its size | 7 days | `station_coverage` |
@@ -22,7 +22,7 @@ The station list shows each station's status, uptime gauge, vessels, and unique 
 
 - `receptions` holds every position copy with its `station`, `source`, and `accepted`, which is true for the copy delivered first. It does not record whether a copy was the station's own ship (`!AIVDO`) or a stale copy of a report the vessel had already superseded, as AISHub's late copies of volunteer reports are. Static messages reach ClickHouse in `statics`, from live ingest, archive loads, and replay, and archive loads also fold them into `vessel_statics`.
 - `station_coverage` keeps, per day, station, resolution, and H3 cell, the distinct vessels heard there. A view fills it, a backfill appends whole days and records each in `station_coverage_backfilled`, and replay, an archive reload, and `rebuild-positions-1m` rebuild it per day ([replay_clickhouse.go](../server/replay_clickhouse.go)). The server loads the last 7 days each hour, merged across stations, and serves tiles, and serves one station's with `?station=`. `coverage`, the same without stations named, is the table before it, which `aiscast clickhouse-cleanup` drops.
-- Per station, the server keeps in memory a 7-day hourly event ring saved to the usage file, for the access tiers' 24-hour counts, and the MMSIs it sent as its own ship, for the own vessel. `vessels`, `vessels_24h`, `vessels_exclusive_24h`, `uptime_7d`, `positions`, `duplicates`, and `first_seen` come from the station series, the per-source counts in `/v1/stats` and MCP `get_coverage` too, and the nearby-place label from coverage cells.
+- Per station, the server keeps in memory a 7-day hourly event ring saved to the usage file, for the access tiers' 24-hour counts, and the MMSIs it sent as its own ship, for the own vessel. `vessels`, `vessels_24h`, `vessels_exclusive_24h`, `uptime_7d`, `positions`, `duplicates`, and `first_seen` come from the station series, the per-source counts in `/v1/stats` and MCP `get_coverage` too, and the nearby-place label from coverage cells. The station list adds every station the series heard in the last 30 days, so a restart keeps it; a UDP station, `udp:` or `mmsi:`, is listed only once heard since the start. Historical archives are not stations.
 
 ## Station identity
 
