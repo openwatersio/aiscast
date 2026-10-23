@@ -271,9 +271,10 @@ type stationRow struct {
 	FirstSeen time.Time         `json:"first_seen"`
 	LastSeen  time.Time         `json:"last_seen"`
 	LastAgeS  int64             `json:"last_age_s"`
-	BBox      *[4]float64       `json:"bbox,omitempty"`  // minLat, minLon, maxLat, maxLon of positions heard
-	Hours     []uint64          `json:"hours,omitempty"` // the station's own page only: receptions each hour of 7 days, oldest first
-	Types     map[string][2]int `json:"types,omitempty"` // the station's own page only: 24 h vessels by ITU ship type or kind, as [vessels, unique]
+	BBox      *[4]float64       `json:"bbox,omitempty"`       // minLat, minLon, maxLat, maxLon of positions heard
+	Hours     []uint64          `json:"hours,omitempty"`      // the station's own page only: receptions each hour of 7 days, oldest first
+	HoursFrom *time.Time        `json:"hours_from,omitempty"` // the first hour of hours, so a reader labels each count by the hour it was counted in
+	Types     map[string][2]int `json:"types,omitempty"`      // the station's own page only: 24 h vessels by ITU ship type or kind, as [vessels, unique]
 
 	Name     string `json:"name,omitempty"`      // see stationNames.decorate for the order names are chosen in
 	NameFrom string `json:"name_from,omitempty"` // "operator" or "vessel"
@@ -390,6 +391,10 @@ func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 		}
 		d := p.stationDetail(id, now)
 		row.Hours, row.Types = d.hours, d.types
+		if d.hours != nil {
+			from := d.at.UTC().Truncate(time.Hour).Add(-(stationWindow - 1) * time.Hour)
+			row.HoursFrom = &from
+		}
 		var features [][]byte
 		attribution := map[string]string{}
 		p.vmu.RLock()

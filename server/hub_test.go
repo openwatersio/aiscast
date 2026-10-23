@@ -506,6 +506,9 @@ func TestStationDetail(t *testing.T) {
 	if len(h) != stationWindow || h[stationWindow-1] != 5.0 || h[0] != 0.0 {
 		t.Fatalf("hours: %v", h)
 	}
+	if from, _ := time.Parse(time.RFC3339, fmt.Sprint(st["hours_from"])); !from.Equal(time.Now().UTC().Truncate(time.Hour).Add(-(stationWindow - 1) * time.Hour)) {
+		t.Fatalf("hours_from %v, want the window's first hour", st["hours_from"])
+	}
 	if got := fmt.Sprint(st["types"]); got != "map[0:[1 0] 30:[1 0] 70:[2 1] aton:[1 1]]" {
 		t.Fatalf("types: %s", got)
 	}
