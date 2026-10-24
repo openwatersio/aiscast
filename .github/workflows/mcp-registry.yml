@@ -27,7 +27,7 @@ jobs:
     # The key lives in the production environment, whose branch policy admits only main, and a manual
     # run picked from any other ref does nothing. Together they keep the key out of unreviewed code.
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: production
     # One run at a time, never cancelled: a queued run finds the version already listed and stops, so
     # two runs for the same version cannot both reach the publish step.
