@@ -135,6 +135,19 @@ CREATE TABLE IF NOT EXISTS ised (
 	callsign   TEXT    NOT NULL DEFAULT '',
 	checked_at INTEGER NOT NULL DEFAULT 0 -- unix ms of the last ask
 );
+-- the slug each vessel page was last submitted to IndexNow under, so a round sends only new vessels and
+-- pages a rename moved (indexnow.go)
+CREATE TABLE IF NOT EXISTS indexnow (
+	mmsi    INTEGER PRIMARY KEY,
+	slug    TEXT    NOT NULL,
+	sent_at INTEGER NOT NULL -- unix ms of the submission
+);
+-- each IndexNow submission's size, which the daily budget is summed from; kept two days (indexnow.go)
+CREATE TABLE IF NOT EXISTS indexnow_rounds (
+	sent_at INTEGER NOT NULL, -- unix ms
+	urls    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS indexnow_rounds_sent_at ON indexnow_rounds (sent_at);
 -- Canadian vessels with an IMO from Transport Canada's Register of Large Vessels, replaced weekly (tc.go)
 CREATE TABLE IF NOT EXISTS tc (
 	imo           INTEGER PRIMARY KEY,

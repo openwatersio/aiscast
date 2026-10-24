@@ -12,6 +12,7 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/sync v0.22.0
+	golang.org/x/text v0.40.0
 	modernc.org/sqlite v1.59.0
 )
 

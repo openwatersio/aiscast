@@ -131,6 +131,9 @@ export function shipClass(kind?: string, type?: number): ShipClass {
 /**
  * The cosmetic half of a vessel URL. The MMSI is canonical; this only has to be stable
  * for a given name and safe in a path segment.
+ *
+ * server/slug.go ports this to Go for the URLs the server submits to IndexNow. Change both, with a case
+ * in server/testdata/vessel-slugs.json, which each side's tests read.
  */
 // Letters NFD cannot help with. `\u00e5` decomposes to a + ring and needs no entry, but `\u00e6`, `\u00f8`
 // and friends are distinct letters rather than an accented base, so normalising drops them

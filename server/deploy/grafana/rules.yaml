@@ -459,6 +459,16 @@ groups:
           summary: The AMSA sync failed {{ $value | printf "%.0f" }} times in a day
           description: Nearly every hourly retry is failing, including on a record file where it has never succeeded. journalctl -u aiscast | grep 'amsa:' on the box for the error.
 
+      # IndexNow rounds send nothing on a day with nothing new, so the alert is refusals with no success,
+      # not staleness. A refusal repeats hourly, but a 429 pauses submission for a day, across restarts, and
+      # counts once, so three days catches a lasting 429 as well.
+      - alert: IndexNowRefused
+        expr: increase(aiscast_indexnow_failures_total[3d]) >= 3 and increase(aiscast_indexnow_submitted_total[3d]) == 0
+        labels: {severity: warning}
+        annotations:
+          summary: IndexNow refused {{ $value | printf "%.0f" }} submissions in three days and accepted none
+          description: A 403 or 422 means the key file at https://openwaters.io/ais/vessels/<key>.txt is not being served or does not match. journalctl -u aiscast | grep 'indexnow:' on the box for the status; a 429 means INDEXNOW_DAILY is above what the endpoint allows.
+
       # The ISED rounds ask per vessel, so a chronically unmatchable vessel fails a few asks a day
       # without harm; the alert is the registry failing while nothing gets through at all.
       - alert: ISEDRoundsStalled

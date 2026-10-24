@@ -67,6 +67,14 @@ describe("vesselSlug", () => {
     expect(vesselSlug("***")).toBe("");
   });
 
+  // The server builds vessel page URLs for IndexNow with its own port of this function (server/slug.go),
+  // held to the same answers by the same fixture.
+  it("answers as the server's port does", () => {
+    const cases: Array<{ name: string; slug: string }> = JSON.parse(readFileSync(new URL("../../../server/testdata/vessel-slugs.json", import.meta.url), "utf8"));
+    expect(cases.length).toBeGreaterThan(20);
+    for (const { name, slug } of cases) expect(vesselSlug(name), name).toBe(slug);
+  });
+
   it("caps length without leaving a trailing hyphen", () => {
     const slug = vesselSlug("A".repeat(40) + " " + "B".repeat(40));
     expect(slug.length).toBeLessThanOrEqual(60);

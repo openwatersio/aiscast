@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { APIRequestContext } from "@playwright/test";
 import { vesselPath, vesselSlug } from "../app/lib/ais";
 import { heardGear, namedVessel } from "./data";
@@ -98,6 +99,14 @@ test("a fleet that does not exist is a 404 in the app, asking not to be indexed"
   expect(res?.status()).toBe(404);
   await expect(page.getByText("There is nothing at this address.")).toBeVisible();
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", /noindex/);
+});
+
+test("the IndexNow key is served where the server's submissions say it is", async ({ request }) => {
+  const key = /indexNowKey\s*=\s*"([0-9a-f]{32})"/.exec(readFileSync(new URL("../../server/indexnow.go", import.meta.url), "utf8"))?.[1];
+  expect(key).toBeDefined();
+  const res = await request.get(`/ais/vessels/${key}.txt`);
+  expect(res.status()).toBe(200);
+  expect((await res.text()).trim()).toBe(key);
 });
 
 test("an address that is not a vessel is a 404", async ({ page }) => {
