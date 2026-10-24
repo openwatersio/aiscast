@@ -333,8 +333,11 @@ function VesselCard({
       <div className="flex gap-3">
         <div className="min-w-0 flex-1">
           <h3 className="text-headline font-semibold text-fg">
+            {/* The report arrives after the server's render, so until then the fleet's own name
+                stands in for the slug. It is the one the vessel sends for most of them, so a crawler
+                follows a canonical link rather than a redirect to one. */}
             {vessel.mmsi ? (
-              <Link data-card to={vesselPath(vessel.mmsi, p?.name, p?.kind)} className="text-fg no-underline after:absolute after:inset-0 after:rounded-2xl hover:text-fg">
+              <Link data-card to={vesselPath(vessel.mmsi, p?.name ?? vessel.name, p?.kind)} className="text-fg no-underline after:absolute after:inset-0 after:rounded-2xl hover:text-fg">
                 {vessel.name}
               </Link>
             ) : (
