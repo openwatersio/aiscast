@@ -307,15 +307,24 @@ const CLASS_NOUNS: Record<ShipClass, string> = {
   special: "special craft",
   aton: "aid to navigation",
   base: "base station",
-  sar: "search and rescue craft",
+  sar: "search and rescue aircraft",
   gear: "fishing gear marker",
   other: "vessel",
 };
 
+/** The class's noun for this vessel. SAR covers aircraft and distress beacons, which the MMSI tells apart. */
+function classNoun(v: { mmsi: number; kind?: string; type?: number }): string {
+  const cls = shipClass(v.kind, v.type);
+  return cls === "sar" && isBeacon(v.mmsi) ? "search and rescue beacon" : CLASS_NOUNS[cls];
+}
+
+// Flags whose English names take "the": flagged in the Marshall Islands, but in Liberia.
+const FLAGS_WITH_THE = new Set(["AE", "BS", "CF", "CK", "DO", "FK", "FO", "GB", "GM", "KM", "KY", "MH", "MP", "MV", "NL", "PH", "SB", "SC", "TC", "US", "VG", "VI"]);
+
 type SnippetVessel = Pick<
   VesselProps,
   "mmsi" | "name" | "kind" | "type" | "flag" | "imo" | "destination" | "near" | "length" | "beam" | "to_bow" | "to_stern" | "to_port" | "to_starboard"
-> & { particulars?: { length?: number } };
+>;
 
 /**
  * A vessel page's title, for a search result. People search for a ship by its name, often
@@ -324,30 +333,35 @@ type SnippetVessel = Pick<
  */
 export function vesselTitle(v: { mmsi: number; name?: string; kind?: string; type?: number }): string {
   if (!v.name) return `MMSI ${v.mmsi} live AIS position | Open Waters AIS`;
-  return `${v.name}, ${CLASS_NOUNS[shipClass(v.kind, v.type)]}: live AIS position | Open Waters AIS`;
+  return `${v.name}, ${classNoun(v)}: live AIS position | Open Waters AIS`;
 }
 
 /**
  * A vessel page's description, for a search result: what the vessel is, where it was last
  * heard, and where it is going. It carries no time, because a search engine shows it for
- * weeks after the render, when any time stated in it reads as stale.
+ * weeks after the render, when any time stated in it reads as stale. The length is the one
+ * the vessel reports, not a register's: a register's needs its credit beside it, and a
+ * search result or a link preview has no room for one.
  */
 export function vesselDescription(v: SnippetVessel): string {
   const label = v.name ?? `MMSI ${v.mmsi}`;
-  const noun = CLASS_NOUNS[shipClass(v.kind, v.type)];
+  const noun = classNoun(v);
   const offsets =
     v.to_bow != null && v.to_stern != null && v.to_port != null && v.to_starboard != null
       ? { toBow: v.to_bow, toStern: v.to_stern, toPort: v.to_port, toStarboard: v.to_starboard }
       : undefined;
-  const length = v.particulars?.length ?? vesselDimensions(offsets, v.length, v.beam)?.length;
+  const length = vesselDimensions(offsets, v.length, v.beam)?.length;
+  const what = length ? `${Math.round(length)} m ${noun}` : noun;
+  // "flagged in", because a region's name does not always make an adjective: "Hong Kong SAR China".
   const country = flagName(v.flag);
-  const what = [length ? `${Math.round(length)} m` : "", country ? `${country}-flagged` : "", noun].filter(Boolean).join(" ");
-  const ids = [`MMSI ${v.mmsi}`, ...(v.imo ? [`IMO ${v.imo}`] : [])].join(", ");
+  const flag = country ? ` flagged in ${FLAGS_WITH_THE.has(v.flag!.toUpperCase()) ? "the " : ""}${country}` : "";
+  // A nameless vessel is already labelled by its MMSI.
+  const ids = [...(v.name ? [`MMSI ${v.mmsi}`] : []), ...(v.imo ? [`IMO ${v.imo}`] : [])].join(", ");
   const to = parseDestination(v.destination)?.to?.raw;
   const where = v.near ? `Last reported near ${v.near}${to ? `, bound for ${to}` : ""}. ` : to ? `Bound for ${to}. ` : "";
-  // Said aloud: "an 80 m", "an 11 m", "an Indonesia-flagged", but "a United States-flagged".
+  // Said aloud: "an 80 m", "an 11 m", "an aid to navigation".
   const a = /^(8\d*|11|18) m/.test(what) || /^[aeio]/i.test(what) ? "an" : "a";
-  return `${label} is ${a} ${what} (${ids}). ${where}See its live AIS position, track and destination.`;
+  return `${label} is ${a} ${what}${flag}${ids ? ` (${ids})` : ""}. ${where}Live AIS position and track.`;
 }
 
 export function flagEmoji(code?: string): string | undefined {

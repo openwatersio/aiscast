@@ -59,7 +59,7 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
     if (slug !== pathSlug(heard.name, heard.kind)) throw redirect(vesselPath(mmsi, heard.name, heard.kind));
     // The pane is already open from the stream's copy, which stands if the record fails.
     const feature: VesselRecord = record.catch(() => undefined);
-    return { mmsi, name: heard.name, kind: heard.kind, feature };
+    return { mmsi, name: heard.name, kind: heard.kind, type: heard.shipType, feature };
   }
   const feature = await orUnavailable(record);
   const name = feature?.properties.name;
@@ -83,7 +83,8 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
   const path = vesselPath(mmsi, name, kind);
   const photo = "photo" in loaderData ? loaderData.photo : undefined;
   return pageMeta({
-    title: vesselTitle({ mmsi, name, kind, type: props?.type }),
+    // The stream's ship type names the class until the record is in, as its name and kind do.
+    title: vesselTitle({ mmsi, name, kind, type: props?.type ?? ("type" in loaderData ? loaderData.type : undefined) }),
     description,
     // An MMSI the network has never heard has no page of its own to point at.
     path: feature || loading ? path : undefined,

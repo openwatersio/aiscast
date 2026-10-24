@@ -638,8 +638,8 @@ describe("vesselDescription", () => {
 
   it("says what the vessel is, where it was last heard, and where it is going", () => {
     expect(vesselDescription({ ...ship, near: "Sinhyeon, South Korea", destination: "SEA TRIAL(SHI-2678)" })).toBe(
-      "EVER EDUCE is a 369 m Singapore-flagged cargo ship (MMSI 563344600, IMO 1025289). " +
-        "Last reported near Sinhyeon, South Korea, bound for SEA TRIAL(SHI-2678). See its live AIS position, track and destination.",
+      "EVER EDUCE is a 369 m cargo ship flagged in Singapore (MMSI 563344600, IMO 1025289). " +
+        "Last reported near Sinhyeon, South Korea, bound for SEA TRIAL(SHI-2678). Live AIS position and track.",
     );
   });
 
@@ -647,14 +647,21 @@ describe("vesselDescription", () => {
     expect(vesselDescription({ ...ship, near: "Busan, South Korea" })).not.toMatch(/\bago\b|GMT|UTC|2026/);
   });
 
-  it("prefers the registered length to the one the transponder reports", () => {
-    expect(vesselDescription({ ...ship, particulars: { length: 368.8 } })).toContain("a 369 m");
+  it("gives the length the vessel reports, not a register's, which would need its credit beside it", () => {
+    expect(vesselDescription({ ...ship, particulars: { length: 340 } } as Parameters<typeof vesselDescription>[0])).toContain("a 369 m");
+  });
+
+  it("names the flag, with the article its name takes", () => {
+    expect(vesselDescription({ ...ship, flag: "MH" })).toContain("cargo ship flagged in the Marshall Islands (");
+    expect(vesselDescription({ ...ship, flag: "lr" })).toContain("cargo ship flagged in Liberia (");
   });
 
   it("leaves out what the vessel has not sent", () => {
     expect(vesselDescription({ mmsi: 244001221, name: "WABI SABI", kind: "vessel", type: 37 })).toBe(
-      "WABI SABI is a pleasure craft (MMSI 244001221). See its live AIS position, track and destination.",
+      "WABI SABI is a pleasure craft (MMSI 244001221). Live AIS position and track.",
     );
+    // A nameless vessel is labelled by its MMSI once.
+    expect(vesselDescription({ mmsi: 244001221, kind: "vessel", type: 37 })).toBe("MMSI 244001221 is a pleasure craft. Live AIS position and track.");
   });
 
   it("reads the destination's far end and skips a placeholder", () => {
@@ -662,11 +669,17 @@ describe("vesselDescription", () => {
     expect(vesselDescription({ ...ship, destination: "XXXXX" })).not.toContain("Bound");
   });
 
+  it("tells a distress beacon from a search and rescue aircraft by its MMSI", () => {
+    expect(vesselDescription({ mmsi: 970123456, name: "SART TEST", kind: "sar" })).toContain("is a search and rescue beacon");
+    expect(vesselDescription({ mmsi: 111257005, name: "RESCUE 1", kind: "sar" })).toContain("is a search and rescue aircraft");
+    expect(vesselTitle({ mmsi: 111257005, name: "RESCUE 1", kind: "sar" })).toBe("RESCUE 1, search and rescue aircraft: live AIS position | Open Waters AIS");
+  });
+
   it("takes the article the words are said with", () => {
     expect(vesselDescription({ ...ship, length: 80 })).toContain("is an 80 m");
     expect(vesselDescription({ ...ship, length: 11, flag: undefined })).toContain("is an 11 m cargo ship");
-    expect(vesselDescription({ ...ship, length: undefined, flag: "ID" })).toContain("is an Indonesia-flagged");
-    expect(vesselDescription({ ...ship, length: undefined, flag: "US" })).toContain("is a United States-flagged");
+    expect(vesselDescription({ ...ship, length: 110 })).toContain("is a 110 m");
+    expect(vesselDescription({ ...ship, length: undefined })).toContain("is a cargo ship flagged in");
     expect(vesselDescription({ mmsi: 992446000, name: "BUOY", kind: "aton" })).toContain("is an aid to navigation");
   });
 });
