@@ -198,25 +198,31 @@ var storeAddedCols = []string{
 
 // vesselPageTriggers keep page_at, the sitemap's lastmod for a vessel's page. seen moves with nearly every
 // report, so a lastmod read from it would change on every fetch and say nothing. page_at moves when the
-// vessel's identity, voyage and size change: name, kind, type, flag, IMO, call sign, destination, length
-// or beam, or a position in another one-degree cell, which stands in for the place the
-// description says it was last reported near. Draught, ETA and navigational status, which change within a
-// voyage, and the registers' particulars, kept in their own tables, do not move it. The triggers run after
-// every writer, the fold's upsert, the import and the kind migration alike, and a blank the upsert keeps
-// the stored value for is no change. They stamp the time of the write, not seen: the import fills a blank
-// name without moving seen, and a source's clock can run ahead. The clock is SQLite's own, because the
-// triggers live in the file: one calling a function only this build registers would leave an older build,
-// after a rollback, or the sqlite3 shell unable to write to vessels at all.
+// vessel's identity, voyage or size changes: name, kind, type, flag, IMO, call sign, destination, length or
+// beam. Position does not move it, since a live position page is always changing, nor do draught, ETA,
+// navigational status, which change within a voyage, or the registers' particulars, kept in their own
+// tables. It moves at most once a day, because aggregates can deliver two versions of a vessel's static
+// data in turn, and an MMSI two ships share flips between their names; a change inside the day waits for
+// the next change after it. The vessel's first name is the exception: it brings the page into the sitemap.
+//
+// The triggers run after every writer, the fold's upsert, the import and the kind migration alike, and a
+// blank the upsert keeps the stored value for is no change. They stamp the time of the write, not seen:
+// the import fills a blank name without moving seen. The clock is SQLite's own, because the triggers live
+// in the file: one calling a function only this build registers would leave an older build, after a
+// rollback, or the sqlite3 shell unable to write to vessels at all. Each start replaces them, so a file
+// keeps the rule of the build that last opened it.
 const vesselPageTriggers = `
-CREATE TRIGGER IF NOT EXISTS vessels_page_insert AFTER INSERT ON vessels BEGIN
+DROP TRIGGER IF EXISTS vessels_page_insert;
+DROP TRIGGER IF EXISTS vessels_page_update;
+CREATE TRIGGER vessels_page_insert AFTER INSERT ON vessels BEGIN
 	UPDATE vessels SET page_at = CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) WHERE mmsi = NEW.mmsi;
 END;
-CREATE TRIGGER IF NOT EXISTS vessels_page_update
-AFTER UPDATE OF name, kind, ship_type, flag, imo, callsign, destination, length, beam, cell ON vessels
-WHEN NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind OR NEW.ship_type IS NOT OLD.ship_type
+CREATE TRIGGER vessels_page_update
+AFTER UPDATE OF name, kind, ship_type, flag, imo, callsign, destination, length, beam ON vessels
+WHEN (NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind OR NEW.ship_type IS NOT OLD.ship_type
 	OR NEW.flag IS NOT OLD.flag OR NEW.imo IS NOT OLD.imo OR NEW.callsign IS NOT OLD.callsign
-	OR NEW.destination IS NOT OLD.destination OR NEW.length IS NOT OLD.length OR NEW.beam IS NOT OLD.beam
-	OR NEW.cell IS NOT OLD.cell
+	OR NEW.destination IS NOT OLD.destination OR NEW.length IS NOT OLD.length OR NEW.beam IS NOT OLD.beam)
+	AND (OLD.name = '' OR OLD.page_at <= CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) - 86400000)
 BEGIN
 	UPDATE vessels SET page_at = CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) WHERE mmsi = NEW.mmsi;
 END;
@@ -316,7 +322,7 @@ func addPageAt(db *sql.DB) error {
 		}
 		return err
 	}
-	if _, err := tx.Exec("UPDATE vessels SET page_at = seen"); err != nil {
+	if _, err := tx.Exec("UPDATE vessels SET page_at = min(seen, ?)", time.Now().UnixMilli()); err != nil {
 		return err
 	}
 	return tx.Commit()

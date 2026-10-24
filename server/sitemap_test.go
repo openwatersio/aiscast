@@ -66,9 +66,17 @@ func TestVesselSitemap(t *testing.T) {
 	if len(got) != 3 || got[0] != "FIRST" || got[1] != "SECOND" || got[2] != "THIRD" {
 		t.Fatalf("page 1 = %v, want FIRST SECOND THIRD in MMSI order", got)
 	}
-	newest := page.Vessels[2].LastMod
-	if index.Pages[0].LastMod != newest {
-		t.Errorf("lastmod = %s, want the newest vessel's, %s", index.Pages[0].LastMod, newest)
+	// The index's lastmod is its page's newest.
+	newest := time.Now().Add(-time.Hour).Truncate(time.Second)
+	exec("UPDATE vessels SET page_at = ? WHERE mmsi = 257000001", unixMs(newest.Add(-2*time.Hour)))
+	exec("UPDATE vessels SET page_at = ? WHERE mmsi = 257000002", unixMs(newest))
+	exec("UPDATE vessels SET page_at = ? WHERE mmsi = 257000003", unixMs(newest.Add(-time.Hour)))
+	p.store.sitemap.answers = nil
+	if err := json.Unmarshal(get(t, p, "/sitemap/vessels").Body.Bytes(), &index); err != nil {
+		t.Fatal(err)
+	}
+	if want := newest.UTC().Format(time.RFC3339); index.Pages[0].LastMod != want {
+		t.Errorf("lastmod = %s, want the newest vessel's, %s", index.Pages[0].LastMod, want)
 	}
 
 	if w := get(t, p, "/sitemap/vessels?page=2"); w.Code != 404 {
@@ -159,36 +167,51 @@ func TestVesselPageAt(t *testing.T) {
 		}
 		return n
 	}
+	// A day passes, as far as the debounce can tell. page_at is not a column the triggers watch.
+	dayLater := func() int64 {
+		t.Helper()
+		if _, err := p.store.db.Exec("UPDATE vessels SET page_at = page_at - 2 * 86400000 WHERE mmsi = ?", mmsi); err != nil {
+			t.Fatal(err)
+		}
+		return pageAt()
+	}
 	static := shipStatic(mmsi, "FIRST").(ais.ShipStaticData)
 
-	if first, got := hear(0, posReport(mmsi, 60.95, 5.1)), pageAt(); !first.has(got) {
-		t.Fatalf("new vessel's page_at = %d, want its write's %v", got, first)
+	if w, got := hear(0, posReport(mmsi, 60.95, 5.1)), pageAt(); !w.has(got) {
+		t.Fatalf("new vessel's page_at = %d, want its write's %v", got, w)
 	}
+	// Its first name brings it into the sitemap, a minute after the record took it.
 	if w, got := hear(time.Minute, static), pageAt(); !w.has(got) {
-		t.Fatalf("after its name: %d, want %v", got, w)
+		t.Fatalf("after its first name: %d, want %v", got, w)
 	}
-	named := pageAt()
+	old := dayLater()
 	hear(2*time.Minute, posReport(mmsi, 60.96, 5.1))
-	hear(3*time.Minute, static)
+	// Across 61°N at about six knots.
+	hear(30*time.Minute, posReport(mmsi, 61.01, 5.1))
+	hear(31*time.Minute, static)
 	static.MaximumStaticDraught = 9.8
 	static.Eta = ais.FieldETA{Month: 9, Day: 21, Hour: 6}
-	hear(4*time.Minute, static)
-	if got := pageAt(); got != named {
-		t.Errorf("after a move within its cell, the same static report, and a new draught and ETA: %d, want %d still", got, named)
+	hear(32*time.Minute, static)
+	if got := pageAt(); got != old {
+		t.Errorf("after moves, the same static report, and a new draught and ETA: %d, want %d still", got, old)
 	}
 	static.Destination = "SEBMA"
-	if w, got := hear(5*time.Minute, static), pageAt(); !w.has(got) {
+	if w, got := hear(33*time.Minute, static), pageAt(); !w.has(got) {
 		t.Errorf("after a new destination: %d, want %v", got, w)
 	}
-	// Across 61°N at about six knots.
-	if w, got := hear(30*time.Minute, posReport(mmsi, 61.01, 5.1)), pageAt(); !w.has(got) {
-		t.Errorf("after a move into another cell: %d, want %v", got, w)
+	// Inside the day, another version of the static data does not move it again.
+	bound := pageAt()
+	static.Destination = "NOOSL"
+	hear(34*time.Minute, static)
+	if got := pageAt(); got != bound {
+		t.Errorf("after a second destination inside the day: %d, want %d still", got, bound)
 	}
 	// Writers that leave seen alone: the import filling a blank, the kind migration.
-	exec("UPDATE vessels SET callsign = '' WHERE mmsi = ?")
+	dayLater()
 	if w, got := exec("UPDATE vessels SET callsign = 'LAJB8' WHERE mmsi = ?"), pageAt(); !w.has(got) {
-		t.Errorf("after a call sign filled without a report: %d, want %v", got, w)
+		t.Errorf("after a call sign changed without a report: %d, want %v", got, w)
 	}
+	dayLater()
 	if w, got := exec("UPDATE vessels SET kind = 'gear', flag = '' WHERE mmsi = ?"), pageAt(); !w.has(got) {
 		t.Errorf("after a new kind: %d, want %v", got, w)
 	}
