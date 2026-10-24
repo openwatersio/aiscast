@@ -393,6 +393,16 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_ised_check_failures_total %d\n", p.ised.failures.Load())
 		metricHead(w, "aiscast_ised_ships", "gauge", "Canadian vessels with a registry record stored")
 		fmt.Fprintf(w, "aiscast_ised_ships %d\n", p.ised.ships.Load())
+		if p.indexNow.enabled.Load() {
+			metricHead(w, "aiscast_indexnow_submitted_total", "counter", "vessel page URLs submitted to IndexNow")
+			fmt.Fprintf(w, "aiscast_indexnow_submitted_total %d\n", p.indexNow.submitted.Load())
+			metricHead(w, "aiscast_indexnow_failures_total", "counter", "IndexNow submissions that failed; their vessels are sent in a later round")
+			fmt.Fprintf(w, "aiscast_indexnow_failures_total %d\n", p.indexNow.failures.Load())
+			if t := p.indexNow.lastSuccess.Load(); t > 0 {
+				metricHead(w, "aiscast_indexnow_last_success_timestamp_seconds", "gauge", "when IndexNow last accepted a submission")
+				fmt.Fprintf(w, "aiscast_indexnow_last_success_timestamp_seconds %d\n", t)
+			}
+		}
 	}
 
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")
