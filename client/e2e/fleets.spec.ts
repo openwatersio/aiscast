@@ -79,3 +79,23 @@ test("fleets open from the map's menu, list their vessels, and open one on the m
   await page.getByRole("link", { name: "Back" }).click();
   await expect(page).toHaveURL(/\/ais\/fleets\/superyachts\/tech-billionaires(#|$)/);
 });
+
+test("a fleet vessel whose report has no name links its bare MMSI, and one never heard keeps the fleet's name", async ({ page }) => {
+  // Carnival Adventure answers with a position but no name; every other vessel is unheard.
+  await page.route(`${API}/v1/vessels/*`, (route) => {
+    const mmsi = Number(new URL(route.request().url()).pathname.split("/").pop());
+    return mmsi === 311001595
+      ? route.fulfill({
+          headers: { "access-control-allow-origin": "*" },
+          json: { type: "Feature", id: mmsi, geometry: { type: "Point", coordinates: [-80, 25] }, properties: { mmsi, seen: new Date().toISOString(), source: "aishub" } },
+        })
+      : route.fulfill({ status: 404, json: {}, headers: { "access-control-allow-origin": "*" } });
+  });
+  await page.route("**/ais/vessels/media/*", (route) => route.fulfill({ json: { photos: [], links: {} } }));
+  // Both answers in before either link is read, so neither assertion passes on the server's render alone.
+  const answered = Promise.all([311001595, 354842000].map((m) => page.waitForResponse((r) => r.url().endsWith(`/v1/vessels/${m}`))));
+  await page.goto("/ais/fleets/cruise-ships/carnival");
+  await answered;
+  await expect(page.getByRole("link", { name: "Carnival Adventure" })).toHaveAttribute("href", "/ais/vessels/311001595");
+  await expect(page.getByRole("link", { name: "Carnival Breeze" })).toHaveAttribute("href", "/ais/vessels/354842000-carnival-breeze");
+});

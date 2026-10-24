@@ -335,9 +335,10 @@ function VesselCard({
           <h3 className="text-headline font-semibold text-fg">
             {/* The report arrives after the server's render, so until then the fleet's own name
                 stands in for the slug. It is the one the vessel sends for most of them, so a crawler
-                follows a canonical link rather than a redirect to one. */}
+                follows a canonical link rather than a redirect to one. Once the report is in, its
+                name decides, and a vessel that has sent none has the bare MMSI for its address. */}
             {vessel.mmsi ? (
-              <Link data-card to={vesselPath(vessel.mmsi, p?.name ?? vessel.name, p?.kind)} className="text-fg no-underline after:absolute after:inset-0 after:rounded-2xl hover:text-fg">
+              <Link data-card to={vesselPath(vessel.mmsi, report ? p?.name : vessel.name, p?.kind)} className="text-fg no-underline after:absolute after:inset-0 after:rounded-2xl hover:text-fg">
                 {vessel.name}
               </Link>
             ) : (
