@@ -159,12 +159,14 @@ test("a station the network has not heard is a 404 that asks not to be indexed",
 });
 
 test("the aisstream.io station links its comparison and status pages, even while it is not heard", async ({ page }) => {
-  // The e2e server has no aisstream subscription, so this is also the station gone quiet in an outage.
+  // The e2e server has no aisstream subscription, so this is the station as it is after 30 days unheard.
   await page.goto("/ais/stations/aisstream");
-  await expect(page.getByText(/use an Open Waters AIS token/)).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Waters AIS token" })).toHaveAttribute("href", "https://openwaters.io/ais/token/");
   await expect(page.getByRole("link", { name: "Compare the APIs →" })).toHaveAttribute("href", "https://openwaters.io/ais/vs/aisstream/");
   await expect(page.getByRole("link", { name: "status page" })).toHaveAttribute("href", "https://openwaters.io/ais/alternatives/aisstream/");
-  await page.goto("/ais/stations/aishub");
+  // A feed the e2e server does hear: its page renders whole, without the prompt.
+  await page.goto("/ais/stations/digitraffic");
+  await expect(page.getByText("Data feed")).toBeVisible();
   await expect(page.getByRole("link", { name: "Compare the APIs →" })).toHaveCount(0);
 });
 
