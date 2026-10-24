@@ -24,9 +24,12 @@ export async function api<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/** Vessels heard in AREA that have sent their name. */
+/**
+ * Vessels heard in AREA that have sent their name. Ships only: gear, such as the buoy heardGear
+ * sends, has no name in its address, and tests build a vessel's address from its name.
+ */
 export async function namedVessels(): Promise<VesselRef[]> {
-  const fc = await api<{ features: Array<{ properties: { mmsi: number; name?: string } }> }>(`/v1/vessels?bbox=${AREA}`);
+  const fc = await api<{ features: Array<{ properties: { mmsi: number; name?: string } }> }>(`/v1/vessels?bbox=${AREA}&kind=vessel`);
   return fc.features.flatMap((f) => (f.properties.name ? [{ mmsi: f.properties.mmsi, name: f.properties.name }] : []));
 }
 
