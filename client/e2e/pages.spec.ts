@@ -12,14 +12,17 @@ const UNHEARD = 100000001;
 test("a vessel page renders the vessel, with its name in the head", async ({ page, request }) => {
   const { mmsi, name } = await namedVessel();
   const path = `/ais${vesselPath(mmsi, name)}`;
-  const title = `${name} (${mmsi}) live position | Open Waters AIS`;
+  // The name, then the class this vessel's type puts it in.
+  const title = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, [a-z ]+: live AIS position \\| Open Waters AIS$`);
 
   const res = await page.goto(path);
   expect(res?.status()).toBe(200);
   await expect(page).toHaveTitle(title);
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `https://openwaters.io${path}`);
   await expect(page.locator('meta[property="og:title"]')).toHaveAttribute("content", title);
-  expect(await page.locator('meta[name="description"]').getAttribute("content")).toContain(`Live AIS position for ${name}`);
+  const description = await page.locator('meta[name="description"]').getAttribute("content");
+  expect(description).toContain(`${name} is a`);
+  expect(description).toContain(`MMSI ${mmsi}`);
   await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
   const ld = JSON.parse((await page.locator('script[type="application/ld+json"]').textContent()) ?? "");
   expect(ld).toMatchObject({

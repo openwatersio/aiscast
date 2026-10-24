@@ -11,6 +11,8 @@ import {
   stationName,
   stationStatus,
   stationDescription,
+  vesselDescription,
+  vesselTitle,
   stationTitle,
   volunteerReceiver,
   stationTitles,
@@ -608,6 +610,56 @@ describe("trackGap", () => {
     expect(splitTrack(coords, silences(times, trackGap(hour)))).toEqual([coords.slice(0, 3)]);
     expect(splitTrack(coords, silences(times))).toEqual([]);
     expect(trackGap(0)).toBe(TRACK_GAP_MS);
+  });
+});
+
+describe("vesselTitle", () => {
+  it("leads with the name and says what kind of vessel it is", () => {
+    expect(vesselTitle({ mmsi: 563344600, name: "EVER EDUCE", kind: "vessel", type: 70 })).toBe(
+      "EVER EDUCE, cargo ship: live AIS position | Open Waters AIS",
+    );
+  });
+
+  it("falls back to the MMSI for a vessel that has not sent its name", () => {
+    expect(vesselTitle({ mmsi: 563344600 })).toBe("MMSI 563344600 live AIS position | Open Waters AIS");
+  });
+});
+
+describe("vesselDescription", () => {
+  const ship = { mmsi: 563344600, name: "EVER EDUCE", kind: "vessel" as const, type: 70, flag: "SG", imo: 1025289, length: 369, beam: 54 };
+
+  it("says what the vessel is, where it was last heard, and where it is going", () => {
+    expect(vesselDescription({ ...ship, near: "Sinhyeon, South Korea", destination: "SEA TRIAL(SHI-2678)" })).toBe(
+      "EVER EDUCE is a 369 m Singapore-flagged cargo ship (MMSI 563344600, IMO 1025289). " +
+        "Last reported near Sinhyeon, South Korea, bound for SEA TRIAL(SHI-2678). See its live AIS position, track and destination.",
+    );
+  });
+
+  it("states no time, which a search result would show long after it was true", () => {
+    expect(vesselDescription({ ...ship, near: "Busan, South Korea" })).not.toMatch(/\bago\b|GMT|UTC|2026/);
+  });
+
+  it("prefers the registered length to the one the transponder reports", () => {
+    expect(vesselDescription({ ...ship, particulars: { length: 368.8 } })).toContain("a 369 m");
+  });
+
+  it("leaves out what the vessel has not sent", () => {
+    expect(vesselDescription({ mmsi: 244001221, name: "WABI SABI", kind: "vessel", type: 37 })).toBe(
+      "WABI SABI is a pleasure craft (MMSI 244001221). See its live AIS position, track and destination.",
+    );
+  });
+
+  it("reads the destination's far end and skips a placeholder", () => {
+    expect(vesselDescription({ ...ship, destination: "NLRTM>SGSIN" })).toContain("Bound for SGSIN.");
+    expect(vesselDescription({ ...ship, destination: "XXXXX" })).not.toContain("Bound");
+  });
+
+  it("takes the article the words are said with", () => {
+    expect(vesselDescription({ ...ship, length: 80 })).toContain("is an 80 m");
+    expect(vesselDescription({ ...ship, length: 11, flag: undefined })).toContain("is an 11 m cargo ship");
+    expect(vesselDescription({ ...ship, length: undefined, flag: "ID" })).toContain("is an Indonesia-flagged");
+    expect(vesselDescription({ ...ship, length: undefined, flag: "US" })).toContain("is a United States-flagged");
+    expect(vesselDescription({ mmsi: 992446000, name: "BUOY", kind: "aton" })).toContain("is an aid to navigation");
   });
 });
 

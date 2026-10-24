@@ -5,7 +5,7 @@ import { Panel } from "../components/Panel";
 import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { IconLink } from "../components/ui/IconButton";
 import { VesselDetail } from "../components/VesselDetail";
-import { CLASS_LABELS, flagName, parseVesselParam, pathSlug, shipClass, vesselCardPath, vesselPath } from "../lib/ais";
+import { parseVesselParam, pathSlug, vesselCardPath, vesselDescription, vesselPath, vesselTitle } from "../lib/ais";
 import { browserAuth, getVessel, orUnavailable, type VesselFeature } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { liveInstance } from "../lib/live";
@@ -77,17 +77,13 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
   const props = feature?.properties;
   const name = props?.name ?? loaderData.name;
   const label = name ?? `MMSI ${mmsi}`;
-  const country = flagName(props?.flag);
   const loading = loaderData.feature instanceof Promise;
-  const description = props
-    ? `Live AIS position for ${label}${country ? `, ${country}` : ""}. ${CLASS_LABELS[shipClass(props.kind, props.type)]}. ` +
-      `Last heard ${new Date(props.seen).toUTCString()}.`
-    : `AIS vessel ${label}.`;
   const kind = props?.kind ?? ("kind" in loaderData ? loaderData.kind : undefined);
+  const description = props ? vesselDescription(props) : `AIS vessel ${label}.`;
   const path = vesselPath(mmsi, name, kind);
   const photo = "photo" in loaderData ? loaderData.photo : undefined;
   return pageMeta({
-    title: `${label}${name ? ` (${mmsi})` : ""} live position | Open Waters AIS`,
+    title: vesselTitle({ mmsi, name, kind, type: props?.type }),
     description,
     // An MMSI the network has never heard has no page of its own to point at.
     path: feature || loading ? path : undefined,
