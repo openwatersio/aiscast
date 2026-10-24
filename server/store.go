@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS vessels (
 	static_at   INTEGER NOT NULL DEFAULT 0,    -- unix ms of the last static report
 	seen        INTEGER NOT NULL,              -- unix ms of the last message that updated the vessel
 	first_seen  INTEGER NOT NULL,              -- unix ms of the earliest report written to this row
+	page_at     INTEGER NOT NULL DEFAULT 0,    -- unix ms of the last change to what the vessel's page says (vesselPageTriggers)
 	source      TEXT    NOT NULL DEFAULT '',
 	station     TEXT    NOT NULL DEFAULT '',
 	msg_type    TEXT    NOT NULL DEFAULT ''
@@ -195,6 +196,38 @@ var storeAddedCols = []string{
 	"to_starboard INTEGER NOT NULL DEFAULT 0",
 }
 
+// vesselPageTriggers keep page_at, the sitemap's lastmod for a vessel's page. seen moves with nearly every
+// report, so a lastmod read from it would change on every fetch and say nothing. page_at moves when the
+// vessel's identity, voyage or size changes: name, kind, type, flag, IMO, call sign, destination, length or
+// beam. Position does not move it, since a live position page is always changing, nor do draught, ETA,
+// navigational status, which change within a voyage, or the registers' particulars, kept in their own
+// tables. It moves at most once a day, because aggregates can deliver two versions of a vessel's static
+// data in turn, and an MMSI two ships share flips between their names; a change inside the day waits for
+// the next change after it. The vessel's first name is the exception: it brings the page into the sitemap.
+//
+// The triggers run after every writer, the fold's upsert, the import and the kind migration alike, and a
+// blank the upsert keeps the stored value for is no change. They stamp the time of the write, not seen:
+// the import fills a blank name without moving seen. The clock is SQLite's own, because the triggers live
+// in the file: one calling a function only this build registers would leave an older build, after a
+// rollback, or the sqlite3 shell unable to write to vessels at all. Each start replaces them, so a file
+// keeps the rule of the build that last opened it.
+const vesselPageTriggers = `
+DROP TRIGGER IF EXISTS vessels_page_insert;
+DROP TRIGGER IF EXISTS vessels_page_update;
+CREATE TRIGGER vessels_page_insert AFTER INSERT ON vessels BEGIN
+	UPDATE vessels SET page_at = CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) WHERE mmsi = NEW.mmsi;
+END;
+CREATE TRIGGER vessels_page_update
+AFTER UPDATE OF name, kind, ship_type, flag, imo, callsign, destination, length, beam ON vessels
+WHEN (NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind OR NEW.ship_type IS NOT OLD.ship_type
+	OR NEW.flag IS NOT OLD.flag OR NEW.imo IS NOT OLD.imo OR NEW.callsign IS NOT OLD.callsign
+	OR NEW.destination IS NOT OLD.destination OR NEW.length IS NOT OLD.length OR NEW.beam IS NOT OLD.beam)
+	AND (OLD.name = '' OR OLD.page_at <= CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) - 86400000)
+BEGIN
+	UPDATE vessels SET page_at = CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) WHERE mmsi = NEW.mmsi;
+END;
+`
+
 // upsertKind is the kind a row takes from the cache's. A kind a message type sets (aton, base, sar) wins and stays.
 // Between vessel and gear the cache decides, unless it does not yet know the station's name or type, as when a buoy
 // the sweep forgot reports its position before its static data: then the row keeps gear. A beacon number is sar only
@@ -276,6 +309,25 @@ type store struct {
 	mirrorFailures                      atomic.Int64 // refreshes of the mirror that failed
 }
 
+// addPageAt adds page_at to a file without it, filled from seen.
+func addPageAt(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("ALTER TABLE vessels ADD COLUMN page_at INTEGER NOT NULL DEFAULT 0"); err != nil {
+		if strings.Contains(err.Error(), "duplicate column") {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.Exec("UPDATE vessels SET page_at = min(seen, ?)", time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func openStore(path string) (*store, error) {
 	// WAL lets the API read while the writer commits; NORMAL sync is durable across a process crash, and a
 	// power loss costs at most the last commits, which the next folds rewrite.
@@ -295,6 +347,18 @@ func openStore(path string) (*store, error) {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+	}
+	// A file from before page_at gains the column, set to each vessel's seen: every lastmod in the sitemap
+	// moves once, then only with its page. One transaction, so a stop between the two cannot leave the column
+	// without its values, which no later start would fill.
+	if err := addPageAt(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// After page_at, which an older file gains just above.
+	if _, err := db.Exec(vesselPageTriggers); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	// A file from before official_key gains the column, and its sync stamp is cleared so the next hourly
 	// check re-lists, filling the keys, rather than serving empty ones for up to a week. The old

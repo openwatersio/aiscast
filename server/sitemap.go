@@ -31,13 +31,13 @@ type sitemapPage struct {
 }
 
 type sitemapVessel struct {
-	MMSI uint32 `json:"mmsi"`
-	Name string `json:"name"`
-	Seen string `json:"seen"`
+	MMSI    uint32 `json:"mmsi"`
+	Name    string `json:"name"`
+	LastMod string `json:"lastmod"` // page_at: when what the vessel's page says last changed
 }
 
 // serveVesselSitemap: GET /sitemap/vessels → the pages of vessels a sitemap lists, each with its count and
-// the newest seen in it; with page=n (from 1), that page's vessels in MMSI order. The web client builds
+// the newest lastmod in it; with page=n (from 1), that page's vessels in MMSI order. The web client builds
 // openwaters.io/ais/sitemap.xml from these. It is the client's, for search engines, not an API: it sits outside
 // /v1, and openapi.json leaves it out.
 func (p *Pipeline) serveVesselSitemap(w http.ResponseWriter, r *http.Request) {
@@ -137,8 +137,8 @@ func (s *store) sitemapAnswer(page int, now time.Time) (body []byte, found bool,
 // sitemapPages numbers the listed vessels in MMSI order and counts each page of them, as sitemapVessels
 // pages them.
 func (s *store) sitemapPages(cutoff int64, size int) ([]sitemapPage, error) {
-	rows, err := s.db.Query(`SELECT count(*), max(seen) FROM (
-		SELECT seen, (row_number() OVER (ORDER BY mmsi) - 1) / ? AS page FROM vessels`+sitemapWhere+`
+	rows, err := s.db.Query(`SELECT count(*), max(page_at) FROM (
+		SELECT page_at, (row_number() OVER (ORDER BY mmsi) - 1) / ? AS page FROM vessels`+sitemapWhere+`
 	) GROUP BY page ORDER BY page`, size, cutoff)
 	if err != nil {
 		return nil, err
@@ -147,18 +147,18 @@ func (s *store) sitemapPages(cutoff int64, size int) ([]sitemapPage, error) {
 	pages := []sitemapPage{}
 	for rows.Next() {
 		var n int
-		var seen int64
-		if err := rows.Scan(&n, &seen); err != nil {
+		var pageAt int64
+		if err := rows.Scan(&n, &pageAt); err != nil {
 			return nil, err
 		}
-		pages = append(pages, sitemapPage{Vessels: n, LastMod: fromMs(seen).Format(time.RFC3339)})
+		pages = append(pages, sitemapPage{Vessels: n, LastMod: fromMs(pageAt).Format(time.RFC3339)})
 	}
 	return pages, rows.Err()
 }
 
 // sitemapVessels is page n of the listed vessels, from 1.
 func (s *store) sitemapVessels(cutoff int64, size, n int) ([]sitemapVessel, error) {
-	rows, err := s.db.Query("SELECT mmsi, name, seen FROM vessels"+sitemapWhere+" ORDER BY mmsi LIMIT ? OFFSET ?",
+	rows, err := s.db.Query("SELECT mmsi, name, page_at FROM vessels"+sitemapWhere+" ORDER BY mmsi LIMIT ? OFFSET ?",
 		cutoff, size, (n-1)*size)
 	if err != nil {
 		return nil, err
@@ -167,11 +167,11 @@ func (s *store) sitemapVessels(cutoff int64, size, n int) ([]sitemapVessel, erro
 	var out []sitemapVessel
 	for rows.Next() {
 		var v sitemapVessel
-		var seen int64
-		if err := rows.Scan(&v.MMSI, &v.Name, &seen); err != nil {
+		var pageAt int64
+		if err := rows.Scan(&v.MMSI, &v.Name, &pageAt); err != nil {
 			return nil, err
 		}
-		v.Seen = fromMs(seen).Format(time.RFC3339)
+		v.LastMod = fromMs(pageAt).Format(time.RFC3339)
 		out = append(out, v)
 	}
 	return out, rows.Err()
