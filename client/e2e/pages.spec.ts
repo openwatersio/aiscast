@@ -88,6 +88,11 @@ test("a vessel the network has never heard is a 404 that asks not to be indexed"
   await expect(page.getByText("The network has never heard this vessel.")).toBeVisible();
 });
 
+test("a fleet links its vessels by their canonical address before any report is in", async ({ page }) => {
+  await page.goto("/ais/fleets/cruise-ships/carnival");
+  await expect(page.getByRole("link", { name: "Carnival Adventure" })).toHaveAttribute("href", "/ais/vessels/311001595-carnival-adventure");
+});
+
 test("a fleet that does not exist is a 404 in the app, asking not to be indexed", async ({ page }) => {
   const res = await page.goto("/ais/fleets/nope");
   expect(res?.status()).toBe(404);
