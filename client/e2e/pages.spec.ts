@@ -158,6 +158,16 @@ test("a station the network has not heard is a 404 that asks not to be indexed",
   await expect(page.getByText("No station with this id has been heard recently.")).toBeVisible();
 });
 
+test("the aisstream.io station links its comparison and status pages, even while it is not heard", async ({ page }) => {
+  // The e2e server has no aisstream subscription, so this is also the station gone quiet in an outage.
+  await page.goto("/ais/stations/aisstream");
+  await expect(page.getByText(/use an Open Waters AIS token/)).toBeVisible();
+  await expect(page.getByRole("link", { name: "Compare the APIs →" })).toHaveAttribute("href", "https://openwaters.io/ais/vs/aisstream/");
+  await expect(page.getByRole("link", { name: "status page" })).toHaveAttribute("href", "https://openwaters.io/ais/alternatives/aisstream/");
+  await page.goto("/ais/stations/aishub");
+  await expect(page.getByRole("link", { name: "Compare the APIs →" })).toHaveCount(0);
+});
+
 test("the sitemap lists the vessel pages at their canonical addresses", async ({ request }) => {
   const index = await request.get("/ais/sitemap.xml");
   expect(index.status()).toBe(200);

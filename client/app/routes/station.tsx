@@ -106,6 +106,16 @@ export default function Station({ loaderData }: Route.ComponentProps) {
   const now = Date.now();
   const own = st?.mmsi != null && st.name_from === "vessel" && st.name ? st.name : undefined;
 
+  // People searching for aisstream.io land here, most of them developers using its API or checking
+  // whether it is down; both have a page on the website. Keyed on the address rather than the station
+  // record, so the links stay up through a long outage, when the station is no longer heard.
+  const aisstream = id === "aisstream" && (
+    <Prompt icon={ArrowLeftRight} href={AISSTREAM_VS} action="Compare the APIs" className="mt-5">
+      An aisstream.io client works with Open Waters AIS once you change the hostname and use an Open Waters AIS token
+      as its APIKey. Whether aisstream.io is delivering right now is on its <a href={AISSTREAM_STATUS}>status page</a>.
+    </Prompt>
+  );
+
   return (
     <Panel back="/stations" title={title} actions={<ShareStation id={id} title={title} />}>
       <PageTitle className="break-all">
@@ -113,7 +123,10 @@ export default function Station({ loaderData }: Route.ComponentProps) {
       </PageTitle>
 
       {!st ? (
-        <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard recently.</Tile>
+        <>
+          <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard recently.</Tile>
+          {aisstream}
+        </>
       ) : (
         <>
           <p className="mt-1 flex items-center gap-1.5 text-body text-fg-secondary">
@@ -152,14 +165,7 @@ export default function Station({ loaderData }: Route.ComponentProps) {
             ]}
           />
 
-          {/* People searching for aisstream.io land here, most of them developers using its API or
-              checking whether it is down; both have a page on the website. */}
-          {st.station === "aisstream" && (
-            <Prompt icon={ArrowLeftRight} href={AISSTREAM_VS} action="Compare the APIs" className="mt-5">
-              An aisstream.io client works with Open Waters AIS by changing the hostname. Whether aisstream.io is delivering
-              right now is on its <a href={AISSTREAM_STATUS}>status page</a>.
-            </Prompt>
-          )}
+          {aisstream}
 
           <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-5">
             {isVolunteer(st.source)
