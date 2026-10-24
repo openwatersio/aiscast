@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS vessels (
 	static_at   INTEGER NOT NULL DEFAULT 0,    -- unix ms of the last static report
 	seen        INTEGER NOT NULL,              -- unix ms of the last message that updated the vessel
 	first_seen  INTEGER NOT NULL,              -- unix ms of the earliest report written to this row
+	page_at     INTEGER NOT NULL DEFAULT 0,    -- unix ms of the last change to what the vessel's page says (vesselPageTriggers)
 	source      TEXT    NOT NULL DEFAULT '',
 	station     TEXT    NOT NULL DEFAULT '',
 	msg_type    TEXT    NOT NULL DEFAULT ''
@@ -195,6 +196,27 @@ var storeAddedCols = []string{
 	"to_starboard INTEGER NOT NULL DEFAULT 0",
 }
 
+// vesselPageTriggers keep page_at, the sitemap's lastmod for a vessel's page. seen moves with nearly every
+// report, so a lastmod read from it would change on every fetch and say nothing. page_at moves when what the
+// page says does: its name, kind, type, flag, identifiers, destination or size, or a position in another
+// one-degree cell, which stands in for the place the page says it was last reported near. They run after
+// every writer, the fold's upsert and the import's alike, and a blank the upsert keeps the stored value for
+// is no change.
+const vesselPageTriggers = `
+CREATE TRIGGER IF NOT EXISTS vessels_page_insert AFTER INSERT ON vessels BEGIN
+	UPDATE vessels SET page_at = NEW.seen WHERE mmsi = NEW.mmsi;
+END;
+CREATE TRIGGER IF NOT EXISTS vessels_page_update
+AFTER UPDATE OF name, kind, ship_type, flag, imo, callsign, destination, length, beam, cell ON vessels
+WHEN NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind OR NEW.ship_type IS NOT OLD.ship_type
+	OR NEW.flag IS NOT OLD.flag OR NEW.imo IS NOT OLD.imo OR NEW.callsign IS NOT OLD.callsign
+	OR NEW.destination IS NOT OLD.destination OR NEW.length IS NOT OLD.length OR NEW.beam IS NOT OLD.beam
+	OR NEW.cell IS NOT OLD.cell
+BEGIN
+	UPDATE vessels SET page_at = max(NEW.seen, OLD.page_at) WHERE mmsi = NEW.mmsi;
+END;
+`
+
 // upsertKind is the kind a row takes from the cache's. A kind a message type sets (aton, base, sar) wins and stays.
 // Between vessel and gear the cache decides, unless it does not yet know the station's name or type, as when a buoy
 // the sweep forgot reports its position before its static data: then the row keeps gear. A beacon number is sar only
@@ -295,6 +317,22 @@ func openStore(path string) (*store, error) {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+	}
+	// A file from before page_at gains the column, set to each vessel's seen: every lastmod in the sitemap
+	// moves once, then only with its page.
+	if _, err := db.Exec("ALTER TABLE vessels ADD COLUMN page_at INTEGER NOT NULL DEFAULT 0"); err == nil {
+		if _, err := db.Exec("UPDATE vessels SET page_at = seen"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	} else if !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// After page_at, which an older file gains just above.
+	if _, err := db.Exec(vesselPageTriggers); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	// A file from before official_key gains the column, and its sync stamp is cleared so the next hourly
 	// check re-lists, filling the keys, rather than serving empty ones for up to a week. The old

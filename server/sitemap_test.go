@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/BertoldVdb/go-ais"
 )
 
 func TestVesselSitemap(t *testing.T) {
@@ -63,9 +66,9 @@ func TestVesselSitemap(t *testing.T) {
 	if len(got) != 3 || got[0] != "FIRST" || got[1] != "SECOND" || got[2] != "THIRD" {
 		t.Fatalf("page 1 = %v, want FIRST SECOND THIRD in MMSI order", got)
 	}
-	newest := page.Vessels[2].Seen
+	newest := page.Vessels[2].LastMod
 	if index.Pages[0].LastMod != newest {
-		t.Errorf("lastmod = %s, want the newest seen, %s", index.Pages[0].LastMod, newest)
+		t.Errorf("lastmod = %s, want the newest vessel's, %s", index.Pages[0].LastMod, newest)
 	}
 
 	if w := get(t, p, "/sitemap/vessels?page=2"); w.Code != 404 {
@@ -93,7 +96,7 @@ func TestVesselSitemapPaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(last) != 1 || last[0].Name != "E" || pages[2].LastMod != last[0].Seen {
+	if len(last) != 1 || last[0].Name != "E" || pages[2].LastMod != last[0].LastMod {
 		t.Fatalf("page 3 = %+v, want E with the page's lastmod %s", last, pages[2].LastMod)
 	}
 }
@@ -114,5 +117,86 @@ func TestVesselSitemapMemo(t *testing.T) {
 	fresh, _, _ := p.store.sitemapAnswer(0, now.Add(sitemapMemoFor))
 	if string(fresh) == string(before) {
 		t.Errorf("answer kept past the memo: %s", fresh)
+	}
+}
+
+// A vessel's lastmod moves when what its page says changes, not with each report.
+func TestVesselPageAt(t *testing.T) {
+	p := storePipeline(t)
+	const mmsi = 257000001
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	hear := func(after time.Duration, pkt ais.Packet) int64 {
+		t.Helper()
+		at := start.Add(after)
+		p.ingestPacket("kystverket", "kystverket", at, at, pkt)
+		mustFlush(t, p)
+		return unixMs(at)
+	}
+	pageAt := func() int64 {
+		t.Helper()
+		var n int64
+		if err := p.store.db.QueryRow("SELECT page_at FROM vessels WHERE mmsi = ?", mmsi).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	static := shipStatic(mmsi, "FIRST").(ais.ShipStaticData)
+
+	first := hear(0, posReport(mmsi, 60.95, 5.1))
+	if got := pageAt(); got != first {
+		t.Fatalf("new vessel's page_at = %d, want its first report's %d", got, first)
+	}
+	named := hear(time.Minute, static)
+	if got := pageAt(); got != named {
+		t.Fatalf("after its name: %d, want %d", got, named)
+	}
+	hear(2*time.Minute, posReport(mmsi, 60.96, 5.1))
+	hear(3*time.Minute, static)
+	if got := pageAt(); got != named {
+		t.Errorf("after a move within its cell and the same static report: %d, want %d still", got, named)
+	}
+	static.Destination = "SEBMA"
+	bound := hear(4*time.Minute, static)
+	if got := pageAt(); got != bound {
+		t.Errorf("after a new destination: %d, want %d", got, bound)
+	}
+	// Across 61°N at about six knots.
+	moved := hear(30*time.Minute, posReport(mmsi, 61.01, 5.1))
+	if got := pageAt(); got != moved {
+		t.Errorf("after a move into another cell: %d, want %d", got, moved)
+	}
+}
+
+// A record from before page_at gains it, set to each vessel's seen, and the triggers that keep it.
+func TestOpenStoreAddsPageAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aiscast.db")
+	st, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"INSERT INTO vessels (mmsi, name, seen, first_seen) VALUES (257000001, 'OLD', 5000, 1000)",
+		"DROP TRIGGER vessels_page_insert",
+		"DROP TRIGGER vessels_page_update",
+		"ALTER TABLE vessels DROP COLUMN page_at",
+	} {
+		if _, err := st.db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	st.close()
+	if st, err = openStore(path); err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	var pageAt int64
+	if err := st.db.QueryRow("SELECT page_at FROM vessels WHERE mmsi = 257000001").Scan(&pageAt); err != nil || pageAt != 5000 {
+		t.Errorf("page_at = %d (%v), want seen, 5000", pageAt, err)
+	}
+	if _, err := st.db.Exec("UPDATE vessels SET name = 'NEW', seen = 9000 WHERE mmsi = 257000001"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRow("SELECT page_at FROM vessels WHERE mmsi = 257000001").Scan(&pageAt); err != nil || pageAt != 9000 {
+		t.Errorf("page_at after a rename = %d (%v), want 9000", pageAt, err)
 	}
 }
