@@ -1,4 +1,4 @@
-import { Antenna, Check, Copy, Share } from "lucide-react";
+import { Antenna, ArrowLeftRight, Check, Copy, Share } from "lucide-react";
 import { useEffect, useState } from "react";
 import { data, Link, redirect } from "react-router";
 import { PageTitle, Panel } from "../components/Panel";
@@ -28,7 +28,7 @@ import {
 import { browserAuth, getStation, orUnavailable, type ApiAuth } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
-import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
+import { AISSTREAM_STATUS, AISSTREAM_VS, CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
 import { pageMeta, SITE } from "../lib/meta";
 import { shareLink } from "../lib/share";
 import type { BBox } from "../lib/stream";
@@ -151,6 +151,15 @@ export default function Station({ loaderData }: Route.ComponentProps) {
               ["Station ID", <CopyId id={st.station} />],
             ]}
           />
+
+          {/* People searching for aisstream.io land here, most of them developers using its API or
+              checking whether it is down; both have a page on the website. */}
+          {st.station === "aisstream" && (
+            <Prompt icon={ArrowLeftRight} href={AISSTREAM_VS} action="Compare the APIs" className="mt-5">
+              An aisstream.io client works with Open Waters AIS by changing the hostname. Whether aisstream.io is delivering
+              right now is on its <a href={AISSTREAM_STATUS}>status page</a>.
+            </Prompt>
+          )}
 
           <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mt-5">
             {isVolunteer(st.source)
