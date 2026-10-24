@@ -11,7 +11,6 @@ package main
 
 import (
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log"
@@ -24,7 +23,7 @@ import (
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
-	"modernc.org/sqlite"
+	_ "modernc.org/sqlite"
 )
 
 const storeSchema = `
@@ -199,16 +198,18 @@ var storeAddedCols = []string{
 
 // vesselPageTriggers keep page_at, the sitemap's lastmod for a vessel's page. seen moves with nearly every
 // report, so a lastmod read from it would change on every fetch and say nothing. page_at moves when the
-// facts the page's title and description are made of change: name, kind, type, flag, IMO, call sign,
-// destination, length or beam, or a position in another one-degree cell, which stands in for the place the
+// vessel's identity, voyage and size change: name, kind, type, flag, IMO, call sign, destination, length
+// or beam, or a position in another one-degree cell, which stands in for the place the
 // description says it was last reported near. Draught, ETA and navigational status, which change within a
 // voyage, and the registers' particulars, kept in their own tables, do not move it. The triggers run after
 // every writer, the fold's upsert, the import and the kind migration alike, and a blank the upsert keeps
-// the stored value for is no change. They stamp the time of the write, page_clock(), not seen: the import
-// fills a blank name without moving seen, and a source's clock can run ahead.
+// the stored value for is no change. They stamp the time of the write, not seen: the import fills a blank
+// name without moving seen, and a source's clock can run ahead. The clock is SQLite's own, because the
+// triggers live in the file: one calling a function only this build registers would leave an older build,
+// after a rollback, or the sqlite3 shell unable to write to vessels at all.
 const vesselPageTriggers = `
 CREATE TRIGGER IF NOT EXISTS vessels_page_insert AFTER INSERT ON vessels BEGIN
-	UPDATE vessels SET page_at = page_clock() WHERE mmsi = NEW.mmsi;
+	UPDATE vessels SET page_at = CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) WHERE mmsi = NEW.mmsi;
 END;
 CREATE TRIGGER IF NOT EXISTS vessels_page_update
 AFTER UPDATE OF name, kind, ship_type, flag, imo, callsign, destination, length, beam, cell ON vessels
@@ -217,20 +218,9 @@ WHEN NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind OR NEW.ship_type IS NO
 	OR NEW.destination IS NOT OLD.destination OR NEW.length IS NOT OLD.length OR NEW.beam IS NOT OLD.beam
 	OR NEW.cell IS NOT OLD.cell
 BEGIN
-	UPDATE vessels SET page_at = page_clock() WHERE mmsi = NEW.mmsi;
+	UPDATE vessels SET page_at = CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) WHERE mmsi = NEW.mmsi;
 END;
 `
-
-// pageClock is page_clock()'s time, which a test sets.
-var pageClock = time.Now
-
-func init() {
-	if err := sqlite.RegisterScalarFunction("page_clock", 0, func(*sqlite.FunctionContext, []driver.Value) (driver.Value, error) {
-		return pageClock().UnixMilli(), nil
-	}); err != nil {
-		panic(err)
-	}
-}
 
 // upsertKind is the kind a row takes from the cache's. A kind a message type sets (aton, base, sar) wins and stays.
 // Between vessel and gear the cache decides, unless it does not yet know the station's name or type, as when a buoy

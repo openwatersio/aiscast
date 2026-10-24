@@ -126,28 +126,30 @@ func TestVesselPageAt(t *testing.T) {
 	p := storePipeline(t)
 	const mmsi = 257000001
 	start := time.Now().Add(-time.Hour).Truncate(time.Second)
-	clock := start
-	pageClock = func() time.Time { return clock }
-	t.Cleanup(func() { pageClock = time.Now })
-	// Each write lands at a clock of its own, a minute after the last.
-	step := 0
-	hear := func(after time.Duration, pkt ais.Packet) int64 {
+	// write runs a write and returns the window of wall-clock milliseconds it ran in, after the last one's.
+	write := func(f func()) writeWindow {
 		t.Helper()
-		step++
-		clock = start.Add(time.Duration(step) * time.Minute)
-		at := start.Add(after)
-		p.ingestPacket("kystverket", "kystverket", at, at, pkt)
-		mustFlush(t, p)
-		return clock.UnixMilli()
+		time.Sleep(2 * time.Millisecond)
+		w := writeWindow{from: time.Now().UnixMilli()}
+		f()
+		w.to = time.Now().UnixMilli()
+		return w
 	}
-	exec := func(q string) int64 {
+	hear := func(after time.Duration, pkt ais.Packet) writeWindow {
 		t.Helper()
-		step++
-		clock = start.Add(time.Duration(step) * time.Minute)
-		if _, err := p.store.db.Exec(q, mmsi); err != nil {
-			t.Fatal(err)
-		}
-		return clock.UnixMilli()
+		return write(func() {
+			at := start.Add(after)
+			p.ingestPacket("kystverket", "kystverket", at, at, pkt)
+			mustFlush(t, p)
+		})
+	}
+	exec := func(q string) writeWindow {
+		t.Helper()
+		return write(func() {
+			if _, err := p.store.db.Exec(q, mmsi); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 	pageAt := func() int64 {
 		t.Helper()
@@ -159,14 +161,13 @@ func TestVesselPageAt(t *testing.T) {
 	}
 	static := shipStatic(mmsi, "FIRST").(ais.ShipStaticData)
 
-	first := hear(0, posReport(mmsi, 60.95, 5.1))
-	if got := pageAt(); got != first {
-		t.Fatalf("new vessel's page_at = %d, want its write's %d", got, first)
+	if first, got := hear(0, posReport(mmsi, 60.95, 5.1)), pageAt(); !first.has(got) {
+		t.Fatalf("new vessel's page_at = %d, want its write's %v", got, first)
 	}
-	named := hear(time.Minute, static)
-	if got := pageAt(); got != named {
-		t.Fatalf("after its name: %d, want %d", got, named)
+	if w, got := hear(time.Minute, static), pageAt(); !w.has(got) {
+		t.Fatalf("after its name: %d, want %v", got, w)
 	}
+	named := pageAt()
 	hear(2*time.Minute, posReport(mmsi, 60.96, 5.1))
 	hear(3*time.Minute, static)
 	static.MaximumStaticDraught = 9.8
@@ -176,26 +177,27 @@ func TestVesselPageAt(t *testing.T) {
 		t.Errorf("after a move within its cell, the same static report, and a new draught and ETA: %d, want %d still", got, named)
 	}
 	static.Destination = "SEBMA"
-	bound := hear(5*time.Minute, static)
-	if got := pageAt(); got != bound {
-		t.Errorf("after a new destination: %d, want %d", got, bound)
+	if w, got := hear(5*time.Minute, static), pageAt(); !w.has(got) {
+		t.Errorf("after a new destination: %d, want %v", got, w)
 	}
 	// Across 61°N at about six knots.
-	moved := hear(30*time.Minute, posReport(mmsi, 61.01, 5.1))
-	if got := pageAt(); got != moved {
-		t.Errorf("after a move into another cell: %d, want %d", got, moved)
+	if w, got := hear(30*time.Minute, posReport(mmsi, 61.01, 5.1)), pageAt(); !w.has(got) {
+		t.Errorf("after a move into another cell: %d, want %v", got, w)
 	}
 	// Writers that leave seen alone: the import filling a blank, the kind migration.
 	exec("UPDATE vessels SET callsign = '' WHERE mmsi = ?")
-	filled := exec("UPDATE vessels SET callsign = 'LAJB8' WHERE mmsi = ?")
-	if got := pageAt(); got != filled {
-		t.Errorf("after a call sign filled without a report: %d, want %d", got, filled)
+	if w, got := exec("UPDATE vessels SET callsign = 'LAJB8' WHERE mmsi = ?"), pageAt(); !w.has(got) {
+		t.Errorf("after a call sign filled without a report: %d, want %v", got, w)
 	}
-	reclassified := exec("UPDATE vessels SET kind = 'gear', flag = '' WHERE mmsi = ?")
-	if got := pageAt(); got != reclassified {
-		t.Errorf("after a new kind: %d, want %d", got, reclassified)
+	if w, got := exec("UPDATE vessels SET kind = 'gear', flag = '' WHERE mmsi = ?"), pageAt(); !w.has(got) {
+		t.Errorf("after a new kind: %d, want %v", got, w)
 	}
 }
+
+// writeWindow is the wall-clock milliseconds a write ran in.
+type writeWindow struct{ from, to int64 }
+
+func (w writeWindow) has(ms int64) bool { return ms >= w.from && ms <= w.to }
 
 // A record from before page_at gains it, set to each vessel's seen, and the triggers that keep it.
 func TestOpenStoreAddsPageAt(t *testing.T) {
@@ -223,12 +225,11 @@ func TestOpenStoreAddsPageAt(t *testing.T) {
 	if err := st.db.QueryRow("SELECT page_at FROM vessels WHERE mmsi = 257000001").Scan(&pageAt); err != nil || pageAt != 5000 {
 		t.Errorf("page_at = %d (%v), want seen, 5000", pageAt, err)
 	}
-	pageClock = func() time.Time { return time.UnixMilli(9000) }
-	t.Cleanup(func() { pageClock = time.Now })
+	before := time.Now().UnixMilli()
 	if _, err := st.db.Exec("UPDATE vessels SET name = 'NEW' WHERE mmsi = 257000001"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.db.QueryRow("SELECT page_at FROM vessels WHERE mmsi = 257000001").Scan(&pageAt); err != nil || pageAt != 9000 {
-		t.Errorf("page_at after a rename = %d (%v), want the clock's 9000", pageAt, err)
+	if err := st.db.QueryRow("SELECT page_at FROM vessels WHERE mmsi = 257000001").Scan(&pageAt); err != nil || pageAt < before {
+		t.Errorf("page_at after a rename = %d (%v), want the time of the write, from %d", pageAt, err, before)
 	}
 }
