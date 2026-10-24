@@ -1,3 +1,5 @@
+import type { VesselProps } from "./api";
+
 export const NAV_STATUS: Record<number, string> = {
   0: "Under way using engine",
   1: "At anchor",
@@ -290,6 +292,59 @@ export function parseDestination(text?: string): Voyage | undefined {
   const from = parsePlace(raw.slice(0, at));
   const to = parsePlace(raw.slice(at + 1));
   return from || to ? { from, to } : undefined;
+}
+
+/** What a vessel of each class is called in a sentence. */
+const CLASS_NOUNS: Record<ShipClass, string> = {
+  cargo: "cargo ship",
+  tanker: "tanker",
+  passenger: "passenger ship",
+  fishing: "fishing vessel",
+  pleasure: "pleasure craft",
+  special: "special craft",
+  aton: "aid to navigation",
+  base: "base station",
+  sar: "search and rescue craft",
+  gear: "fishing gear marker",
+  other: "vessel",
+};
+
+type SnippetVessel = Pick<
+  VesselProps,
+  "mmsi" | "name" | "kind" | "type" | "flag" | "imo" | "destination" | "near" | "length" | "beam" | "to_bow" | "to_stern" | "to_port" | "to_starboard"
+> & { particulars?: { length?: number } };
+
+/**
+ * A vessel page's title, for a search result. People search for a ship by its name, often
+ * with "vessel", "AIS" or "live" beside it, so the name leads and the class says which ship
+ * of that name this is. The MMSI is in the description; nobody searches for it.
+ */
+export function vesselTitle(v: { mmsi: number; name?: string; kind?: string; type?: number }): string {
+  if (!v.name) return `MMSI ${v.mmsi} live AIS position | Open Waters AIS`;
+  return `${v.name}, ${CLASS_NOUNS[shipClass(v.kind, v.type)]}: live AIS position | Open Waters AIS`;
+}
+
+/**
+ * A vessel page's description, for a search result: what the vessel is, where it was last
+ * heard, and where it is going. It carries no time, because a search engine shows it for
+ * weeks after the render, when any time stated in it reads as stale.
+ */
+export function vesselDescription(v: SnippetVessel): string {
+  const label = v.name ?? `MMSI ${v.mmsi}`;
+  const noun = CLASS_NOUNS[shipClass(v.kind, v.type)];
+  const offsets =
+    v.to_bow != null && v.to_stern != null && v.to_port != null && v.to_starboard != null
+      ? { toBow: v.to_bow, toStern: v.to_stern, toPort: v.to_port, toStarboard: v.to_starboard }
+      : undefined;
+  const length = v.particulars?.length ?? vesselDimensions(offsets, v.length, v.beam)?.length;
+  const country = flagName(v.flag);
+  const what = [length ? `${Math.round(length)} m` : "", country ? `${country}-flagged` : "", noun].filter(Boolean).join(" ");
+  const ids = [`MMSI ${v.mmsi}`, ...(v.imo ? [`IMO ${v.imo}`] : [])].join(", ");
+  const to = parseDestination(v.destination)?.to?.raw;
+  const where = v.near ? `Last reported near ${v.near}${to ? `, bound for ${to}` : ""}. ` : to ? `Bound for ${to}. ` : "";
+  // Said aloud: "an 80 m", "an 11 m", "an Indonesia-flagged", but "a United States-flagged".
+  const a = /^(8\d*|11|18) m/.test(what) || /^[aeio]/i.test(what) ? "an" : "a";
+  return `${label} is ${a} ${what} (${ids}). ${where}See its live AIS position, track and destination.`;
 }
 
 export function flagEmoji(code?: string): string | undefined {
