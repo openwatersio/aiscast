@@ -77,16 +77,17 @@ export async function waitForFlight(page: Page) {
 /**
  * A vessel drawn on the map that a click will land on: nothing over it but the map, and no
  * other vessel near enough to take the click instead. One that will stay where it is drawn
- * comes first.
+ * comes first. With `gear: false`, never a net buoy or other gear, though gear still counts as
+ * near.
  */
-export async function vesselOnMap(page: Page, exclude: number[] = []) {
+export async function vesselOnMap(page: Page, exclude: number[] = [], { gear = true }: { gear?: boolean } = {}) {
   const deadline = Date.now() + 15_000;
   let last: Target | undefined;
   for (;;) {
     // The same vessel in the same place twice running. After the camera moves, the tiles for
     // the new view load and the stream subscribes to it, and vessels they add can land next
     // to one that was clear a moment ago.
-    const { target, seen } = await findVessel(page, exclude);
+    const { target, seen } = await findVessel(page, exclude, gear);
     if (target && last && target.mmsi === last.mmsi && Math.hypot(target.x - last.x, target.y - last.y) < 2) return target;
     if (Date.now() > deadline) throw new Error(`no vessel on the map clear enough to click: ${JSON.stringify(seen)}`);
     last = target;
@@ -100,8 +101,8 @@ interface Target {
   y: number;
 }
 
-function findVessel(page: Page, exclude: number[]) {
-  return page.evaluate((exclude) => {
+function findVessel(page: Page, exclude: number[], gear: boolean) {
+  return page.evaluate(({ exclude, gear }) => {
     const map = window.aiscastMap!;
     const seen = { moving: map.isMoving(), zoom: map.getZoom(), drawn: 0, isolated: 0 };
     if (seen.moving) return { seen };
@@ -113,6 +114,7 @@ function findVessel(page: Page, exclude: number[]) {
       .filter((f) => f.source === "vessels" || !f.state.live)
       .map((f) => ({
         mmsi: Number(f.properties.mmsi),
+        isGear: f.layer.id.endsWith("-gear"),
         at: map.project((f.geometry as GeoJSON.Point).coordinates as [number, number]),
         // The stream moves a vessel it draws a little with each report. A tile's copy is where
         // the vessel was when the tile was built, which for one under way can be far behind,
@@ -127,8 +129,8 @@ function findVessel(page: Page, exclude: number[]) {
     seen.drawn = drawn.length;
     const clear = (x: number, y: number) =>
       [[0, 0], [-12, 0], [12, 0], [0, -12], [0, 12]].every(([dx, dy]) => document.elementFromPoint(x + dx!, y + dy!) === canvas);
-    for (const { mmsi, at } of drawn) {
-      if (exclude.includes(mmsi)) continue;
+    for (const { mmsi, at, isGear } of drawn) {
+      if (exclude.includes(mmsi) || (isGear && !gear)) continue;
       if (drawn.some((o) => o.mmsi !== mmsi && Math.hypot(o.at.x - at.x, o.at.y - at.y) < 30)) continue;
       seen.isolated++;
       const x = box.left + at.x;
@@ -136,7 +138,7 @@ function findVessel(page: Page, exclude: number[]) {
       if (clear(x, y)) return { target: { mmsi, x, y }, seen };
     }
     return { seen };
-  }, exclude);
+  }, { exclude, gear });
 }
 
 /**
@@ -144,11 +146,16 @@ function findVessel(page: Page, exclude: number[]) {
  * finding it and the click, which then opens nothing, so another is tried. `beforeClick` runs
  * just before each click, with the vessel about to be clicked.
  */
-export async function openVesselOnMap(page: Page, exclude: number[] = [], beforeClick?: (mmsi: number) => Promise<unknown>) {
+export async function openVesselOnMap(
+  page: Page,
+  exclude: number[] = [],
+  beforeClick?: (mmsi: number) => Promise<unknown>,
+  { gear = true }: { gear?: boolean } = {},
+) {
   const from = new URL(page.url()).pathname;
   const missed: number[] = [];
   for (let attempt = 1; ; attempt++) {
-    const { mmsi, x, y } = await vesselOnMap(page, [...exclude, ...missed]);
+    const { mmsi, x, y } = await vesselOnMap(page, [...exclude, ...missed], { gear });
     // A click taken for a miss can still open its vessel, only slowly.
     const now = new URL(page.url()).pathname;
     const late = now !== from && /\/ais\/vessels\/(\d+)/.exec(now);
