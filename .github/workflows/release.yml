@@ -12,7 +12,7 @@ on:
 
 jobs:
   npm:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     permissions:
       id-token: write # npm trusted publishing
       contents: write # gh release create

@@ -37,7 +37,7 @@ jobs:
   deploy:
     needs: [test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v7
@@ -112,7 +112,7 @@ jobs:
     secrets: inherit
 
   signalk-plugin:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: signalk-plugin
@@ -130,7 +130,7 @@ jobs:
       - run: npm pack --dry-run
 
   client:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: client
