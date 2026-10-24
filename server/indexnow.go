@@ -6,7 +6,7 @@ package main
 // (https://www.indexnow.org/documentation).
 //
 // A vessel's page is news when it first qualifies for the sitemap, or when a rename moves it to a new
-// address. Its position is not: that changes every few seconds, and the sitemap's lastmod already says so.
+// address. Its position is not: that changes every few seconds, and the sitemap's lastmod covers the rest.
 // The indexnow table remembers the slug each vessel was submitted under, so a round sends only vessels
 // never submitted or whose page has moved, within a daily budget: moved pages first, then the rest newest
 // to the record first. A moved page waits a week from its last submission, so an MMSI two ships share,

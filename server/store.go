@@ -11,6 +11,7 @@ package main
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log"
@@ -23,7 +24,7 @@ import (
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 const storeSchema = `
@@ -197,14 +198,17 @@ var storeAddedCols = []string{
 }
 
 // vesselPageTriggers keep page_at, the sitemap's lastmod for a vessel's page. seen moves with nearly every
-// report, so a lastmod read from it would change on every fetch and say nothing. page_at moves when what the
-// page says does: its name, kind, type, flag, identifiers, destination or size, or a position in another
-// one-degree cell, which stands in for the place the page says it was last reported near. They run after
-// every writer, the fold's upsert and the import's alike, and a blank the upsert keeps the stored value for
-// is no change.
+// report, so a lastmod read from it would change on every fetch and say nothing. page_at moves when the
+// facts the page's title and description are made of change: name, kind, type, flag, IMO, call sign,
+// destination, length or beam, or a position in another one-degree cell, which stands in for the place the
+// description says it was last reported near. Draught, ETA and navigational status, which change within a
+// voyage, and the registers' particulars, kept in their own tables, do not move it. The triggers run after
+// every writer, the fold's upsert, the import and the kind migration alike, and a blank the upsert keeps
+// the stored value for is no change. They stamp the time of the write, page_clock(), not seen: the import
+// fills a blank name without moving seen, and a source's clock can run ahead.
 const vesselPageTriggers = `
 CREATE TRIGGER IF NOT EXISTS vessels_page_insert AFTER INSERT ON vessels BEGIN
-	UPDATE vessels SET page_at = NEW.seen WHERE mmsi = NEW.mmsi;
+	UPDATE vessels SET page_at = page_clock() WHERE mmsi = NEW.mmsi;
 END;
 CREATE TRIGGER IF NOT EXISTS vessels_page_update
 AFTER UPDATE OF name, kind, ship_type, flag, imo, callsign, destination, length, beam, cell ON vessels
@@ -213,9 +217,20 @@ WHEN NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind OR NEW.ship_type IS NO
 	OR NEW.destination IS NOT OLD.destination OR NEW.length IS NOT OLD.length OR NEW.beam IS NOT OLD.beam
 	OR NEW.cell IS NOT OLD.cell
 BEGIN
-	UPDATE vessels SET page_at = max(NEW.seen, OLD.page_at) WHERE mmsi = NEW.mmsi;
+	UPDATE vessels SET page_at = page_clock() WHERE mmsi = NEW.mmsi;
 END;
 `
+
+// pageClock is page_clock()'s time, which a test sets.
+var pageClock = time.Now
+
+func init() {
+	if err := sqlite.RegisterScalarFunction("page_clock", 0, func(*sqlite.FunctionContext, []driver.Value) (driver.Value, error) {
+		return pageClock().UnixMilli(), nil
+	}); err != nil {
+		panic(err)
+	}
+}
 
 // upsertKind is the kind a row takes from the cache's. A kind a message type sets (aton, base, sar) wins and stays.
 // Between vessel and gear the cache decides, unless it does not yet know the station's name or type, as when a buoy
@@ -298,6 +313,25 @@ type store struct {
 	mirrorFailures                      atomic.Int64 // refreshes of the mirror that failed
 }
 
+// addPageAt adds page_at to a file without it, filled from seen.
+func addPageAt(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("ALTER TABLE vessels ADD COLUMN page_at INTEGER NOT NULL DEFAULT 0"); err != nil {
+		if strings.Contains(err.Error(), "duplicate column") {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.Exec("UPDATE vessels SET page_at = seen"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func openStore(path string) (*store, error) {
 	// WAL lets the API read while the writer commits; NORMAL sync is durable across a process crash, and a
 	// power loss costs at most the last commits, which the next folds rewrite.
@@ -319,13 +353,9 @@ func openStore(path string) (*store, error) {
 		}
 	}
 	// A file from before page_at gains the column, set to each vessel's seen: every lastmod in the sitemap
-	// moves once, then only with its page.
-	if _, err := db.Exec("ALTER TABLE vessels ADD COLUMN page_at INTEGER NOT NULL DEFAULT 0"); err == nil {
-		if _, err := db.Exec("UPDATE vessels SET page_at = seen"); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-	} else if !strings.Contains(err.Error(), "duplicate column") {
+	// moves once, then only with its page. One transaction, so a stop between the two cannot leave the column
+	// without its values, which no later start would fill.
+	if err := addPageAt(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

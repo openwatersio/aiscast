@@ -120,17 +120,34 @@ func TestVesselSitemapMemo(t *testing.T) {
 	}
 }
 
-// A vessel's lastmod moves when what its page says changes, not with each report.
+// A vessel's lastmod moves when the facts its title and description are made of change, from any writer,
+// and not with each report.
 func TestVesselPageAt(t *testing.T) {
 	p := storePipeline(t)
 	const mmsi = 257000001
 	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	clock := start
+	pageClock = func() time.Time { return clock }
+	t.Cleanup(func() { pageClock = time.Now })
+	// Each write lands at a clock of its own, a minute after the last.
+	step := 0
 	hear := func(after time.Duration, pkt ais.Packet) int64 {
 		t.Helper()
+		step++
+		clock = start.Add(time.Duration(step) * time.Minute)
 		at := start.Add(after)
 		p.ingestPacket("kystverket", "kystverket", at, at, pkt)
 		mustFlush(t, p)
-		return unixMs(at)
+		return clock.UnixMilli()
+	}
+	exec := func(q string) int64 {
+		t.Helper()
+		step++
+		clock = start.Add(time.Duration(step) * time.Minute)
+		if _, err := p.store.db.Exec(q, mmsi); err != nil {
+			t.Fatal(err)
+		}
+		return clock.UnixMilli()
 	}
 	pageAt := func() int64 {
 		t.Helper()
@@ -144,7 +161,7 @@ func TestVesselPageAt(t *testing.T) {
 
 	first := hear(0, posReport(mmsi, 60.95, 5.1))
 	if got := pageAt(); got != first {
-		t.Fatalf("new vessel's page_at = %d, want its first report's %d", got, first)
+		t.Fatalf("new vessel's page_at = %d, want its write's %d", got, first)
 	}
 	named := hear(time.Minute, static)
 	if got := pageAt(); got != named {
@@ -152,11 +169,14 @@ func TestVesselPageAt(t *testing.T) {
 	}
 	hear(2*time.Minute, posReport(mmsi, 60.96, 5.1))
 	hear(3*time.Minute, static)
+	static.MaximumStaticDraught = 9.8
+	static.Eta = ais.FieldETA{Month: 9, Day: 21, Hour: 6}
+	hear(4*time.Minute, static)
 	if got := pageAt(); got != named {
-		t.Errorf("after a move within its cell and the same static report: %d, want %d still", got, named)
+		t.Errorf("after a move within its cell, the same static report, and a new draught and ETA: %d, want %d still", got, named)
 	}
 	static.Destination = "SEBMA"
-	bound := hear(4*time.Minute, static)
+	bound := hear(5*time.Minute, static)
 	if got := pageAt(); got != bound {
 		t.Errorf("after a new destination: %d, want %d", got, bound)
 	}
@@ -164,6 +184,16 @@ func TestVesselPageAt(t *testing.T) {
 	moved := hear(30*time.Minute, posReport(mmsi, 61.01, 5.1))
 	if got := pageAt(); got != moved {
 		t.Errorf("after a move into another cell: %d, want %d", got, moved)
+	}
+	// Writers that leave seen alone: the import filling a blank, the kind migration.
+	exec("UPDATE vessels SET callsign = '' WHERE mmsi = ?")
+	filled := exec("UPDATE vessels SET callsign = 'LAJB8' WHERE mmsi = ?")
+	if got := pageAt(); got != filled {
+		t.Errorf("after a call sign filled without a report: %d, want %d", got, filled)
+	}
+	reclassified := exec("UPDATE vessels SET kind = 'gear', flag = '' WHERE mmsi = ?")
+	if got := pageAt(); got != reclassified {
+		t.Errorf("after a new kind: %d, want %d", got, reclassified)
 	}
 }
 
@@ -193,10 +223,12 @@ func TestOpenStoreAddsPageAt(t *testing.T) {
 	if err := st.db.QueryRow("SELECT page_at FROM vessels WHERE mmsi = 257000001").Scan(&pageAt); err != nil || pageAt != 5000 {
 		t.Errorf("page_at = %d (%v), want seen, 5000", pageAt, err)
 	}
-	if _, err := st.db.Exec("UPDATE vessels SET name = 'NEW', seen = 9000 WHERE mmsi = 257000001"); err != nil {
+	pageClock = func() time.Time { return time.UnixMilli(9000) }
+	t.Cleanup(func() { pageClock = time.Now })
+	if _, err := st.db.Exec("UPDATE vessels SET name = 'NEW' WHERE mmsi = 257000001"); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.db.QueryRow("SELECT page_at FROM vessels WHERE mmsi = 257000001").Scan(&pageAt); err != nil || pageAt != 9000 {
-		t.Errorf("page_at after a rename = %d (%v), want 9000", pageAt, err)
+		t.Errorf("page_at after a rename = %d (%v), want the clock's 9000", pageAt, err)
 	}
 }
