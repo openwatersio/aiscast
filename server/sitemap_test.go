@@ -19,6 +19,8 @@ func TestVesselSitemap(t *testing.T) {
 	heardAgo(p, 1, "DATAHUB", 60, 5, time.Minute)
 	heardAgo(p, 111257001, "RESCUE", 60, 5, time.Minute)
 	heardAgo(p, 994257001, "NET 1", 60, 5, time.Minute)
+	// A ship's range, but no country's MID: a test unit left at its default.
+	heardAgo(p, 200000008, "TEST", 60, 5, time.Minute)
 	// Nameless: heard only by position.
 	at := time.Now().Add(-time.Minute).Truncate(time.Second)
 	p.ingestPacket("kystverket", "kystverket", at, at, posReport(257000005, 60, 5))
