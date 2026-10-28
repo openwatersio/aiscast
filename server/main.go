@@ -118,6 +118,11 @@ func main() {
 			if env("ISED", "1") == "1" {
 				go p.runISED(env("ISED_URL", isedEndpoint))
 			}
+			// Off unless asked for: only the production box speaks for openwaters.io.
+			if os.Getenv("INDEXNOW") == "1" {
+				p.indexNow.enabled.Store(true)
+				go p.runIndexNow(env("INDEXNOW_URL", indexNowEndpoint), envInt("INDEXNOW_DAILY", indexNowDaily))
+			}
 			go p.runRecordCounts()
 		}
 	}

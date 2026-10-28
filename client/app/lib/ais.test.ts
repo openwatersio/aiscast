@@ -11,6 +11,8 @@ import {
   stationName,
   stationStatus,
   stationDescription,
+  vesselDescription,
+  vesselTitle,
   stationTitle,
   volunteerReceiver,
   stationTitles,
@@ -63,6 +65,14 @@ describe("vesselSlug", () => {
     expect(vesselSlug(undefined)).toBe("");
     expect(vesselSlug("")).toBe("");
     expect(vesselSlug("***")).toBe("");
+  });
+
+  // The server builds vessel page URLs for IndexNow with its own port of this function (server/slug.go),
+  // held to the same answers by the same fixture.
+  it("answers as the server's port does", () => {
+    const cases: Array<{ name: string; slug: string }> = JSON.parse(readFileSync(new URL("../../../server/testdata/vessel-slugs.json", import.meta.url), "utf8"));
+    expect(cases.length).toBeGreaterThan(20);
+    for (const { name, slug } of cases) expect(vesselSlug(name), name).toBe(slug);
   });
 
   it("caps length without leaving a trailing hyphen", () => {
@@ -608,6 +618,69 @@ describe("trackGap", () => {
     expect(splitTrack(coords, silences(times, trackGap(hour)))).toEqual([coords.slice(0, 3)]);
     expect(splitTrack(coords, silences(times))).toEqual([]);
     expect(trackGap(0)).toBe(TRACK_GAP_MS);
+  });
+});
+
+describe("vesselTitle", () => {
+  it("leads with the name and says what kind of vessel it is", () => {
+    expect(vesselTitle({ mmsi: 563344600, name: "EVER EDUCE", kind: "vessel", type: 70 })).toBe(
+      "EVER EDUCE, cargo ship: live AIS position | Open Waters AIS",
+    );
+  });
+
+  it("falls back to the MMSI for a vessel that has not sent its name", () => {
+    expect(vesselTitle({ mmsi: 563344600 })).toBe("MMSI 563344600 live AIS position | Open Waters AIS");
+  });
+});
+
+describe("vesselDescription", () => {
+  const ship = { mmsi: 563344600, name: "EVER EDUCE", kind: "vessel" as const, type: 70, flag: "SG", imo: 1025289, length: 369, beam: 54 };
+
+  it("says what the vessel is, where it was last heard, and where it is going", () => {
+    expect(vesselDescription({ ...ship, near: "Sinhyeon, South Korea", destination: "SEA TRIAL(SHI-2678)" })).toBe(
+      "EVER EDUCE is a 369 m cargo ship flagged in Singapore (MMSI 563344600, IMO 1025289). " +
+        "Last reported near Sinhyeon, South Korea, bound for SEA TRIAL(SHI-2678). Live AIS position and track.",
+    );
+  });
+
+  it("states no time, which a search result would show long after it was true", () => {
+    expect(vesselDescription({ ...ship, near: "Busan, South Korea" })).not.toMatch(/\bago\b|GMT|UTC|2026/);
+  });
+
+  it("gives the length the vessel reports, not a register's, which would need its credit beside it", () => {
+    expect(vesselDescription({ ...ship, particulars: { length: 340 } } as Parameters<typeof vesselDescription>[0])).toContain("a 369 m");
+  });
+
+  it("names the flag, with the article its name takes", () => {
+    expect(vesselDescription({ ...ship, flag: "MH" })).toContain("cargo ship flagged in the Marshall Islands (");
+    expect(vesselDescription({ ...ship, flag: "lr" })).toContain("cargo ship flagged in Liberia (");
+  });
+
+  it("leaves out what the vessel has not sent", () => {
+    expect(vesselDescription({ mmsi: 244001221, name: "WABI SABI", kind: "vessel", type: 37 })).toBe(
+      "WABI SABI is a pleasure craft (MMSI 244001221). Live AIS position and track.",
+    );
+    // A nameless vessel is labelled by its MMSI once.
+    expect(vesselDescription({ mmsi: 244001221, kind: "vessel", type: 37 })).toBe("MMSI 244001221 is a pleasure craft. Live AIS position and track.");
+  });
+
+  it("reads the destination's far end and skips a placeholder", () => {
+    expect(vesselDescription({ ...ship, destination: "NLRTM>SGSIN" })).toContain("Bound for SGSIN.");
+    expect(vesselDescription({ ...ship, destination: "XXXXX" })).not.toContain("Bound");
+  });
+
+  it("tells a distress beacon from a search and rescue aircraft by its MMSI", () => {
+    expect(vesselDescription({ mmsi: 970123456, name: "SART TEST", kind: "sar" })).toContain("is a search and rescue beacon");
+    expect(vesselDescription({ mmsi: 111257005, name: "RESCUE 1", kind: "sar" })).toContain("is a search and rescue aircraft");
+    expect(vesselTitle({ mmsi: 111257005, name: "RESCUE 1", kind: "sar" })).toBe("RESCUE 1, search and rescue aircraft: live AIS position | Open Waters AIS");
+  });
+
+  it("takes the article the words are said with", () => {
+    expect(vesselDescription({ ...ship, length: 80 })).toContain("is an 80 m");
+    expect(vesselDescription({ ...ship, length: 11, flag: undefined })).toContain("is an 11 m cargo ship");
+    expect(vesselDescription({ ...ship, length: 110 })).toContain("is a 110 m");
+    expect(vesselDescription({ ...ship, length: undefined })).toContain("is a cargo ship flagged in");
+    expect(vesselDescription({ mmsi: 992446000, name: "BUOY", kind: "aton" })).toContain("is an aid to navigation");
   });
 });
 

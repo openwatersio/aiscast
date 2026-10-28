@@ -298,8 +298,8 @@ export async function getSitemapPages(auth: ApiAuth): Promise<SitemapPages> {
 export async function getSitemapVessels(
   auth: ApiAuth,
   page: number,
-): Promise<Array<{ mmsi: number; name: string; seen: string }> | undefined> {
-  return (await get<{ vessels: Array<{ mmsi: number; name: string; seen: string }> }>(auth, `/sitemap/vessels?page=${page}`))?.vessels;
+): Promise<Array<{ mmsi: number; name: string; lastmod: string }> | undefined> {
+  return (await get<{ vessels: Array<{ mmsi: number; name: string; lastmod: string }> }>(auth, `/sitemap/vessels?page=${page}`))?.vessels;
 }
 
 export async function getStation(
