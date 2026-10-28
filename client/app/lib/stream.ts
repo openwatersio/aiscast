@@ -334,7 +334,10 @@ export class Stream {
       }
     }
 
-    if (POSITION_TYPES.has(ev.msg_type) && !stale) {
+    // A type 11 decodes as a base station report too: a ship's UTC response to a coast station's interrogation, with
+    // no course or speed, which leaves the ship as its position reports have it.
+    const utcResponse = ev.msg_type === "BaseStationReport" && m.MessageID === 11;
+    if (POSITION_TYPES.has(ev.msg_type) && !utcResponse && !stale) {
       const lr = ev.msg_type === "LongRangeAisBroadcastMessage";
       v.cog = m.Cog != null && m.Cog < (lr ? 511 : 360) ? m.Cog : undefined;
       v.sog = m.Sog != null && m.Sog < (lr ? 63 : 102.3) ? m.Sog : undefined;
@@ -357,7 +360,7 @@ export class Stream {
     if (m.Eta?.Month) v.eta = m.Eta;
 
     if (ev.msg_type === "AidsToNavigationReport") v.kind = "aton";
-    else if (ev.msg_type === "BaseStationReport") v.kind = "base";
+    else if (ev.msg_type === "BaseStationReport" && !utcResponse) v.kind = "base";
     else if (ev.msg_type === "StandardSearchAndRescueAircraftReport") v.kind = "sar";
     // Decided again only on a message that brings what it decides by, as the server does, so a buoy a tile named
     // gear by its hull stays gear through the position reports between its static ones.
