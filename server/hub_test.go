@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -458,6 +459,138 @@ func TestStationStats(t *testing.T) {
 	}
 	if res, _ := http.Get(srv.URL + "/v1/stations/nope"); res.StatusCode != 404 {
 		t.Errorf("unknown station: %d", res.StatusCode)
+	}
+}
+
+// TestStationDetail checks a station page's hours, types, and their credits: absent without ClickHouse or while
+// the rollups find it down, read once a minute per station and again at the turn of the hour, and a failed read
+// held for the minute rather than retried each request.
+func TestStationDetail(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.Ingest(Reception{Source: "s1", Station: "s1", RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	detail := func() (map[string]any, map[string]any) {
+		res, err := http.Get(srv.URL + "/v1/stations/s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out struct {
+			Station     map[string]any
+			Attribution map[string]any
+		}
+		json.NewDecoder(res.Body).Decode(&out)
+		return out.Station, out.Attribution
+	}
+	if st, credits := detail(); st["hours"] != nil || st["types"] != nil || credits != nil {
+		t.Fatalf("hours, types, or credits without ClickHouse: %v %v", st, credits)
+	}
+	// An aid the cache knows by its kind, whatever type it sent, credited to its source; two cargo ships whose type Kystverket sent; a vessel
+	// statics has no type for, which takes the cache's and its source's credit; and one with no type anywhere.
+	const aid, fallback = 992571234, 257000004
+	p.vmu.Lock()
+	p.vessels[aid] = &vessel{Kind: "aton", Source: "barentswatch"}
+	p.vessels[fallback] = &vessel{Kind: "vessel", ShipType: 30, Source: "digitraffic"}
+	p.vmu.Unlock()
+
+	hours := make([]uint64, stationWindow)
+	hours[stationWindow-1] = 5
+	series := &fakeSeries{hours: map[string][]uint64{"s1": hours}, vessels: map[string]map[uint32]heardVessel{"s1": {
+		aid: {true, 70, "kystverket"}, 257000001: {true, 70, "kystverket"}, 257000002: {}, 257000003: {false, 70, "kystverket"}, fallback: {}}}}
+	p.attachClickHouse(&chStore{w: &fakeCH{}, series: series})
+	p.refreshRollups(series, time.Now())
+	st, credits := detail()
+	h, _ := st["hours"].([]any)
+	if len(h) != stationWindow || h[stationWindow-1] != 5.0 || h[0] != 0.0 {
+		t.Fatalf("hours: %v", h)
+	}
+	if from, _ := time.Parse(time.RFC3339, fmt.Sprint(st["hours_from"])); !from.Equal(time.Now().UTC().Truncate(time.Hour).Add(-(stationWindow - 1) * time.Hour)) {
+		t.Fatalf("hours_from %v, want the window's first hour", st["hours_from"])
+	}
+	if got := fmt.Sprint(st["types"]); got != "map[0:[1 0] 30:[1 0] 70:[2 1] aton:[1 1]]" {
+		t.Fatalf("types: %s", got)
+	}
+	if credits["kystverket"] != attributionOf("kystverket") || credits["digitraffic"] != attributionOf("digitraffic") ||
+		credits["barentswatch"] != attributionOf("barentswatch") || len(credits) != 3 {
+		t.Fatalf("credits: %v", credits)
+	}
+	detail()
+	if series.hoursReads != 1 {
+		t.Fatalf("reads within the minute: %d", series.hoursReads)
+	}
+
+	// Later reads at a time of the test's choosing, with the rollups read then too.
+	at := func(when time.Time) stationDetail {
+		p.refreshRollups(series, when)
+		return p.stationDetail("s1", when)
+	}
+	if got := at(now.Add(time.Minute + 5*time.Second)).hours; series.hoursReads != 2 || len(got) != stationWindow {
+		t.Fatalf("a minute on: %d reads, %v", series.hoursReads, got)
+	}
+	edge := now.Truncate(time.Hour).Add(2*time.Hour - 10*time.Second)
+	at(edge)
+	if at(edge.Add(20 * time.Second)); series.hoursReads != 4 {
+		t.Fatalf("the hour turned within the minute: %d reads, want the new hour read", series.hoursReads)
+	}
+
+	series.hoursErr = errors.New("down")
+	if got := at(edge.Add(5 * time.Minute)).hours; got != nil || series.hoursReads != 5 {
+		t.Fatalf("failed read: %d reads, %v", series.hoursReads, got)
+	}
+	if got := at(edge.Add(5*time.Minute + 30*time.Second)).hours; got != nil || series.hoursReads != 5 {
+		t.Fatalf("failure not held for the minute: %d reads, %v", series.hoursReads, got)
+	}
+	series.vesselsErr = errors.New("down")
+	if got := at(edge.Add(7 * time.Minute)); got.hours == nil || got.types != nil || got.credits != nil {
+		t.Fatalf("a failed vessels read keeps the hours alone: %+v", got)
+	}
+
+	// Once the rollups have gone unread for stationRollupsStale, ClickHouse is not asked.
+	p.refreshRollups(series, edge.Add(8*time.Minute))
+	if got := p.stationDetail("s1", edge.Add(8*time.Minute+stationRollupsStale+time.Second)); got.hours != nil || series.hoursReads != 6 {
+		t.Fatalf("read while the rollups are stale: %d reads, %v", series.hoursReads, got.hours)
+	}
+
+	// A request that waited out another station's read takes this station's figures if they came meanwhile, rather
+	// than holding none for the minute.
+	was := stationDetailWait
+	stationDetailWait = 50 * time.Millisecond
+	defer func() { stationDetailWait = was }()
+	waited := edge.Add(20 * time.Minute)
+	p.refreshRollups(series, waited)
+	p.details.read <- struct{}{} // another station's read holds the slot
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		p.details.mu.Lock()
+		p.details.m["s1"] = stationDetail{at: waited, hours: hours}
+		p.details.mu.Unlock()
+	}()
+	if got := p.stationDetail("s1", waited); got.hours == nil {
+		t.Fatalf("a wait kept nothing over the figures that came meanwhile")
+	}
+	<-p.details.read
+
+	// Requests for a station at once share one read, and each gets its figures.
+	stationDetailWait = 10 * time.Second
+	series.hoursDelay = 50 * time.Millisecond
+	reads, later := series.hoursReads, edge.Add(30*time.Minute)
+	p.refreshRollups(series, later)
+	var wg sync.WaitGroup
+	got := make([]stationDetail, 8)
+	for i := range got {
+		wg.Add(1)
+		go func() { defer wg.Done(); got[i] = p.stationDetail("s1", later) }()
+	}
+	wg.Wait()
+	if series.hoursReads != reads+1 {
+		t.Fatalf("8 requests at once read %d times", series.hoursReads-reads)
+	}
+	for i, g := range got {
+		if g.hours == nil {
+			t.Fatalf("request %d got no hours", i)
+		}
 	}
 }
 

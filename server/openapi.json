@@ -386,7 +386,12 @@
                   "required": ["station", "vessels"],
                   "properties": {
                     "station": { "$ref": "#/components/schemas/Station" },
-                    "vessels": { "$ref": "#/components/schemas/FeatureCollection" }
+                    "vessels": { "$ref": "#/components/schemas/FeatureCollection" },
+                    "attribution": {
+                      "type": "object",
+                      "description": "Per source kind whose ship types or kinds `station.types` counts, the credit line to display with it. Absent when `types` is, or when it counts no source's type.",
+                      "additionalProperties": { "type": "string" }
+                    }
                   }
                 }
               }
@@ -918,6 +923,25 @@
             "items": { "type": "number" },
             "minItems": 4,
             "maxItems": 4
+          },
+          "hours": {
+            "type": "array",
+            "description": "`GET /v1/stations/{id}` only: the station's position receptions in each hour of the last 7 days, UTC, 168 counts oldest first, the current hour last, its own vessel's included, as `uptime_7d` counts them. An hour with none is 0. Up to about 7 minutes behind, and read at most once a minute per station. Absent without ClickHouse, while the station list's figures find ClickHouse down, for the minute after its read fails, and when the page waited 10 seconds behind another station's read; each of those stands for the minute.",
+            "items": { "type": "integer" },
+            "minItems": 168,
+            "maxItems": 168
+          },
+          "hours_from": { "type": "string", "format": "date-time", "description": "`GET /v1/stations/{id}` only, with `hours`: the UTC hour its first count is for. Each later count is the next hour." },
+          "types": {
+            "type": "object",
+            "description": "`GET /v1/stations/{id}` only: the vessels the station heard in the last 24 hours, its own vessel left out, by type, each as `[vessels, unique]`, where unique counts those no other station heard, as `vessels_exclusive_24h` does. A key is an ITU ship type such as `\"70\"`: the latest non-zero one any source sent, within the last 35 days, else the one the vessel cache or record holds, credited to the vessel's source as `/v1/vessels` credits it; `\"0\"` when none is known; or a kind for what is not a ship: `aton`, `base`, `sar` for a SAR aircraft or a distress beacon, or `gear`. Read apart from `vessels_24h`, so the counts can differ from it by a minute's traffic. Absent without ClickHouse, while the station list's figures find ClickHouse down, for the minute after its read fails, after a 10-second wait, and when the station heard no vessel. The response's `attribution` credits the sources of the types.",
+            "additionalProperties": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "example": { "70": [12, 3], "37": [4, 0], "0": [2, 1], "aton": [1, 0] }
           }
         }
       },

@@ -87,8 +87,8 @@ describe("sitemap", () => {
     api({
       "/sitemap/vessels?page=1": {
         vessels: [
-          { mmsi: 257000001, name: "FIRST", seen: "2026-10-02T10:00:00Z" },
-          { mmsi: 257000002, name: "A&B", seen: "2026-10-02T11:00:00Z" },
+          { mmsi: 257000001, name: "FIRST", lastmod: "2026-10-02T10:00:00Z" },
+          { mmsi: 257000002, name: "A&B", lastmod: "2026-10-02T11:00:00Z" },
         ],
       },
     });
