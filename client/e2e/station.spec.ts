@@ -14,3 +14,16 @@ test("a station page hydrates cleanly though its vessels' ages move on between s
   await expect(page.getByRole("link", { name: /MMSI \d+/ }).first()).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("a station page without the series' figures leaves out its chart and footprint", async ({ page }) => {
+  // The e2e server runs without ClickHouse, so it serves no hours, types, or coverage cells.
+  const id = await heardFromVolunteer();
+  const coverage = page.waitForResponse((r) => r.url().includes("/v1/coverage/tiles.json?station="));
+  await page.goto(`/ais/stations/${id}`);
+  await expect(page.getByText(/^Last heard /)).toBeVisible();
+  await expect(page.getByRole("img", { name: /^Messages per hour/ })).toHaveCount(0);
+  // Once the coverage request has had its answer, which here is none, and the map has its style.
+  expect((await coverage).ok()).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.aiscastMap?.isStyleLoaded() ?? false)).toBe(true);
+  expect(await page.evaluate(() => Boolean(window.aiscastMap?.getSource("footprint")))).toBe(false);
+});

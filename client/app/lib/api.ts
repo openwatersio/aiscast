@@ -156,6 +156,10 @@ export interface Station {
   name_from?: "operator" | "vessel";
   mmsi?: number; // the station's own vessel
   near?: string; // the town or region nearest the traffic it hears
+  uptime_7d?: number | null; // share of the last 7 days' hours it sent in, 0 to 1; null while unknown
+  hours?: number[]; // a station's own page only: messages in each hour of 7 days, oldest first
+  hours_from?: string; // a station's own page only: the UTC hour hours starts at
+  types?: Record<string, [number, number]>; // a station's own page only: 24 h vessels by ITU type or kind, [vessels, only here]
 }
 
 /** The API answered with neither the resource nor a 404, or did not answer. */
@@ -305,7 +309,7 @@ export async function getSitemapVessels(
 export async function getStation(
   auth: ApiAuth,
   id: string,
-): Promise<{ station: Station; vessels: FeatureCollection } | undefined> {
+): Promise<{ station: Station; vessels: FeatureCollection; attribution?: Record<string, string> } | undefined> {
   const segments = id.split("/");
   // encodeURIComponent leaves "." and "..", and the URL would resolve them into another endpoint,
   // asked with the server's token. No station id has such a segment.
@@ -350,6 +354,14 @@ export interface CoverageTiles {
   maxzoom?: number;
   attribution?: string;
   window: { from: string; to: string; days: number };
+}
+
+/**
+ * One station's coverage cells, with `fit`, [west, south, east, north], framing them without a few stray ones. Nothing for a
+ * station with no cells in the window, which the server answers with a 404, or while it has no coverage loaded.
+ */
+export async function getStationCoverage(auth: ApiAuth, station: string): Promise<(CoverageTiles & { fit?: number[] }) | undefined> {
+  return soft(get<CoverageTiles & { fit?: number[] }>(auth, `/v1/coverage/tiles.json?station=${encodeURIComponent(station)}`));
 }
 
 /** Nothing when the server has no coverage loaded, which it answers with a 503. */
