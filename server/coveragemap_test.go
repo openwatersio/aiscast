@@ -421,7 +421,7 @@ func TestCoverageCellKeepsAntimeridianCellsWhole(t *testing.T) {
 }
 
 // TestCoverageFromClickHouse runs against a real server named by CLICKHOUSE_TEST_URL, in a database of its own
-// that it drops afterward: the views fill station_coverage and coverage as receptions are written, counting each
+// that it drops afterward: the view fills station_coverage as receptions are written, counting each
 // vessel once however many copies arrive and skipping implausible copies and those older than coverage keeps, a
 // backfill over the same days counts nothing twice, and a day the backfill has done it never bins again. The
 // network's cells merge stations, counting a feed's receivers as its one source, and a station's are its own.
@@ -508,12 +508,6 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		// coverage is written as well, so a server rolled back to reading it still has the map.
-		var vessels, stations uint64
-		if err := conn.conn.QueryRow(ctx, "SELECT uniqExactMerge(vessels), uniqExactMerge(stations) FROM "+db+".coverage WHERE res = 6 AND cell = ? AND day = ?",
-			osloRes6, day1).Scan(&vessels, &stations); err != nil || vessels != 2 || stations != 2 {
-			t.Errorf("%s: coverage holds %d vessels from %d stations on the first day, %v; want 2 from 2", when, vessels, stations, err)
-		}
 		if _, err := covCellFrom(oslo.cell, oslo.lats, oslo.lons); err != nil || len(oslo.lats) != 6 || math.Abs(oslo.lats[0]-59.9) > 0.1 || math.Abs(oslo.lons[0]-10.7) > 0.2 {
 			t.Errorf("%s: outline %v %v: %v", when, oslo.lats, oslo.lons, err)
 		}
@@ -538,7 +532,8 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	}
 	check("after a backfill over the same days")
 
-	// With coverage emptied, a second backfill finds both days done and leaves it empty.
+	// With coverage emptied, a second backfill finds both days done and leaves it empty. The old coverage table,
+	// which migrations still create, is emptied too and the backfill never fills it.
 	if err := conn.exec(ctx, "TRUNCATE TABLE {db}.coverage", "TRUNCATE TABLE {db}.station_coverage"); err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +546,7 @@ func TestCoverageFromClickHouse(t *testing.T) {
 
 	// With the record cleared too, a backfill since the second day bins only it, as the map's window is binned
 	// before the rest, and a backfill of everything then adds the first.
-	if err := conn.exec(ctx, "TRUNCATE TABLE {db}.coverage_backfilled", "TRUNCATE TABLE {db}.station_coverage_backfilled"); err != nil {
+	if err := conn.exec(ctx, "TRUNCATE TABLE {db}.station_coverage_backfilled"); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.coverageBackfill(ctx, day2); err != nil {
@@ -564,12 +559,15 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("after the rest is backfilled")
+	if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+".coverage"); err != nil || len(n) != 1 || n[0] != 0 {
+		t.Errorf("the backfill wrote %v rows to the old coverage table, %v", n, err)
+	}
 }
 
 // A database at step 9 has coverage without stations and a view that does not fill them, and no
-// station_coverage. Steps 10 to 12 add the column, point the view at it, and clear the backfill's record, so the
-// backfill bins the old days again with their stations and new receptions arrive with theirs. Steps 15 to 17 add
-// station_coverage, which the backfill bins from the same receptions and the network map then reads.
+// station_coverage. Steps 10 to 12 add the column and point the view at it, so new receptions arrive in coverage
+// with their stations. Steps 15 to 17 add station_coverage, which the backfill bins from the same receptions and
+// the network map reads; the backfill leaves coverage as it was.
 func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	url := os.Getenv("CLICKHOUSE_TEST_URL")
 	if url == "" {
@@ -614,7 +612,7 @@ func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	if err := conn.exec(ctx, "INSERT INTO {db}.coverage_backfilled VALUES ('"+day.Format("2006-01-02")+"')"); err != nil {
 		t.Fatal(err)
 	}
-	// coverage, read as a server rolled back to it does, and the network map's cells from station_coverage
+	// coverage, as the steps leave it, and the network map's cells from station_coverage
 	oslo := func() (coverage, network covRow) {
 		t.Helper()
 		var stations uint64
@@ -641,14 +639,14 @@ func TestCoverageStationsMigrateInPlace(t *testing.T) {
 	if err := conn.coverageBackfill(ctx, day); err != nil {
 		t.Fatal(err)
 	}
-	if c, n := oslo(); c.vessels != 2 || c.stations != 2 || n.vessels != 2 || n.stations != 2 {
-		t.Errorf("after steps 10 to 17 and the backfill Oslo is %+v in coverage and %+v on the map, want 2 vessels from 2 stations", c, n)
+	if c, n := oslo(); c.vessels != 2 || c.stations != 0 || n.vessels != 2 || n.stations != 2 {
+		t.Errorf("after steps 10 to 17 and the backfill Oslo is %+v in coverage and %+v on the map, want coverage as step 9 left it and 2 vessels from 2 stations on the map", c, n)
 	}
 	if err := conn.insert(ctx, "new", []trackPoint{at(3, "udp", "udp:b", day.Add(3*time.Hour))}); err != nil {
 		t.Fatal(err)
 	}
-	if c, n := oslo(); c.vessels != 3 || c.stations != 3 || n.vessels != 3 || n.stations != 3 {
-		t.Errorf("after a reception from a third station Oslo is %+v in coverage and %+v on the map, want 3 vessels from 3 stations", c, n)
+	if c, n := oslo(); c.vessels != 3 || c.stations != 1 || n.vessels != 3 || n.stations != 3 {
+		t.Errorf("after a reception from a third station Oslo is %+v in coverage and %+v on the map, want its station in coverage and 3 vessels from 3 stations on the map", c, n)
 	}
 }
 
@@ -860,7 +858,7 @@ func TestCoverageBackfillWaitsForARebuild(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if name == "backfill" {
-			conn.exec(ctx, "TRUNCATE TABLE {db}.station_coverage_backfilled", "TRUNCATE TABLE {db}.coverage_backfilled")
+			conn.exec(ctx, "TRUNCATE TABLE {db}.station_coverage_backfilled")
 		}
 	}
 }
