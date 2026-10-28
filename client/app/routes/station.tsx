@@ -389,7 +389,8 @@ function Activity({ hours, from, uptime, status }: { hours: number[]; from: numb
           {at == null ? (
             <>
               {percent != null && <StatusDot status={status} uptime={percent} className="size-4" />}
-              {sent}
+              {/* The header lines its label and this up by baseline, which must be the text's, not the gauge's bottom. */}
+              <span className="self-baseline">{sent}</span>
             </>
           ) : (
             label(at)
