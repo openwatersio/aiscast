@@ -487,18 +487,22 @@ func openStore(path string) (*store, error) {
 const derivedKindsVersion = "2"
 
 // deriveStoredKinds gives every row saved as a vessel or gear, or as a base station that sent a ship's static data
-// (notBase), the kind its stored name, type, size, and status give it (derivedKind), and the flag that goes with it,
-// once per version of the rule. The fold decides a station's kind as it is heard and the daily import as history
-// merges in, but a station not heard since keeps the row it had. A beacon's sar row is left to the fold: the import
-// resets a row's status to not available when history brings a newer position, so a stored status cannot say a beacon
-// has stopped. A full scan, under a second for 300,000 rows, then a write per row that changes.
+// (notBase) or has a ship's number (2xx to 7xx), the kind its stored name, type, size, and status give it
+// (derivedKind), and the flag that goes with it, once per version of the rule. The fold decides a station's kind as it
+// is heard and the daily import as history merges in, but a station not heard since keeps the row it had. A base
+// station has a coast station's number (00MIDxxxx); a ship's number became one through a UTC response (type 11) or a
+// corrupt report the fold once took for a type 4, and a real base station on such a number is base again with its
+// next report. A beacon's sar row is left to the fold: the import resets a row's status to not available when history
+// brings a newer position, so a stored status cannot say a beacon has stopped. A full scan, under a second for 300,000
+// rows, then a write per row that changes.
 func deriveStoredKinds(db *sql.DB) error {
 	var done string
 	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'derived_kinds'`).Scan(&done); err == nil && done == derivedKindsVersion {
 		return nil
 	}
 	rows, err := db.Query(`SELECT mmsi, kind, name, ship_type, length, beam, nav_status FROM vessels
-		WHERE kind IN ('vessel', 'gear') OR kind = 'base' AND (ship_type BETWEEN 20 AND 99 OR imo != 0)`)
+		WHERE kind IN ('vessel', 'gear')
+			OR kind = 'base' AND (ship_type BETWEEN 20 AND 99 OR imo != 0 OR mmsi BETWEEN 200000000 AND 799999999)`)
 	if err != nil {
 		return err
 	}

@@ -492,6 +492,77 @@ func TestAStrayBaseReportLeavesAShipAVessel(t *testing.T) {
 	}
 }
 
+// A UTC and date response (type 11) is a ship answering a coast station's interrogation: go-ais decodes it as a
+// base station report, but it leaves the ship a vessel, with the speed, course, and heading its position reports gave.
+func TestAUTCResponseLeavesAShipAVessel(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	pos := posReport(636017577, 38.46903, 15.76283).(ais.PositionReport)
+	pos.Sog, pos.Cog, pos.TrueHeading, pos.NavigationalStatus = 14.2, 187.5, 188, 0
+	p.ingestPacket("kystverket", "kystverket", now, now, pos)
+	utc := now.Add(4 * time.Second).UTC()
+	p.ingestPacket("kystverket", "kystverket", utc, utc, ais.BaseStationReport{Header: ais.Header{MessageID: 11, UserID: 636017577}, Valid: true,
+		UtcYear: uint16(utc.Year()), UtcMonth: uint8(utc.Month()), UtcDay: uint8(utc.Day()), UtcHour: uint8(utc.Hour()),
+		UtcMinute: uint8(utc.Minute()), UtcSecond: uint8(utc.Second()), Latitude: 38.46902, Longitude: 15.76283})
+	mustFlush(t, p)
+	v := p.vessels[636017577]
+	if v.Kind != "vessel" {
+		t.Errorf("cache kind = %q, want vessel", v.Kind)
+	}
+	if rec, _, _ := p.store.get(636017577); rec.v.Kind != "vessel" {
+		t.Errorf("record kind = %q, want vessel", rec.v.Kind)
+	}
+	if v.Sog != 14.2 || v.Cog != 187.5 || v.Heading != 188 || v.NavStatus != 0 {
+		t.Errorf("motion after the UTC response: sog %v cog %v heading %d status %d, want the position report's",
+			v.Sog, v.Cog, v.Heading, v.NavStatus)
+	}
+	if v.lastPos == nil || v.lastPos.Type != "PositionReport" {
+		t.Errorf("a snapshot replays %v, want the position report", v.lastPos)
+	}
+}
+
+// A base station report (type 4) fills one slot, 168 bits, and carries the station's UTC clock. A longer one is two
+// messages run together or a corrupt reception, and one dated thousands of years off is garbage; either would make a
+// random MMSI a base station at a random place, so neither reaches the cache. A coast station's report still does.
+func TestACorruptBaseReportIsDropped(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second).UTC()
+	report := func(mmsi uint32, year uint16) ais.BaseStationReport {
+		return ais.BaseStationReport{Header: ais.Header{MessageID: 4, UserID: mmsi}, Valid: true,
+			UtcYear: year, UtcMonth: uint8(now.Month()), UtcDay: uint8(now.Day()), UtcHour: uint8(now.Hour()),
+			UtcMinute: uint8(now.Minute()), UtcSecond: uint8(now.Second()), Latitude: 44.4, Longitude: 8.9}
+	}
+	ingest := func(line string) {
+		p.ingestLine(Reception{Source: "station:test", Station: "station:test", RecvTime: now, Body: line})
+	}
+	sentence := func(fields string) string {
+		var sum byte
+		for i := 0; i < len(fields); i++ {
+			sum ^= fields[i]
+		}
+		return fmt.Sprintf("!%s*%02X", fields, sum)
+	}
+	// The receiver's two sentences: a type 4 and the 180 bits after it.
+	armored := strings.Split(p.encoder.EncodeSentence(aisnmeaPacket('A', append(p.codec.EncodePacket(report(372901920, uint16(now.Year()))),
+		make([]byte, 180)...)))[0], ",")[5]
+	ingest(sentence("AIVDM,2,1,3,A," + armored[:30] + ",0"))
+	ingest(sentence("AIVDM,2,2,3,A," + armored[30:] + ",0"))
+	p.ingestPacket("aisstream", "aisstream", now, now, report(269600056, 8211))
+	ingest(p.encoder.EncodeSentence(aisnmeaPacket('A', p.codec.EncodePacket(report(2573104, uint16(now.Year())))))[0])
+	mustFlush(t, p)
+	for _, m := range []uint32{372901920, 269600056} {
+		if v := p.vessels[m]; v != nil {
+			t.Errorf("a corrupt base station report made %d a %s", m, v.Kind)
+		}
+		if _, ok, _ := p.store.get(m); ok {
+			t.Errorf("a corrupt base station report gave %d a record row", m)
+		}
+	}
+	if v := p.vessels[2573104]; v == nil || v.Kind != "base" || !v.HasPos {
+		t.Errorf("a coast station's report: %+v, want a base station with a position", v)
+	}
+}
+
 // A class B yacht sends its name in part A of message 24 and its ship type in part B. A buoy-like name with no type
 // yet reads as gear; the type that follows makes it a vessel again, flag and all.
 func TestAShipTypeUndoesGear(t *testing.T) {

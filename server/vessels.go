@@ -100,7 +100,12 @@ func foldOf(pkt ais.Packet) (u *vessel, hasPos, isStatic bool) {
 		u.Lat, u.Lon, hasPos, u.Kind = float64(m.Latitude), float64(m.Longitude), true, "sar"
 		u.Cog, u.Sog = float64(m.Cog), float64(m.Sog)
 	case ais.BaseStationReport:
-		u.Lat, u.Lon, hasPos, u.Kind = float64(m.Latitude), float64(m.Longitude), true, "base"
+		// go-ais decodes type 11 to the same struct: a ship's UTC and date response to a coast station's
+		// interrogation (type 10). It is the ship's own fix with no course or speed, which its position reports
+		// already carry, so it folds nothing.
+		if m.MessageID == 4 {
+			u.Lat, u.Lon, hasPos, u.Kind = float64(m.Latitude), float64(m.Longitude), true, "base"
+		}
 	case ais.AidsToNavigationReport:
 		u.Lat, u.Lon, hasPos, u.Name, u.Kind, u.ShipType = float64(m.Latitude), float64(m.Longitude), true, m.Name, "aton", m.Type
 	case ais.ShipStaticData:
