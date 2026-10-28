@@ -153,13 +153,6 @@ func main() {
 	if key := os.Getenv("AISSTREAM_API_KEY"); key != "" {
 		go runAisstream(p, env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream"), key, env("AISSTREAM_BBOX", "[[[-90,-180],[90,180]]]"))
 	}
-	if addr := os.Getenv("AISHUB_FEED"); addr != "" { // reciprocity: our received stream to AISHub's assigned UDP port
-		f, err := newUDPFeeder(addr)
-		if err != nil {
-			log.Fatalf("AISHUB_FEED: %v", err)
-		}
-		p.feeder = f
-	}
 	if u := os.Getenv("AISHUB_USERNAME"); u != "" {
 		iv, err := time.ParseDuration(env("AISHUB_INTERVAL", "20s"))
 		if err != nil || iv < 20*time.Second {

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BertoldVdb/go-ais"
 	"github.com/coder/websocket"
 )
 
@@ -273,7 +274,7 @@ func TestUDPSenderKeyedByOwnMMSI(t *testing.T) {
 // The raw feed renders own-ship reports as VDM, because a raw consumer binds VDO to its own position instead of
 // plotting it (see ownShipToVDM). A /v1 event keeps the sentence as it arrived: that is what lets a peer
 // republishing it derive `synthesized` again, and dropping to VDM there would make the republished position
-// look like a real VHF reception and so eligible for the AISHub feed.
+// look like a real VHF reception.
 func TestOwnShipRebroadcastAsVDM(t *testing.T) {
 	p := testPipeline(t)
 	sub := p.subscribe()
@@ -296,8 +297,8 @@ func TestOwnShipRebroadcastAsVDM(t *testing.T) {
 	p2 := testPipeline(t)
 	sub2 := p2.subscribe()
 	p2.Ingest(Reception{Source: "v1:peer", Station: "v1:peer", RecvTime: time.Now(), Body: renderV1(ev).NMEA[0]})
-	if ev2 := <-sub2.ch; !ev2.Synthesized || feedable(ev2) {
-		t.Errorf("republished own-ship report: synthesized=%v feedable=%v", ev2.Synthesized, feedable(ev2))
+	if ev2 := <-sub2.ch; !ev2.Synthesized {
+		t.Error("republished own-ship report not synthesized")
 	}
 }
 
@@ -495,7 +496,11 @@ func TestNMEAFeed(t *testing.T) {
 	defer c.CloseNow()
 	time.Sleep(50 * time.Millisecond)
 	p.Ingest(Reception{Source: "kystverket", Station: "kystverket/2573010", RecvTime: time.Unix(1787234980, 0), Body: `\s:2573010,c:1787234980*03\!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43`}) // outside bbox
-	p.Ingest(Reception{Source: "station:t", Station: "t", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})                                              // inside
+	// a UDP report of a vessel no trusted source has heard stays off the raw feed, so the first frame is station:t's
+	udp := udpStation("203.0.113.9")
+	lone := ais.PositionReport{Header: ais.Header{MessageID: 1, UserID: 227006761}, Valid: true, Latitude: 49.5, Longitude: 0.5, Cog: 360, Sog: 102.3, TrueHeading: 511}
+	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: time.Unix(1787234985, 0), Body: p.encoder.EncodeSentence(aisnmeaPacket('A', p.codec.EncodePacket(lone)))[0]})
+	p.Ingest(Reception{Source: "station:t", Station: "t", RecvTime: time.Unix(1787234990, 0), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // inside
 	_, msg, err := c.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
