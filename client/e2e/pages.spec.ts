@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { APIRequestContext } from "@playwright/test";
 import { vesselPath, vesselSlug } from "../app/lib/ais";
 import { heardGear, namedVessel } from "./data";
@@ -12,14 +13,17 @@ const UNHEARD = 100000001;
 test("a vessel page renders the vessel, with its name in the head", async ({ page, request }) => {
   const { mmsi, name } = await namedVessel();
   const path = `/ais${vesselPath(mmsi, name)}`;
-  const title = `${name} (${mmsi}) live position | Open Waters AIS`;
+  // The name, then the class this vessel's type puts it in.
+  const title = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, [a-z ]+: live AIS position \\| Open Waters AIS$`);
 
   const res = await page.goto(path);
   expect(res?.status()).toBe(200);
   await expect(page).toHaveTitle(title);
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `https://openwaters.io${path}`);
   await expect(page.locator('meta[property="og:title"]')).toHaveAttribute("content", title);
-  expect(await page.locator('meta[name="description"]').getAttribute("content")).toContain(`Live AIS position for ${name}`);
+  const description = await page.locator('meta[name="description"]').getAttribute("content");
+  expect(description).toContain(`${name} is a`);
+  expect(description).toContain(`MMSI ${mmsi}`);
   await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
   const ld = JSON.parse((await page.locator('script[type="application/ld+json"]').textContent()) ?? "");
   expect(ld).toMatchObject({
@@ -85,11 +89,24 @@ test("a vessel the network has never heard is a 404 that asks not to be indexed"
   await expect(page.getByText("The network has never heard this vessel.")).toBeVisible();
 });
 
+test("a fleet links its vessels by their canonical address before any report is in", async ({ page }) => {
+  await page.goto("/ais/fleets/cruise-ships/carnival");
+  await expect(page.getByRole("link", { name: "Carnival Adventure" })).toHaveAttribute("href", "/ais/vessels/311001595-carnival-adventure");
+});
+
 test("a fleet that does not exist is a 404 in the app, asking not to be indexed", async ({ page }) => {
   const res = await page.goto("/ais/fleets/nope");
   expect(res?.status()).toBe(404);
   await expect(page.getByText("There is nothing at this address.")).toBeVisible();
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", /noindex/);
+});
+
+test("the IndexNow key is served where the server's submissions say it is", async ({ request }) => {
+  const key = /indexNowKey\s*=\s*"([0-9a-f]{32})"/.exec(readFileSync(new URL("../../server/indexnow.go", import.meta.url), "utf8"))?.[1];
+  expect(key).toBeDefined();
+  const res = await request.get(`/ais/vessels/${key}.txt`);
+  expect(res.status()).toBe(200);
+  expect((await res.text()).trim()).toBe(key);
 });
 
 test("an address that is not a vessel is a 404", async ({ page }) => {
@@ -139,6 +156,18 @@ test("a station the network has not heard is a 404 that asks not to be indexed",
   expect(res?.status()).toBe(404);
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
   await expect(page.getByText("No station with this id has been heard recently.")).toBeVisible();
+});
+
+test("the aisstream.io station links its comparison and status pages, even while it is not heard", async ({ page }) => {
+  // The e2e server has no aisstream subscription, so this is the station as it is after 30 days unheard.
+  await page.goto("/ais/stations/aisstream");
+  await expect(page.getByRole("link", { name: "Open Waters AIS token" })).toHaveAttribute("href", "https://openwaters.io/ais/token/");
+  await expect(page.getByRole("link", { name: "Compare the APIs →" })).toHaveAttribute("href", "https://openwaters.io/ais/vs/aisstream/");
+  await expect(page.getByRole("link", { name: "status page" })).toHaveAttribute("href", "https://openwaters.io/ais/alternatives/aisstream/");
+  // A feed the e2e server does hear: its page renders whole, without the prompt.
+  await page.goto("/ais/stations/digitraffic");
+  await expect(page.getByText("Data feed")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Compare the APIs →" })).toHaveCount(0);
 });
 
 test("the sitemap lists the vessel pages at their canonical addresses", async ({ request }) => {

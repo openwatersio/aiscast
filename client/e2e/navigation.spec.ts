@@ -115,11 +115,16 @@ test("Back skips vessels opened one after another when one's address is correcte
   await waitForVessels(page);
   // With a name from the stream the page opens from that and never asks the record, so the
   // stream is made not to have heard one. Its reports and the tiles would give it one back.
-  const second = await openVesselOnMap(page, [first], (mmsi) =>
-    page.evaluate((mmsi) => {
-      const heard = window.aiscastStream!.vessels.get(mmsi);
-      if (heard) Object.defineProperty(heard, "name", { get: () => undefined, set: () => {}, configurable: true });
-    }, mmsi),
+  // Gear keeps its bare MMSI as its address, so its page never redirects.
+  const second = await openVesselOnMap(
+    page,
+    [first],
+    (mmsi) =>
+      page.evaluate((mmsi) => {
+        const heard = window.aiscastStream!.vessels.get(mmsi);
+        if (heard) Object.defineProperty(heard, "name", { get: () => undefined, set: () => {}, configurable: true });
+      }, mmsi),
+    { gear: false },
   );
   await expect(page).toHaveURL(new RegExp(`/ais/vessels/${second}-e2e-renamed(#|$)`));
   // The state is put back just after the redirect lands.

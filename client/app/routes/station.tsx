@@ -1,11 +1,11 @@
-import { Check, Copy, Share } from "lucide-react";
+import { ArrowLeftRight, Check, Copy, Share } from "lucide-react";
 import { useEffect, useState, type PointerEvent } from "react";
 import { data, Link, redirect } from "react-router";
 import { PageTitle, Panel } from "../components/Panel";
 import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { Facts } from "../components/ui/Facts";
 import { IconButton } from "../components/ui/IconButton";
-import { ReceiverLink } from "../components/ui/Prompt";
+import { Prompt, ReceiverLink } from "../components/ui/Prompt";
 import { ClassDot, List, ListRow, StationTitle, StatusDot } from "../components/ui/List";
 import { Section, Tile } from "../components/ui/Section";
 import {
@@ -36,6 +36,7 @@ import { browserAuth, getStation, getStationCoverage, orUnavailable, type ApiAut
 import { cn } from "../lib/cn";
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
+import { AISSTREAM_STATUS, AISSTREAM_VS, TOKEN } from "../lib/links";
 import { pageMeta, SITE } from "../lib/meta";
 import { shareLink } from "../lib/share";
 import type { BBox } from "../lib/stream";
@@ -145,6 +146,16 @@ function StationPage({ loaderData }: Pick<Route.ComponentProps, "loaderData">) {
   const own = st?.mmsi != null && st.name_from === "vessel" && st.name ? st.name : undefined;
   const [showAll, setShowAll] = useState(false);
 
+  // People searching for aisstream.io land here, most of them developers using its API or checking
+  // whether it is down; both have a page on the website. Keyed on the address rather than the station
+  // record, so the links stay up after 30 days of silence, when the server stops listing the station.
+  const aisstream = id === "aisstream" && (
+    <Prompt icon={ArrowLeftRight} href={AISSTREAM_VS} action="Compare the APIs" className="mt-5">
+      An aisstream.io client works with Open Waters AIS once you change the hostname and use an{" "}
+      <a href={TOKEN}>Open Waters AIS token</a> as its APIKey. Whether aisstream.io is delivering right now is on its <a href={AISSTREAM_STATUS}>status page</a>.
+    </Prompt>
+  );
+
   return (
     <Panel back="/stations" title={title} actions={<ShareStation id={id} title={title} />}>
       <PageTitle className="break-all">
@@ -152,7 +163,10 @@ function StationPage({ loaderData }: Pick<Route.ComponentProps, "loaderData">) {
       </PageTitle>
 
       {!st ? (
-        <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard recently.</Tile>
+        <>
+          <Tile className="mt-4 text-body text-fg-secondary">No station with this id has been heard recently.</Tile>
+          {aisstream}
+        </>
       ) : (
         <>
           <p className="mt-1 flex items-center gap-1.5 text-body text-fg-secondary">
@@ -169,6 +183,8 @@ function StationPage({ loaderData }: Pick<Route.ComponentProps, "loaderData">) {
           {st.hours && st.hours_from && (
             <Activity hours={st.hours} from={Date.parse(st.hours_from)} uptime={st.uptime_7d} status={stationStatus(st.last_age_s)} />
           )}
+
+          {aisstream}
 
           <Section label="Last reported here" aside={vessels.length === 1 ? "1 vessel" : `${n(vessels.length)} vessels`} bare>
             <List>

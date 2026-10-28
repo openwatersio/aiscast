@@ -9,6 +9,11 @@ export const ABOUT = `${WEBSITE}/ais/`;
 export const DEVELOPERS = `${WEBSITE}/api/ais/`;
 /** How to connect a receiver. A section of the landing page until the website gives it a page. */
 export const CONTRIBUTE = `${WEBSITE}/ais/#contribute`;
+/** For someone who arrived on the aisstream.io feed's station: the API comparison, and its live status and outages. */
+export const AISSTREAM_VS = `${WEBSITE}/ais/vs/aisstream/`;
+export const AISSTREAM_STATUS = `${WEBSITE}/ais/alternatives/aisstream/`;
+/** Where a free personal token is issued. */
+export const TOKEN = `${WEBSITE}/ais/token/`;
 export const SIGNALK_PLUGIN = "https://github.com/openwatersio/aiscast/tree/main/signalk-plugin#readme";
 export const GITHUB = "https://github.com/openwatersio/aiscast";
 

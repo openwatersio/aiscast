@@ -118,6 +118,7 @@ type Pipeline struct {
 	tc              tcStats                    // the weekly sync of Transport Canada's vessel register (tc.go)
 	amsa            amsaStats                  // the weekly sync of AMSA's list of registered ships (amsa.go)
 	ised            isedStats                  // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
+	indexNow        indexNowStats              // vessel pages submitted to IndexNow as they enter the sitemap (indexnow.go)
 	ch              *chStore                   // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
 	series          stationRollups             // the station series' figures, read at most once a minute (stationseries.go)
 	details         stationDetails             // each station page's figures, read at most once a minute per station (stationseries.go)
