@@ -354,6 +354,9 @@ func TestOpenStoreDerivesStoredKinds(t *testing.T) {
 		{992576072, "AQUACULTURE BUOY 1", "aton", "NO", 30, 0, 0, 15},
 		// A beacon's row whose status the import reset: a stored status cannot say the beacon stopped.
 		{972000001, "", "sar", "", 0, 0, 0, 15},
+		// A ship a stray base station report made a base station, and a base station.
+		{310791000, "ENCHANTED PRINCESS", "base", "BM", 60, 330, 44, 5},
+		{2573104, "", "base", "NO", 0, 0, 0, 15},
 	} {
 		if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, ship_type, length, beam, nav_status, seen, first_seen)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`, r.mmsi, r.name, r.kind, r.flag, r.shipType, r.length, r.beam, r.nav); err != nil {
@@ -364,7 +367,8 @@ func TestOpenStoreDerivesStoredKinds(t *testing.T) {
 	if st, err = openStore(path); err != nil {
 		t.Fatal(err)
 	}
-	for m, want := range map[uint32]string{233510227: "gear ", 970123456: "sar ", 257000001: "vessel NO", 992576072: "aton NO", 972000001: "sar "} {
+	for m, want := range map[uint32]string{233510227: "gear ", 970123456: "sar ", 257000001: "vessel NO", 992576072: "aton NO", 972000001: "sar ",
+		310791000: "vessel BM", 2573104: "base NO"} {
 		var got string
 		if err := st.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = ?`, m).Scan(&got); err != nil || got != want {
 			t.Errorf("row %d after opening: %q (%v), want %q", m, got, err, want)

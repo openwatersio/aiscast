@@ -328,8 +328,8 @@ func (p *Pipeline) updateVessel(ev *Event) {
 	// A kind a message type sets (aton, base, sar) wins, and stays, so an aid whose report a feed rebuilds as a
 	// vessel's stays an aid. What the station says about itself names the rest (kinds.go), again whenever a message
 	// brings what it decides by: a ship type after a buoy-like name, as a class B part B follows part A, makes gear a
-	// vessel again.
-	if (v.Kind == "vessel" || v.Kind == "gear" || v.Kind == "sar" && isBeaconMMSI(ev.MMSI)) &&
+	// vessel again. A station that has sent a ship's static data is not a base station, whatever its type 4 said.
+	if v.Kind == "base" && notBase(v) || (v.Kind == "vessel" || v.Kind == "gear" || v.Kind == "sar" && isBeaconMMSI(ev.MMSI)) &&
 		(created && v.Kind == "vessel" || u.Name != "" || u.ShipType != 0 || u.Length > 0 || u.Beam > 0 || hasPos && isBeaconMMSI(ev.MMSI)) {
 		v.Kind = derivedKind(ev.MMSI, v)
 	}

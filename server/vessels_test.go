@@ -449,6 +449,49 @@ func TestGearHasNoRegisterFacts(t *testing.T) {
 	}
 }
 
+// A base station report (type 4) under a ship's number, one stray message among its own, does not make the ship a
+// base station: its ship type and IMO say what it is, in the cache, the record, the lookup, and the kind filter. A
+// base station heard through AISHub, which rebuilds its reports as a vessel's, stays a base station.
+func TestAStrayBaseReportLeavesAShipAVessel(t *testing.T) {
+	p := storePipeline(t)
+	now := time.Now().Truncate(time.Second)
+	base := func(mmsi uint32) ais.Packet {
+		return ais.BaseStationReport{Header: ais.Header{MessageID: 4, UserID: mmsi}, Valid: true,
+			Latitude: ais.FieldLatLonFine(37.46), Longitude: ais.FieldLatLonFine(25.32)}
+	}
+	p.ingestPacket("aishub", "aishub", now, now, posReport(310791000, 37.46, 25.32))
+	p.ingestPacket("aishub", "aishub", now, now, shipStatic(310791000, "ENCHANTED PRINCESS"))
+	p.ingestPacket("aisstream", "aisstream", now.Add(time.Second), now.Add(time.Second), base(310791000))
+	p.ingestPacket("aishub", "aishub", now.Add(2*time.Second), now.Add(2*time.Second), posReport(310791000, 37.46, 25.32))
+	p.ingestPacket("kystverket", "kystverket", now, now, base(2573104))
+	p.ingestPacket("aishub", "aishub", now.Add(time.Minute), now.Add(time.Minute), posReport(2573104, 37.46, 25.32))
+	mustFlush(t, p)
+	for m, k := range map[uint32]string{310791000: "vessel", 2573104: "base"} {
+		if got := p.vessels[m].Kind; got != k {
+			t.Errorf("cache kind of %d = %q, want %q", m, got, k)
+		}
+		if rec, _, _ := p.store.get(m); rec.v.Kind != k {
+			t.Errorf("record kind of %d = %q, want %q", m, rec.v.Kind, k)
+		}
+	}
+	if w := get(t, p, "/v1/vessels?mmsi=310791000&kind=vessel"); !strings.Contains(w.Body.String(), "310791000") {
+		t.Errorf("kind=vessel leaves out the ship: %s", w.Body)
+	}
+	// A row the record already holds as a base station, back after the sweep: the ship's static data makes it a
+	// vessel again, in the record too.
+	if _, err := p.store.db.Exec(`UPDATE vessels SET kind = 'base' WHERE mmsi = 310791000`); err != nil {
+		t.Fatal(err)
+	}
+	forget(p)
+	later := now.Add(time.Hour)
+	p.ingestPacket("aishub", "aishub", later, later, posReport(310791000, 37.46, 25.32))
+	p.ingestPacket("aishub", "aishub", later.Add(time.Second), later.Add(time.Second), shipStatic(310791000, "ENCHANTED PRINCESS"))
+	mustFlush(t, p)
+	if rec, _, _ := p.store.get(310791000); rec.v.Kind != "vessel" {
+		t.Errorf("a stored base station row after the ship's static data: %q, want vessel", rec.v.Kind)
+	}
+}
+
 // A class B yacht sends its name in part A of message 24 and its ship type in part B. A buoy-like name with no type
 // yet reads as gear; the type that follows makes it a vessel again, flag and all.
 func TestAShipTypeUndoesGear(t *testing.T) {
