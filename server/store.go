@@ -231,12 +231,10 @@ END;
 // upsertKind is the kind a row takes from the cache's. A kind a message type sets (aton, base, sar) wins and stays.
 // Between vessel and gear the cache decides, unless it does not yet know the station's name or type, as when a buoy
 // the sweep forgot reports its position before its static data: then the row keeps gear. A beacon number is sar only
-// while it says AIS-SART active, so once the cache has heard its position the cache decides that too. A base station
-// row yields to a cache that has heard the station send a ship type or an IMO number (notBase).
+// while it says AIS-SART active, so once the cache has heard its position the cache decides that too.
 const upsertKind = `CASE
 		WHEN excluded.kind NOT IN ('vessel', 'gear') THEN excluded.kind
 		WHEN vessels.kind = 'sar' AND excluded.mmsi / 1000000 IN (970, 972, 974) AND excluded.has_pos THEN excluded.kind
-		WHEN vessels.kind = 'base' AND (excluded.ship_type BETWEEN 20 AND 99 OR excluded.imo != 0) THEN excluded.kind
 		WHEN vessels.kind NOT IN ('vessel', 'gear') THEN vessels.kind
 		WHEN excluded.kind = 'vessel' AND vessels.kind = 'gear' AND excluded.name = '' AND excluded.ship_type = 0 THEN 'gear'
 		ELSE excluded.kind
@@ -486,15 +484,15 @@ func openStore(path string) (*store, error) {
 // boot applies the new rule to the rows the fold has not heard since.
 const derivedKindsVersion = "2"
 
-// deriveStoredKinds gives every row saved as a vessel or gear, or as a base station that sent a ship's static data
-// (notBase) or has a ship's number (2xx to 7xx), the kind its stored name, type, size, and status give it
-// (derivedKind), and the flag that goes with it, once per version of the rule. The fold decides a station's kind as it
-// is heard and the daily import as history merges in, but a station not heard since keeps the row it had. A base
-// station has a coast station's number (00MIDxxxx); a ship's number became one through a UTC response (type 11) or a
-// corrupt report the fold once took for a type 4, and a real base station on such a number is base again with its
-// next report. A beacon's sar row is left to the fold: the import resets a row's status to not available when history
-// brings a newer position, so a stored status cannot say a beacon has stopped. A full scan, under a second for 300,000
-// rows, then a write per row that changes.
+// deriveStoredKinds gives every row saved as a vessel or gear the kind its stored name, type, size, and status give it
+// (derivedKind), and the flag that goes with it, once per version of the rule. So does a base station row on a ship's
+// number (2xx to 7xx) that has a ship's class, type, or IMO number: a ship a UTC response (type 11) made a base station
+// when the fold took it for a type 4. A base station row on a ship's number with none of those was never heard as a
+// ship, as a corrupt reception at a random place was not, and stays as it is; a real base station on any number is
+// base again with its next report. The fold decides a station's kind as it is heard and the daily import as history
+// merges in, but a station not heard since keeps the row it had. A beacon's sar row is left to the fold: the import
+// resets a row's status to not available when history brings a newer position, so a stored status cannot say a beacon
+// has stopped. A full scan, under a second for 300,000 rows, then a write per row that changes.
 func deriveStoredKinds(db *sql.DB) error {
 	var done string
 	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'derived_kinds'`).Scan(&done); err == nil && done == derivedKindsVersion {
@@ -502,7 +500,7 @@ func deriveStoredKinds(db *sql.DB) error {
 	}
 	rows, err := db.Query(`SELECT mmsi, kind, name, ship_type, length, beam, nav_status FROM vessels
 		WHERE kind IN ('vessel', 'gear')
-			OR kind = 'base' AND (ship_type BETWEEN 20 AND 99 OR imo != 0 OR mmsi BETWEEN 200000000 AND 799999999)`)
+			OR kind = 'base' AND mmsi BETWEEN 200000000 AND 799999999 AND (class != '' OR ship_type BETWEEN 20 AND 99 OR imo != 0)`)
 	if err != nil {
 		return err
 	}

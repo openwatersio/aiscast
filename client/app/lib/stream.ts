@@ -321,8 +321,11 @@ export class Stream {
     // AISHub lags minutes behind the live feeds, so a late arrival must not drag a marker
     // backwards. Static fields still fold in; only the position and its derivatives are held.
     const stale = v.lat != null && t < v.seen - 1000;
+    // A type 11 decodes as a base station report too: a ship's UTC response to a coast station's interrogation, with
+    // no course or speed, which leaves the ship as its position reports have it.
+    const utcResponse = ev.msg_type === "BaseStationReport" && m.MessageID === 11;
 
-    if (ev.lat != null && ev.lon != null && !stale) {
+    if (ev.lat != null && ev.lon != null && !stale && !utcResponse) {
       const moved = v.lat !== ev.lat || v.lon !== ev.lon;
       v.lat = ev.lat;
       v.lon = ev.lon;
@@ -334,9 +337,6 @@ export class Stream {
       }
     }
 
-    // A type 11 decodes as a base station report too: a ship's UTC response to a coast station's interrogation, with
-    // no course or speed, which leaves the ship as its position reports have it.
-    const utcResponse = ev.msg_type === "BaseStationReport" && m.MessageID === 11;
     if (POSITION_TYPES.has(ev.msg_type) && !utcResponse && !stale) {
       const lr = ev.msg_type === "LongRangeAisBroadcastMessage";
       v.cog = m.Cog != null && m.Cog < (lr ? 511 : 360) ? m.Cog : undefined;

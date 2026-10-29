@@ -336,7 +336,8 @@ func TestOpenStoreDerivesStoredKinds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.db.Exec(`DELETE FROM meta WHERE key = 'derived_kinds'`); err != nil {
+	// The record as the previous rule left it.
+	if _, err := st.db.Exec(`UPDATE meta SET value = '1' WHERE key = 'derived_kinds'`); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range []struct {
@@ -354,25 +355,36 @@ func TestOpenStoreDerivesStoredKinds(t *testing.T) {
 		{992576072, "AQUACULTURE BUOY 1", "aton", "NO", 30, 0, 0, 15},
 		// A beacon's row whose status the import reset: a stored status cannot say the beacon stopped.
 		{972000001, "", "sar", "", 0, 0, 0, 15},
-		// A ship a stray base station report made a base station, and a base station.
+		// A ship a UTC response made a base station, and a coast station's base station.
 		{310791000, "ENCHANTED PRINCESS", "base", "BM", 60, 330, 44, 5},
 		{2573104, "", "base", "NO", 0, 0, 0, 15},
-		// A ship's number a UTC response or a corrupt report made a base station before its static data came, and a
-		// base station on a number that is neither a ship's nor a coast station's.
+		// A ship a UTC response made a base station before its static data came, known by the class its position
+		// reports gave it, and one known by its IMO number alone; a corrupt reception at a ship's number, never heard
+		// as a ship; and base stations on an aid's number, one with an AtoN type in the ship type range.
 		{372901920, "", "base", "PA", 0, 0, 0, 15},
+		{257000003, "", "base", "NO", 0, 0, 0, 15},
+		{269600056, "", "base", "CH", 0, 0, 0, 15},
 		{992571234, "", "base", "NO", 0, 0, 0, 15},
+		{992571235, "", "base", "NO", 25, 0, 0, 15},
 	} {
 		if _, err := st.db.Exec(`INSERT INTO vessels (mmsi, name, kind, flag, ship_type, length, beam, nav_status, seen, first_seen)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`, r.mmsi, r.name, r.kind, r.flag, r.shipType, r.length, r.beam, r.nav); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if _, err := st.db.Exec(`UPDATE vessels SET class = 'A' WHERE mmsi = 372901920`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE vessels SET imo = 9241061 WHERE mmsi = 257000003`); err != nil {
+		t.Fatal(err)
+	}
 	st.close()
 	if st, err = openStore(path); err != nil {
 		t.Fatal(err)
 	}
 	for m, want := range map[uint32]string{233510227: "gear ", 970123456: "sar ", 257000001: "vessel NO", 992576072: "aton NO", 972000001: "sar ",
-		310791000: "vessel BM", 2573104: "base NO", 372901920: "vessel PA", 992571234: "base NO"} {
+		310791000: "vessel BM", 2573104: "base NO", 372901920: "vessel PA", 257000003: "vessel NO", 269600056: "base CH",
+		992571234: "base NO", 992571235: "base NO"} {
 		var got string
 		if err := st.db.QueryRow(`SELECT kind || ' ' || flag FROM vessels WHERE mmsi = ?`, m).Scan(&got); err != nil || got != want {
 			t.Errorf("row %d after opening: %q (%v), want %q", m, got, err, want)

@@ -13,10 +13,6 @@ import (
 // navigation status 14, "AIS-SART active" (IEC 61097-14). The number alone is not enough, and a beacon number whose
 // later reports say otherwise is a vessel again.
 //
-// A base station never sends a ship's static data, so a station that has sent a ship type or an IMO number is not one,
-// whatever type 4 its number carried: one stray base station report would otherwise make a ship a base station for
-// good, since AISHub rebuilds every report as a vessel's and so cannot be what undoes it.
-//
 // Gear is a transmitter on fishing gear, in practice a net buoy: a device ITU-R M.2135 keeps off the AIS channels,
 // which many send on anyway. ITU-R M.585 gives such devices 979xxxxxx; the rest are known by their static data, as
 // Global Fishing Watch knows them: a battery level closing the name, which the buoy rewrites as it drains; a voltage
@@ -45,9 +41,6 @@ func isBeaconMMSI(mmsi uint32) bool {
 	p := mmsi / 1_000_000
 	return p == 970 || p == 972 || p == 974
 }
-
-// notBase reports whether a station has sent what no base station does: a ship type or an IMO number.
-func notBase(v *vessel) bool { return shipType(v.ShipType) || v.IMO != 0 }
 
 // shipType reports an ITU ship and cargo type a vessel would send: 20 to 99. Gear sends none, or a reserved one.
 func shipType(t uint8) bool { return t >= 20 && t <= 99 }

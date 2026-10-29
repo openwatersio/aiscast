@@ -410,7 +410,8 @@ func aisnmeaPacket(channel byte, payload []byte) aisnmea.VdmPacket {
 }
 
 // corruptBaseReport reports a base station report (type 4) no station sent. One fills a single slot, 168 bits, so a
-// longer payload is a corrupt reception the receiver assembled from two sentences. And its UTC year is 0, "not
+// longer payload is a corrupt reception the receiver assembled from two sentences; a rebuilt copy is always re-encoded
+// to 168 bits, so only the year can tell on one. And its UTC year is 0, "not
 // available", or one AIS could carry: from ITU-R M.1371's 1998 to a year past the event's. A station with a wrong
 // clock still has a year like that; noise, such as 8211, mostly does not. Either kind of corruption would make a
 // random MMSI a base station at a random place.
