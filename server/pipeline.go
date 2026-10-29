@@ -410,12 +410,31 @@ func aisnmeaPacket(channel byte, payload []byte) aisnmea.VdmPacket {
 	return aisnmea.VdmPacket{Channel: ch, TalkerID: "AI", MessageType: "VDM", Payload: payload}
 }
 
+// corruptBaseReport reports a base station report (type 4) no station sent. One fills a single slot, 168 bits, so a
+// longer payload is a corrupt reception the receiver assembled from two sentences; a rebuilt copy is always re-encoded
+// to 168 bits, so only the year can tell on one. And its UTC year is 0, "not
+// available", or one AIS could carry: from ITU-R M.1371's 1998 to a year past the event's. A station with a wrong
+// clock still has a year like that; noise, such as 8211, mostly does not. Either kind of corruption would make a
+// random MMSI a base station at a random place.
+func corruptBaseReport(ev *Event) bool {
+	m, ok := ev.Packet.(ais.BaseStationReport)
+	if !ok || m.MessageID != 4 {
+		return false
+	}
+	y := int(m.UtcYear)
+	return len(ev.Payload) > 168 || y != 0 && (y < 1998 || y > ev.Time.Year()+1)
+}
+
 // emit is the common tail: dedupe on (payload, channel) within the window, then id, vessel cache, fan-out.
 func (p *Pipeline) emit(ev *Event) {
-	// Kept out of the cache, the record, history, the stream, and the delay stats; the raw archive already holds
-	// the reception.
+	// Kept out of the cache, the record, history, the stream, and the delay stats, as is a corrupt base station
+	// report; the raw archive already holds the reception.
 	if !validMMSI(ev.Packet.GetHeader().UserID) {
 		p.stats.invalidMMSI.Add(1)
+		return
+	}
+	if corruptBaseReport(ev) {
+		p.stats.decodeFail.Add(1)
 		return
 	}
 	p.noteStatic(ev) // every copy, each under its source, whatever dedupe and the fold make of it
