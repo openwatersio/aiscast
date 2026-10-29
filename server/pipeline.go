@@ -121,6 +121,7 @@ type Pipeline struct {
 	indexNow        indexNowStats              // vessel pages submitted to IndexNow as they enter the sitemap (indexnow.go)
 	ch              *chStore                   // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
 	series          stationRollups             // the station series' figures, read at most once a minute (stationseries.go)
+	details         stationDetails             // each station page's figures, read at most once a minute per station (stationseries.go)
 	chMu            sync.Mutex                 // guards chQueue; taken after vmu when both are held
 	chQueue         []trackPoint               // copies received since the last flush to ClickHouse; nil until it connects
 	chOwn           map[ownKey]time.Time       // own-ship sightings since the last flush, the latest per key; nil until it connects

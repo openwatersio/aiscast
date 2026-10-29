@@ -24,4 +24,4 @@ export const DEFAULT_SHARE_IMAGE = `${WEBSITE}/og/ais.png`;
  * The contributor ask, one line wherever it appears, so it reads as one invitation rather
  * than a dozen variations.
  */
-export const CONTRIBUTE_PROMPT = "Put your receiver on the map";
+export const CONTRIBUTE_PROMPT = "Add an AIS receiver to the map";
