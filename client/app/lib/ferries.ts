@@ -41,10 +41,11 @@ export function ferryIdentity(v: FerryVessel): FerryIdentity | undefined {
   if (v.kind && v.kind !== "vessel") return undefined;
   const verified = VERIFIED_FERRIES[v.mmsi];
   // An MMSI follows the radio, so a different reported name must not inherit the curated service.
-  if (verified && (!v.name || v.name.trim().toUpperCase() === verified.name)) return verified;
+  if (verified && v.name?.trim().toUpperCase() === verified.name) return verified;
   for (const type of [v.particulars?.ship_type, v.particulars?.service]) {
     if (type && FERRY_TYPES.has(type.trim().toLowerCase().replace(/[‐‑‒–—]/g, "-"))) {
-      return { operator: v.particulars?.operator };
+      // Enrichment can retain a former operator; current service copy needs a verified entry.
+      return {};
     }
   }
   return undefined;

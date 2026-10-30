@@ -347,13 +347,15 @@ export function vesselTitle(v: FerryVessel & { type?: number }): string {
  */
 export function vesselDescription(v: SnippetVessel): string {
   const label = v.name ?? `MMSI ${v.mmsi}`;
+  const ids = [...(v.name ? [`MMSI ${v.mmsi}`] : []), ...(v.imo ? [`IMO ${v.imo}`] : [])].join(", ");
   const ferry = ferryIdentity(v);
   if (ferry) {
     const operator = ferry.operator ? `${ferry.operator} ` : "";
     const a = /^[aeio]/i.test(operator) ? "an" : "a";
     const service = ferry.service ? ` serving ${ferry.service}` : "";
-    const id = v.name ? ` (MMSI ${v.mmsi})` : "";
-    return `${label} is ${a} ${operator}ferry${service}${id}. Live AIS position and track.`;
+    // A ferry's AIS destination often names a route rather than the current sailing.
+    const where = v.near ? `Last reported near ${v.near}. ` : "";
+    return `${label} is ${a} ${operator}ferry${service}${ids ? ` (${ids})` : ""}. ${where}Live AIS position and track.`;
   }
   const noun = classNoun(v);
   const offsets =
@@ -365,8 +367,6 @@ export function vesselDescription(v: SnippetVessel): string {
   // "flagged in", because a region's name does not always make an adjective: "Hong Kong SAR China".
   const country = flagName(v.flag);
   const flag = country ? ` flagged in ${FLAGS_WITH_THE.has(v.flag!.toUpperCase()) ? "the " : ""}${country}` : "";
-  // A nameless vessel is already labelled by its MMSI.
-  const ids = [...(v.name ? [`MMSI ${v.mmsi}`] : []), ...(v.imo ? [`IMO ${v.imo}`] : [])].join(", ");
   const to = parseDestination(v.destination)?.to?.raw;
   const where = v.near ? `Last reported near ${v.near}${to ? `, bound for ${to}` : ""}. ` : to ? `Bound for ${to}. ` : "";
   // Said aloud: "an 80 m", "an 11 m", "an aid to navigation".

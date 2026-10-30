@@ -188,7 +188,7 @@ export function VesselDetail({
 
       {ferry && (ferry.operator || ferry.service) && (
         <p className="mt-2 text-subhead text-fg-secondary">
-          {ferry.operator && (ferry.url ? <a href={ferry.url} className="font-medium">{ferry.operator}</a> : ferry.operator)}
+          {ferry.operator && (ferry.url ? <a href={ferry.url} target="_blank" rel="noopener" className="font-medium">{ferry.operator}</a> : ferry.operator)}
           {ferry.operator ? " ferry" : "Ferry"}
           {ferry.service && ` serving ${ferry.service}`}
           .
@@ -309,14 +309,7 @@ export function VesselDetail({
   );
 }
 
-/**
- * The vessel as registered, one section merged from the enrichment sources, and where to read
- * more about it. Absent for most vessels: Wikidata knows ships with an IMO, the Coast Guard
- * US-flag vessels it matches by call sign and name. The footer links each source's own page for
- * the vessel. For CC0 and public-domain sources the footer is provenance for the reader; for an
- * NLOD-licensed register it is also the credit the license asks for. `photos` is the Commons
- * category the photos above came from.
- */
+/** Registered vessel facts retain each source's credit, with links when a public page is available. */
 function Particulars({
   particulars: m,
   provenance,
@@ -336,10 +329,12 @@ function Particulars({
     // The item's category, else the one the photos above came from.
     ["Wikimedia Commons", m.commons_category ?? photos],
   ];
+  const unlinkedCredits = Object.values(sources ?? {}).filter((s) => !s.url).map((s) => s.credit).join(" · ");
   return (
     <Section label="Particulars">
       <Facts items={particularsFacts(m, name, provenance)} />
       <SourceLinks className="mt-3" links={links} />
+      {unlinkedCredits && <p className="mt-3 text-footnote text-fg-muted">{unlinkedCredits}</p>}
     </Section>
   );
 }

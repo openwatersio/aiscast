@@ -687,8 +687,21 @@ describe("vesselDescription", () => {
     expect(description).not.toMatch(/Bound for|bound for|arriv|ETA/);
   });
 
-  it("uses explicit ferry enrichment and its operator in the description", () => {
-    expect(vesselDescription({ ...ship, type: 60, particulars: { ship_type: "car ferry", operator: "Example Ferries" } })).toContain("Example Ferries ferry");
+  it("does not promote a potentially historical operator into the ferry description", () => {
+    const description = vesselDescription({ ...ship, type: 60, particulars: { ship_type: "car ferry", operator: "Example Ferries" } });
+    expect(description).toContain("is a ferry");
+    expect(description).not.toContain("Example Ferries");
+  });
+
+  it("requires a vessel name before applying a verified operator and service", () => {
+    expect(vesselDescription({ mmsi: 367720690, kind: "vessel", type: 40 })).not.toContain("Hy-Line Cruises");
+  });
+
+  it("retains the ferry's IMO and last-reported place without interpreting its AIS route", () => {
+    const description = vesselDescription({ ...ship, type: 60, near: "Tsawwassen, Canada", destination: "TSA<>SWB", particulars: { service: "FERRY" } });
+    expect(description).toContain("IMO 1025289");
+    expect(description).toContain("Last reported near Tsawwassen, Canada.");
+    expect(description).not.toContain("bound for");
   });
 
   it("says what the vessel is, where it was last heard, and where it is going", () => {

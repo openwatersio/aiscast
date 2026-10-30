@@ -23,6 +23,31 @@ const ferry: VesselFeature = {
 };
 
 describe("ferry vessel pages", () => {
+  it("shows a registry's credit even when the source has no public URL", () => {
+    const feature: VesselFeature = {
+      ...ferry,
+      id: 316001251,
+      properties: {
+        ...ferry.properties,
+        mmsi: 316001251,
+        name: "QUEEN OF COWICHAN",
+        type: 60,
+        particulars: { service: "FERRY" },
+        provenance: { service: "tc" },
+        sources: {
+          tc: { credit: "Transport Canada vessel registry", license: "OGL-Canada-2.0" },
+          wikidata: { credit: "Wikidata", license: "CC0-1.0", url: "https://www.wikidata.org/wiki/Q6719949" },
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
+    ));
+    expect(html).toContain("Transport Canada vessel registry");
+    expect(html).toContain('href="https://www.wikidata.org/wiki/Q6719949"');
+    expect(html).not.toContain(">Wikipedia<");
+  });
+
   it("renders the ferry identity and official service link in the initial HTML", () => {
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
       createElement(VesselDetail, { mmsi: ferry.properties.mmsi, feature: ferry }),
@@ -41,7 +66,8 @@ describe("ferry vessel pages", () => {
     const descriptors = meta({ loaderData: { mmsi: 230000001, name: "TEST SHIP", feature } } as Parameters<typeof meta>[0]);
     expect(descriptors).toContainEqual({ title: "TEST SHIP ferry tracker | Open Waters AIS" });
     expect(descriptors).toContainEqual({ property: "og:title", content: "TEST SHIP ferry tracker | Open Waters AIS" });
-    expect(descriptors).toContainEqual({ name: "description", content: expect.stringContaining("Example Ferries ferry") });
+    expect(descriptors).toContainEqual({ name: "description", content: expect.stringContaining("is a ferry") });
+    expect(descriptors).not.toContainEqual({ name: "description", content: expect.stringContaining("Example Ferries") });
     expect(descriptors).toContainEqual({ tagName: "link", rel: "canonical", href: "https://openwaters.io/ais/vessels/230000001-test-ship" });
   });
 
