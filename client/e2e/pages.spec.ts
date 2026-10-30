@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { APIRequestContext } from "@playwright/test";
 import { vesselPath, vesselSlug } from "../app/lib/ais";
-import { heardGear, namedVessel } from "./data";
+import { heardFerry, heardGear, namedVessel } from "./data";
 import { expect, test } from "./fixtures";
 
 // With scripts off, whatever the page shows came from the Worker's render.
@@ -10,35 +10,80 @@ test.use({ javaScriptEnabled: false });
 /** An MMSI in no country's range, so no vessel has it. */
 const UNHEARD = 100000001;
 
-test("a vessel page renders the vessel, with its name in the head", async ({ page, request }) => {
-  const { mmsi, name } = await namedVessel();
-  const path = `/ais${vesselPath(mmsi, name)}`;
-  // The vessel may have an explicit ferry identity in its synced particulars.
-  const title = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: ferry tracker|, [a-z ]+: live AIS position) \\| Open Waters AIS$`);
+for (const [label, findVessel] of [["a vessel", namedVessel], ["a ferry", heardFerry]] as const) {
+  test(`${label} page renders the vessel, with its name in the head`, async ({ page, request }) => {
+    const { mmsi, name } = await findVessel();
+    const path = `/ais${vesselPath(mmsi, name)}`;
+    // The vessel may have an explicit ferry identity in its synced particulars.
+    const title = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: ferry tracker|, [a-z ]+: live AIS position) \\| Open Waters AIS$`);
 
-  const res = await page.goto(path);
-  expect(res?.status()).toBe(200);
-  await expect(page).toHaveTitle(title);
-  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `https://openwaters.io${path}`);
-  await expect(page.locator('meta[property="og:title"]')).toHaveAttribute("content", title);
-  const description = await page.locator('meta[name="description"]').getAttribute("content");
-  expect(description).toContain(`${name} is a`);
-  expect(description).toContain(`MMSI ${mmsi}`);
-  await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
-  const ld = JSON.parse((await page.locator('script[type="application/ld+json"]').textContent()) ?? "");
-  expect(ld).toMatchObject({
-    "@type": "Vehicle",
-    name,
-    url: `https://openwaters.io${path}`,
-    identifier: expect.arrayContaining([{ "@type": "PropertyValue", propertyID: "MMSI", value: String(mmsi) }]),
+    const res = await page.goto(path);
+    expect(res?.status()).toBe(200);
+    await expect(page).toHaveTitle(title);
+    await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `https://openwaters.io${path}`);
+    await expect(page.locator('meta[property="og:title"]')).toHaveAttribute("content", title);
+    const description = await page.locator('meta[name="description"]').getAttribute("content");
+    expect(description).toContain(`${name} is a`);
+    expect(description).toContain(`MMSI ${mmsi}`);
+    expect(description).not.toMatch(/Slackwater|slackwater/);
+    await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
+    const ld = JSON.parse((await page.locator('script[type="application/ld+json"]').textContent()) ?? "");
+    expect(ld).toMatchObject({
+      "@type": "Vehicle",
+      name,
+      url: `https://openwaters.io${path}`,
+      identifier: expect.arrayContaining([{ "@type": "PropertyValue", propertyID: "MMSI", value: String(mmsi) }]),
+    });
+    // Its photo when Wikimedia has one, else its card.
+    const image = await page.locator('meta[property="og:image"]').getAttribute("content");
+    expect(image === `https://openwaters.io/ais/vessels/${mmsi}.png` || image?.startsWith("https://thumb.wikimedia.org/") || image?.startsWith("https://upload.wikimedia.org/")).toBe(true);
+    await expectCard(request, `/ais/vessels/${mmsi}.png`);
+    // One heading, the vessel's, in sight: not a fallback with the vessel hidden behind it.
+    await expect(page.getByRole("heading", { level: 1, includeHidden: true })).toHaveText([name]);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    if (label === "a ferry") {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(page.getByRole("heading", { name: "Riding this ferry?" })).toBeVisible();
+      const link = page.getByRole("link", { name: "Get Slackwater", exact: true });
+      await expect(link).toHaveCount(1);
+      await expect(link).toHaveAttribute("href", "https://slackwater.xyz/?ref=ais-ferry");
+      await expect(link).toHaveAttribute("target", "_blank");
+      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      const card = await page.getByRole("complementary", { name: "Slackwater" }).boundingBox();
+      expect(card!.x).toBeGreaterThanOrEqual(0);
+      expect(card!.x + card!.width).toBeLessThanOrEqual(390);
+      expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
   });
-  // Its photo when Wikimedia has one, else its card.
-  const image = await page.locator('meta[property="og:image"]').getAttribute("content");
-  expect(image === `https://openwaters.io/ais/vessels/${mmsi}.png` || image?.startsWith("https://thumb.wikimedia.org/") || image?.startsWith("https://upload.wikimedia.org/")).toBe(true);
-  await expectCard(request, `/ais/vessels/${mmsi}.png`);
-  // One heading, the vessel's, in sight: not a fallback with the vessel hidden behind it.
-  await expect(page.getByRole("heading", { level: 1, includeHidden: true })).toHaveText([name]);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+}
+
+test.describe("Slackwater handoff", () => {
+  test.use({ javaScriptEnabled: true });
+
+  test("click, keyboard and middle-click each count once and preserve the ferry page", async ({ page, context }) => {
+    const events: unknown[][] = [];
+    await page.exposeFunction("recordHandoff", (...args: unknown[]) => events.push(args));
+    await context.route("https://plausible.io/js/script.tagged-events.js", (route) => route.fulfill({
+      contentType: "application/javascript",
+      body: "window.startPlausible=()=>{const q=window.plausible?.q||[];window.plausible=(...args)=>window.recordHandoff(...args);q.forEach(args=>window.plausible(...args))};",
+    }));
+    await context.route("https://slackwater.xyz/**", (route) => route.fulfill({ contentType: "text/html", body: "<title>Slackwater test destination</title>" }));
+    const { mmsi, name } = await heardFerry();
+    const path = `/ais${vesselPath(mmsi, name)}#map=12/48.12/-123.43`;
+    await page.goto(path);
+    await page.waitForFunction(() => Boolean(window.aiscastMap));
+    const link = page.getByRole("link", { name: "Get Slackwater", exact: true });
+    const activations = [() => link.click(), () => link.press("Enter"), () => link.click({ button: "middle" })];
+    for (const [index, activate] of activations.entries()) {
+      const destination = context.waitForEvent("request", { predicate: (request) => request.url() === "https://slackwater.xyz/?ref=ais-ferry" });
+      await activate();
+      expect((await destination).headers().referer).toBeUndefined();
+      expect(new URL(page.url()).pathname + new URL(page.url()).hash).toBe(path);
+      // The first click must survive in the inline queue before the analytics script initializes.
+      if (index === 0) await page.evaluate("window.startPlausible()");
+    }
+    await expect.poll(() => events).toEqual(Array.from({ length: 3 }, () => ["slackwater_handoff", { props: { context: "ferry" } }]));
+  });
 });
 
 test("a vessel's address without its name, or with another, redirects to the canonical one", async ({ request }) => {

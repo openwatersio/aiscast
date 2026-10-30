@@ -51,7 +51,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Meta />
         <Links />
         {/* The website's site, so /ais/ counts with the rest of openwaters.io. */}
-        <script defer data-domain="openwaters.io" src="https://plausible.io/js/script.js" />
+        <script dangerouslySetInnerHTML={{ __html: "window.plausible=window.plausible||function(){(window.plausible.q=window.plausible.q||[]).push(arguments)};" }} />
+        <script defer data-domain="openwaters.io" src="https://plausible.io/js/script.tagged-events.js" />
       </head>
       <body className="h-full">
         {children}

@@ -1,6 +1,6 @@
 # Fleets
 
-Each `.yaml` file here is a fleet, at its path under `/ais/fleets/`: `cruise-ships/royal-caribbean.yaml` is `/ais/fleets/cruise-ships/royal-caribbean`. Each folder is a group of fleets, and its `index.yaml` gives the group's `title`, `summary` and optional `description`, and nothing else. Folders nest. The Fleets page is the top group: it shows the top-level folders and files, and each group shows what is in its folder, as cards with the most vessels first, counting every vessel in a group's fleets, and the first shown largest, or the first two when there are only two. A group's cover is the first photo its fleets name.
+Each `.yaml` or `.json` file here is a fleet, at its path under `/ais/fleets/`: `cruise-ships/royal-caribbean.yaml` is `/ais/fleets/cruise-ships/royal-caribbean`. JSON files are individual fleets; groups require `index.yaml`. Each folder is a group of fleets, and its `index.yaml` gives the group's `title`, `summary` and optional `description`, and nothing else. Folders nest. The Fleets page is the top group: it shows the top-level folders and files, and each group shows what is in its folder, as cards with the most vessels first, counting every vessel in a group's fleets, and the first shown largest, or the first two when there are only two. A group's cover is the first photo its fleets name.
 
 ```yaml
 # cruise-ships/index.yaml
@@ -52,6 +52,25 @@ Photos must be on Wikimedia Commons under a free licence, which every Commons fi
 On a fleet's page, readers can sort its vessels as listed, by when they were last heard, or by name, and show only those on the map or heard in the last day.
 
 An MMSI follows the radio, not the hull, and changes when a vessel changes flag. Link where you confirmed it under `AIS identity`.
+
+## Ferry operator rosters
+
+The JSON fleets in `ferries/` also identify ferries on vessel pages, in search descriptions and on share cards. Their `title` is the operator name, `source[title]` links to its official roster, and `reviewed` is the date a person last checked membership and identities. Keep these fleets flat, using `vessels`. Register a new operator's JSON in `lib/ferries.ts` and add its source adapter in `scripts/refresh-ferry-fleet.mjs`.
+
+Each vessel may have an `ais_name` for its observed radio spelling and a `service` describing its usual service. Both the roster name and the observed name are accepted, with an MMSI or IMO match. A conflicting reported IMO prevents an MMSI match. Use `Official vessel` in `links` for an individual official page; otherwise the operator's roster is linked. Record the MMSI check under `AIS identity`. Members without a confirmed MMSI remain listed on the fleet page. A name or an enrichment operator string alone does not identify a ferry.
+
+Refresh one operator from the repository root:
+
+```bash
+npm run refresh:ferries -w client -- --operator bc-ferries --out /tmp/bc-ferries-draft.json
+git diff --no-index client/app/fleets/ferries/bc-ferries.json /tmp/bc-ferries-draft.json
+```
+
+Use `black-ball` or `hy-line` for the other sources. The command fetches the official roster and checks known identities against Open Waters AIS. BC Ferries' full selector supplies all vessels, including those beyond the first page of cards. Hy-Line's service descriptions distinguish ferries from fishing and sightseeing boats. An unrecognized source format, malformed API response or API error other than a vessel’s 404 aborts the refresh. A 404 means the radio is unheard and leaves its identity unresolved in the draft. Output files must be new; the command never overwrites a maintained roster or an earlier draft.
+
+The report lists additions, removals, name changes and radio changes. A known IMO can confirm a new MMSI under an accepted name. Other search results are candidates for a person to verify, even when the name matches. Confirm those against the operator's page and registry particulars before adding an MMSI, IMO or `ais_name`; check for sales and renames before removing a vessel. The draft preserves hand-edited notes, links and services for retained members, but clears a radio identity it cannot confirm. Being temporarily unheard does not prove a sale or retirement: resolve those cases before copying the draft over the maintained JSON. Update `reviewed` only after checking the changes, then run `npm test -w client` and review the diff in a PR.
+
+Roster membership establishes the operator and ferry category. Optional service descriptions do not establish the current route, direction, schedule or arrival time. BC Ferries vessels currently have no curated route assignments.
 
 ## Drafting a fleet from Wikidata
 

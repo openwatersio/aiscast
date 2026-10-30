@@ -1,0 +1,400 @@
+{
+  "title": "BC Ferries",
+  "summary": "Ferries serving coastal British Columbia, from the Salish Sea to the North Coast and Haida Gwaii.",
+  "source": {
+    "BC Ferries": "https://www.bcferries.com/on-the-ferry/our-fleet"
+  },
+  "reviewed": "2026-10-30",
+  "vessels": [
+    {
+      "name": "Baynes Sound Connector",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/baynes-sound-connector/BSC_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316030644"
+      },
+      "mmsi": 316030644,
+      "imo": 9739252,
+      "ais_name": "BAYNES SOUND CONNECT"
+    },
+    {
+      "name": "Coastal Celebration",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/coastal-celebration/CEL_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316011409"
+      },
+      "mmsi": 316011409,
+      "imo": 9332779,
+      "ais_name": "COASTAL CELEBRATION"
+    },
+    {
+      "name": "Coastal Inspiration",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/coastal-inspiration/INS_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316011408"
+      },
+      "mmsi": 316011408,
+      "imo": 9332767,
+      "ais_name": "COASTAL INSPIRATION"
+    },
+    {
+      "name": "Coastal Renaissance",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/coastal-renaissance/REN_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316011407"
+      },
+      "mmsi": 316011407,
+      "imo": 9332755,
+      "ais_name": "COASTAL RENAISSANCE"
+    },
+    {
+      "name": "Island Aurora",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/island-aurora/IAUR",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316039863"
+      },
+      "mmsi": 316039863,
+      "imo": 9831763,
+      "ais_name": "ISLAND AURORA"
+    },
+    {
+      "name": "Island Discovery",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/island-discovery/IDSC",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316039864"
+      },
+      "mmsi": 316039864,
+      "imo": 9831751,
+      "ais_name": "ISLAND DISCOVERY"
+    },
+    {
+      "name": "Island G̲wawis",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/island-gwawis/IGWA",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316047946"
+      },
+      "mmsi": 316047946,
+      "imo": 9900605,
+      "ais_name": "ISLAND GWAWIS"
+    },
+    {
+      "name": "Island Kwigwis",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/island-kwigwis/IKWG",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316047555"
+      },
+      "mmsi": 316047555,
+      "imo": 9900590,
+      "ais_name": "ISLAND KWIGWIS"
+    },
+    {
+      "name": "Island K’ulut’a",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/island-kuluta/IKTA",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316046934"
+      },
+      "mmsi": 316046934,
+      "imo": 9900588,
+      "ais_name": "ISLAND K'ULUT'A"
+    },
+    {
+      "name": "Island Nagalis",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/island-nagalis/INGL",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316046819"
+      },
+      "mmsi": 316046819,
+      "imo": 9900576,
+      "ais_name": "ISLAND NAGALIS"
+    },
+    {
+      "name": "Island sarlequun",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/island-sarlequun/ISLQ",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316059031"
+      },
+      "mmsi": 316059031,
+      "imo": 1052359,
+      "ais_name": "ISLAND SARLEQUUN"
+    },
+    {
+      "name": "Island xwsaĺux̌ul",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/island-xwsauxul/IXWL",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316059023"
+      },
+      "mmsi": 316059023,
+      "imo": 1052347,
+      "ais_name": "ISLAND XWSALUXUL"
+    },
+    {
+      "name": "Kahloke",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/kahloke/KAHL",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001236"
+      },
+      "mmsi": 316001236,
+      "imo": 7330595,
+      "ais_name": "KAHLOKE"
+    },
+    {
+      "name": "Klitsa",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/klitsa/KLI_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001235"
+      },
+      "mmsi": 316001235,
+      "imo": 7228481,
+      "ais_name": "KLITSA"
+    },
+    {
+      "name": "Kwuna",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/kwuna/KWUN",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001237"
+      },
+      "mmsi": 316001237,
+      "imo": 7512117,
+      "ais_name": "KWUNA"
+    },
+    {
+      "name": "Malaspina Sky",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/malaspina-sky/ISKY",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316012774"
+      },
+      "mmsi": 316012774,
+      "imo": 9370458,
+      "ais_name": "MALASPINA SKY"
+    },
+    {
+      "name": "Northern Adventure",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/northern-adventure/NADV",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316194000"
+      },
+      "mmsi": 316194000,
+      "imo": 9257735,
+      "ais_name": "NORTHERN ADVENTURE"
+    },
+    {
+      "name": "Northern Expedition",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/northern-expedition/NEXP",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316014054"
+      },
+      "mmsi": 316014054,
+      "imo": 9408413,
+      "ais_name": "NORTHERN EXPEDITION"
+    },
+    {
+      "name": "Northern Sea Wolf",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/northern-sea-wolf/NSW_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316036676"
+      },
+      "mmsi": 316036676,
+      "imo": 9212450,
+      "ais_name": "NORTHERN SEA WOLF"
+    },
+    {
+      "name": "Pune'luxutth",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/puneluxutth/KUP_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316009547"
+      },
+      "mmsi": 316009547,
+      "imo": 9029267,
+      "ais_name": "PUNE ' LUXUTTH"
+    },
+    {
+      "name": "Quadra Queen II",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/quadra-queen-ii/QQII",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001244"
+      },
+      "mmsi": 316001244,
+      "imo": 7003439,
+      "ais_name": "QQ II"
+    },
+    {
+      "name": "Queen of Alberni",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/queen-of-alberni/QALB",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001245"
+      },
+      "mmsi": 316001245,
+      "imo": 7414080,
+      "ais_name": "QUEEN OF ALBERNI"
+    },
+    {
+      "name": "Queen of Capilano",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/queen-of-capilano/QCAP",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001247"
+      },
+      "mmsi": 316001247,
+      "imo": 9008354,
+      "ais_name": "QUEEN OF CAPILANO"
+    },
+    {
+      "name": "Queen of Coquitlam",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/queen-of-coquitlam/QCOQ",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001249"
+      },
+      "mmsi": 316001249,
+      "imo": 7411155,
+      "ais_name": "QUEEN OF COQUITLAM"
+    },
+    {
+      "name": "Queen of Cowichan",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/queen-of-cowichan/QCOW",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001251"
+      },
+      "mmsi": 316001251,
+      "imo": 7411143,
+      "ais_name": "QUEEN OF COWICHAN"
+    },
+    {
+      "name": "Queen of Cumberland",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/queen-of-cumberland/QCUM",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001252"
+      },
+      "mmsi": 316001252,
+      "imo": 9009360,
+      "ais_name": "QUEEN OF CUMBERLAND"
+    },
+    {
+      "name": "Queen of New Westminster",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/queen-of-new-westminster/QNWM",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001255"
+      },
+      "mmsi": 316001255,
+      "imo": 6413663,
+      "ais_name": "QUEEN OF NEW WEST"
+    },
+    {
+      "name": "Queen of Oak Bay",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/queen-of-oak-bay/QOAK",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001257"
+      },
+      "mmsi": 316001257,
+      "imo": 7902283,
+      "ais_name": "QUEEN OF OAK BAY"
+    },
+    {
+      "name": "Queen of Surrey",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/queen-of-surrey/QSUR",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001262"
+      },
+      "mmsi": 316001262,
+      "imo": 7902221,
+      "ais_name": "QUEEN OF SURREY"
+    },
+    {
+      "name": "Quinitsa",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/quinitsa/QNIT",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001265"
+      },
+      "mmsi": 316001265,
+      "imo": 7710965,
+      "ais_name": "QUINITSA"
+    },
+    {
+      "name": "Quinsam",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/quinsam/QSAM",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001266"
+      },
+      "mmsi": 316001266,
+      "imo": 8111386,
+      "ais_name": "QUINSAM"
+    },
+    {
+      "name": "Salish Eagle",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/salish-eagle/EAG_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316030626"
+      },
+      "mmsi": 316030626,
+      "imo": 9750282,
+      "ais_name": "SALISH EAGLE"
+    },
+    {
+      "name": "Salish Heron",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/salish-heron/HERO",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316047943"
+      },
+      "mmsi": 316047943,
+      "imo": 9905746,
+      "ais_name": "SALISH HERON"
+    },
+    {
+      "name": "Salish Orca",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/salish-orca/ORCA",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316030627"
+      },
+      "mmsi": 316030627,
+      "imo": 9750270,
+      "ais_name": "SALISH ORCA"
+    },
+    {
+      "name": "Salish Raven",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/salish-raven/RAV_",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316030628"
+      },
+      "mmsi": 316030628,
+      "imo": 9750294,
+      "ais_name": "SALISH RAVEN"
+    },
+    {
+      "name": "Skeena Queen",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/skeena-queen/SKEN",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001267"
+      },
+      "mmsi": 316001267,
+      "imo": 9137090,
+      "ais_name": "SKEENA QUEEN"
+    },
+    {
+      "name": "Spirit of British Columbia",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/spirit-of-british-columbia/SOBC",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001268"
+      },
+      "mmsi": 316001268,
+      "imo": 9015668,
+      "ais_name": "SPIRIT OF BC"
+    },
+    {
+      "name": "Spirit of Vancouver Island",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/spirit-of-vancouver-island/SOVI",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001269"
+      },
+      "mmsi": 316001269,
+      "imo": 9030682,
+      "ais_name": "SPIRIT OF VI"
+    },
+    {
+      "name": "Tachek",
+      "links": {
+        "Official vessel": "https://www.bcferries.com/on-the-ferry/our-fleet/tachek/TACH",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/316001271"
+      },
+      "mmsi": 316001271,
+      "imo": 6920343,
+      "ais_name": "TACHEK"
+    }
+  ]
+}

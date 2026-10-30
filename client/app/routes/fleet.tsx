@@ -17,6 +17,7 @@ import { namedPhotos } from "../lib/media.server";
 import { useLive, useNow } from "../lib/live";
 import { pageMeta, SITE } from "../lib/meta";
 import { useMedia } from "../lib/useMedia";
+import { matchesFerryRoster } from "../lib/ferries";
 import type { BBox } from "../lib/stream";
 import type { Route } from "./+types/fleet";
 
@@ -178,7 +179,13 @@ function FleetView({
 
   const seen = (e: Entry) => (e.report ? Date.parse(e.report.properties.seen) : 0);
   const entries = fleet.sections.flatMap((section) =>
-    section.vessels.map((vessel): Entry => ({ vessel, section, report: (vessel.mmsi && reports.get(vessel.mmsi)) || undefined })),
+    section.vessels.map((vessel): Entry => {
+      const report = (vessel.mmsi && reports.get(vessel.mmsi)) || undefined;
+      if (report && fleet.id.startsWith("ferries/") && !matchesFerryRoster(vessel, report.properties)) {
+        return { vessel: { ...vessel, mmsi: undefined }, section };
+      }
+      return { vessel, section, report };
+    }),
   );
 
   // The map rings the vessels shown and frames the whole fleet, as it does search results.

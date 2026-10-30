@@ -251,7 +251,13 @@ describe("vessel cards", () => {
 
   it("identifies ferries on shared links, including high-speed craft", () => {
     expect(vesselCardProps(vessel({ mmsi: 367720690, name: "GREY LADY IV", type: 40, flag: "US" })).subtitle).toBe("Ferry · United States");
+    expect(vesselCardProps(vessel({ mmsi: 316011409, imo: 9332779, name: "COASTAL CELEBRATION", type: 60, flag: "CA" })).subtitle).toBe("Ferry · Canada");
     expect(vesselCardProps(vessel({ particulars: { ship_type: "car ferry" } })).subtitle).toBe("Ferry");
+  });
+
+  it("keeps the Slackwater page invitation out of ferry share cards", () => {
+    const props = vesselCardProps(vessel({ mmsi: 366929710, name: "COHO", type: 60, flag: "US" }));
+    expect(JSON.stringify(props)).not.toMatch(/Slackwater|slackwater|Riding this ferry/);
   });
 
   it("say what the vessel is and how big, with nothing that goes stale in an hour", () => {

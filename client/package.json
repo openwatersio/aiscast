@@ -7,7 +7,8 @@
     "build": "react-router build",
     "preview": "npm run build && vite preview",
     "deploy": "npm run build && wrangler deploy",
-    "test": "vitest run",
+    "test": "node --test scripts/refresh-ferry-fleet.test.mjs && vitest run",
+    "refresh:ferries": "node scripts/refresh-ferry-fleet.mjs",
     "test:e2e": "playwright test",
     "typecheck": "wrangler types && react-router typegen && tsc",
     "check:styles": "node scripts/check-styles.mjs"
