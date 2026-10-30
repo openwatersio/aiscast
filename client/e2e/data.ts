@@ -40,6 +40,27 @@ export async function namedVessel(): Promise<VesselRef> {
   return vessel;
 }
 
+/** Coho's identity with a synthetic position, heard only by this run's local UDP server. */
+export async function heardFerry(): Promise<VesselRef> {
+  const mmsi = 366929710;
+  const sentences = [
+    "!AIVDM,1,1,,A,15MsW;U000G:voPKR=@00?v00000,0*3C",
+    "!AIVDM,2,1,7,A,55MsW;P1=MuD0000000<tPt0000000000000000t6@j::000000000000000,0*64",
+    "!AIVDM,2,2,7,A,00000000000,2*23",
+  ];
+  const socket = createSocket("udp4");
+  await new Promise<void>((resolve, reject) =>
+    socket.send(sentences.join("\n") + "\n", UDP_PORT, "127.0.0.1", (err) => (err ? reject(err) : resolve())),
+  );
+  socket.close();
+  for (let i = 0; i < 50; i++) {
+    const vessel = await api<{ properties: { name?: string; imo?: number } }>(`/v1/vessels/${mmsi}`).catch(() => undefined);
+    if (vessel?.properties.name === "COHO" && vessel.properties.imo === 5076949) return { mmsi, name: "COHO" };
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  throw new Error("the local e2e server never held Coho's ferry identity");
+}
+
 /**
  * A fishing-net buoy under an aid's 99 MMSI, as a volunteer receiver hears one: a vessel's
  * position report with the course of its drift and the out-of-range heading HSD-NET units send

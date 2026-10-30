@@ -23,6 +23,7 @@ import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
 import { mediaKey, type Photo } from "../lib/media";
 import { particularsFacts } from "../lib/particulars";
+import { ferryIdentity } from "../lib/ferries";
 import { useMedia } from "../lib/useMedia";
 import type { TrackRange } from "../lib/trackRange";
 import { useStation } from "../lib/useStationTitle";
@@ -35,6 +36,7 @@ import { ReceiverLink } from "./ui/Prompt";
 import { Section } from "./ui/Section";
 import { ShipDiagram } from "./ui/ShipDiagram";
 import { StatGrid } from "./ui/StatGrid";
+import { SlackwaterCard } from "./SlackwaterCard";
 import { uploadUrl, VesselPhotos } from "./VesselPhotos";
 import { VesselTrack } from "./VesselTrack";
 
@@ -67,6 +69,7 @@ export function VesselDetail({
   const gear = kind === "gear";
   const type = p?.type ?? heard?.shipType;
   const cls = shipClass(kind, type);
+  const ferry = ferryIdentity({ mmsi, imo: p?.imo ?? heard?.imo, name, kind, particulars: p?.particulars });
   const [recordLon, recordLat] = feature?.geometry?.coordinates ?? [];
   const lat = fresher?.lat ?? recordLat ?? heard?.lat;
   const lon = fresher?.lon ?? recordLon ?? heard?.lon;
@@ -179,10 +182,19 @@ export function VesselDetail({
       )}
       <PageTitle className="truncate text-large-title">{name ?? `MMSI ${mmsi}`}</PageTitle>
       <p className="text-footnote text-fg-muted">
-        {CLASS_LABELS[cls]}
+        {ferry ? "Ferry" : CLASS_LABELS[cls]}
         {type && !gear ? ` · type ${type}` : ""}
       </p>
       <p className="mt-0.5 text-footnote text-fg-muted">{ids}</p>
+
+      {ferry && (ferry.operator || ferry.service) && (
+        <p className="mt-2 text-subhead text-fg-secondary">
+          {ferry.operator && (ferry.url ? <a href={ferry.url} target="_blank" rel="noopener" className="font-medium">{ferry.operator}</a> : ferry.operator)}
+          {ferry.operator ? " ferry" : "Ferry"}
+          {ferry.service && ` serving ${ferry.service}`}
+          .
+        </p>
+      )}
 
       <VesselActions live={live} mmsi={mmsi} imo={imo} name={name} kind={kind} hasTrack={(track?.coords.length ?? 0) > 0} />
 
@@ -264,6 +276,8 @@ export function VesselDetail({
         ]}
       />
 
+      {ferry && <SlackwaterCard />}
+
       {p?.particulars && (
         <Particulars particulars={p.particulars} provenance={p.provenance} sources={p.sources} name={name} photos={media?.links.commonsCategory} />
       )}
@@ -286,7 +300,7 @@ export function VesselDetail({
         </p>
       </Section>
 
-      {!gear && <Fleets mmsi={mmsi} />}
+      {!gear && <Fleets mmsi={mmsi} ferryOperator={ferry?.operator} />}
 
       {/* The credit that came with this vessel's own last message, which only the stream carries. */}
       {attribution && (
@@ -298,14 +312,7 @@ export function VesselDetail({
   );
 }
 
-/**
- * The vessel as registered, one section merged from the enrichment sources, and where to read
- * more about it. Absent for most vessels: Wikidata knows ships with an IMO, the Coast Guard
- * US-flag vessels it matches by call sign and name. The footer links each source's own page for
- * the vessel. For CC0 and public-domain sources the footer is provenance for the reader; for an
- * NLOD-licensed register it is also the credit the license asks for. `photos` is the Commons
- * category the photos above came from.
- */
+/** Registered vessel facts retain each source's credit, with links when a public page is available. */
 function Particulars({
   particulars: m,
   provenance,
@@ -325,10 +332,12 @@ function Particulars({
     // The item's category, else the one the photos above came from.
     ["Wikimedia Commons", m.commons_category ?? photos],
   ];
+  const unlinkedCredits = Object.values(sources ?? {}).filter((s) => !s.url).map((s) => `${s.credit}${s.license ? ` (${s.license})` : ""}`).join(" · ");
   return (
     <Section label="Particulars">
       <Facts items={particularsFacts(m, name, provenance)} />
       <SourceLinks className="mt-3" links={links} />
+      {unlinkedCredits && <p className="mt-3 text-footnote text-fg-muted">{unlinkedCredits}</p>}
     </Section>
   );
 }
@@ -408,7 +417,7 @@ function ContributePrompt({ ownBoat, volunteer }: { ownBoat: boolean; volunteer:
 }
 
 /** The fleets this vessel is in, as their cards, from routes/vessel-fleets.ts. Nothing until they come, or if none. */
-function Fleets({ mmsi }: { mmsi: number }) {
+function Fleets({ mmsi, ferryOperator }: { mmsi: number; ferryOperator?: string }) {
   const [answer, setAnswer] = useState<{ cards: FleetCardData[]; photos: Record<string, Photo> }>();
   useEffect(() => {
     let current = true;
@@ -421,12 +430,13 @@ function Fleets({ mmsi }: { mmsi: number }) {
       current = false;
     };
   }, [mmsi]);
-  if (!answer?.cards.length) return null;
+  const cards = answer?.cards.filter((card) => !card.path.startsWith("/fleets/ferries/") || card.title === ferryOperator);
+  if (!cards?.length) return null;
   return (
-    <Section label={answer.cards.length === 1 ? "In a fleet" : "In fleets"} bare>
+    <Section label={cards.length === 1 ? "In a fleet" : "In fleets"} bare>
       <div className="space-y-3">
-        {answer.cards.map((card) => (
-          <FleetCard key={card.path} card={card} photos={answer.photos} featured />
+        {cards.map((card) => (
+          <FleetCard key={card.path} card={card} photos={answer?.photos} featured />
         ))}
       </div>
     </Section>

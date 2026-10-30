@@ -1,0 +1,21 @@
+{
+  "title": "Black Ball Ferry Line",
+  "summary": "The Coho passenger and vehicle ferry connects Victoria, British Columbia, with Port Angeles, Washington.",
+  "source": {
+    "Black Ball Ferry Line": "https://www.cohoferry.com/about-us"
+  },
+  "reviewed": "2026-10-30",
+  "vessels": [
+    {
+      "name": "Coho",
+      "mmsi": 366929710,
+      "imo": 5076949,
+      "service": "Victoria–Port Angeles",
+      "links": {
+        "Official vessel": "https://www.cohoferry.com/about-us",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366929710"
+      },
+      "ais_name": "COHO"
+    }
+  ]
+}

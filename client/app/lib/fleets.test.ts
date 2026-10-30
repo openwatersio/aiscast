@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { isValidImo } from "./ais";
 import { coverKey, coverPhoto, fleetCard, FLEETS, fleetVessels, getFleet, parentPath, type Fleet } from "./fleets.server";
 
-const FLEET_KEYS = ["id", "title", "summary", "description", "cover", "photos", "source", "sections", "children"];
+const FLEET_KEYS = ["id", "title", "summary", "description", "cover", "photos", "source", "reviewed", "sections", "children"];
 const SECTION_KEYS = ["title", "subtitle", "avatar", "links", "vessels"];
-const VESSEL_KEYS = ["name", "mmsi", "imo", "subtitle", "note", "photos", "links"];
+const VESSEL_KEYS = ["name", "mmsi", "imo", "ais_name", "service", "subtitle", "note", "photos", "links"];
 
 describe("fleets", () => {
   it("nests fleets in groups by folder, the most vessels first", () => {
@@ -34,6 +34,7 @@ describe("fleets", () => {
       text(fleet.title, "title");
       text(fleet.summary, "summary");
       optional(fleet.description, "description");
+      optional(fleet.reviewed, "reviewed");
       const links = (l: Record<string, unknown> | undefined) => Object.entries(l ?? {}).forEach(([k, v]) => (text(k, "link label"), text(v, `link ${k}`)));
       // A typo'd key is otherwise silently ignored.
       for (const key of Object.keys(fleet)) expect(FLEET_KEYS, `${fleet.id}: ${key}`).toContain(key);
@@ -64,6 +65,8 @@ describe("fleets", () => {
         for (const key of Object.keys(v)) expect(VESSEL_KEYS, `${v.name}: ${key}`).toContain(key);
         optional(v.subtitle, `${v.name} subtitle`);
         optional(v.note, `${v.name} note`);
+        optional(v.ais_name, `${v.name} AIS name`);
+        optional(v.service, `${v.name} service`);
         links(v.links);
         // Numbers, not strings: the map's features are keyed by number.
         if (v.mmsi != null) expect(typeof v.mmsi === "number" && /^[2-7]\d{8}$/.test(String(v.mmsi)), `${v.name} MMSI ${v.mmsi}`).toBe(true);

@@ -1,0 +1,53 @@
+{
+  "title": "Hy-Line Cruises",
+  "summary": "Passenger ferries connecting Hyannis, Nantucket and Martha’s Vineyard in Massachusetts.",
+  "source": {
+    "Hy-Line Cruises": "https://www.hylinecruises.com/fleet/"
+  },
+  "reviewed": "2026-10-30",
+  "vessels": [
+    {
+      "name": "Grey Lady IV",
+      "mmsi": 367720690,
+      "service": "Hyannis–Nantucket",
+      "links": {
+        "Official vessel": "https://www.hylinecruises.com/nantucket-ferry/",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367720690"
+      },
+      "ais_name": "GREY LADY IV"
+    },
+    {
+      "name": "Grey Lady",
+      "mmsi": 367101920,
+      "imo": 8986157,
+      "ais_name": "GREY LADY",
+      "service": "Hyannis–Nantucket",
+      "links": {
+        "Official vessel": "https://www.hylinecruises.com/fleet/",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367101920"
+      }
+    },
+    {
+      "name": "Lady Martha",
+      "mmsi": 366740280,
+      "imo": 8994116,
+      "ais_name": "LADY MARTHA",
+      "service": "Hyannis–Martha’s Vineyard and inter-island connections",
+      "links": {
+        "Official vessel": "https://www.hylinecruises.com/fleet/",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366740280"
+      }
+    },
+    {
+      "name": "Vineyard Lady",
+      "mmsi": 367719150,
+      "imo": 9097408,
+      "ais_name": "VINEYARD LADY",
+      "service": "Hyannis–Martha’s Vineyard",
+      "links": {
+        "Official vessel": "https://www.hylinecruises.com/fleet/",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367719150"
+      }
+    }
+  ]
+}
