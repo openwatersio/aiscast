@@ -646,10 +646,11 @@ describe("vesselTitle", () => {
     expect(vesselTitle({ mmsi: 367720690, name: "ANOTHER SHIP", kind: "vessel", type: 40 })).not.toContain("ferry");
   });
 
-  it("recognizes a Canadian ferry from its registered service without a Wikidata ship type", () => {
+  it("recognizes registered ferry service and verified ferries with generic passenger service", () => {
     expect(vesselTitle({ mmsi: 316001251, name: "QUEEN OF COWICHAN", kind: "vessel", type: 60, particulars: { service: "FERRY" } })).toContain("ferry tracker");
     expect(vesselTitle({ mmsi: 316030627, name: "SALISH ORCA", kind: "vessel", type: 60, particulars: { service: "FERRY" } })).toContain("ferry tracker");
-    expect(vesselTitle({ mmsi: 366929710, name: "COHO", kind: "vessel", type: 60, particulars: { service: "Passenger (Inspected)" } })).not.toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 366929710, name: "COHO", kind: "vessel", type: 60, particulars: { service: "Passenger (Inspected)" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 230000001, name: "PASSENGER SHIP", kind: "vessel", type: 60, particulars: { service: "Passenger (Inspected)" } })).not.toContain("ferry tracker");
   });
 
   it("recognizes Wikidata's roll-on/roll-off passenger ship classification", () => {

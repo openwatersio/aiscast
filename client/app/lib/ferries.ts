@@ -14,6 +14,12 @@ export interface FerryVessel {
 }
 
 const VERIFIED_FERRIES: Record<number, FerryIdentity & { name: string }> = {
+  366929710: {
+    name: "COHO",
+    operator: "Black Ball Ferry Line",
+    service: "Victoria–Port Angeles",
+    url: "https://www.cohoferry.com/about-us",
+  },
   367720690: {
     name: "GREY LADY IV",
     operator: "Hy-Line Cruises",
