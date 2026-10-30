@@ -84,7 +84,7 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
   const photo = "photo" in loaderData ? loaderData.photo : undefined;
   return pageMeta({
     // The stream's ship type names the class until the record is in, as its name and kind do.
-    title: vesselTitle({ mmsi, name, kind, type: props?.type ?? ("type" in loaderData ? loaderData.type : undefined) }),
+    title: vesselTitle({ mmsi, name, kind, type: props?.type ?? ("type" in loaderData ? loaderData.type : undefined), particulars: props?.particulars }),
     description,
     // An MMSI the network has never heard has no page of its own to point at.
     path: feature || loading ? path : undefined,

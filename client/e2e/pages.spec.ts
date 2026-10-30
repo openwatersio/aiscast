@@ -13,8 +13,8 @@ const UNHEARD = 100000001;
 test("a vessel page renders the vessel, with its name in the head", async ({ page, request }) => {
   const { mmsi, name } = await namedVessel();
   const path = `/ais${vesselPath(mmsi, name)}`;
-  // The name, then the class this vessel's type puts it in.
-  const title = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, [a-z ]+: live AIS position \\| Open Waters AIS$`);
+  // The vessel may have an explicit ferry identity in its synced particulars.
+  const title = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: ferry tracker|, [a-z ]+: live AIS position) \\| Open Waters AIS$`);
 
   const res = await page.goto(path);
   expect(res?.status()).toBe(200);

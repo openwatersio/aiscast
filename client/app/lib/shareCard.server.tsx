@@ -19,6 +19,7 @@ import {
 import { ApiUnavailable, getStations, getStats, getVessel, type ApiAuth, type Station, type Stats, type VesselProps } from "./api";
 import { edgeCached, notGetOrHead } from "./edge.server";
 import { coverKey, coverPhoto, fleetCardPath, getFleet, vesselCount, type Fleet } from "./fleets.server";
+import { ferryIdentity } from "./ferries";
 import { fileTitle, type Photo } from "./media";
 import { firstPhotoOf, namedPhotos } from "./media.server";
 
@@ -268,7 +269,7 @@ export function vesselCardProps(p: VesselProps): ShareCardProps {
   ].slice(0, 3);
   // "Other" says nothing about a vessel, so its line is only the flag, or nothing.
   const cls = shipClass(p.kind, p.type);
-  const subtitle = [cls !== "other" ? CLASS_LABELS[cls] : undefined, flagName(p.flag)].filter(Boolean).join(" · ");
+  const subtitle = [ferryIdentity(p) ? "Ferry" : cls !== "other" ? CLASS_LABELS[cls] : undefined, flagName(p.flag)].filter(Boolean).join(" · ");
   return { title: p.name ?? `MMSI ${p.mmsi}`, subtitle: subtitle || undefined, stats };
 }
 

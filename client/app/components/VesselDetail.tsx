@@ -23,6 +23,7 @@ import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
 import { mediaKey, type Photo } from "../lib/media";
 import { particularsFacts } from "../lib/particulars";
+import { ferryIdentity } from "../lib/ferries";
 import { useMedia } from "../lib/useMedia";
 import type { TrackRange } from "../lib/trackRange";
 import { useStation } from "../lib/useStationTitle";
@@ -67,6 +68,7 @@ export function VesselDetail({
   const gear = kind === "gear";
   const type = p?.type ?? heard?.shipType;
   const cls = shipClass(kind, type);
+  const ferry = ferryIdentity({ mmsi, name, kind, particulars: p?.particulars });
   const [recordLon, recordLat] = feature?.geometry?.coordinates ?? [];
   const lat = fresher?.lat ?? recordLat ?? heard?.lat;
   const lon = fresher?.lon ?? recordLon ?? heard?.lon;
@@ -179,10 +181,19 @@ export function VesselDetail({
       )}
       <PageTitle className="truncate text-large-title">{name ?? `MMSI ${mmsi}`}</PageTitle>
       <p className="text-footnote text-fg-muted">
-        {CLASS_LABELS[cls]}
+        {ferry ? "Ferry" : CLASS_LABELS[cls]}
         {type && !gear ? ` · type ${type}` : ""}
       </p>
       <p className="mt-0.5 text-footnote text-fg-muted">{ids}</p>
+
+      {ferry && (ferry.operator || ferry.service) && (
+        <p className="mt-2 text-subhead text-fg-secondary">
+          {ferry.operator && (ferry.url ? <a href={ferry.url} className="font-medium">{ferry.operator}</a> : ferry.operator)}
+          {ferry.operator ? " ferry" : "Ferry"}
+          {ferry.service && ` serving ${ferry.service}`}
+          .
+        </p>
+      )}
 
       <VesselActions live={live} mmsi={mmsi} imo={imo} name={name} kind={kind} hasTrack={(track?.coords.length ?? 0) > 0} />
 

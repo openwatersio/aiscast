@@ -1,4 +1,5 @@
 import type { VesselProps } from "./api";
+import { ferryIdentity, type FerryVessel } from "./ferries";
 
 export const NAV_STATUS: Record<number, string> = {
   0: "Under way using engine",
@@ -323,7 +324,7 @@ const FLAGS_WITH_THE = new Set(["AE", "BS", "CF", "CK", "DO", "FK", "FO", "GB", 
 
 type SnippetVessel = Pick<
   VesselProps,
-  "mmsi" | "name" | "kind" | "type" | "flag" | "imo" | "destination" | "near" | "length" | "beam" | "to_bow" | "to_stern" | "to_port" | "to_starboard"
+  "mmsi" | "name" | "kind" | "type" | "flag" | "imo" | "destination" | "near" | "length" | "beam" | "to_bow" | "to_stern" | "to_port" | "to_starboard" | "particulars"
 >;
 
 /**
@@ -331,8 +332,9 @@ type SnippetVessel = Pick<
  * with "vessel", "AIS" or "live" beside it, so the name leads and the class says which ship
  * of that name this is. The MMSI is in the description; nobody searches for it.
  */
-export function vesselTitle(v: { mmsi: number; name?: string; kind?: string; type?: number }): string {
+export function vesselTitle(v: FerryVessel & { type?: number }): string {
   if (!v.name) return `MMSI ${v.mmsi} live AIS position | Open Waters AIS`;
+  if (ferryIdentity(v)) return `${v.name} ferry tracker | Open Waters AIS`;
   return `${v.name}, ${classNoun(v)}: live AIS position | Open Waters AIS`;
 }
 
@@ -345,6 +347,14 @@ export function vesselTitle(v: { mmsi: number; name?: string; kind?: string; typ
  */
 export function vesselDescription(v: SnippetVessel): string {
   const label = v.name ?? `MMSI ${v.mmsi}`;
+  const ferry = ferryIdentity(v);
+  if (ferry) {
+    const operator = ferry.operator ? `${ferry.operator} ` : "";
+    const a = /^[aeio]/i.test(operator) ? "an" : "a";
+    const service = ferry.service ? ` serving ${ferry.service}` : "";
+    const id = v.name ? ` (MMSI ${v.mmsi})` : "";
+    return `${label} is ${a} ${operator}ferry${service}${id}. Live AIS position and track.`;
+  }
   const noun = classNoun(v);
   const offsets =
     v.to_bow != null && v.to_stern != null && v.to_port != null && v.to_starboard != null

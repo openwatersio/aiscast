@@ -626,6 +626,45 @@ describe("trackGap", () => {
 });
 
 describe("vesselTitle", () => {
+  it("identifies a verified ferry even when AIS reports only high-speed craft", () => {
+    expect(vesselTitle({ mmsi: 367720690, name: "GREY LADY IV", kind: "vessel", type: 40 })).toBe(
+      "GREY LADY IV ferry tracker | Open Waters AIS",
+    );
+  });
+
+  it("identifies an explicitly enriched ferry without classifying every passenger ship as one", () => {
+    expect(vesselTitle({ mmsi: 230000001, name: "TEST FERRY", type: 60, particulars: { ship_type: "passenger ferry" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 230000001, name: "CRUISE SHIP", type: 60 })).not.toContain("ferry");
+    expect(vesselTitle({ mmsi: 230000001, name: "FAST CRAFT", type: 40 })).not.toContain("ferry");
+  });
+
+  it("does not give a ferry identity to fishing gear using a ship's MMSI", () => {
+    expect(vesselTitle({ mmsi: 367720690, name: "BUOY", kind: "gear", type: 40 })).not.toContain("ferry");
+  });
+
+  it("does not transfer a curated service to a different vessel name on the MMSI", () => {
+    expect(vesselTitle({ mmsi: 367720690, name: "ANOTHER SHIP", kind: "vessel", type: 40 })).not.toContain("ferry");
+  });
+
+  it("recognizes a Canadian ferry from its registered service without a Wikidata ship type", () => {
+    expect(vesselTitle({ mmsi: 316001251, name: "QUEEN OF COWICHAN", kind: "vessel", type: 60, particulars: { service: "FERRY" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 316030627, name: "SALISH ORCA", kind: "vessel", type: 60, particulars: { service: "FERRY" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 366929710, name: "COHO", kind: "vessel", type: 60, particulars: { service: "Passenger (Inspected)" } })).not.toContain("ferry tracker");
+  });
+
+  it("recognizes Wikidata's roll-on/roll-off passenger ship classification", () => {
+    expect(vesselTitle({ mmsi: 266343000, name: "STENA SCANDINAVICA", kind: "vessel", type: 60, particulars: { ship_type: "roll-on/roll-off passenger ship" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 266343000, name: "TEST SHIP", kind: "vessel", type: 70, particulars: { ship_type: "roll-on/roll-off cargo ship" } })).not.toContain("ferry tracker");
+  });
+
+  it.each(["Ferry", " car ferry ", "high‑speed ferry", "ro-ro passenger ferry", "train ferry"])("recognizes the explicit enriched type %s", (ship_type) => {
+    expect(vesselTitle({ mmsi: 230000001, name: "TEST SHIP", particulars: { ship_type } })).toContain("ferry tracker");
+  });
+
+  it.each(["former ferry", "ferry tender", "passenger ship", "high-speed craft"])("does not infer a ferry from %s", (ship_type) => {
+    expect(vesselTitle({ mmsi: 230000001, name: "TEST SHIP", particulars: { ship_type } })).not.toContain("ferry tracker");
+  });
+
   it("leads with the name and says what kind of vessel it is", () => {
     expect(vesselTitle({ mmsi: 563344600, name: "EVER EDUCE", kind: "vessel", type: 70 })).toBe(
       "EVER EDUCE, cargo ship: live AIS position | Open Waters AIS",
@@ -639,6 +678,18 @@ describe("vesselTitle", () => {
 
 describe("vesselDescription", () => {
   const ship = { mmsi: 563344600, name: "EVER EDUCE", kind: "vessel" as const, type: 70, flag: "SG", imo: 1025289, length: 369, beam: 54 };
+
+  it("describes the ferry's usual service without claiming a current direction or arrival", () => {
+    const description = vesselDescription({ mmsi: 367720690, name: "GREY LADY IV", kind: "vessel", type: 40, destination: "NANTUCKET ROUTE" });
+    expect(description).toContain("Hy-Line Cruises ferry serving Hyannis–Nantucket");
+    expect(description).toContain("MMSI 367720690");
+    expect(description).toContain("Live AIS position and track.");
+    expect(description).not.toMatch(/Bound for|bound for|arriv|ETA/);
+  });
+
+  it("uses explicit ferry enrichment and its operator in the description", () => {
+    expect(vesselDescription({ ...ship, type: 60, particulars: { ship_type: "car ferry", operator: "Example Ferries" } })).toContain("Example Ferries ferry");
+  });
 
   it("says what the vessel is, where it was last heard, and where it is going", () => {
     expect(vesselDescription({ ...ship, near: "Sinhyeon, South Korea", destination: "SEA TRIAL(SHI-2678)" })).toBe(
