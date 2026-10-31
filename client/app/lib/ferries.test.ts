@@ -9,6 +9,15 @@ describe("operator ferry rosters", () => {
     expect(ferryIdentity({ mmsi: 316011409, name: "COASTAL CELEBRATION", particulars: { service: "PASSENGER" } })).toMatchObject({ operator: "BC Ferries" });
   });
 
+  it("shares the full Washington State Ferries roster with fleet pages", () => {
+    expect(fleetVessels(getFleet("ferries/wsf")!)).toHaveLength(21);
+    expect(fleetsWith(366749710).map((f) => f.id)).toContain("ferries/wsf");
+    // WSF radios carry a fleet prefix; the roster name is accepted too, but not another vessel's name.
+    expect(ferryIdentity({ mmsi: 366749710, imo: 9137351, name: "WSF WENATCHEE", particulars: { service: "PASSENGER" } })).toMatchObject({ operator: "Washington State Ferries" });
+    expect(ferryIdentity({ mmsi: 366749710, name: "WENATCHEE" })).toMatchObject({ operator: "Washington State Ferries" });
+    expect(ferryIdentity({ mmsi: 366749710, name: "WENATCHEE EXPRESS" })).toBeUndefined();
+  });
+
   it("identifies existing ferries and observed AIS aliases", () => {
     expect(ferryIdentity({ mmsi: 366929710, name: "COHO" })).toMatchObject({ operator: "Black Ball Ferry Line", service: "Victoria–Port Angeles" });
     expect(ferryIdentity({ mmsi: 367720690, name: "GREY LADY IV" })).toMatchObject({ operator: "Hy-Line Cruises", service: "Hyannis–Nantucket" });

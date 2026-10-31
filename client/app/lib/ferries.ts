@@ -3,6 +3,7 @@ import type { FleetVessel } from "./fleets.server";
 import bcFerries from "../fleets/ferries/bc-ferries.json" with { type: "json" };
 import blackBall from "../fleets/ferries/black-ball.json" with { type: "json" };
 import hyLine from "../fleets/ferries/hy-line.json" with { type: "json" };
+import wsf from "../fleets/ferries/wsf.json" with { type: "json" };
 
 export interface FerryIdentity {
   operator?: string;
@@ -25,7 +26,7 @@ interface FerryRoster {
 }
 
 // Shared with fleet pages; direct JSON imports work in both Vite and Node without a YAML parser.
-const rosters: FerryRoster[] = [bcFerries, blackBall, hyLine];
+const rosters: FerryRoster[] = [bcFerries, blackBall, hyLine, wsf];
 const byMmsi = new Map<number, FleetVessel & FerryIdentity>();
 const byImo = new Map<number, FleetVessel & FerryIdentity>();
 for (const roster of rosters) {
