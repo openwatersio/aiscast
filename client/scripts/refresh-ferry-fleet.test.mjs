@@ -28,6 +28,21 @@ test("Hy-Line distinguishes ferry service from cruises and historical ferry work
   assert.throws(() => parseRoster("hy-line", item("Unknown", "Our newest boat.")), /Unknown/);
 });
 
+test("Washington State Ferries reads WSDOT's vessel feed and keeps only WSF-owned hulls", () => {
+  const feed = JSON.stringify([
+    { VesselID: 1, VesselName: "Cathlamet", VesselAbbrev: "CAT", Status: 1, OwnedByWSF: true },
+    { VesselID: 75, VesselName: "Suquamish", VesselAbbrev: "SUQ", Status: 2, OwnedByWSF: true },
+    { VesselID: 17, VesselName: "Kaleetan", VesselAbbrev: "KAL", Status: 3, OwnedByWSF: true },
+    { VesselID: 99, VesselName: "Charter Boat", VesselAbbrev: "CHB", Status: 1, OwnedByWSF: false },
+  ]);
+  const vessels = parseRoster("wsf", feed);
+  assert.deepEqual(vessels.map((v) => v.name), ["Cathlamet", "Suquamish", "Kaleetan"], "ownership decides membership, not service, maintenance or out-of-service status");
+  assert.equal(vessels[1].links["Official vessel"], "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=75");
+  assert.throws(() => parseRoster("wsf", "<html>Maintenance</html>"), /feed/i);
+  assert.throws(() => parseRoster("wsf", JSON.stringify([{ VesselID: 1, OwnedByWSF: true }])), /feed/i);
+  assert.throws(() => parseRoster("wsf", JSON.stringify([{ VesselID: 1, VesselName: "Only", OwnedByWSF: false }])), /empty/i);
+});
+
 test("Black Ball requires the current Coho description", () => {
   assert.equal(parseRoster("black-ball", "<h2>The M.V. Coho</h2><p>Black Ball Ferry Line operates the M.V. Coho passenger and vehicle ferry.</p>")[0].name, "Coho");
   assert.throws(() => parseRoster("black-ball", "<h2>History of Coho</h2>"), /roster/i);

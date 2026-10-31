@@ -8,6 +8,8 @@ const SOURCES = {
   "bc-ferries": "https://www.bcferries.com/on-the-ferry/our-fleet",
   "black-ball": "https://www.cohoferry.com/about-us",
   "hy-line": "https://www.hylinecruises.com/fleet/",
+  // WSDOT's vessel feed, which answers without an access code; its "About our fleet" page names no vessels.
+  wsf: "https://www.wsdot.wa.gov/ferries/api/vessels/rest/vesselbasics",
 };
 const text = (html) => html.replace(/<[^>]*>/g, " ").replace(/&(#x[0-9a-f]+|#\d+|amp|apos|quot|nbsp|rsquo|lsquo);/gi, (_, entity) => {
   if (entity.startsWith("#")) return String.fromCodePoint(entity[1].toLowerCase() === "x" ? parseInt(entity.slice(2), 16) : Number(entity.slice(1)));
@@ -38,6 +40,13 @@ export function parseRoster(operator, html) {
       if (/\b(?:operates|operating|service)\b[^.]*\bbetween\b/i.test(description)) vessels.push({ name });
       else if (!/fishing trips|Harbor Cruise|Canal Cruises/i.test(description)) throw new Error(`Check Hy-Line service for ${name}: ${description}`);
     }
+  } else if (operator === "wsf") {
+    let feed;
+    try { feed = JSON.parse(html); } catch { throw new Error("WSDOT vessel feed is not JSON"); }
+    if (!Array.isArray(feed) || feed.some((v) => typeof v?.VesselName !== "string" || !Number.isInteger(v.VesselID) || typeof v.OwnedByWSF !== "boolean"))
+      throw new Error("WSDOT vessel feed has an unexpected shape");
+    // Status (in service, maintenance, out of service) is not membership; WSDOT drops a sold hull from the feed. Leased hulls are not the fleet.
+    vessels = feed.filter((v) => v.OwnedByWSF).map((v) => ({ name: text(v.VesselName), links: { "Official vessel": `https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=${v.VesselID}` } }));
   } else {
     if (!/<h2\b[^>]*>\s*The M\.V\. Coho\s*<\/h2>/i.test(html) || !/Black Ball Ferry Line operates the M\.V\. Coho/i.test(text(html)))
       throw new Error("Black Ball's current Coho roster description not found");
