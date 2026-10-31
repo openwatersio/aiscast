@@ -201,7 +201,6 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("aiscast_thinned_total", "events withheld from connections over their per-second rate", p.stats.thinned.Load())
 	counter("aiscast_implausible_total", "positions dropped for implying an impossible speed", p.stats.implausible.Load())
 	counter("aiscast_stale_total", "events withheld from the stream for being older than the vessel's newest", p.stats.stale.Load())
-	counter("aiscast_uncorroborated_total", "low-trust events kept local because no trusted source has heard the vessel", p.stats.uncorroborated.Load())
 	counter("aiscast_invalid_mmsi_total", "messages archived but kept off the map because their MMSI cannot name one station", p.stats.invalidMMSI.Load())
 
 	p.vmu.RLock()
