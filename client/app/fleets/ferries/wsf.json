@@ -1,0 +1,221 @@
+{
+  "title": "Washington State Ferries",
+  "summary": "WSDOT's passenger and vehicle ferries across Puget Sound and the San Juan Islands.",
+  "source": {
+    "Washington State Ferries": "https://wsdot.wa.gov/travel/washington-state-ferries/ferries-terminals/about-our-fleet",
+    "WSDOT vessel feed": "https://www.wsdot.wa.gov/ferries/api/vessels/rest/vesselbasics"
+  },
+  "reviewed": "2026-10-31",
+  "vessels": [
+    {
+      "name": "Cathlamet",
+      "imo": 7808138,
+      "ais_name": "WSF CATHLAMET",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=1",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366773070"
+      },
+      "mmsi": 366773070
+    },
+    {
+      "name": "Chelan",
+      "imo": 7808140,
+      "ais_name": "WSF CHELAN",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=2",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366709770"
+      },
+      "mmsi": 366709770
+    },
+    {
+      "name": "Chetzemoka",
+      "imo": 9347669,
+      "ais_name": "WSF CHETZEMOKA",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=65",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367463060"
+      },
+      "mmsi": 367463060
+    },
+    {
+      "name": "Chimacum",
+      "imo": 9801770,
+      "ais_name": "WSF CHIMACUM",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=74",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367712660"
+      },
+      "mmsi": 367712660
+    },
+    {
+      "name": "Issaquah",
+      "imo": 7808102,
+      "ais_name": "WSF ISSAQUAH",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=15",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366773040"
+      },
+      "mmsi": 366773040
+    },
+    {
+      "name": "Kaleetan",
+      "imo": 8835346,
+      "ais_name": "WSF KALEETAN",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=17",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366772990"
+      },
+      "mmsi": 366772990
+    },
+    {
+      "name": "Kennewick",
+      "imo": 9618331,
+      "ais_name": "WSF KENNEWICK",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=52",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367479990"
+      },
+      "mmsi": 367479990
+    },
+    {
+      "name": "Kitsap",
+      "imo": 7808126,
+      "ais_name": "WSF KITSAP",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=18",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366772980"
+      },
+      "mmsi": 366772980
+    },
+    {
+      "name": "Kittitas",
+      "imo": 7808114,
+      "ais_name": "WSF KITTITAS",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=19",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366772960"
+      },
+      "mmsi": 366772960
+    },
+    {
+      "name": "Puyallup",
+      "imo": 9137363,
+      "ais_name": "WSF PUYALLUP",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=25",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366759130"
+      },
+      "mmsi": 366759130
+    },
+    {
+      "name": "Salish",
+      "imo": 9618329,
+      "ais_name": "WSF SALISH",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=66",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367480010"
+      },
+      "mmsi": 367480010
+    },
+    {
+      "name": "Samish",
+      "imo": 9720251,
+      "ais_name": "WSF SAMISH",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=69",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367649320"
+      },
+      "mmsi": 367649320
+    },
+    {
+      "name": "Sealth",
+      "imo": 7808152,
+      "ais_name": "WSF SEALTH",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=28",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366710820"
+      },
+      "mmsi": 366710820
+    },
+    {
+      "name": "Spokane",
+      "imo": 7214325,
+      "ais_name": "WSF SPOKANE",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=30",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366709780"
+      },
+      "mmsi": 366709780
+    },
+    {
+      "name": "Suquamish",
+      "imo": 9801782,
+      "ais_name": "WSF SUQUAMISH",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=75",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/368027230"
+      },
+      "mmsi": 368027230
+    },
+    {
+      "name": "Tacoma",
+      "imo": 9133977,
+      "ais_name": "WSF TACOMA",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=32",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366772760"
+      },
+      "mmsi": 366772760
+    },
+    {
+      "name": "Tillikum",
+      "imo": 8836120,
+      "ais_name": "WSF TILLIKUM",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=33",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366773090"
+      },
+      "mmsi": 366773090
+    },
+    {
+      "name": "Tokitae",
+      "imo": 9720160,
+      "ais_name": "WSF TOKITAE",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=68",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/367608860"
+      },
+      "mmsi": 367608860
+    },
+    {
+      "name": "Walla Walla",
+      "imo": 7233151,
+      "ais_name": "WSF WALLA WALLA",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=36",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366772780"
+      },
+      "mmsi": 366772780
+    },
+    {
+      "name": "Wenatchee",
+      "imo": 9137351,
+      "ais_name": "WSF WENATCHEE",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=37",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366749710"
+      },
+      "mmsi": 366749710
+    },
+    {
+      "name": "Yakima",
+      "imo": 8835360,
+      "ais_name": "WSF YAKIMA",
+      "links": {
+        "Official vessel": "https://wsdot.com/ferries/vesselwatch/VesselDetail.aspx?vessel_id=38",
+        "AIS identity": "https://ais.openwaters.io/v1/vessels/366772750"
+      },
+      "mmsi": 366772750
+    }
+  ]
+}

@@ -1,4 +1,5 @@
-import { API } from "./data";
+import { vesselPath } from "../app/lib/ais";
+import { API, heardFerry } from "./data";
 import { expect, test } from "./fixtures";
 
 test("fleets open from the map's menu, list their vessels, and open one on the map", async ({ page }) => {
@@ -98,4 +99,29 @@ test("a fleet vessel whose report has no name links its bare MMSI, and one never
   await answered;
   await expect(page.getByRole("link", { name: "Carnival Adventure" })).toHaveAttribute("href", "/ais/vessels/311001595");
   await expect(page.getByRole("link", { name: "Carnival Breeze" })).toHaveAttribute("href", "/ais/vessels/354842000-carnival-breeze");
+});
+
+test("ferry fleets reject a reused radio and unrelated ferry membership cards", async ({ page }) => {
+  await page.route(`${API}/v1/vessels/366929710`, (route) => route.fulfill({
+    headers: { "access-control-allow-origin": "*" },
+    json: { type: "Feature", id: 366929710, geometry: { type: "Point", coordinates: [-123.43, 48.12] }, properties: { mmsi: 366929710, name: "SEA CHIEF", imo: 9876543, kind: "vessel", type: 52, seen: new Date().toISOString(), source: "aishub" } },
+  }));
+  await page.route("**/ais/vessels/media/*", (route) => route.fulfill({ json: { photos: [], links: {} } }));
+  const report = page.waitForResponse((response) => response.url().endsWith("/v1/vessels/366929710"));
+  await page.goto("/ais/fleets/ferries/black-ball");
+  await report;
+  await expect(page.getByRole("heading", { name: "Coho", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Coho", exact: true })).toHaveCount(0);
+
+  await page.route("**/ais/vessels/fleets/366929710", (route) => route.fulfill({ json: {
+    cards: [
+      { path: "/fleets/ferries/bc-ferries", title: "BC Ferries", summary: "Wrong operator", count: "39 vessels" },
+      { path: "/fleets/ferries/black-ball", title: "Black Ball Ferry Line", summary: "Current operator", count: "1 vessel" },
+    ], photos: {},
+  } }));
+  // The server-rendered record remains the local server's Coho, independent of the browser mock above.
+  const { mmsi, name } = await heardFerry();
+  await page.goto(`/ais${vesselPath(mmsi, name)}`);
+  await expect(page.locator('a[href="/ais/fleets/ferries/black-ball"]')).toHaveCount(1);
+  await expect(page.locator('a[href="/ais/fleets/ferries/bc-ferries"]')).toHaveCount(0);
 });

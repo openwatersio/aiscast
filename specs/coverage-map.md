@@ -21,7 +21,7 @@ Kept: H3 cells, unique vessels as the measure, opacity by evidence, empty cells 
 Changed:
 
 - **Receptions are the input, not the raw archive.** The server has already parsed and decoded every copy, marked implausible and bad-clock ones, and left out positions at null island. ClickHouse's `receptions` holds every copy from every source, so coverage needs no parsers of its own.
-- **Aggregated per day as positions arrive, windowed at serving time.** ClickHouse keeps one more table, `coverage`, which a materialized view fills from `receptions` as they are written. The server sums a trailing window of its days. A new station appears the day after it starts feeding, and a station that stops fades out of the window on its own.
+- **Aggregated per day as positions arrive, windowed at serving time.** ClickHouse keeps one more table, `station_coverage`, which a materialized view fills from `receptions` as they are written. The server sums a trailing window of its days. A new station appears the day after it starts feeding, and a station that stops fades out of the window on its own.
 - **Vessels a day, not vessels in the window.** Distinct vessels do not add across days, so the measure is distinct vessels per day, averaged over the window. "About 40 vessels a day are heard here" also reads better than a window total.
 - **Days heard is the evidence.** Of the days in the window, how many heard the cell at all. A cell heard on 1 of 7 days fades. A cell heard on all 7 is solid. This measure is easier to explain than a log of message counts, and it survives the AISHub sampling problem.
 - **Vector tiles from the server, not PMTiles on R2.** The research proposed tippecanoe to PMTiles in a bucket. The window's aggregate is a few hundred thousand cells, small enough to hold in the server and tile on demand. That is what `/v1/vessels/tiles` already does. Coverage then lives in the `/v1` API next to everything else, and needs no public bucket, domain, or build step. A map needs only the TileJSON URL.
@@ -32,22 +32,24 @@ Changed:
 
 The smallest map that answers "is my area on the feed?", on the network page at `openwaters.io/ais/network`, beside the counts of what the network receives. Both answer what data the network has.
 
-### ClickHouse: `coverage` and `station_coverage`
+### ClickHouse: `station_coverage`
 
-The map reads `station_coverage`, the same cells keyed by station as well, so the same rows answer the network map and each station's footprint ([station-page.md](station-page.md#rollups)). `coverage` is written beside it for one release, so the previous server keeps its map on rollback, and is then dropped.
+The map reads `station_coverage`, the same cells keyed by station as well, so the same rows answer the network map and each station's footprint ([station-page.md](station-page.md#rollups)). `coverage`, the same cells without stations, is the table before it: early migrations still create it and its view, nothing else writes or reads it, and `aiscast clickhouse-cleanup` drops it with its view and ledger.
 
-`coverage` has one row per (`day`, `res`, `cell`), beside `receptions` in the ClickHouse database the server writes. `station_coverage` has the same per station as well, with its `source`, and no `stations` column, since the map counts the stations with a row for the cell:
+`station_coverage` has one row per (`day`, `station`, `res`, `cell`, `source`), beside `receptions` in the ClickHouse database the server writes. It has no `stations` column, since the map counts the stations with a row for the cell:
 
 | Column | Type | Meaning |
 | --- | --- | --- |
 | `day` | Date | The UTC day of the positions |
+| `station` | LowCardinality(String) | The station that heard them |
 | `res` | UInt8 | H3 resolution, 3 through 6 |
 | `cell` | UInt64 | H3 cell index at `res` |
-| `vessels` | AggregateFunction(uniqExact, UInt32) | The distinct MMSIs heard in the cell that day |
+| `source` | LowCardinality(String) | The station's source kind |
+| `vessels` | AggregateFunction(uniqExact, UInt32) | The distinct MMSIs the station heard in the cell that day |
 
 - **Filled as receptions arrive.** A materialized view bins each batch written to `receptions`, skipping copies marked implausible or with a bad clock: each copy's cell at resolution 6, and the cells that contain it at 5, 4, and 3, so the levels nest exactly. The view sets `geotoh3_argument_order`, since ClickHouse releases have disagreed on whether `geoToH3` takes latitude or longitude first and a view keeps what it was created with.
 - **Counted once.** Distinct sets merge as unions, so every copy of a transmission, and the same copies binned twice, count each vessel once. That makes a backfill over days the view already covers harmless.
-- **Backfilled once.** The view sees only receptions written after it exists, and the receptions loaded from the lake before it are not among them. On first start the server bins the map's window from `receptions` and loads the map, then bins each older day back 13 months in the background, newest first and one day per query so the largest day stays within ClickHouse's memory cap, and records each in `coverage_backfilled` and `station_coverage_backfilled`, one ledger per table, an empty day too. A restart resumes with the days not yet recorded. Counting days back from today, rather than reading partitions, keeps the backfill independent of how `receptions` is partitioned.
+- **Backfilled once.** The view sees only receptions written after it exists, and the receptions loaded from the lake before it are not among them. On first start the server bins the map's window from `receptions` and loads the map, then bins each older day back 13 months in the background, newest first and one day per query so the largest day stays within ClickHouse's memory cap, and records each in `station_coverage_backfilled`, an empty day too. A restart resumes with the days not yet recorded. Counting days back from today, rather than reading partitions, keeps the backfill independent of how `receptions` is partitioned.
 - **Kept 13 months,** like the 15-minute rollup, so seasonal questions stay answerable.
 - **Every position counts,** whatever its source: live feeds and stations, uncorroborated reports, and historical archives loaded into `receptions`. Coverage is where there is data for a period, not which source supplied it.
 - **Bounded to what it keeps.** The view and the backfill bin only receptions within the 13 months coverage keeps, so a load of older history computes no cells its TTL would delete.
@@ -69,7 +71,7 @@ The map reads `station_coverage`, the same cells keyed by station as well, so th
 
 ### Done when
 
-- [x] ClickHouse keeps `coverage`, filled by a view and a backfill, with a test against a real ClickHouse server.
+- [x] ClickHouse keeps `station_coverage`, filled by a view and a backfill, with a test against a real ClickHouse server.
 - [x] The server loads it, serves tiles, and has tests for the load, the zoom bands, polygon encoding, and a missing ClickHouse.
 - [x] The page renders from a local server and passes the client's tests, typecheck, and style check.
 - [x] [server/README.md](../server/README.md), [server/openapi.json](../server/openapi.json), and [client/README.md](../client/README.md) describe it.
@@ -81,7 +83,7 @@ Each is a separate issue once phase 1 ships.
 
 1. **Redundancy.** The station list at `openwaters.io/ais/stations` draws the same tiles colored by how many distinct stations heard each cell in the window: 1, 2, 3, and 4 or more. `station_coverage` keeps each station's cells per day ([station-page.md](station-page.md#rollups)), and a station counts if it heard the cell on any day of the window. A volunteer's station is one station, whatever streams it tags, and each aggregator and government feed is one as a whole, by its source: all of AISHub is one station, and so is BarentsWatch, its coastal, offshore, and satellite paths together. A historical archive counts as a station like any other, with its own name, so a period the archives cover fills in with them and a recent week shows only what the live network heard. The same data answers "how much of this bounding box has two independent sources?" as a query, which makes a region's coverage target something to measure rather than judge. Later: the stations behind a cell in its card. A station's own cells on its page are planned in [station-page.md](station-page.md).
 2. **Where the network is deaf.** The inverse layer for recruiting. It shows cells with traffic that no station or open feed of ours hears, ranked by vessels a day. Aggregators see vessels the volunteer network cannot hear, so their rows supply the traffic that makes a gap measurable. It includes a ranked list of the largest gaps, which a monthly post can quote. It depends on redundancy's source classes.
-3. **Reception probability.** Hammond and Peters: each vessel's reporting interval says how many reports it sent between two that were heard, and the missing ones are spread across the cells along its path. This replaces vessels a day as the fill, and fades out where coverage is uncertain. It needs per-vessel sequences, so it is a query over `positions`, not a sum of `coverage`.
+3. **Reception probability.** Hammond and Peters: each vessel's reporting interval says how many reports it sent between two that were heard, and the missing ones are spread across the cells along its path. This replaces vessels a day as the fill, and fades out where coverage is uncertain. It needs per-vessel sequences, so it is a query over `positions`, not a sum of `station_coverage`.
 4. **Coverage for a chosen period.** A period picker on the network page, such as last June, beside the trailing week. The server reads the coverage rollup for any range it keeps, and historical archives fill in the periods they cover. The coverage rollup keeps 13 months, and its view bins nothing older, so a period further back needs that bound raised. Days older than 13 months then come from a backfill over `receptions`, and the cost is the table's size, several hundred thousand rows a day.
 5. **Per-station range outline.** On the station page: the farthest position heard in each bearing bucket over a rolling window, drawn as an outline around the station. This is what AIS-catcher, tar1090, and MarineTraffic converged on. It needs the station's location. AIS-catcher envelopes send it, and the server does not keep it yet. Other stations would need their operator to set it, which fits with station naming ([#51](https://github.com/openwatersio/aiscast/issues/51), [#53](https://github.com/openwatersio/aiscast/issues/53)).
 

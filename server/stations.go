@@ -259,19 +259,22 @@ func isPositionType(t string) bool {
 }
 
 type stationRow struct {
-	Station   string           `json:"station"`
-	Source    string           `json:"source"`
-	Events    map[string]int64 `json:"events"` // last_24h, last_7d
-	Dups      int64            `json:"duplicates"`
-	Vessels   int              `json:"vessels"`               // distinct MMSIs heard within the last 30 min, own ship aside
-	Vessels24 int              `json:"vessels_24h"`           // distinct MMSIs heard within the last 24 h, own ship aside
-	Exclusive int              `json:"vessels_exclusive_24h"` // of those, heard by no other station
-	Uptime    *float64         `json:"uptime_7d"`             // share of hours with a reception over 7 days; null before the series has the station
-	Positions int64            `json:"positions"`
-	FirstSeen time.Time        `json:"first_seen"`
-	LastSeen  time.Time        `json:"last_seen"`
-	LastAgeS  int64            `json:"last_age_s"`
-	BBox      *[4]float64      `json:"bbox,omitempty"` // minLat, minLon, maxLat, maxLon of positions heard
+	Station   string            `json:"station"`
+	Source    string            `json:"source"`
+	Events    map[string]int64  `json:"events"` // last_24h, last_7d
+	Dups      int64             `json:"duplicates"`
+	Vessels   int               `json:"vessels"`               // distinct MMSIs heard within the last 30 min, own ship aside
+	Vessels24 int               `json:"vessels_24h"`           // distinct MMSIs heard within the last 24 h, own ship aside
+	Exclusive int               `json:"vessels_exclusive_24h"` // of those, heard by no other station
+	Uptime    *float64          `json:"uptime_7d"`             // share of hours with a reception over 7 days; null before the series has the station
+	Positions int64             `json:"positions"`
+	FirstSeen time.Time         `json:"first_seen"`
+	LastSeen  time.Time         `json:"last_seen"`
+	LastAgeS  int64             `json:"last_age_s"`
+	BBox      *[4]float64       `json:"bbox,omitempty"`       // minLat, minLon, maxLat, maxLon of positions heard
+	Hours     []uint64          `json:"hours,omitempty"`      // the station's own page only: receptions each hour of 7 days, oldest first
+	HoursFrom *time.Time        `json:"hours_from,omitempty"` // the first hour of hours, so a reader labels each count by the hour it was counted in
+	Types     map[string][2]int `json:"types,omitempty"`      // the station's own page only: 24 h vessels by ITU ship type or kind, as [vessels, unique]
 
 	Name     string `json:"name,omitempty"`      // see stationNames.decorate for the order names are chosen in
 	NameFrom string `json:"name_from,omitempty"` // "operator" or "vessel"
@@ -386,6 +389,12 @@ func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 		if row.Station != id {
 			continue
 		}
+		d := p.stationDetail(id, now)
+		row.Hours, row.Types = d.hours, d.types
+		if d.hours != nil {
+			from := d.at.UTC().Truncate(time.Hour).Add(-(stationWindow - 1) * time.Hour)
+			row.HoursFrom = &from
+		}
 		var features [][]byte
 		attribution := map[string]string{}
 		p.vmu.RLock()
@@ -396,7 +405,11 @@ func (p *Pipeline) serveStations(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		p.vmu.RUnlock()
-		json.NewEncoder(w).Encode(map[string]any{"station": row, "vessels": json.RawMessage(featureCollection(features, attribution, false))})
+		out := map[string]any{"station": row, "vessels": json.RawMessage(featureCollection(features, attribution, false))}
+		if len(d.credits) > 0 {
+			out["attribution"] = d.credits // credits for the ship types in station.types, beside the vessels' own
+		}
+		json.NewEncoder(w).Encode(out)
 		return
 	}
 	if p.seriesPending(counts) {

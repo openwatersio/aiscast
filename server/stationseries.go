@@ -15,6 +15,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -87,6 +88,11 @@ type stationSeries interface {
 	backfillStationSeries(ctx context.Context, now time.Time) error
 	// stationCounts is each station heard within stationKeep, with its hours and vessels in the window.
 	stationCounts(ctx context.Context, now time.Time) (map[string]stationCount, error)
+	// stationHours is one station's receptions in each hour of the window, oldest first, the current hour last.
+	stationHours(ctx context.Context, station string, now time.Time) ([]uint64, error)
+	// stationVessels is the vessels one station heard within stationVesselTTL, its own aside, each with whether no
+	// other station heard it and its latest ITU ship type, 0 when none is known.
+	stationVessels(ctx context.Context, station string, now time.Time) (map[uint32]heardVessel, error)
 	// stationTotals is each station's first hour and receptions ever, a read of its whole history.
 	stationTotals(ctx context.Context) (map[string]stationCount, error)
 	// sourceCounts is, per source kind, the vessels its stations heard within vesselTTL and how many no other kind did.
@@ -521,6 +527,73 @@ func (c *chConn) stationCounts(ctx context.Context, now time.Time) (map[string]s
 	return out, rows.Err()
 }
 
+// stationHours counts every usable reception, as uptime does, so an hour with any is never 0.
+func (c *chConn) stationHours(ctx context.Context, station string, now time.Time) ([]uint64, error) {
+	cur := now.UTC().Truncate(time.Hour)
+	start := cur.Add(-(stationWindow - 1) * time.Hour)
+	rows, err := c.conn.Query(ctx, `SELECT hour, sum(receptions) FROM `+c.db+`.station_hours
+		WHERE station = ? AND hour >= ? AND hour <= ? AND `+strings.ReplaceAll(chNewestFrom, "{db}", c.db)+`
+		GROUP BY hour`, station, start, cur, start)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]uint64, stationWindow)
+	for rows.Next() {
+		var hour time.Time
+		var n uint64
+		if err := rows.Scan(&hour, &n); err != nil {
+			return nil, err
+		}
+		out[int(hour.Sub(start)/time.Hour)] = n
+	}
+	return out, rows.Err()
+}
+
+// heardVessel is one vessel a station heard: whether no other station did, and its latest ITU ship type with the
+// source that sent it.
+type heardVessel struct {
+	only     bool
+	shipType uint8
+	source   string // empty when no source sent a type
+}
+
+// stationVessels reads the window and uniqueness as stationCounts does, counting other stations' rows only for
+// this station's vessels, and each vessel's type as its latest non-zero ship_type in statics over
+// chStationVesselDays, whichever source sent it. The record's seed is left out: its rows carry the record's own
+// source, and vesselTypes falls back to the cache and the record, crediting the vessel's source as /v1/vessels
+// does. The vessels stay in ClickHouse for the join: a feed hears tens of thousands a day, past what a query may
+// list.
+func (c *chConn) stationVessels(ctx context.Context, station string, now time.Time) (map[uint32]heardVessel, error) {
+	day, typed := now.Add(-stationVesselTTL), now.Add(-chStationVesselDays*24*time.Hour)
+	mine := `(SELECT mmsi FROM {db}.station_vessels WHERE station = ? AND hour >= toStartOfHour(?) AND last_ts > ?)`
+	rows, err := c.conn.Query(ctx, strings.ReplaceAll(`SELECT v.mmsi, v.hearers = 1, ifNull(s.t, 0), ifNull(s.src, '') FROM (
+			SELECT mmsi, hearers FROM (
+				SELECT station, mmsi, count() OVER (PARTITION BY mmsi) AS hearers FROM (
+					SELECT station, mmsi FROM {db}.station_vessels
+					WHERE hour >= toStartOfHour(?) AND last_ts > ? AND mmsi IN `+mine+` AND `+chNewestFrom+` AND `+chOwnIn+` GROUP BY station, mmsi))
+			WHERE station = ?) AS v
+		LEFT JOIN (
+			SELECT mmsi, argMax((ship_type, toString(source)), last_ts) AS latest, latest.1 AS t, latest.2 AS src FROM {db}.statics
+			WHERE day >= toDate(?) AND last_ts > ? AND ship_type != 0 AND source != 'record' AND mmsi IN `+mine+`
+			GROUP BY mmsi) AS s ON v.mmsi = s.mmsi`, "{db}", c.db),
+		day, day, station, day, day, day, day, day, station, typed, typed, station, day, day)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[uint32]heardVessel{}
+	for rows.Next() {
+		var mmsi uint32
+		var h heardVessel
+		if err := rows.Scan(&mmsi, &h.only, &h.shipType, &h.source); err != nil {
+			return nil, err
+		}
+		out[mmsi] = h
+	}
+	return out, rows.Err()
+}
+
 // lastReceptions sets each station's last to its latest reception, read from its last hour. The hour stands in
 // when that hour held only stale copies, or when this read fails: listing never waits on it.
 func (c *chConn) lastReceptions(ctx context.Context, keep time.Time, out map[string]stationCount) error {
@@ -749,4 +822,159 @@ func (r *stationRollups) fresh(now time.Time) (map[string]stationCount, map[stri
 		return nil, nil
 	}
 	return r.counts, r.sources
+}
+
+// stationDetails is each station page's figures, kept a minute from their read.
+type stationDetails struct {
+	mu   sync.Mutex
+	m    map[string]stationDetail
+	read chan struct{} // one read at a time: each scans every station's 24 hours of station_vessels
+}
+
+// stationDetailWait is how long a station page waits behind another station's read.
+var stationDetailWait = 10 * time.Second
+
+type stationDetail struct {
+	at      time.Time
+	hours   []uint64          // nil when the read failed
+	types   map[string][2]int // nil when the read failed
+	credits map[string]string // per source kind whose ship types types counts, the credit it requires
+}
+
+// stationDetail is a station's figures for its page, empty without ClickHouse or while the rollups have found it
+// down. They stand for a minute, and not past the hour they were read in, whose counts end hours. A failed read
+// stands the minute too, so a struggling ClickHouse is asked once a minute per station, not once a request.
+// Reads run one at a time; a request that waited for another finds its figures if that read was the same
+// station's, and one that waits 10 seconds gets none, which stand the minute as a failure does.
+// ponytail: one read at a time across stations; per-station flights under a small cap if page traffic outgrows it.
+func (p *Pipeline) stationDetail(id string, now time.Time) stationDetail {
+	var s stationSeries
+	p.vmu.RLock()
+	if p.ch != nil {
+		s = p.ch.series
+	}
+	p.vmu.RUnlock()
+	if counts, _ := p.rollups(now); s == nil || counts == nil {
+		return stationDetail{}
+	}
+	d := &p.details
+	cached := func() (stationDetail, bool) {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		e, ok := d.m[id]
+		return e, ok && now.Sub(e.at) < time.Minute && now.Truncate(time.Hour).Equal(e.at.Truncate(time.Hour))
+	}
+	// keep stores e, unless e holds nothing and another read stored this station's figures meanwhile.
+	keep := func(e stationDetail) stationDetail {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if old, ok := d.m[id]; ok && e.hours == nil && e.types == nil && now.Sub(old.at) < time.Minute && now.Truncate(time.Hour).Equal(old.at.Truncate(time.Hour)) {
+			return old
+		}
+		for k, old := range d.m {
+			if now.Sub(old.at) >= time.Minute {
+				delete(d.m, k)
+			}
+		}
+		if d.m == nil {
+			d.m = map[string]stationDetail{}
+		}
+		d.m[id] = e
+		return e
+	}
+	if e, ok := cached(); ok {
+		return e
+	}
+	d.mu.Lock()
+	if d.read == nil {
+		d.read = make(chan struct{}, 1)
+	}
+	read := d.read
+	d.mu.Unlock()
+	select {
+	case read <- struct{}{}:
+		defer func() { <-read }()
+	case <-time.After(stationDetailWait):
+		return keep(stationDetail{at: now})
+	}
+	if e, ok := cached(); ok {
+		return e
+	}
+	e := stationDetail{at: now}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var err error
+	if e.hours, err = s.stationHours(ctx, id, now); err != nil {
+		log.Printf("station series: hours for %s: %v", id, err)
+		e.hours = nil
+	}
+	if heard, err := s.stationVessels(ctx, id, now); err != nil {
+		log.Printf("station series: vessels for %s: %v", id, err)
+	} else if e.types, e.credits, err = p.vesselTypes(heard); err != nil {
+		log.Printf("station series: vessel kinds for %s: %v", id, err)
+		e.types, e.credits = nil, nil
+	}
+	return keep(e)
+}
+
+// vesselTypes counts vessels by type, as [vessels, of them heard only here], with the credits of the sources whose
+// types it counts: an aid to navigation, base station, SAR aircraft or distress beacon, or fishing gear by its
+// kind, from the vessel cache or else the record; any other by its latest ship type in statics, else the cache's or
+// the record's; "0" when none is known.
+// A failed record lookup fails the count, since an aid it would have named counts as a ship otherwise.
+func (p *Pipeline) vesselTypes(heard map[uint32]heardVessel) (map[string][2]int, map[string]string, error) {
+	type held struct {
+		kind, source string
+		shipType     uint8
+	}
+	known := make(map[uint32]held, len(heard))
+	var rest []uint32
+	p.vmu.RLock()
+	for m := range heard {
+		if v := p.vessels[m]; v != nil {
+			known[m] = held{v.Kind, v.Source, v.ShipType}
+		} else {
+			rest = append(rest, m)
+		}
+	}
+	p.vmu.RUnlock()
+	for p.store != nil && len(rest) > 0 {
+		n := min(len(rest), maxParams)
+		recs, err := p.store.find(recordQuery{mmsis: rest[:n]})
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, r := range recs {
+			known[r.mmsi] = held{r.v.Kind, r.v.Source, r.v.ShipType}
+		}
+		rest = rest[n:]
+	}
+	out, credits := map[string][2]int{}, map[string]string{}
+	for m, h := range heard {
+		v := known[m]
+		k := v.kind
+		switch {
+		case k != "" && k != "vessel": // a kind the vessel's own messages set, credited as /v1/vessels credits it
+			if v.source != "" {
+				noteAttribution(credits, v.source)
+			}
+		case h.shipType != 0:
+			k = strconv.Itoa(int(h.shipType))
+			noteAttribution(credits, h.source)
+		case v.shipType != 0:
+			k = strconv.Itoa(int(v.shipType))
+			if v.source != "" {
+				noteAttribution(credits, v.source)
+			}
+		default:
+			k = "0"
+		}
+		c := out[k]
+		c[0]++
+		if h.only {
+			c[1]++
+		}
+		out[k] = c
+	}
+	return out, credits, nil
 }

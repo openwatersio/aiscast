@@ -216,10 +216,9 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	if err := conn.exec(ctx, "INSERT INTO {db}.statics (mmsi, day, source, message, name, first_ts, last_ts) VALUES (367567110, '2026-06-30', 'marinecadastre', 'archive', 'OLD NAME', '2026-06-30 01:00:00', '2026-06-30 01:00:00')"); err != nil {
 		t.Fatal(err)
 	}
-	// a cell the earlier load counted that the changed file no longer has, in each coverage table
+	// a cell the earlier load counted that the changed file no longer has
 	if err := conn.exec(ctx,
-		"INSERT INTO {db}.station_coverage (day, station, res, cell, source, vessels) SELECT toDate('2026-06-30'), 'marinecadastre', 6, 1, 'marinecadastre', uniqExactState(toUInt32(1))",
-		"INSERT INTO {db}.coverage (day, res, cell, vessels, stations) SELECT toDate('2026-06-30'), 6, 1, uniqExactState(toUInt32(1)), uniqExactState('marinecadastre')"); err != nil {
+		"INSERT INTO {db}.station_coverage (day, station, res, cell, source, vessels) SELECT toDate('2026-06-30'), 'marinecadastre', 6, 1, 'marinecadastre', uniqExactState(toUInt32(1))"); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.loadHistory(ctx, s, stats); err != nil {
@@ -232,10 +231,8 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	if got := states(); len(got) != 1 || got[0] != "367567110 CETACEA WDG7421" {
 		t.Errorf("a reload replaces its day's static states: %q", got)
 	}
-	for _, table := range []string{"coverage", "station_coverage"} {
-		if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+"."+table+" WHERE cell = 1"); err != nil || len(n) != 1 || n[0] != 0 {
-			t.Errorf("%s keeps a cell the reloaded day no longer has: %v %v", table, n, err)
-		}
+	if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+".station_coverage WHERE cell = 1"); err != nil || len(n) != 1 || n[0] != 0 {
+		t.Errorf("station_coverage keeps a cell the reloaded day no longer has: %v %v", n, err)
 	}
 	if again := rows(); len(again) != 8 {
 		t.Errorf("a changed file replaces its day rather than adding to it: %d rows", len(again))

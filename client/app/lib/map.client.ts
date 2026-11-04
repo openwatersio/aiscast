@@ -131,6 +131,11 @@ export interface MapController {
   onCoverageSelect(fn: (stations: string[] | undefined) => void): () => void;
   /** Lets go of the outlined cell. */
   clearCoverageSelect(): void;
+  /**
+   * Draws a station's coverage cells from these tiles under the vessels, in the coverage map's colors but
+   * fainter, until called with nothing.
+   */
+  setFootprint(tiles: CoverageTiles | undefined): void;
 }
 
 export interface MapView {
@@ -972,6 +977,42 @@ export function createMap(
     }
   }
 
+  // A station's footprint while its page is open, with the vessels over it.
+  let footprint: CoverageTiles | undefined;
+  const FOOTPRINT_OPACITY = 0.5; // of the coverage map's
+
+  function applyFootprint() {
+    if (!ready) return;
+    const src = map.getSource("footprint") as maplibregl.VectorTileSource | undefined;
+    // Another station's tiles are another source: its tile URLs carry the station.
+    if (src && (!footprint || src.tiles?.join() !== footprint.tiles.join())) {
+      map.removeLayer("footprint");
+      map.removeSource("footprint");
+    }
+    if (!footprint) return;
+    if (!map.getSource("footprint")) {
+      map.addSource("footprint", {
+        type: "vector",
+        tiles: footprint.tiles,
+        minzoom: footprint.minzoom ?? 0,
+        maxzoom: footprint.maxzoom ?? 10,
+        attribution: footprint.attribution,
+      });
+      // Under the basemap's labels, and so under every vessel layer, which come after them.
+      const labels = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+      map.addLayer(
+        { id: "footprint", type: "fill", source: "footprint", "source-layer": "coverage", filter: ["has", "vessels"] } as maplibregl.LayerSpecification,
+        labels,
+      );
+    }
+    map.setPaintProperty("footprint", "fill-color", coverageColor(theme, "vessels") as maplibregl.DataDrivenPropertyValueSpecification<string>);
+    map.setPaintProperty(
+      "footprint",
+      "fill-opacity",
+      coverageOpacity(footprint.window.days, FOOTPRINT_OPACITY) as maplibregl.DataDrivenPropertyValueSpecification<number>,
+    );
+  }
+
   // On hover, or on a tap, since a phone has no pointer to hover with.
   function showCoverage(e: maplibregl.MapLayerMouseEvent) {
     const p = e.features?.[0]?.properties;
@@ -1133,6 +1174,7 @@ export function createMap(
 
     ready = true;
     applyCoverage();
+    applyFootprint();
     updateView();
     render();
     applyInsets();
@@ -1370,6 +1412,10 @@ export function createMap(
         selectedCell = undefined;
         refreshTiles();
       }
+    },
+    setFootprint(tiles) {
+      footprint = tiles;
+      applyFootprint();
     },
     onCoverageSelect(fn) {
       coverageSelectHandlers.add(fn);

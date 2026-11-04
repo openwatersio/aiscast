@@ -309,10 +309,9 @@ func (c *chConn) replayDay(ctx context.Context, dir string, day time.Time, warmu
 	return nil
 }
 
-// rebuildCoverage bins day's usable positions into each coverage table again. Their distinct sets only ever
+// rebuildCoverage bins day's usable positions into station_coverage again. Its distinct sets only ever
 // grow, so a copy deleted or judged implausible leaves the cell it counted toward unless the day is deleted
-// first. coverage is rebuilt as long as it is written, so a server rolled back to reading it never serves
-// coverage a deletion removed.
+// first.
 func (c *chConn) rebuildCoverage(ctx context.Context, day time.Time) error {
 	coverageBinning.Lock()
 	defer coverageBinning.Unlock()

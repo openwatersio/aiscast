@@ -4,7 +4,7 @@ import { Activity, Plus } from "lucide-react";
 import { ChipRow, ClearChip, MenuChip } from "../components/ui/Chip";
 import { IconBadge, List, ListRow, StationTitle, StatusDot } from "../components/ui/List";
 import { Section } from "../components/ui/Section";
-import { isVolunteer, stationStatus, stationTitles } from "../lib/ais";
+import { isVolunteer, stationStatus, stationTitles, uptimePercent } from "../lib/ais";
 import { browserAuth, getCoverage, getStations, type ApiAuth, type Station } from "../lib/api";
 import { serverEnv } from "../lib/context";
 import { useLive } from "../lib/live";
@@ -42,10 +42,13 @@ const n = (v: number) => v.toLocaleString("en-US");
 const vessels = (s: Station) => s.vessels_24h ?? s.vessels;
 const unique = (s: Station) => s.vessels_exclusive_24h ?? 0;
 
-type Sort = "unique" | "vessels";
+const uptime = (s: Station) => uptimePercent(s.uptime_7d);
+
+type Sort = "unique" | "vessels" | "uptime";
 const SORTS: Array<{ value: Sort; label: string; chip: string; of(s: Station): number }> = [
   { value: "unique", label: "Most unique vessels", chip: "Unique vessels", of: unique },
   { value: "vessels", label: "Most vessels in 24 hours", chip: "Vessels", of: vessels },
+  { value: "uptime", label: "Highest uptime over 7 days", chip: "Uptime", of: (s) => s.uptime_7d ?? -1 },
 ];
 
 /** How many of a section's stations are live, of all of them: "29/35". */
@@ -82,7 +85,8 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
   }, [live, coverage]);
 
   const sort = SORTS.find((o) => o.value === sortBy)!;
-  const stations = loaderData.stations && [...loaderData.stations].sort((a, b) => sort.of(b) - sort.of(a));
+  // Many stations tie on uptime at 100%; among them, the ones that add the most lead.
+  const stations = loaderData.stations && [...loaderData.stations].sort((a, b) => sort.of(b) - sort.of(a) || unique(b) - unique(a));
   const titles = stationTitles(stations ?? []);
   const volunteers = stations?.filter((s) => isVolunteer(s.source) && (!area || area.has(s.station))) ?? [];
   const feeds = stations?.filter((s) => !isVolunteer(s.source)) ?? [];
@@ -99,13 +103,21 @@ export default function Stations({ loaderData }: Route.ComponentProps) {
       <ListRow
         key={s.station}
         to={`/stations/${s.station}`}
-        leading={<StatusDot status={status} />}
+        leading={
+          // The width of an IconBadge, so rows line up with any that have one.
+          <span className="flex w-9 shrink-0 justify-center">
+            <StatusDot status={status} uptime={uptime(s)} />
+          </span>
+        }
         title={<StationTitle name={titles.get(s.station)!} />}
         subtitle={
           <>
             {subtitle.join(" · ")}
-            {/* The dot is hidden from screen readers, so they hear the status here. */}
-            {status !== "live" && <span className="sr-only">, {status}</span>}
+            {/* The dot and its gauge are hidden from screen readers, so they hear them here. */}
+            <span className="sr-only">
+              {status !== "live" && `, ${status}`}
+              {uptime(s) != null && `, ${uptime(s)}% uptime`}
+            </span>
           </>
         }
       />

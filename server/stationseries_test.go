@@ -14,16 +14,23 @@ import (
 
 // fakeSeries answers the station series' reads from fixed figures.
 type fakeSeries struct {
-	counts  map[string]stationCount
-	totals  map[string]stationCount
-	sources map[string][2]int
-	own     map[string]map[uint32]int64
-	points  map[string][][2]float64
-	reads   int
-	err     error
+	counts     map[string]stationCount
+	totals     map[string]stationCount
+	sources    map[string][2]int
+	own        map[string]map[uint32]int64
+	points     map[string][][2]float64
+	hours      map[string][]uint64
+	vessels    map[string]map[uint32]heardVessel
+	vesselsErr error // what the next vessels read returns
+	reads      int
+	err        error
 	// totals' reads, and the error the next one returns
 	totalsReads int
 	totalsErr   error
+	// hours' reads, and the error the next one returns
+	hoursReads int
+	hoursErr   error
+	hoursDelay time.Duration // how long each hours read takes
 }
 
 func (f *fakeSeries) rebuildStationSeries(context.Context, time.Time) error  { return nil }
@@ -39,6 +46,22 @@ func (f *fakeSeries) stationTotals(context.Context) (map[string]stationCount, er
 		return nil, err
 	}
 	return f.totals, nil
+}
+func (f *fakeSeries) stationHours(_ context.Context, id string, _ time.Time) ([]uint64, error) {
+	f.hoursReads++
+	time.Sleep(f.hoursDelay)
+	if err := f.hoursErr; err != nil {
+		f.hoursErr = nil
+		return nil, err
+	}
+	return f.hours[id], nil
+}
+func (f *fakeSeries) stationVessels(_ context.Context, id string, _ time.Time) (map[uint32]heardVessel, error) {
+	if err := f.vesselsErr; err != nil {
+		f.vesselsErr = nil
+		return nil, err
+	}
+	return f.vessels[id], nil
 }
 func (f *fakeSeries) sourceCounts(context.Context, time.Time) (map[string][2]int, error) {
 	return f.sources, nil
@@ -195,6 +218,31 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	}
 	if s := counts["station:s1"]; !s.last.Equal(recent.Truncate(time.Millisecond)) {
 		t.Errorf("s1: last %v; want %v", s.last, recent)
+	}
+	// Hours read each hour's newest recorded version: s1's current hour is its copies, not the older version's
+	// 1000 or the unrecorded 5000. Its own ship counts, as uptime counts it; the default MMSI is no reception.
+	last := stationWindow - 1
+	if h, err := conn.stationHours(ctx, "station:s1", now); err != nil || len(h) != stationWindow || h[last-2] != 1 || h[last-1] != 0 || h[last] != 2 {
+		t.Errorf("s1 hours %v, %v; want 1 two hours back, 0 the next, and 2 now: its own ship counts, the default MMSI does not", h[last-3:], err)
+	}
+	if h, err := conn.stationHours(ctx, "station:s3", now); err != nil || h[last-30] != 1 || h[last] != 0 {
+		t.Errorf("s3 hours %v, %v; want 1 thirty hours back", h, err)
+	}
+	// A vessel's type is its latest non-zero one across sources; a vessel with none has 0.
+	d := func(ago time.Duration) string { return now.Add(-ago).Format("2006-01-02 15:04:05.000") }
+	if err := conn.exec(ctx, "INSERT INTO {db}.statics (mmsi, day, source, station, message, ship_type, first_ts, last_ts) VALUES "+
+		"(257000001, toDate('"+d(48*time.Hour)+"'), 'kystverket', 'kystverket', '5', 70, '"+d(48*time.Hour)+"', '"+d(48*time.Hour)+"'), "+
+		"(257000001, toDate('"+d(time.Hour)+"'), 'station', 'station:s1', '5', 30, '"+d(2*time.Hour)+"', '"+d(time.Hour)+"'), "+
+		"(257000001, toDate('"+d(time.Minute)+"'), 'aishub', 'aishub', '5', 0, '"+d(time.Minute)+"', '"+d(time.Minute)+"'), "+
+		// the record's seed and a state older than the window statics is read over, neither of which counts
+		"(257000001, toDate('"+d(time.Minute)+"'), 'record', 'record', 'record', 99, '"+d(time.Minute)+"', '"+d(time.Minute)+"'), "+
+		"(257000002, toDate('"+d(40*24*time.Hour)+"'), 'kystverket', 'kystverket', '5', 50, '"+d(40*24*time.Hour)+"', '"+d(40*24*time.Hour)+"'), "+
+		// on the window's first day, but before its start
+		"(257000002, toDate('"+d(35*24*time.Hour)+"'), 'kystverket', 'kystverket', '5', 60, '"+d(35*24*time.Hour+time.Minute)+"', '"+d(35*24*time.Hour+time.Minute)+"')"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := conn.stationVessels(ctx, "station:s1", now); err != nil || fmt.Sprint(v) != fmt.Sprint(map[uint32]heardVessel{257000001: {true, 30, "station"}, 257000002: {}}) {
+		t.Errorf("s1 vessels %v, %v; want vessel 1 unique and type 30, vessel 2 shared and untyped, its own ship left out", v, err)
 	}
 	if _, ok := counts["station:old"]; !ok {
 		t.Errorf("the stream before the fold is not under its receiver: %v", counts)

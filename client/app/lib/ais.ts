@@ -1,4 +1,5 @@
 import type { VesselProps } from "./api";
+import { ferryIdentity, type FerryVessel } from "./ferries";
 
 export const NAV_STATUS: Record<number, string> = {
   0: "Under way using engine",
@@ -323,7 +324,7 @@ const FLAGS_WITH_THE = new Set(["AE", "BS", "CF", "CK", "DO", "FK", "FO", "GB", 
 
 type SnippetVessel = Pick<
   VesselProps,
-  "mmsi" | "name" | "kind" | "type" | "flag" | "imo" | "destination" | "near" | "length" | "beam" | "to_bow" | "to_stern" | "to_port" | "to_starboard"
+  "mmsi" | "name" | "kind" | "type" | "flag" | "imo" | "destination" | "near" | "length" | "beam" | "to_bow" | "to_stern" | "to_port" | "to_starboard" | "particulars"
 >;
 
 /**
@@ -331,8 +332,9 @@ type SnippetVessel = Pick<
  * with "vessel", "AIS" or "live" beside it, so the name leads and the class says which ship
  * of that name this is. The MMSI is in the description; nobody searches for it.
  */
-export function vesselTitle(v: { mmsi: number; name?: string; kind?: string; type?: number }): string {
+export function vesselTitle(v: FerryVessel & { type?: number }): string {
   if (!v.name) return `MMSI ${v.mmsi} live AIS position | Open Waters AIS`;
+  if (ferryIdentity(v)) return `${v.name} ferry tracker | Open Waters AIS`;
   return `${v.name}, ${classNoun(v)}: live AIS position | Open Waters AIS`;
 }
 
@@ -345,6 +347,16 @@ export function vesselTitle(v: { mmsi: number; name?: string; kind?: string; typ
  */
 export function vesselDescription(v: SnippetVessel): string {
   const label = v.name ?? `MMSI ${v.mmsi}`;
+  const ids = [...(v.name ? [`MMSI ${v.mmsi}`] : []), ...(v.imo ? [`IMO ${v.imo}`] : [])].join(", ");
+  const ferry = ferryIdentity(v);
+  if (ferry) {
+    const operator = ferry.operator ? `${ferry.operator} ` : "";
+    const a = /^[aeio]/i.test(operator) ? "an" : "a";
+    const service = ferry.service ? ` serving ${ferry.service}` : "";
+    // A ferry's AIS destination often names a route rather than the current sailing.
+    const where = v.near ? `Last reported near ${v.near}. ` : "";
+    return `${label} is ${a} ${operator}ferry${service}${ids ? ` (${ids})` : ""}. ${where}Live AIS position and track.`;
+  }
   const noun = classNoun(v);
   const offsets =
     v.to_bow != null && v.to_stern != null && v.to_port != null && v.to_starboard != null
@@ -355,8 +367,6 @@ export function vesselDescription(v: SnippetVessel): string {
   // "flagged in", because a region's name does not always make an adjective: "Hong Kong SAR China".
   const country = flagName(v.flag);
   const flag = country ? ` flagged in ${FLAGS_WITH_THE.has(v.flag!.toUpperCase()) ? "the " : ""}${country}` : "";
-  // A nameless vessel is already labelled by its MMSI.
-  const ids = [...(v.name ? [`MMSI ${v.mmsi}`] : []), ...(v.imo ? [`IMO ${v.imo}`] : [])].join(", ");
   const to = parseDestination(v.destination)?.to?.raw;
   const where = v.near ? `Last reported near ${v.near}${to ? `, bound for ${to}` : ""}. ` : to ? `Bound for ${to}. ` : "";
   // Said aloud: "an 80 m", "an 11 m", "an aid to navigation".
@@ -766,6 +776,62 @@ export function stationTitles(sts: Array<{ station: string; name?: string; near?
       return [st.station, { title: name.title, suffix: name.suffix ? `${name.suffix} ${tell}` : tell }];
     }),
   );
+}
+
+/** One class of vessel a station heard: how many, and how many of them no other station heard. */
+export interface MixSlice {
+  cls: ShipClass;
+  vessels: number;
+  only: number;
+}
+
+/**
+ * A station's vessels by class, from its counts by ITU ship type or kind, most first and "other"
+ * last, so the classes read as the map colors them.
+ */
+export function vesselMix(types: Record<string, [number, number]> | undefined): MixSlice[] {
+  const by = new Map<ShipClass, MixSlice>();
+  for (const [key, [vessels, only]] of Object.entries(types ?? {})) {
+    const cls = /^\d+$/.test(key) ? shipClass("vessel", Number(key)) : shipClass(key);
+    const slice = by.get(cls) ?? { cls, vessels: 0, only: 0 };
+    slice.vessels += vessels;
+    slice.only += only;
+    by.set(cls, slice);
+  }
+  const rank = (m: MixSlice) => (m.cls === "other" ? -1 : m.vessels);
+  return [...by.values()].sort((a, b) => rank(b) - rank(a));
+}
+
+/**
+ * A station's coverage TileJSON `fit`, [west, south, east, north], as the map's box, [south, west, north,
+ * east]. Undefined without one, as from a server that does not frame one station's cells.
+ */
+export function fitBox(fit: number[] | undefined): [number, number, number, number] | undefined {
+  return fit?.length === 4 ? [fit[1]!, fit[0]!, fit[3]!, fit[2]!] : undefined;
+}
+
+/** The network's own credit, which the server's every credit line opens with. */
+const OWN_CREDIT = "Open Waters AIS (https://openwaters.io/ais/)";
+
+/**
+ * The credit lines a response gives per source, as one: the network's own credit once, then each source's
+ * own as the source words it.
+ */
+export function creditLine(...credits: Array<Record<string, string> | undefined>): string {
+  const lines = credits.flatMap((m) => Object.values(m ?? {}));
+  if (!lines.length) return "";
+  const theirs = new Set(lines.map((c) => (c.startsWith(OWN_CREDIT) ? c.slice(OWN_CREDIT.length).replace(/^\. /, "") : c)));
+  theirs.delete("");
+  return [OWN_CREDIT, ...theirs].join(". ");
+}
+
+/**
+ * A station's uptime, a share from 0 to 1, as a whole percent, rounded down so only a station that sent in
+ * every hour reads 100. Undefined while the server does not know it.
+ */
+export function uptimePercent(u: number | null | undefined): number | undefined {
+  // The nudge keeps a share like 0.29, stored as 0.28999…, from reading 28.
+  return u == null ? undefined : Math.floor(u * 100 + 1e-9);
 }
 
 /**

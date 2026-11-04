@@ -6,6 +6,10 @@ export interface FleetVessel {
   name: string;
   mmsi?: number;
   imo?: number;
+  /** Observed AIS spelling, including radio-name truncation. */
+  ais_name?: string;
+  /** Usual service, independent of the vessel's current sailing. */
+  service?: string;
   subtitle?: string;
   note?: string;
   /** Wikimedia Commons file names, such as interiors, shown with the vessel. */
@@ -39,6 +43,7 @@ export interface Fleet {
   photos?: string[];
   /** Where the fleet's members come from, label to URL: `Wikidata: https://www.wikidata.org/wiki/Q929872`. */
   source?: Record<string, string>;
+  reviewed?: string;
   /** A fleet's vessels. A group has none. */
   sections?: FleetSection[];
   /** A group's fleets and groups, the most vessels first. */
@@ -46,23 +51,24 @@ export interface Fleet {
 }
 
 // Parsed here, on the server, so the YAML parser stays out of the browser's bundle.
-const files = import.meta.glob<string>("../fleets/**/*.yaml", { query: "?raw", import: "default", eager: true });
+const files = import.meta.glob<string>("../fleets/**/*.{yaml,json}", { query: "?raw", import: "default", eager: true });
 
 const parentOf = (id: string) => id.slice(0, Math.max(0, id.lastIndexOf("/")));
 
 const byId = new Map<string, Fleet>([["", { id: "", title: "Fleets", summary: "Collections of notable vessels, on the map.", children: [] }]]);
 for (const [path, text] of Object.entries(files).sort(([a], [b]) => a.localeCompare(b))) {
-  const id = path.slice("../fleets/".length, -".yaml".length).replace(/(^|\/)index$/, "");
+  if (path.endsWith("/index.json")) throw new Error(`${path}: groups use index.yaml`);
+  const id = path.slice("../fleets/".length).replace(/\.(yaml|json)$/, "").replace(/(^|\/)index$/, "");
   const parsed = load(text) as Omit<Fleet, "id" | "children"> & { vessels?: FleetVessel[] };
   // Both come from where the file is, not from what it says.
   if ("id" in parsed || "children" in parsed) throw new Error(`fleets/${id}: id and children are not keys a fleet sets`);
   const { vessels, sections, ...rest } = parsed;
-  if (vessels && sections) throw new Error(`fleets/${id}.yaml: list vessels or sections, not both`);
+  if (vessels && sections) throw new Error(`${path}: list vessels or sections, not both`);
   const group = path.endsWith("/index.yaml");
   // A group's cover and photos are its first fleet's.
   if (group && (vessels || sections || "cover" in parsed || "photos" in parsed || "source" in parsed))
     throw new Error(`fleets/${id}/index.yaml: a group gives only a title, summary and description`);
-  if (byId.has(id)) throw new Error(`fleets/${id}: both ${id}.yaml and ${id}/index.yaml`);
+  if (byId.has(id)) throw new Error(`${path}: duplicate fleet id ${id}`);
   byId.set(id, { ...rest, id, children: [], ...(group ? {} : { sections: sections ?? [{ vessels: vessels ?? [] }] }) });
 }
 for (const f of byId.values()) {

@@ -20,24 +20,25 @@ and identity.
   is a feeder token: five streams, 200 messages a second, any area, history.
   There is no application, no uptime gate, and nobody to email. Stop feeding and
   it lapses after a day; start again and it returns.
-- **A named station** with a public page: vessels heard, coverage extent,
-  message counts, and how many messages another station heard first.
+- **A named station** with a public page: its uptime, messages per hour, the
+  vessels it hears by type and how many of them no other station heard, and
+  where it hears them.
 - **An open aggregate that stays open.** Volunteer receptions are CC0, the
   aggregate is ODbL, and the [contributor agreement](contributor-agreement.md)
   says so before the data exists. It also says the aggregate stays open if the
   project is sold, and it changes only through public pull requests.
 
-## Heard first
+## Unique vessels
 
 The number that matters on a station page is not messages received. It is
-**messages this station heard first** — receptions that no other station and no
-open feed had already delivered.
+**unique vessels**: the vessels this station heard that no other station or
+open feed did.
 
 That is the honest measure of what a station adds. A rooftop in a well-covered
 harbour can log millions of messages that three other stations also logged; a
 station on an empty headland can log a fraction of that and be the only reason
 those vessels appear at all. Ranking by volume would tell operators to point
-antennas where the ships already are. Ranking by heard-first tells them to point
+antennas where the ships already are. Ranking by unique vessels tells them to point
 antennas at the gaps, which is the actual problem.
 
 Coverage scales with the square of range — `d(nm) ≈ 1.23 × (√h_rx(ft) +
