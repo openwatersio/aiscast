@@ -17,7 +17,7 @@ import {
 } from "../lib/ais";
 import { publicApiBase, type SourceRef, type VesselFeature, type VesselParticulars } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
-import { DEVELOPERS, SIGNALK_PLUGIN } from "../lib/links";
+import { DEVELOPERS, SIGNALK_PLUGIN, WIKIDATA_GUIDE } from "../lib/links";
 import { SITE } from "../lib/meta";
 import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
@@ -280,6 +280,12 @@ export function VesselDetail({
 
       {p?.particulars && (
         <Particulars particulars={p.particulars} provenance={p.provenance} sources={p.sources} name={name} photos={media?.links.commonsCategory} />
+      )}
+
+      {kind === "vessel" && (
+        <p className="mt-3 text-footnote text-fg-muted">
+          Missing or incorrect particulars? <a href={WIKIDATA_GUIDE}>Correct vessel details</a>.
+        </p>
       )}
 
       <ContributePrompt

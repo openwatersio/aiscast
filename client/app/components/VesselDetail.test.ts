@@ -134,3 +134,22 @@ describe("ferry vessel pages", () => {
     expect(descriptors).toContainEqual({ property: "og:title", content: "TEST SHIP, passenger ship: live AIS position | Open Waters AIS" });
   });
 });
+
+describe("correcting vessel details", () => {
+  it.each([undefined, { ship_type: "survey vessel" }])("links vessels to the Wikidata guide with or without particulars", (particulars) => {
+    const feature: VesselFeature = { ...ferry, properties: { ...ferry.properties, particulars } };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
+    ));
+    expect(html).toContain('href="https://openwaters.io/ais/wikidata/"');
+    expect(html).toContain(">Correct vessel details</a>");
+  });
+
+  it.each(["gear", "aton", "base", "sar"] as const)("does not suggest vessel edits for %s", (kind) => {
+    const feature: VesselFeature = { ...ferry, properties: { ...ferry.properties, kind } };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
+    ));
+    expect(html).not.toContain("/ais/wikidata/");
+  });
+});
