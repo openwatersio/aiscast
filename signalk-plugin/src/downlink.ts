@@ -1,4 +1,4 @@
-import type { Delta, ServerAPI } from "@signalk/server-api";
+import type { Delta, Path, ServerAPI } from "@signalk/server-api";
 import { Parser } from "@signalk/nmea0183-signalk";
 import type { Frame, Link } from "./link.js";
 import { stripTag, xorChecksum } from "./nmea.js";
@@ -9,7 +9,7 @@ export type ReceiveMode = "off" | "auto" | "always";
 export interface DownlinkOptions {
   mode: ReceiveMode;
   radiusNm: number;
-  source: string; // $source on injected deltas
+  source: string; // namespace for network $source values
   selfSub: () => string | null; // our token's sub: aiscast files our own publishes under it, and they are dropped on the way back
   onReceived?: (sentence: string) => void; // loop guard hook
   onInjected?: (sentence: string) => void; // relay to NMEA 0183 output, for chartplotters and tablets
@@ -40,8 +40,7 @@ interface Box {
   radiusNm: number;
 }
 
-// Subscribes to aiscast around the boat and injects the events as Signal K deltas through the server's own
-// AIS parser, so injected targets are indistinguishable in shape from VHF-received ones except by $source.
+// The server's AIS parser keeps network targets compatible with locally received targets.
 export class Downlink {
   private parser = new Parser();
   private lastLocal = 0;
@@ -213,9 +212,16 @@ export class Downlink {
     if (delta.context === this.app.selfContext) return;
     if (this.opts.mode === "always" && this.vhfIsFresh(delta.context, Date.now())) return;
 
+    // Volunteer stations share credit; separate source ids would accumulate per-station values forever.
+    const feed = ev.source?.replace(/^(station|udp|mmsi|http|v1):.*$/, "$1");
+    const source = feed ? `${this.opts.source}.feed-${Buffer.from(feed).toString("base64url")}` : this.opts.source;
+    delta.updates.push({
+      timestamp: delta.updates[0].timestamp,
+      values: [{ path: "sensors.aiscast" as Path, value: { source: ev.source, license: ev.license, attribution: ev.attribution } }],
+    });
     for (const u of delta.updates) {
       delete (u as { source?: unknown }).source;
-      u.$source = this.opts.source as Delta["updates"][number]["$source"];
+      u.$source = source as Delta["updates"][number]["$source"];
       if (ev.time) u.timestamp = ev.time as Delta["updates"][number]["timestamp"];
     }
     this.app.handleMessage(this.opts.source, delta);
@@ -259,7 +265,7 @@ export class Downlink {
   // Another source (the boat's receiver) updated this target recently: do not overwrite it.
   private vhfIsFresh(context: string, now: number): boolean {
     const pos = this.app.getPath(`${context}.navigation.position`) as { $source?: string; timestamp?: string } | undefined;
-    if (!pos?.$source || pos.$source === this.opts.source || !pos.timestamp) return false;
+    if (!pos?.$source || pos.$source === this.opts.source || pos.$source.startsWith(`${this.opts.source}.`) || !pos.timestamp) return false;
     return now - Date.parse(pos.timestamp) < VHF_WINS;
   }
 
@@ -278,6 +284,8 @@ interface AisEvent {
   type: "event";
   time?: string;
   source?: string;
+  license?: string;
+  attribution?: string;
   nmea?: string[];
   mmsi?: number;
   msg_type?: string;
