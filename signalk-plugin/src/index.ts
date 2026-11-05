@@ -142,7 +142,7 @@ export default function (app: ServerAPI): Plugin {
         mode: { "ui:widget": "radio" },
         nmea0183out: {
           "ui:help":
-            "Relay aiscast targets as !AIVDM on the nmea0183out event, so chartplotters and tablet apps reading the server's NMEA 0183 connections see them. Turn off if another plugin (signalk-vessels-to-ais) already converts them.",
+            "Relay aiscast targets as !AIVDM on the nmea0183out event, so chartplotters and tablet apps reading the server's NMEA 0183 connections see them. NMEA cannot carry source credits: display the attribution from sensors.aiscast separately, or turn this off. Also turn off if another plugin (signalk-vessels-to-ais) already converts them.",
         },
       },
       advanced: {

@@ -40,8 +40,7 @@ interface Box {
   radiusNm: number;
 }
 
-// Subscribes to aiscast around the boat and injects the events as Signal K deltas through the server's own
-// AIS parser, so injected targets are indistinguishable in shape from VHF-received ones except by $source.
+// The server's AIS parser keeps network targets compatible with locally received targets.
 export class Downlink {
   private parser = new Parser();
   private lastLocal = 0;
@@ -213,8 +212,9 @@ export class Downlink {
     if (delta.context === this.app.selfContext) return;
     if (this.opts.mode === "always" && this.vhfIsFresh(delta.context, Date.now())) return;
 
-    // Station ids contain separators that cannot be literal Signal K source-path segments.
-    const source = ev.source ? `${this.opts.source}.feed-${Buffer.from(ev.source).toString("base64url")}` : this.opts.source;
+    // Volunteer stations share credit; separate source ids would accumulate per-station values forever.
+    const feed = ev.source?.replace(/^(station|udp|mmsi|http|v1):.*$/, "$1");
+    const source = feed ? `${this.opts.source}.feed-${Buffer.from(feed).toString("base64url")}` : this.opts.source;
     delta.updates.push({
       timestamp: delta.updates[0].timestamp,
       values: [{ path: "sensors.aiscast" as Path, value: { source: ev.source, license: ev.license, attribution: ev.attribution } }],

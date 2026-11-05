@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Received traffic keeps a separate Signal K source for each upstream feed, with source, license, and attribution at the vessel's `sensors.aiscast` path. Apps can match credits to the source of each value. Source-priority rules that name `signalk-aiscast.net` exactly need to include its per-feed names. NMEA 0183 output cannot carry these credits; the README explains how to display them separately.
+- Received traffic keeps a separate Signal K source for each upstream feed, with volunteer stations grouped by source prefix. Source, license, and attribution are available at the vessel's `sensors.aiscast` path. Apps can match credits to fields with a source; plain identity fields need the vessel's combined credits. Source-priority rules that name `signalk-aiscast.net` exactly need to include its per-feed names. NMEA 0183 output cannot carry these credits; the setting and README explain the need to display them separately.
 
 ## 0.6.3
 
