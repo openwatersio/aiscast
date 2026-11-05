@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Received traffic keeps a separate Signal K source for each upstream feed, with source, license, and attribution at the vessel's `sensors.aiscast` path. Apps can match credits to the source of each value. Source-priority rules that name `signalk-aiscast.net` exactly need to include its per-feed names. NMEA 0183 output cannot carry these credits; the README explains how to display them separately.
+
 ## 0.6.3
 
 - The plugin's App Store page has screenshots of aiscast traffic in Navionics and Aqua Map, which receive it from the Signal K server as NMEA 0183 over Wi-Fi.

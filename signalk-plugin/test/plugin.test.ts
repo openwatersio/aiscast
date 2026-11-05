@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { createPublicKey, verify } from "node:crypto";
 import { join } from "node:path";
-import type { Plugin } from "@signalk/server-api";
+import { FullSignalK, type Delta, type Plugin } from "@signalk/server-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mintMessage } from "../src/identity.js";
 import createPlugin, { type Config, stationPageHelp } from "../src/index.js";
@@ -414,11 +414,72 @@ describe("downlink", () => {
     expect(app.deltas).toHaveLength(1);
     const d = app.deltas[0];
     expect(d.context).toBe("vessels.urn:mrn:imo:mmsi:227006760");
-    expect(d.updates[0].$source).toBe("signalk-aiscast.net");
+    expect(d.updates[0].$source).toBe("signalk-aiscast.net.feed-a3lzdHZlcmtldA");
     expect(d.updates[0].timestamp).toBe(time);
     expect((d.updates[0] as { source?: unknown }).source).toBeUndefined();
     const paths = d.updates.flatMap((u) => ("values" in u ? u.values.map((v) => v.path) : []));
     expect(paths).toContain("navigation.position");
+  });
+
+  it("keeps each feed's credits readable by the source of a value, without treating network updates as VHF", async () => {
+    const model = new FullSignalK(app.selfId);
+    app.handleMessage = (_id, delta) => {
+      app.deltas.push(delta as Delta);
+      model.addDelta(delta);
+    };
+    app.getPath = (path) => path.split(".").reduce((node, key) => node?.[key], model.retrieve());
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const position = { type: "event", time: new Date().toISOString(), nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 };
+    const government = { source: "kystverket", license: "NLOD-2.0", attribution: "Credit the Norwegian Coastal Administration." };
+    const aggregate = { source: "aishub", license: "AISHub", attribution: "Credit AISHub contributors." };
+    server.send({ ...position, ...government });
+    await until(() => app.deltas.length === 1);
+    const vessel = model.retrieve().vessels["urn:mrn:imo:mmsi:227006760"];
+    const governmentSource = vessel.navigation.position.$source;
+    expect(vessel.sensors.aiscast.value).toEqual(government);
+    expect(vessel.sensors.aiscast.$source).toBe(governmentSource);
+
+    server.send({ ...position, ...aggregate });
+    await until(() => app.deltas.length === 2);
+    const aggregateSource = vessel.navigation.position.$source;
+    expect(aggregateSource).not.toBe(governmentSource);
+    expect(vessel.sensors.aiscast.values[governmentSource].value).toEqual(government);
+    expect(vessel.sensors.aiscast.values[aggregateSource].value).toEqual(aggregate);
+
+    server.send({ type: "event", time: position.time, ...aggregate, nmea: TYPE5, mmsi: 227006760, msg_type: "ShipStaticData" });
+    await until(() => app.deltas.length === 3);
+    expect(vessel.sensors.aiscast.values[governmentSource].value).toEqual(government);
+
+    server.send({ ...position, source: "aishub" });
+    await until(() => app.deltas.length === 4);
+    expect(vessel.sensors.aiscast.value).toEqual({ source: "aishub" });
+  });
+
+  it.each(["signalk-aiscast.net", "signalk-aiscast.net.feed-a3lzdHZlcmtldA"])("does not treat network source %s as a fresh VHF receiver", async (source) => {
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    app.model["vessels.urn:mrn:imo:mmsi:227006760.navigation.position"] = {
+      $source: source,
+      timestamp: new Date().toISOString(),
+    };
+    server.send({ type: "event", time: new Date().toISOString(), source: "aishub", nmea: [VDM], mmsi: 227006760, msg_type: "PositionReport", lat: 1, lon: 1 });
+    await until(() => app.deltas.length === 1);
+  });
+
+  it("keeps station source ids safe for Signal K paths and credits multipart static updates", async () => {
+    await start({ receive: { mode: "always" } });
+    await server.waitForFrame((f) => f.type === "subscribe");
+    const time = new Date(Date.now() - 30 * 60_000).toISOString();
+    const source = "station:ed25519:key.with/slashes";
+    server.send({ type: "event", time, source, license: "ODbL-1.0", attribution: "Open Waters AIS", nmea: TYPE5, mmsi: 227006760, msg_type: "ShipStaticData" });
+    await until(() => app.deltas.length === 1);
+    const updates = app.deltas[0].updates;
+    expect(updates.every((u) => u.$source === updates[0].$source && u.timestamp === time)).toBe(true);
+    expect(updates[0].$source).toMatch(/^signalk-aiscast\.net\.feed-[A-Za-z0-9_-]+$/);
+    const values = updates.flatMap((u) => "values" in u ? u.values : []);
+    expect(values.find((v) => v.path === "sensors.aiscast")?.value).toEqual({ source, license: "ODbL-1.0", attribution: "Open Waters AIS" });
+    expect(values).toContainEqual({ path: "", value: { name: "TEST VESSEL" } });
   });
 
   it("drops echoes under an operator-issued token's own station", async () => {
