@@ -64,6 +64,38 @@ describe("ferry vessel pages", () => {
     expect(JSON.stringify(descriptors)).not.toMatch(/Slackwater|slackwater/);
   });
 
+  it("links the Slackwater station pages near the vessel by name, at their own addresses", () => {
+    const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type: 70 } };
+    const db = "Slackwater database (https://github.com/openwatersio/slackwater-database)";
+    const stations = [
+      { kind: "tide" as const, name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/", attribution: `${db}. Source: TICON-4` },
+      { kind: "current" as const, name: "Porlier Pass", url: "https://slackwater.xyz/currents/ca/bc/porlier-pass/", attribution: db },
+    ];
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature, stations }),
+    ));
+    expect(html).toContain("Near its last position:");
+    // Each its own line and a full-size tap target, as the app link is.
+    expect(html).toContain('<li><a href="https://slackwater.xyz/tides/ca/bc/crofton/" target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11');
+    expect(html).toContain(">Tides: Crofton</a>");
+    expect(html).toContain('<li><a href="https://slackwater.xyz/currents/ca/bc/porlier-pass/" target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11');
+    expect(html).toContain(">Currents: Porlier Pass</a>");
+    // Each station's licence asks a page showing it to display its notice; a shared notice shows once.
+    expect(html.match(/Source: TICON-4/g)).toHaveLength(1);
+    expect(html.match(/Slackwater database \(https:\/\/github\.com\/openwatersio\/slackwater-database\)/g)).toHaveLength(2);
+    // The app link stays, for a reader who wants more than one station.
+    expect(html).toContain('href="https://slackwater.xyz/?ref=ais-vessel"');
+  });
+
+  it("offers only the app when no station is near", () => {
+    const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type: 70 } };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature, stations: [] }),
+    ));
+    expect(html).not.toContain("Near its last position");
+    expect(html.match(/slackwater\.xyz/g)).toHaveLength(1);
+  });
+
   it.each(["gear", "aton", "base", "sar"] as const)("does not offer Slackwater on a %s page", (kind) => {
     const feature: VesselFeature = { ...ferry, properties: { ...ferry.properties, kind } };
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
