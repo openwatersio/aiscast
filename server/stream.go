@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -77,16 +79,105 @@ func (p *Pipeline) noteSlow(sub *subscriber, protocol string, c *Claims, r *http
 	if !sub.overflow.Load() {
 		return
 	}
-	p.streams.closedSlow(protocol, c)
+	// The loopback health probe falls behind only when the server itself stalls; refusing it would fail /health.
+	refusing := !net.ParseIP(clientIP(r)).IsLoopback() && slowClients.strike(c.Sub, time.Now())
 	who := c.Sub
 	if c.Role == "anonymous" {
 		who = "anon" // its sub carries the full address
 	}
 	network, _ := clientNet(clientIP(r))
 	log.Printf("stream: %s %s client too slow: sub=%q net=%s", protocol, tierOf(c), who, network)
+	if refusing {
+		log.Printf("stream: refusing new streams for %s after %d slow closes: sub=%q net=%s", slowRefusal, slowStrikes, who, network)
+	}
+	p.streams.closedSlow(protocol, c) // last, so a test that sees the count sees the strike
 }
 
-// ---- /v0/stream: aisstream.io wire protocol. Frozen; nothing here may deviate. ----
+// A client that cannot keep up reconnects into the same stall, and each stall drops a queue's worth of its
+// events, so after slowStrikes slow closes within slowWindow its new streams are refused for slowRefusal. A
+// client is its sub: its token's, or its address when anonymous, as its stream slots count it.
+const (
+	slowStrikes = 3
+	slowWindow  = 10 * time.Minute
+	slowRefusal = 5 * time.Minute
+)
+
+var slowClients = &slowBackoff{}
+
+type slowBackoff struct {
+	mu    sync.Mutex
+	seen  map[string]*slowRecord
+	swept time.Time
+}
+
+type slowRecord struct {
+	closes []time.Time // slow closes within the last slowWindow, oldest first
+	until  time.Time   // new streams are refused before this
+}
+
+// strike records one slow close for key and reports whether it starts a refusal.
+func (b *slowBackoff) strike(key string, now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.seen == nil {
+		b.seen = map[string]*slowRecord{}
+	}
+	// Once a minute, so a stall that closes every client at once does not sweep once per client.
+	if now.Sub(b.swept) > time.Minute {
+		for k, r := range b.seen {
+			if (len(r.closes) == 0 || now.Sub(r.closes[len(r.closes)-1]) > slowWindow) && !now.Before(r.until) {
+				delete(b.seen, k)
+			}
+		}
+		b.swept = now
+	}
+	r := b.seen[key]
+	if r == nil {
+		r = &slowRecord{}
+		b.seen[key] = r
+	}
+	r.closes = append(slices.DeleteFunc(r.closes, func(t time.Time) bool { return now.Sub(t) > slowWindow }), now)
+	if len(r.closes) < slowStrikes {
+		return false
+	}
+	*r = slowRecord{until: now.Add(slowRefusal)}
+	return true
+}
+
+// wait is how long new streams from key stay refused; zero or less when they are not.
+func (b *slowBackoff) wait(key string, now time.Time) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r := b.seen[key]; r != nil {
+		return r.until.Sub(now)
+	}
+	return 0
+}
+
+// refused is the refusal for a new stream from sub while it is backed off for being slow, with the seconds
+// until it may retry, or "" when it is not backed off.
+func (p *Pipeline) refused(sub string) (string, int) {
+	wait := slowClients.wait(sub, time.Now())
+	if wait <= 0 {
+		return "", 0
+	}
+	p.stats.slowRefused.Add(1)
+	secs := int(math.Ceil(wait.Seconds()))
+	return fmt.Sprintf("client too slow: retry in %d seconds", secs), secs
+}
+
+// refusedHTTP answers a backed-off client's stream request before any upgrade, as the stream-slot limit does.
+func (p *Pipeline) refusedHTTP(w http.ResponseWriter, sub string) bool {
+	msg, secs := p.refused(sub)
+	if msg == "" {
+		return false
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	http.Error(w, msg, http.StatusTooManyRequests)
+	return true
+}
+
+// ---- /v0/stream: aisstream.io wire protocol. Frozen; nothing here may deviate but the slow-client refusal. ----
 
 // aisstream's subscription object; encoding/json matches keys case-insensitively, as aisstream does.
 type v0Sub struct {
@@ -264,6 +355,9 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 			noteClaims(r, cl)
 		}
 		if msg == "" && release == nil {
+			msg, _ = p.refused(cl.Sub) // the key arrives in this frame, so v0 cannot refuse before the upgrade
+		}
+		if msg == "" && release == nil {
 			var err error
 			if release, err = acquireStream(cl, ip); err != nil {
 				msg = "concurrent connections per user exceeded" // aisstream's wording
@@ -436,6 +530,13 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cl = p.orAnonymous(cl, r)
+	// After the upgrade, as the stream-slot refusal below is, so a browser can read why. MQTT, which only
+	// ingests and never falls behind the fan-out, has already branched off.
+	if msg, _ := p.refused(cl.Sub); msg != "" {
+		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": msg})
+		c.Close(websocket.StatusPolicyViolation, msg)
+		return
+	}
 	ip := clientIP(r)
 	relSub, relAddr, err := acquireStreamSlots(cl, ip)
 	if err != nil {
@@ -567,6 +668,12 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				errf := func(msg string) { wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": msg}) }
 				if cl.Role != "anonymous" && !(allowAnon && cl.Sub == "anon") { // the ALLOW_ANON admin socket may still register (local dev)
 					errf("already registered")
+					continue
+				}
+				// Refused as a reconnect with this key's token would be, before the mint saves its names; the sub is
+				// the one mintPersonal gives.
+				if msg, _ := p.refused("ed25519:" + f.Pubkey); msg != "" {
+					errf(msg)
 					continue
 				}
 				if !keysLimit.allow(ip) { // before the mint, so spammed frames don't pay key derivation
@@ -825,6 +932,9 @@ func (p *Pipeline) serveV1SSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cl = p.orAnonymous(cl, r)
+	if p.refusedHTTP(w, cl.Sub) {
+		return
+	}
 	// Parsed and checked before any slot or subscription is taken, so a rejected request is cheap.
 	s, status, msg := p.parseSSESub(r, cl)
 	if msg != "" {

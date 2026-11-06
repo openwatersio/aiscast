@@ -196,6 +196,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("aiscast_client_drops_total", "events dropped because a client queue was full", p.stats.clientDrops.Load())
 	counter("aiscast_ping_timeouts_total", "stream connections closed because the client stopped answering pings", p.stats.pingTimeouts.Load())
 	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
+	counter("aiscast_slow_refusals_total", "stream connections refused because the client was closed as too slow repeatedly", p.stats.slowRefused.Load())
 	metricHead(w, "aiscast_keys_minted_total", "counter", "personal tokens minted, by whether the request was signed with the key; unsigned mints are refused once these stop")
 	fmt.Fprintf(w, "aiscast_keys_minted_total{signed=\"true\"} %d\naiscast_keys_minted_total{signed=\"false\"} %d\n", p.stats.keysSigned.Load(), p.stats.keysUnsigned.Load())
 	counter("aiscast_thinned_total", "events withheld from connections over their per-second rate", p.stats.thinned.Load())
