@@ -1,5 +1,5 @@
 import { createRequestHandler, RouterContextProvider } from "react-router";
-import { serverEnv } from "../app/lib/context";
+import { serverEnv, serverWaitUntil } from "../app/lib/context";
 import { edgeCached, isSharedPage, notGetOrHead, pageCacheKey } from "../app/lib/edge.server";
 import { serveCard } from "../app/lib/shareCard.server";
 import { isSitemap, sitemap } from "../app/lib/sitemap.server";
@@ -60,6 +60,7 @@ export default {
     const render = () => {
       const context = new RouterContextProvider();
       context.set(serverEnv, auth);
+      context.set(serverWaitUntil, waitUntil);
       return handler(request, context);
     };
 
