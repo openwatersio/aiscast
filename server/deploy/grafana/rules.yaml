@@ -179,13 +179,15 @@ groups:
           summary: '{{ $value }} vessels cached'
           description: Upstream sources are missing. Check the source ages.
 
-      - alert: ClientDropsHigh
-        expr: sum(rate(aiscast_client_drops_total[5m])) > 1
+      # Counts closed streams, not dropped events: one stalled stream drops thousands. A client that reconnects
+      # into the same stall once a minute makes about 10 in 10 minutes; fan-out saturation closes many at once.
+      - alert: SlowClientsHigh
+        expr: sum(increase(aiscast_slow_disconnects_total[10m])) > 20
         for: 10m
         labels: {severity: warning}
         annotations:
-          summary: '{{ $value | printf "%.1f" }} client queue drops per second'
-          description: Slow clients or fan-out saturation. The writers cannot keep up.
+          summary: '{{ $value | printf "%.0f" }} streams closed as too slow in 10 minutes'
+          description: Fan-out saturation or a network problem. The client too slow lines in journalctl -u aiscast name each client.
 
       - alert: PingTimeoutsHigh
         expr: sum(rate(aiscast_ping_timeouts_total[5m])) > 1
