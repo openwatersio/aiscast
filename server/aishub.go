@@ -7,78 +7,17 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
 )
 
-// AISHub is reciprocal: we feed them our volunteer receivers' stream over UDP (their assigned port), and poll
-// their aggregate snapshot (all stations, positions downsampled to ≤60 s) every 20 s. Their terms grant "use"
-// with no stated restriction and no stated term, i.e. revocable at will, so this source is flagged in
-// `source`/archive tags and can be switched off and purged; see docs/policy.md.
-
-// ---- feed out ----
-
-type udpFeeder struct {
-	conn *net.UDPConn
-	mu   sync.Mutex
-}
-
-func newUDPFeeder(addr string) (*udpFeeder, error) {
-	ua, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return nil, err
-	}
-	c, err := net.DialUDP("udp", nil, ua)
-	if err != nil {
-		return nil, err
-	}
-	return &udpFeeder{conn: c}, nil
-}
-
-// feedable: only data received directly from volunteer stations goes to AISHub. Their terms prohibit feeding
-// synthesized data and data from public AIS sources (Kystverket, Digitraffic, aisstream, their own snapshot).
-func feedable(ev *Event) bool {
-	if ev.Synthesized || ev.Packet == nil {
-		return false
-	}
-	for _, pfx := range []string{"station:", "udp:", "mmsi:"} { // mmsi: is a UDP station re-keyed by its !AIVDO
-		if strings.HasPrefix(ev.Source, pfx) {
-			return true
-		}
-	}
-	return false
-}
-
-// send re-encodes the event as plain !AIVDM (no TAG block, AI talker) so any aggregator accepts it.
-func (f *udpFeeder) send(p *Pipeline, ev *Event) {
-	if !feedable(ev) {
-		return
-	}
-	if ev.LowTrust && !ev.Corroborated { // UDP traffic nobody else has heard stays local until corroborated
-		p.stats.uncorroborated.Add(1)
-		return
-	}
-	ch := ev.Channel
-	if ch == 0 {
-		ch = 'A'
-	}
-	p.mu.Lock()
-	lines := p.encoder.EncodeSentence(aisnmeaPacket(ch, ev.Payload))
-	p.mu.Unlock()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, l := range lines {
-		f.conn.Write([]byte(l + "\r\n"))
-	}
-}
-
-// ---- poll in ----
+// AISHub: we poll their aggregate snapshot (all stations, positions downsampled to ≤60 s) every 20 s. Their
+// terms grant "use" with no stated restriction and no stated term, i.e. revocable at will, so this source is
+// flagged in `source`/archive tags and can be switched off and purged; see docs/policy.md.
 
 // aishubRow is one vessel in format=0 (AIS encoding): raw AIS field scales, TIME = epoch seconds as a string.
 type aishubRow struct {

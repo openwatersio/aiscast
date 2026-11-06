@@ -576,7 +576,7 @@ func TestTiersAndTrust(t *testing.T) {
 		t.Errorf("third anonymous stream from one address: %v", err)
 	}
 
-	// UDP trust: uncorroborated positions stay out of the AISHub feed; an implausible jump is dropped
+	// UDP trust: a UDP report is low-trust until a trusted source hears the vessel; an implausible jump is dropped
 	sub := p.subscribe()
 	udp := udpStation("203.0.113.50")
 	p.Ingest(Reception{Source: udp, Station: udp, RecvTime: now, Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"}) // 227006760 at 49.48N 0.13E

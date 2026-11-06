@@ -141,7 +141,6 @@ type Pipeline struct {
 
 	auth         *verifier // issuer public keys for access tokens
 	stations     *stationStats
-	feeder       *udpFeeder     // optional: forward received (non-synthesized) events to an aggregator
 	udp          []*udpListener // ingest sockets; /metrics counts datagrams per listener
 	last         atomic.Int64
 	probeLast    atomic.Int64 // unix time of the last event the loopback probe received; 0 = probe not running
@@ -156,9 +155,9 @@ type Pipeline struct {
 	fanout       struct{ v0, v1, sse, nmea fanoutCounter }
 	names        *stationNames
 	stats        struct {
-		keysSigned, keysUnsigned                                                                                                                      atomic.Int64 // personal-token mints, by whether the key signed the request
-		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts, invalidMMSI atomic.Int64
-		bySource                                                                                                                                      sync.Map // source → *counterT
+		keysSigned, keysUnsigned                                                                                                      atomic.Int64 // personal-token mints, by whether the key signed the request
+		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, pingTimeouts, invalidMMSI atomic.Int64
+		bySource                                                                                                                      sync.Map // source → *counterT
 	}
 }
 
@@ -632,9 +631,6 @@ func (p *Pipeline) unsubscribe(s *subscriber) {
 }
 
 func (p *Pipeline) broadcast(ev *Event) {
-	if p.feeder != nil {
-		p.feeder.send(p, ev)
-	}
 	p.smu.RLock()
 	for s := range p.subs {
 		select {

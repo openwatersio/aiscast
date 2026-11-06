@@ -16,7 +16,6 @@ Environment:
 - `BARENTSWATCH_CLIENT_ID` + `BARENTSWATCH_CLIENT_SECRET` (set = BarentsWatch upstream on), `BARENTSWATCH_URL`.
 - `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`.
 - `AISSTREAM_API_KEY` (set = aisstream.io upstream on), `AISSTREAM_BBOX` (world), `AISSTREAM_URL`.
-- `AISHUB_FEED` (`data.aishub.net:<port>`): forward volunteer-station events to AISHub as plain `!AIVDM`. The server never forwards public feeds or synthesized events, per their terms.
 - `AISHUB_USERNAME` (set = poll AISHub's aggregate snapshot), `AISHUB_INTERVAL` (`20s`, the limit AISHub set for our account).
 - `ARCHIVE_DIR` (`archive`).
 - `ACCESS_DIR` (`access`) + `ACCESS_BUCKET`: the access log, one JSON line per HTTP request, staged in hourly gzip files and uploaded under `access/v1/` to `ACCESS_BUCKET` with the R2 credentials. `off` turns it off. Without a bucket the hours stay on disk, and the sweep uploads them once one is set. See [Access log](#access-log).
@@ -72,7 +71,7 @@ Sources:
 - BarentsWatch when `BARENTSWATCH_CLIENT_ID` is set (Norway, NLOD, JSON stream, `synthesized`). The same AIS Norge network as Kystverket plus satellite and offshore receivers out to the EEZ and Svalbard. Events rebuilt from a non-NMEA source must advance the vessel's clock, so its copies of transmissions Kystverket already delivered raw are withheld, and it takes over a vessel from that vessel's next missed transmission onward.
 - Digitraffic (Finland, CC BY 4.0). The server maps its MQTT JSON to go-ais structs and re-encodes it, and the events carry `synthesized: true`.
 - aisstream.io when `AISSTREAM_API_KEY` is set. The server maps its `/v0` envelopes back to structs, also `synthesized`. Anything the open feeds already delivered dedupes.
-- AISHub's aggregate snapshot when `AISHUB_USERNAME` is set (`synthesized`, source `aishub`, reciprocal with `AISHUB_FEED`). AISHub regenerates its world snapshot about once a minute, so positions from it run about a minute behind (`sources.aishub.delay` in `/v1/stats`). The server skips unchanged snapshots.
+- AISHub's aggregate snapshot when `AISHUB_USERNAME` is set (`synthesized`, source `aishub`). AISHub regenerates its world snapshot about once a minute, so positions from it run about a minute behind (`sources.aishub.delay` in `/v1/stats`). The server skips unchanged snapshots.
 
 Volunteer stations feed over `/v1/stream` as MQTT (a socket that negotiates the `mqtt` subprotocol gets a receive-only MQTT 3.1.1 session: the token is the CONNECT password or the request's, each PUBLISH payload is newline-separated NMEA on any topic, QoS 0 to 2 acknowledged, SUBSCRIBE refused), `/v1/receive` (AIS-catcher HTTP output), or `/v1/stream` publish frames. All three name the station by the token's `sub` alone, `station:<sub>`, so a feeder can switch transports without changing identity. UDP senders are `udp:<hash>`, or `mmsi:<n>` once their own `!AIVDO` names the vessel.
 
