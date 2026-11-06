@@ -49,12 +49,27 @@ describe("ferry vessel pages", () => {
     expect(JSON.stringify(descriptors)).not.toMatch(/Slackwater|slackwater/);
   });
 
-  it.each([70, 80, 52, 60, undefined])("does not offer Slackwater on an unverified non-ferry page (type %s)", (type) => {
+  it.each([70, 80, 52, 60, undefined])("offers Slackwater without the ferry wording on an unverified non-ferry page (type %s)", (type) => {
     const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type } };
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
       createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
     ));
-    expect(html).not.toMatch(/Riding this ferry|slackwater.xyz/);
+    expect(html).not.toMatch(/Riding this ferry/);
+    expect(html.match(/Heading out on the water\?/g)).toHaveLength(1);
+    // The link carries no position, so the copy speaks of the reader's coast, not the vessel's.
+    expect(html).toContain("Slackwater shows today&#x27;s tides and currents for the coast around you.");
+    expect(html).toContain('href="https://slackwater.xyz/?ref=ais-vessel" target="_blank" rel="noopener noreferrer"');
+    expect(html).toContain(">Get Slackwater</a>");
+    const descriptors = meta({ loaderData: { mmsi: feature.properties.mmsi, name: "TEST SHIP", feature } } as Parameters<typeof meta>[0]);
+    expect(JSON.stringify(descriptors)).not.toMatch(/Slackwater|slackwater/);
+  });
+
+  it.each(["gear", "aton", "base", "sar"] as const)("does not offer Slackwater on a %s page", (kind) => {
+    const feature: VesselFeature = { ...ferry, properties: { ...ferry.properties, kind } };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
+    ));
+    expect(html).not.toMatch(/slackwater\.xyz/);
   });
 
   it.each([9332779, 9876543])("uses the same IMO check in visible content and metadata (%s)", (imo) => {

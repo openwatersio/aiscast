@@ -276,7 +276,8 @@ export function VesselDetail({
         ]}
       />
 
-      {ferry && <SlackwaterCard />}
+      {/* Vessels only. Other vessels wait for the record, since a ferry known only by its particulars would otherwise be offered, and counted, as any vessel. */}
+      {kind === "vessel" && (p || ferry) && <SlackwaterCard ferry={Boolean(ferry)} />}
 
       {p?.particulars && (
         <Particulars particulars={p.particulars} provenance={p.provenance} sources={p.sources} name={name} photos={media?.links.commonsCategory} />
