@@ -53,6 +53,13 @@ for (const [label, findVessel] of [["a vessel", namedVessel], ["a ferry", heardF
       expect(card!.x).toBeGreaterThanOrEqual(0);
       expect(card!.x + card!.width).toBeLessThanOrEqual(390);
       expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    } else {
+      // The Worker's render carries the link, so a crawler reaching any vessel page reaches Slackwater.
+      // The named vessel can itself be a ferry, so the card's heading says which context to expect.
+      const ferryCard = await page.getByRole("heading", { name: "Riding this ferry?" }).count();
+      if (!ferryCard) await expect(page.getByRole("heading", { name: "Heading out on the water?" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Get Slackwater", exact: true }))
+        .toHaveAttribute("href", `https://slackwater.xyz/?ref=ais-${ferryCard ? "ferry" : "vessel"}`);
     }
   });
 }
@@ -117,6 +124,7 @@ test("gear's address carries no name, and its page asks not to be indexed", asyn
   await expect(page.getByText("Drift", { exact: true })).toBeVisible();
   await expect(page.getByText("Heading", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Is this your boat?")).toHaveCount(0);
+  await expect(page.getByRole("complementary", { name: "Slackwater" })).toHaveCount(0);
   await expect(page.locator('script[type="application/ld+json"]')).toHaveCount(0);
   // With no photo to float over, the bar stands on the page and the title starts below it.
   await expect(page.locator("[data-over-photo]")).toHaveCount(0);
