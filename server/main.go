@@ -172,6 +172,18 @@ func main() {
 		}
 		go runAishub(p, u, iv) // best effort, outside the health gate like aisstream
 	}
+	// A node key that will not load costs peering, never ingest or the stream.
+	if key, err := loadNodeKey(env("NODE_KEY", "node.key")); err != nil {
+		log.Printf("NODE_KEY: %v; not peering", err)
+	} else {
+		p.nodeKey, p.nodeSub, p.approvedPeers = key, nodeSub(key), parseApproved(os.Getenv("PEERS_APPROVED"))
+		log.Printf("node %s", p.nodeSub)
+		if !allowAnon { // local development stays off the network
+			for _, pr := range peers {
+				go runPeer(p, pr, key)
+			}
+		}
+	}
 	udp, err := parseUDPAddrs(env("UDP_ADDR", ":10110"))
 	if err != nil {
 		log.Fatal(err)

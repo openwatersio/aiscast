@@ -79,9 +79,10 @@ func netKey(ip string) string {
 	return a.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
-// lowTrust marks sources that cannot be authenticated: UDP senders, named by hash or by their own AIVDO.
+// lowTrust marks sources that cannot be authenticated: UDP senders, named by hash or by their own AIVDO, and
+// peer nodes, whose receptions are self-reported. Neither corroborates a vessel, and both wait for corroboration.
 func lowTrust(source string) bool {
-	return strings.HasPrefix(source, "udp:") || strings.HasPrefix(source, "mmsi:")
+	return strings.HasPrefix(source, "udp:") || strings.HasPrefix(source, "mmsi:") || strings.HasPrefix(source, peerSource+":")
 }
 
 // ---- concurrent stream accounting: per token sub and per address ----

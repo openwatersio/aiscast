@@ -331,6 +331,7 @@ type v1Frame struct {
 	NMEA     []string `json:"nmea,omitempty"`     // publish: tagged or bare sentences
 	Replay   bool     `json:"replay,omitempty"`   // publish: an offline backlog; stale TAG times are archived, not emitted
 	Snapshot bool     `json:"snapshot,omitempty"` // subscribe: first replay the last known events for vessels already tracked
+	Origin   string   `json:"origin,omitempty"`   // subscribe: "local" = everything this node shares with peers (approved nodes only)
 	Pubkey   string   `json:"pubkey,omitempty"`   // register: base64url ed25519 public key
 	BindIP   bool     `json:"bind_ip,omitempty"`  // register: claim this connection's UDP station for the token (as /v1/keys bind_ip)
 
@@ -348,12 +349,14 @@ type v1Frame struct {
 const termsURL = "https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md"
 
 type v1Welcome struct {
-	Type   string   `json:"type"` // "welcome"
-	Sub    string   `json:"sub"`
-	Role   string   `json:"role"`
-	Feeder bool     `json:"feeder,omitempty"` // this connection is earning the feeder tier: its personal token's station, or its network's UDP station, is feeding
-	Terms  string   `json:"terms"`            // the contributor agreement; publishing data is acceptance
-	Limits v1Limits `json:"limits"`
+	Type    string   `json:"type"` // "welcome"
+	Sub     string   `json:"sub"`
+	Role    string   `json:"role"`
+	Feeder  bool     `json:"feeder,omitempty"`   // this connection is earning the feeder tier: its personal token's station, or its network's UDP station, is feeding
+	Node    string   `json:"node,omitempty"`     // to an approved peer node: this node's key
+	NodeSig string   `json:"node_sig,omitempty"` // and its signature over the peer's proof
+	Terms   string   `json:"terms"`              // the contributor agreement; publishing data is acceptance
+	Limits  v1Limits `json:"limits"`
 }
 
 // v1Limits: absent/0 = unlimited; area < 0 = MMSI-only subscriptions. Same semantics as the token claims.
@@ -437,6 +440,29 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 	}
 	cl = p.orAnonymous(cl, r)
 	ip := clientIP(r)
+	// Another aiscast node, proving its key. An approved one exchanges receptions on this socket; any other
+	// is logged, so a new node is seen the moment it starts, and served as the client it otherwise is.
+	var node string
+	if h := r.Header.Get(nodeHeader); h != "" {
+		sub, ms, err := verifyNode(h, r.Host, time.Now())
+		switch {
+		case err != nil:
+			wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
+			return
+		case sub == p.nodeSub:
+			wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": errSelf.Error()})
+			return
+		case p.approvedPeers[sub] && p.nodeKey != nil:
+			if !freshProof(sub, ms) {
+				wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "node proof already used"})
+				return
+			}
+			node = sub
+			cl = &Claims{Sub: sub, Role: "peer"}
+		default:
+			log.Printf("node %s (%s) connected from %s; not in PEERS_APPROVED", sub, r.UserAgent(), ip)
+		}
+	}
 	relSub, relAddr, err := acquireStreamSlots(cl, ip)
 	if err != nil {
 		wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": err.Error()})
@@ -461,7 +487,14 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		slotMu.Unlock()
 	}()
 	canPublish := cl.may("publish")
-	sendWelcome := func() error { return wsWriteJSON(ctx, c, welcomeFor(cl, canPublish)) }
+	sendWelcome := func() error {
+		w := welcomeFor(cl, canPublish)
+		if node != "" { // this node's key, proven over the dialer's proof: what its receptions carry on the other side
+			w.Node, w.NodeSig = p.nodeSub, nodeReply(p.nodeKey, r.Header.Get(nodeHeader))
+			w.Limits.PublishPerMin = 0 // a peer carries a whole network
+		}
+		return wsWriteJSON(ctx, c, w)
+	}
 	if sendWelcome() != nil {
 		return
 	}
@@ -486,6 +519,18 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			}
 			switch f.Type {
 			case "subscribe":
+				if node != "" && f.Origin != "local" { // a peer's role grants only what this node may re-serve
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "a peer node subscribes with origin=local"})
+					continue
+				}
+				if f.Origin != "" {
+					if f.Origin != "local" || node == "" {
+						wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "origin=local is for approved peers"})
+						continue
+					}
+					subscription.Store(&v1Sub{local: true})
+					continue
+				}
 				b := f.BBox
 				everything := len(b) == 0 && len(f.MMSI) == 0 && len(f.IMO) == 0
 				denied := (everything && cl.Area != 0) || (len(b) > 0 && !cl.allowsArea(b))
@@ -551,9 +596,12 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 				}
 				now := time.Now()
 				src := stationSource(cl.Sub)
+				if node != "" {
+					src = peerSource + ":" + node
+				}
 				n := 0
 				for _, line := range f.NMEA {
-					if n >= maxPublishFrame || !publishLimit.allow(cl.Sub) {
+					if n >= maxPublishFrame || (node == "" && !publishLimit.allow(cl.Sub)) { // a peer carries a whole network
 						p.stats.rateLimited.Add(1)
 						break
 					}
@@ -656,9 +704,13 @@ type v1Sub struct {
 	imo    map[uint32]int
 	joined map[uint32]bool
 	cut    bool // maxMMSIsPerIMO left out vessels reporting an IMO asked for
+	local  bool // origin=local: everything this node shares with its peers
 }
 
 func (s *v1Sub) match(ev *Event) bool {
+	if s.local {
+		return peerable(ev)
+	}
 	if s.everything || s.mmsi[ev.MMSI] || s.joined[ev.MMSI] || s.joins(ev) {
 		return true
 	}
