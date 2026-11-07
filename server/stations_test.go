@@ -252,3 +252,32 @@ func TestStationExtentKeepsOutAnImpossiblePosition(t *testing.T) {
 		t.Fatalf("positions %d, want every report counted", st.Positions)
 	}
 }
+
+func TestRejectedJumpDoesNotMoveTheReference(t *testing.T) {
+	s := newStationStats()
+	at := time.Unix(1800000000, 0)
+	ev := func(lat, lon float64, dt time.Duration) *Event {
+		return &Event{Station: "udp:aa", Source: "udp:aa", MMSI: 503150060, Time: at.Add(dt), HasPos: true, Type: "PositionReport", Lat: lat, Lon: lon}
+	}
+	s.event(ev(-33.86, 151.18, 0))
+	s.event(ev(-33.8633, 163.8383, 10*time.Minute)) // impossible jump: rejected
+	s.event(ev(-33.8633, 163.85, 11*time.Minute))   // near the jump: still impossible from the real place
+	s.event(ev(-33.87, 151.19, 12*time.Minute))     // the real track goes on
+	st := s.m["udp:aa"]
+	if st.MaxLon > 152 {
+		t.Fatalf("a second point near a rejected jump stretched the extent to %.2f E", st.MaxLon)
+	}
+	if pl := st.place[503150060]; pl.lon > 152 {
+		t.Fatalf("the reference followed the rejected jump to %.2f E", pl.lon)
+	}
+}
+
+func TestSweepForgetsOldPlacesOnSmallStations(t *testing.T) {
+	s := newStationStats()
+	at := time.Unix(1800000000, 0)
+	s.event(&Event{Station: "udp:aa", Source: "udp:aa", MMSI: 503150060, Time: at, HasPos: true, Type: "PositionReport", Lat: -33.86, Lon: 151.18})
+	s.sweep(at.Add(stationVesselTTL + time.Minute))
+	if n := len(s.m["udp:aa"].place); n != 0 {
+		t.Fatalf("%d places kept a day later on a station with one vessel", n)
+	}
+}

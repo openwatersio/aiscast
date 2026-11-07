@@ -189,17 +189,12 @@ func (s *stationStats) event(ev *Event) {
 		prev, ok := st.place[ev.MMSI]
 		// A place the vessel could not have reached from where this station last heard her (a typed-in or spoofed
 		// position, or a second set on the same MMSI) would stretch the extent for good: it is counted, not mapped.
+		// The place she is judged from next time moves only with an accepted report, so one impossible jump
+		// cannot carry the reference with it.
 		if !ok || !unreachable(prev, t, ev.Lat, ev.Lon) {
 			st.MinLat, st.MaxLat = min(st.MinLat, ev.Lat), max(st.MaxLat, ev.Lat)
 			st.MinLon, st.MaxLon = min(st.MinLon, ev.Lon), max(st.MaxLon, ev.Lon)
-		}
-		st.place[ev.MMSI] = lastPlace{t: t, lat: float32(ev.Lat), lon: float32(ev.Lon)}
-		if len(st.place) > 4096 && st.Positions%4096 == 0 {
-			for m, pl := range st.place {
-				if t-pl.t > int64(stationVesselTTL/time.Second) {
-					delete(st.place, m)
-				}
-			}
+			st.place[ev.MMSI] = lastPlace{t: t, lat: float32(ev.Lat), lon: float32(ev.Lon)}
 		}
 	}
 }
@@ -269,7 +264,8 @@ func (s *stationStats) ownShips() map[string]map[uint32]int64 {
 	return out
 }
 
-// sweep forgets own-ship candidates a station has not sent since cutoff.
+// sweep forgets own-ship candidates a station has not sent since cutoff, and the last places of vessels it has
+// not placed since then, so a vessel back after a day is judged afresh and the map stays bounded on every station.
 func (s *stationStats) sweep(cutoff time.Time) {
 	c := cutoff.Unix()
 	s.mu.Lock()
@@ -278,6 +274,11 @@ func (s *stationStats) sweep(cutoff time.Time) {
 		for m, t := range st.own {
 			if t < c {
 				delete(st.own, m)
+			}
+		}
+		for m, pl := range st.place {
+			if pl.t < c {
+				delete(st.place, m)
 			}
 		}
 	}
