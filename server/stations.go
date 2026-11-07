@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"maps"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -35,8 +36,9 @@ type stationStat struct {
 	MinLon    float64
 	MaxLat    float64
 	MaxLon    float64
-	own       map[uint32]int64 // MMSIs this station sent as own ship (!AIVDO), unix seconds of the last
-	ring      hourRing         // events per clock hour over 7 days; feeds /v1/stations and the earned feeder tier
+	own       map[uint32]int64     // MMSIs this station sent as own ship (!AIVDO), unix seconds of the last
+	place     map[uint32]lastPlace // each vessel's last position heard by this station, for the extent's reach test
+	ring      hourRing             // events per clock hour over 7 days; feeds /v1/stations and the earned feeder tier
 }
 
 // noteOwn records that the station sent mmsi as its own ship at t.
@@ -108,7 +110,7 @@ func (s *stationStats) netIDs(key, own string) []string {
 func (s *stationStats) get(station, source string, now time.Time) *stationStat {
 	st := s.m[station]
 	if st == nil {
-		st = &stationStat{Source: source, First: now, MinLat: 91, MinLon: 181, MaxLat: -91, MaxLon: -181, own: map[uint32]int64{}}
+		st = &stationStat{Source: source, First: now, MinLat: 91, MinLon: 181, MaxLat: -91, MaxLon: -181, own: map[uint32]int64{}, place: map[uint32]lastPlace{}}
 		if r, ok := s.restored[station]; ok {
 			st.ring.restore(r)
 			delete(s.restored, station)
@@ -183,9 +185,40 @@ func (s *stationStats) event(ev *Event) {
 	}
 	if ev.HasPos && isPositionType(ev.Type) {
 		st.Positions++
-		st.MinLat, st.MaxLat = min(st.MinLat, ev.Lat), max(st.MaxLat, ev.Lat)
-		st.MinLon, st.MaxLon = min(st.MinLon, ev.Lon), max(st.MaxLon, ev.Lon)
+		t := ev.Time.Unix()
+		prev, ok := st.place[ev.MMSI]
+		// A place the vessel could not have reached from where this station last heard her (a typed-in or spoofed
+		// position, or a second set on the same MMSI) would stretch the extent for good: it is counted, not mapped.
+		if !ok || !unreachable(prev, t, ev.Lat, ev.Lon) {
+			st.MinLat, st.MaxLat = min(st.MinLat, ev.Lat), max(st.MaxLat, ev.Lat)
+			st.MinLon, st.MaxLon = min(st.MinLon, ev.Lon), max(st.MaxLon, ev.Lon)
+		}
+		st.place[ev.MMSI] = lastPlace{t: t, lat: float32(ev.Lat), lon: float32(ev.Lon)}
+		if len(st.place) > 4096 && st.Positions%4096 == 0 {
+			for m, pl := range st.place {
+				if t-pl.t > int64(stationVesselTTL/time.Second) {
+					delete(st.place, m)
+				}
+			}
+		}
 	}
+}
+
+// lastPlace is a vessel's last position heard by one station.
+type lastPlace struct {
+	t        int64
+	lat, lon float32
+}
+
+// unreachable reports a move faster than 60 knots from prev, with 5 degrees of room for scatter.
+func unreachable(prev lastPlace, t int64, lat, lon float64) bool {
+	dLat, dLon := math.Abs(lat-float64(prev.lat)), math.Abs(lon-float64(prev.lon))
+	if dLon > 180 {
+		dLon = 360 - dLon
+	}
+	dt := math.Abs(float64(t - prev.t))
+	reach := dt/3600 + 5 // degrees: 60 knots is a degree of latitude an hour
+	return dLat > reach || dLon > reach*2
 }
 
 // dup records an event another station delivered first. The station did hear the vessel, as its rows in

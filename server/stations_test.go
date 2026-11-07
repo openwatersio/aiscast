@@ -217,3 +217,38 @@ func TestUnknownStationWaitsForTheSeries(t *testing.T) {
 		t.Errorf("once the series answers without it: %d, want 404", code)
 	}
 }
+
+func TestExtentIgnoresAPlaceTheVesselCouldNotReach(t *testing.T) {
+	now := int64(1800000000)
+	prev := lastPlace{t: now - 600, lat: -33.86, lon: 151.18}
+	if !unreachable(prev, now, -33.8633, 163.8383) {
+		t.Fatal("Sydney to 163.84 E in ten minutes must not stretch the extent")
+	}
+	if unreachable(prev, now, -33.9, 151.3) {
+		t.Fatal("an ordinary move must count")
+	}
+	if unreachable(lastPlace{t: now - 86400, lat: -33.86, lon: 151.18}, now, -30, 160) {
+		t.Fatal("a day later she can be there")
+	}
+	if unreachable(lastPlace{t: now - 60, lat: 10, lon: 179.9}, now, 10, -179.9) {
+		t.Fatal("crossing the antimeridian is a short move")
+	}
+}
+
+func TestStationExtentKeepsOutAnImpossiblePosition(t *testing.T) {
+	s := newStationStats()
+	at := time.Unix(1800000000, 0)
+	ev := func(lat, lon float64, dt time.Duration) *Event {
+		return &Event{Station: "udp:aa", Source: "udp:aa", MMSI: 503150060, Time: at.Add(dt), HasPos: true, Type: "PositionReport", Lat: lat, Lon: lon}
+	}
+	s.event(ev(-33.86, 151.18, 0))
+	s.event(ev(-33.8633, 163.8383, 10*time.Minute))
+	s.event(ev(-33.87, 151.2, 11*time.Minute))
+	st := s.m["udp:aa"]
+	if st.MaxLon > 152 {
+		t.Fatalf("extent stretched to %.2f E", st.MaxLon)
+	}
+	if st.Positions != 3 {
+		t.Fatalf("positions %d, want every report counted", st.Positions)
+	}
+}
