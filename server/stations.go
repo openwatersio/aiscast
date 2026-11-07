@@ -312,7 +312,9 @@ func (s *stationStats) rows(now time.Time, counts map[string]stationCount) []sta
 		// A UDP station, udp: or mmsi:, is listed only while the process that heard it runs. Anyone can name one with a
 		// line to the UDP port or claim any MMSI with !AIVDO, and a re-keyed sender leaves a udp: row at every restart
 		// until its next own-ship sentence, so nothing in the series tells a real one from these.
-		if c.source == "udp" || c.source == "mmsi" || retiredStation(c.source) {
+		if c.source == "udp" || c.source == "mmsi" || retiredStation(c.source) ||
+			c.source == peerSource && (strings.Contains(id, "/udp:") || strings.Contains(id, "/mmsi:")) { // a peer's UDP stations alike
+
 			continue
 		}
 		src := seriesSource(id, c.source)
