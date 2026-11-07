@@ -87,11 +87,23 @@ func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
 func runAisstream(p *Pipeline, url, apiKey, bboxJSON string) {
 	backoff := 5 * time.Second
 	for {
+		started := time.Now()
 		err := aisstreamSession(p, url, apiKey, bboxJSON)
+		backoff = reconnectDelay(backoff, time.Since(started))
 		log.Printf("aisstream: %v (retry in %s)", err, backoff)
 		time.Sleep(backoff)
 		backoff = min(backoff*2, 5*time.Minute)
 	}
+}
+
+// reconnectDelay is the wait before the next attempt. A session that ran for more than a minute was
+// working, so its drop is a blip: start again from the shortest wait instead of keeping the backoff
+// earned by earlier failures, which otherwise stays at five minutes for the rest of the process.
+func reconnectDelay(backoff, ran time.Duration) time.Duration {
+	if ran > time.Minute {
+		return 5 * time.Second
+	}
+	return backoff
 }
 
 func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) error {
