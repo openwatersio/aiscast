@@ -30,7 +30,7 @@ Go 1.27 and Node 24 (`mise.toml` supplies Node to local development and CI; `ser
 
 ## License and CLA
 
-The server and the rest of the repo are [AGPL-3.0](LICENSE). The Signal K plugin (`signalk-plugin/`) and the web client (`client/`) are MIT, so other projects can build on them. Every contributor signs the [Contributor License Agreement](CLA.md) before a pull request can merge; the CLA workflow asks on your first one. The CLA lets Open Water Software, LLC move code into the MIT parts or into other MIT packages, and offer other licenses, while an OSI-approved license stays public. Code another project needs to import belongs in an MIT package, not in the AGPL server, or that project becomes AGPL.
+The server, the web client and the rest of the repo are [AGPL-3.0](LICENSE). The Signal K plugin (`signalk-plugin/`) is MIT, so receiver software and other projects can build on it. Every contributor signs the [Contributor License Agreement](CLA.md) before a pull request can merge; the CLA workflow asks on your first one. The CLA lets Open Water Software, LLC move code into the Signal K plugin or other MIT packages, and offer other licenses, while an OSI-approved license stays public. Code another project needs to import belongs in an MIT package, not in the AGPL server, or that project becomes AGPL.
 
 ## Production
 
