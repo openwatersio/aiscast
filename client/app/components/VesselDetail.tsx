@@ -24,6 +24,7 @@ import { cn } from "../lib/cn";
 import { mediaKey, type Photo } from "../lib/media";
 import { particularsFacts } from "../lib/particulars";
 import { ferryIdentity } from "../lib/ferries";
+import type { NearbyStation } from "../lib/slackwater";
 import { useMedia } from "../lib/useMedia";
 import type { TrackRange } from "../lib/trackRange";
 import { useStation } from "../lib/useStationTitle";
@@ -49,10 +50,13 @@ export function VesselDetail({
   mmsi,
   feature,
   loading = false,
+  stations,
 }: {
   mmsi: number;
   feature: VesselFeature | undefined;
   loading?: boolean;
+  /** The Slackwater station pages near the vessel, which only a server render looks up. */
+  stations?: NearbyStation[];
 }) {
   const live = useLive();
   const heard = useLiveVessel(mmsi);
@@ -276,7 +280,8 @@ export function VesselDetail({
         ]}
       />
 
-      {ferry && <SlackwaterCard />}
+      {/* Vessels only. Other vessels wait for the record, since a ferry known only by its particulars would otherwise be offered, and counted, as any vessel. */}
+      {kind === "vessel" && (p || ferry) && <SlackwaterCard ferry={Boolean(ferry)} stations={stations} />}
 
       {p?.particulars && (
         <Particulars particulars={p.particulars} provenance={p.provenance} sources={p.sources} name={name} photos={media?.links.commonsCategory} />

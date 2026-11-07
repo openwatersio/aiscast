@@ -23,7 +23,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.18.0"
+const mcpVersion = "0.18.1"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -36,15 +36,15 @@ const (
 
 const mcpInstructions = `Open Waters AIS (https://openwaters.io/ais/) is the open AIS network: live vessel positions from government feeds, partner aggregates, and volunteer receivers, deduplicated into one picture.
 
-- Live terrestrial coverage is strongest in the Nordics and wherever volunteer receivers are; elsewhere positions come from partner aggregates, mostly AISHub, which runs about a minute behind. get_coverage reports each source's current delay, also published at https://ais.openwaters.io/v1/stats. Where no feed or receiver hears, there is nothing. Call get_coverage before saying a region has no traffic.
-- A position is the last report heard. find_vessels_in_area and find_vessels_near return vessels heard in the last 30 minutes. get_vessels and search_vessels_by_name also find vessels heard earlier, with the last position the network heard from them. Every row carries seen and age_s, so read an old position as where the vessel was, not where it is.
-- Destination, ETA, draught, dimensions, call sign, and IMO come from a vessel's static data, which it sends every six minutes, so a vessel heard for the first time may lack them. Flag comes from the MMSI's maritime identification digits and is present when those are known. ETA has no year: read it as the next occurrence.
+- Live terrestrial coverage is strongest in the Nordics and wherever volunteer receivers are; elsewhere positions come from partner aggregates, mostly AISHub, which runs about a minute behind. get_coverage reports each source's current delay, also published at https://ais.openwaters.io/v1/stats. A region without reports may have gaps in coverage.
+- A position is the last report heard. find_vessels_in_area and find_vessels_near return vessels heard in the last 30 minutes. get_vessels and search_vessels_by_name also find vessels heard earlier, with the last position the network heard from them. Each row's seen and age_s give the time and age of its last report.
+- Destination, ETA, draught, dimensions, call sign, and IMO come from a vessel's static data, which it sends every six minutes, so a vessel heard for the first time may lack them. Flag comes from the MMSI's maritime identification digits and is present when those are known. The ETA gives the month and day of the next expected arrival, without a year.
 - Anonymous calls may cover 100 square degrees and look up 10 vessels by MMSI per call. A free personal token from ` + mcpTokenURL + `, sent as an Authorization: Bearer header, raises that to 400 square degrees and 50 vessels. A tool says so when a call exceeds its limit.
 - Looking vessels up by IMO number needs a feeder or partner token; every tier sees the IMO in the vessels it gets back. A feeder token is a personal token whose station feeds the network. One IMO can be reported by several vessels: a ship that changed flag keeps its IMO under a new MMSI, and some vessels send placeholder numbers such as 1234567.
-- Show the credit lines from each result's attribution field wherever the data is displayed.
+- The credit lines in each result's attribution field are required wherever the data is displayed.
 - A supplement to onboard AIS, never a substitute, and not for safety of navigation.
 - get_vessel_track answers where a vessel has been, up to a year per call.
-- These tools answer one question at a time. For continuous updates use the WebSocket stream at wss://ais.openwaters.io/v1/stream, documented at ` + mcpDocsURL + `.
+- These tools answer one question at a time. Continuous updates are available over the WebSocket stream at wss://ais.openwaters.io/v1/stream, documented at ` + mcpDocsURL + `.
 - get_vessels adds particulars for vessels an enrichment source knows, merged into one vocabulary, with a provenance map naming each field's source and a sources map carrying each source's credit, license, and its own page for the vessel. The sources: Wikidata, by IMO number; the US Coast Guard's PSIX, for a US-flag vessel matched by call sign and name or by its FCC license's official number; the FCC's ship station licenses, by MMSI; Norway's fishing vessel register, matched as PSIX is; Transport Canada's vessel register (Open Government Licence - Canada), by IMO and name for a CA-flag vessel; AMSA's list of registered Australian ships (CC BY 4.0), the same way for an AU-flag vessel; and ISED's Canadian MMSI registry, asked on demand for heard CA-flag vessels. Each field is present only when a source has it; the registers refresh weekly, and the Canadian MMSI registry answers stand about ninety days. Registered dimensions can differ from the ones AIS reports, and the draught AIS reports is the current voyage's. Wikidata is CC0 and the US sources public domain; the Norwegian, Canadian, and Australian registers' licenses ask for the credit their sources entries carry.
 - The network holds no port call, weather, or inspection data. Owners and operators come only from Wikidata, for the ships whose items list them.`
 
@@ -82,22 +82,22 @@ func newMCPService(p *Pipeline) *mcpService {
 			SetCacheable: func(_ context.Context, _ mcp.Request, c *mcp.Cacheable) { c.TTLMs, c.CacheScope = 3600_000, "public" },
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "get_vessels", Title: "Vessels by MMSI", Annotations: ro("Vessels by MMSI"),
-		Description: "Last known position and particulars of specific vessels by MMSI (Maritime Mobile Service Identity), or by IMO number with a feeder or partner token: the last report heard for each, however long ago, with destination, ETA, draught, and dimensions once its static data has been heard, and which identifiers match no vessel the network has heard. A vessel whose IMO number has a Wikidata item also carries its type, builder, year built, tonnage, registered dimensions, registry, home port, owner, operator, former names, and Wikipedia and Commons links from there, and a documented US vessel its service type, status, official number, registered dimensions, and tonnage from the US Coast Guard. Use search_vessels_by_name first when you only have a name."},
+		Description: "Last known position and particulars of specific vessels by MMSI (Maritime Mobile Service Identity), or by IMO number with a feeder or partner token: the last report heard for each, however long ago, with destination, ETA, draught, and dimensions once its static data has been heard, and which identifiers match no vessel the network has heard. A vessel whose IMO number has a Wikidata item also carries its type, builder, year built, tonnage, registered dimensions, registry, home port, owner, operator, former names, and Wikipedia and Commons links from there, and a documented US vessel its service type, status, official number, registered dimensions, and tonnage from the US Coast Guard."},
 		p.mcpGetVessels)
 	mcp.AddTool(s, &mcp.Tool{Name: "find_vessels_in_area", Title: "Vessels in an area", Annotations: ro("Vessels in an area"),
-		Description: "Vessels currently inside a latitude/longitude bounding box, newest report first, with optional kind and ship-type filters. Use for what is in a port, a strait, or a stretch of coast. Anonymous calls may cover 100 square degrees per call."},
+		Description: "Vessels currently inside a latitude/longitude bounding box, newest report first, with optional kind and ship-type filters. Anonymous calls may cover 100 square degrees per call."},
 		p.mcpFindInArea)
 	mcp.AddTool(s, &mcp.Tool{Name: "find_vessels_near", Title: "Vessels near a point or vessel", Annotations: ro("Vessels near a point or vessel"),
-		Description: "Vessels within a radius (default 10 NM, maximum 50) of a point or of another vessel's last known position, nearest first, each with distance and bearing from the centre. Use for what is near this position or what is around vessel X."},
+		Description: "Vessels within a radius (default 10 NM, maximum 50) of a point or of another vessel's last known position, nearest first, each with distance and bearing from the centre."},
 		p.mcpFindNear)
 	mcp.AddTool(s, &mcp.Tool{Name: "search_vessels_by_name", Title: "Search vessels by name", Annotations: ro("Search vessels by name"),
-		Description: "Vessels whose name contains the text, case-insensitive, among every vessel the network has heard, each with its last known position. Use to turn a name into an MMSI, then get_vessels or find_vessels_near for detail. An optional bounding box narrows the search. With a feeder or partner token, text of the form IMO 9241061 finds the vessels reporting that IMO number, and a bare seven-digit number finds them ahead of the name matches."},
+		Description: "Vessels whose name contains the text, case-insensitive, among every vessel the network has heard, each with its MMSI and last known position when available. An optional bounding box narrows the search. With a feeder or partner token, text of the form IMO 9241061 finds the vessels reporting that IMO number, and a bare seven-digit number finds them ahead of the name matches."},
 		p.mcpSearchByName)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_vessel_track", Title: "Where a vessel has been", Annotations: ro("Where a vessel has been"),
-		Description: "The positions heard from one vessel over a time range, oldest first, with speed, course, and navigational status. Positions implying an impossible speed for the vessel are left out. Use for where a ship was yesterday, when it left port, or its route today. Give the vessel's mmsi, or its imo with a feeder or partner token. A call covers up to a year. By default the track is simplified by shape: the positions that hold its path, with breaks where the vessel went unheard; interval_minutes asks for even spacing instead."},
+		Description: "The positions heard from one vessel over a time range, oldest first, with speed, course, and navigational status. Positions implying an impossible speed for the vessel are left out. A vessel can be identified by MMSI, or by IMO with a feeder or partner token. A call covers up to a year. By default the track is simplified by shape: the positions that hold its path, with breaks where the vessel went unheard; interval_minutes asks for even spacing instead."},
 		p.mcpGetVesselTrack)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_coverage", Title: "Coverage and sources", Annotations: ro("Coverage and sources"),
-		Description: "Where Open Waters AIS is hearing AIS right now: sources with their current delay, stations, freshness, and vessel counts. Pass a bounding box to learn which stations cover it and how many vessels are in it, or a station id for that station's numbers. Vessel counts cover the last 30 minutes; max_age widens them, to 7d for the last week or all for every vessel the network has heard. Call this before saying a region has no traffic."},
+		Description: "Where Open Waters AIS is hearing AIS right now: sources with their current delay, stations, freshness, and vessel counts. A bounding box adds the stations whose coverage overlaps that area and a count of vessels in it. A station ID adds statistics for that station. Vessel counts cover the last 30 minutes; max_age widens them, to 7d for the last week or all for every vessel the network has heard. An area without reports may have gaps in coverage."},
 		p.mcpGetCoverage)
 	return &mcpService{srv: s, http: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
 		Stateless:           true, // no session state, and the mode the 2026-07-28 protocol revision requires
@@ -157,7 +157,7 @@ type mcpVessel struct {
 	IMO           uint32               `json:"imo,omitempty" jsonschema:"IMO number, once the vessel's static data has been heard"`
 	CallSign      string               `json:"callsign,omitempty"`
 	Destination   string               `json:"destination,omitempty" jsonschema:"destination as typed by the crew: a port name, a UN/LOCODE, or nothing useful"`
-	ETA           string               `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD; AIS carries no year, so read it as the next occurrence"`
+	ETA           string               `json:"eta,omitempty" jsonschema:"estimated arrival as sent, MM-DD HH:MM UTC or MM-DD, for the next expected arrival. AIS omits the year"`
 	Draught       *float64             `json:"draught,omitempty" jsonschema:"maximum static draught, metres; never for gear"`
 	Length        *uint16              `json:"length,omitempty" jsonschema:"overall length, metres; never for gear, whose size is a placeholder"`
 	Beam          *uint16              `json:"beam,omitempty" jsonschema:"beam, metres; never for gear"`
@@ -175,10 +175,10 @@ type mcpVessel struct {
 type mcpVessels struct {
 	Vessels     []mcpVessel       `json:"vessels"`
 	Total       int               `json:"total" jsonschema:"vessels matched before the limit was applied"`
-	Truncated   bool              `json:"truncated" jsonschema:"true when rows were left out: total exceeds the rows returned, so narrow the query or raise limit, or an IMO number is reported by more than the 10 vessels returned for it"`
+	Truncated   bool              `json:"truncated" jsonschema:"true when rows were left out: total exceeds the rows returned, or an IMO number is reported by more than the 10 vessels returned for it"`
 	Unknown     []uint32          `json:"unknown_mmsi,omitempty" jsonschema:"requested MMSIs matching no vessel the network has heard"`
 	UnknownIMO  []uint32          `json:"unknown_imo,omitempty" jsonschema:"requested IMO numbers matching no vessel the network has heard"`
-	Attribution map[string]string `json:"attribution" jsonschema:"credit line per source kind in the rows, to show with the data"`
+	Attribution map[string]string `json:"attribution" jsonschema:"attribution required when displaying the rows, by source kind"`
 }
 
 func mcpRow(mmsi uint32, v *vessel, now time.Time) mcpVessel {
@@ -652,9 +652,9 @@ func (p *Pipeline) mcpFindInArea(ctx context.Context, _ *mcp.CallToolRequest, in
 }
 
 type mcpNearIn struct {
-	Lat      *float64 `json:"lat,omitempty" jsonschema:"centre latitude, degrees; give lat and lon, or mmsi"`
+	Lat      *float64 `json:"lat,omitempty" jsonschema:"centre latitude in degrees, paired with lon when the centre is a point"`
 	Lon      *float64 `json:"lon,omitempty" jsonschema:"centre longitude, degrees"`
-	MMSI     uint32   `json:"mmsi,omitempty" jsonschema:"centre on this vessel's last position instead of lat and lon; the vessel itself is left out of the results"`
+	MMSI     uint32   `json:"mmsi,omitempty" jsonschema:"MMSI of the vessel whose last position is the search centre, instead of lat and lon. Results exclude this vessel"`
 	RadiusNM float64  `json:"radius_nm,omitempty" jsonschema:"search radius in nautical miles: default 10, maximum 50"`
 	Kind     string   `json:"kind,omitempty" jsonschema:"only this kind: vessel, aton, base, sar, or gear; vessel leaves out distress beacons and gear"`
 	Flag     string   `json:"flag,omitempty" jsonschema:"only vessels flying this flag: ISO 3166-1 alpha-2, e.g. NO, FI, MH"`
@@ -889,8 +889,8 @@ func (p *Pipeline) mcpSearchByName(ctx context.Context, _ *mcp.CallToolRequest, 
 var errMCPRecord = errors.New("the vessel record is unavailable; try again shortly")
 
 type mcpCoverageIn struct {
-	BBox    *mcpBox `json:"bbox,omitempty" jsonschema:"report the stations covering this box and the vessels currently in it"`
-	Station string  `json:"station,omitempty" jsonschema:"a station id from an earlier result, for that station's numbers"`
+	BBox    *mcpBox `json:"bbox,omitempty" jsonschema:"area for station coverage and vessel counts"`
+	Station string  `json:"station,omitempty" jsonschema:"station ID for station-specific statistics"`
 	MaxAge  string  `json:"max_age,omitempty" jsonschema:"count vessels heard within this long, network-wide and in bbox, instead of the last 30 minutes: a duration such as 6h, 24h, or 7d, or all for every vessel the network has heard"`
 }
 
