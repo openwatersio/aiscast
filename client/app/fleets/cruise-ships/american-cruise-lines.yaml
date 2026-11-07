@@ -1,0 +1,145 @@
+title: American Cruise Lines
+summary: Riverboats, paddlewheelers and small coastal ships for 90 to 180 guests, cruising American rivers and coasts.
+description: American Cruise Lines sails only domestic itineraries, on the Mississippi, Columbia and Snake rivers, the Great Lakes, New England, the Southeast, Puget Sound and Alaska. Most of its ships were built at Chesapeake Shipbuilding in Salisbury, Maryland.
+source:
+  American Cruise Lines: https://www.americancruiselines.com/ships
+cover: American Harmony
+photos:
+  - Am Harmony @ Hayden Island panorama.jpg
+sections:
+  - title: American Riverboats
+    vessels:
+      - name: American Encore
+        mmsi: 368450870
+        links:
+          Ship details: https://www.americancruiselines.com/ships/american-riverboat-cruise-ships/american-encore
+          AIS identity: https://ais.openwaters.io/v1/vessels/368450870
+      - name: American Harmony
+        mmsi: 368082970
+        imo: 9901673
+        links:
+          Ship details: https://www.americancruiselines.com/ships/american-riverboat-cruise-ships/american-harmony
+          AIS identity: https://ais.openwaters.io/v1/vessels/368082970
+      - name: American Jazz
+        mmsi: 368135920
+        links:
+          Ship details: https://www.americancruiselines.com/ships/american-riverboat-cruise-ships/american-jazz
+          AIS identity: https://ais.openwaters.io/v1/vessels/368135920
+      - name: American Melody
+        mmsi: 368205140
+        imo: 9901697
+        links:
+          Ship details: https://www.americancruiselines.com/ships/american-riverboat-cruise-ships/american-melody
+          AIS identity: https://ais.openwaters.io/v1/vessels/368205140
+      - name: American Serenade
+        mmsi: 368297540
+        links:
+          Ship details: https://www.americancruiselines.com/ships/american-riverboat-cruise-ships/american-serenade
+          AIS identity: https://ais.openwaters.io/v1/vessels/368297540
+      - name: American Song
+        mmsi: 368046350
+        imo: 9871713
+        links:
+          Ship details: https://www.americancruiselines.com/ships/american-riverboat-cruise-ships/american-song
+          AIS identity: https://ais.openwaters.io/v1/vessels/368046350
+      - name: American Symphony
+        mmsi: 368261060
+        imo: 9901702
+        links:
+          Ship details: https://www.americancruiselines.com/ships/american-riverboat-cruise-ships/american-symphony
+          AIS identity: https://ais.openwaters.io/v1/vessels/368261060
+  - title: Paddlewheelers
+    vessels:
+      - name: American Heritage
+        mmsi: 367648680
+        links:
+          Ship details: https://www.americancruiselines.com/ships/paddlewheeler-cruise-ships/american-heritage
+          AIS identity: https://ais.openwaters.io/v1/vessels/367648680
+      - name: American Pride
+        mmsi: 367517320
+        imo: 8686678
+        links:
+          Ship details: https://www.americancruiselines.com/ships/paddlewheeler-cruise-ships/american-pride
+          AIS identity: https://ais.openwaters.io/v1/vessels/367517320
+      - name: American Splendor
+        mmsi: 367710540
+        links:
+          Ship details: https://www.americancruiselines.com/ships/paddlewheeler-cruise-ships/american-splendor
+          AIS identity: https://ais.openwaters.io/v1/vessels/367710540
+  - title: Coastal Cats
+    vessels:
+      - name: American Eagle
+        mmsi: 368317840
+        links:
+          Ship details: https://www.americancruiselines.com/ships/coastal-cats/american-eagle
+          AIS identity: https://ais.openwaters.io/v1/vessels/368317840
+      - name: American Glory
+        mmsi: 368317880
+        links:
+          Ship details: https://www.americancruiselines.com/ships/coastal-cats/american-glory
+          AIS identity: https://ais.openwaters.io/v1/vessels/368317880
+      - name: American Legend
+        mmsi: 368385810
+        links:
+          Ship details: https://www.americancruiselines.com/ships/coastal-cats/american-legend
+          AIS identity: https://ais.openwaters.io/v1/vessels/368385810
+      - name: American Liberty
+        mmsi: 368366750
+        links:
+          Ship details: https://www.americancruiselines.com/ships/coastal-cats/american-liberty
+          AIS identity: https://ais.openwaters.io/v1/vessels/368366750
+  - title: Patriot class
+    vessels:
+      - name: American Maverick
+        mmsi: 368461470
+        links:
+          Ship details: https://www.americancruiselines.com/ships/patriot-class/american-maverick
+          AIS identity: https://ais.openwaters.io/v1/vessels/368461470
+      - name: American Patriot
+        mmsi: 368413570
+        links:
+          Ship details: https://www.americancruiselines.com/ships/patriot-class/american-patriot
+          AIS identity: https://ais.openwaters.io/v1/vessels/368413570
+      - name: American Pioneer
+        mmsi: 368434520
+        links:
+          Ship details: https://www.americancruiselines.com/ships/patriot-class/american-pioneer
+          AIS identity: https://ais.openwaters.io/v1/vessels/368434520
+      - name: American Ranger
+        mmsi: 368483880
+        links:
+          Ship details: https://www.americancruiselines.com/ships/patriot-class/american-ranger
+          AIS identity: https://ais.openwaters.io/v1/vessels/368483880
+  - title: Independence class
+    vessels:
+      - name: American Independence
+        mmsi: 367438210
+        imo: 9583366
+        links:
+          Ship details: https://www.americancruiselines.com/ships/independence-class-coastal-ships/american-independence
+          AIS identity: https://ais.openwaters.io/v1/vessels/367438210
+      - name: American Spirit
+        mmsi: 367023690
+        imo: 9283124
+        links:
+          Ship details: https://www.americancruiselines.com/ships/independence-class-coastal-ships/american-spirit
+          AIS identity: https://ais.openwaters.io/v1/vessels/367023690
+      - name: American Star
+        mmsi: 367184740
+        imo: 9427615
+        links:
+          Ship details: https://www.americancruiselines.com/ships/independence-class-coastal-ships/american-star
+          AIS identity: https://ais.openwaters.io/v1/vessels/367184740
+  - title: Constellation class
+    vessels:
+      - name: American Constellation
+        mmsi: 367764750
+        imo: 9838333
+        links:
+          Ship details: https://www.americancruiselines.com/ships/constellation-class-coastal-cruise-ships/american-constellation
+          AIS identity: https://ais.openwaters.io/v1/vessels/367764750
+      - name: American Constitution
+        mmsi: 368023770
+        links:
+          Ship details: https://www.americancruiselines.com/ships/constellation-class-coastal-cruise-ships/american-constitution
+          AIS identity: https://ais.openwaters.io/v1/vessels/368023770
