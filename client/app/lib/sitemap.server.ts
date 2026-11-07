@@ -57,9 +57,10 @@ export async function sitemap(pathname: string, auth: ApiAuth): Promise<Response
       return document("urlset", [
         ...APP_PAGES.map((path) => entry("url", `${SITE}${path}`)),
         // A volunteer's receiver is a person's own station, often on their boat or at home, so
-        // the sitemap does not list it. Its page is as it was for anyone who follows a link.
+        // the sitemap does not list it, nor one reaching us through a peer node, which is
+        // always a volunteer's. Its page is as it was for anyone who follows a link.
         ...stations
-          .filter((st) => st.last_age_s <= STATION_MAX_AGE_S && !isVolunteer(st.source) && !volunteerReceiver(st.station))
+          .filter((st) => st.last_age_s <= STATION_MAX_AGE_S && !isVolunteer(st.source) && !volunteerReceiver(st.station) && !st.source.startsWith("peer:"))
           .map((st) => entry("url", `${SITE}/stations/${st.station}`, st.last_seen)),
       ]);
     }

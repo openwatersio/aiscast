@@ -961,6 +961,7 @@ var sourceDescriptions = map[string]string{
 	"udp":          "volunteer receivers sending raw NMEA over UDP, unauthenticated",
 	"mmsi":         "volunteer receivers identified by their own vessel's MMSI, unauthenticated",
 	"station":      "volunteer receivers and peers feeding with a token, over MQTT, HTTP, or /v1/stream",
+	"peer":         "volunteer receivers of another aiscast node in the network",
 }
 
 func mcpStationRow(r stationRow) mcpStation {

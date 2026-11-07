@@ -7,6 +7,7 @@
 /.env
 /hub.log
 /aiscast.db
+/node.key
 /aiscast.db-*
 /*.test
 /server
