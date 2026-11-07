@@ -31,6 +31,12 @@ aiscast enforces limits per token, and per network address on top of that. One a
 ## Sending data
 
 - **Authenticated** (AIS-catcher `-Q wssmqtt://x:<token>@…` or `-H … USERPWD x:<token>`, the Signal K plugin, `/v1/stream` publish): 6,000 sentences per minute per token, 1,000 per frame, 1 MB per HTTP post or MQTT packet. Your station appears under your token's id, and aiscast credits the data to you. MQTT is the realtime path: AIS-catcher publishes each message as it is decoded, where its HTTP output batches on an interval.
+- **TCP** (`tcp.ais.openwaters.io:10111`, for a receiver that only emits NMEA lines, such as rtl_ais, dAISy, or a plotter's NMEA output through kplex or a serial-to-TCP bridge): the first line is `AUTH <token>`, sent within 5 seconds, and every line after it is one sentence, with or without a TAG block. aiscast answers the token with one line, `OK` and the contributor agreement, or `ERR` and the reason before it closes the connection. After that it writes nothing, so a sender that never reads is fine. The connection then counts as your token's station, with the same identity, limits, and credit as the other authenticated paths: 6,000 sentences per minute per token, shared with them, and one of the token's concurrent streams. A line longer than 4,096 bytes closes the connection, and so do 10 minutes without a line. One address may hold 8 TCP connections, counted from the moment they connect.
+
+  ```sh
+  ( echo "AUTH <token>"; cat /dev/ttyUSB0 ) | nc tcp.ais.openwaters.io 10111
+  ```
+
 - **UDP** (`udp.ais.openwaters.io:10110`, any forwarder): no token, 500 sentences per second per source address. UDP carries no authentication, so it is the lowest-trust path. aiscast shows it on the map and in the stream with `source: udp:<id>`. It never raises a vessel's trust level. aiscast forwards it to partners and the raw feed only once another station or an open feed has corroborated the same traffic. Feeding by UDP earns the feeder tier for connections from the same network. If you want credit and a station name for a UDP station, bind its source address to your token.
 
 Tokens do not block bad data. Rate caps, plausibility checks (impossible position jumps, invalid identifiers), and corroboration catch it. Every message is archived with its source, so aiscast can purge a bad source. Report a problem station to hello@openwaters.io.

@@ -23,7 +23,7 @@ import (
 // deploy/grafana/ query these names, so a rename here breaks them.
 
 var (
-	streamProtocols = []string{"v0", "v1", "sse", "nmea", "mqtt"}
+	streamProtocols = []string{"v0", "v1", "sse", "nmea", "mqtt", "tcp"}
 	streamTiers     = []string{"anonymous", "anonymous_feeder", "personal", "feeder", "peer", "partner", "admin"}
 )
 
