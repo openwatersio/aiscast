@@ -12,6 +12,8 @@ export default [
   route("vessels/media/:key", "routes/vessel-media.ts"),
   // JSON for the fleets a vessel is in, for the foot of its page (lib/fleets.server.ts).
   route("vessels/fleets/:mmsi", "routes/vessel-fleets.ts"),
+  // JSON for the Slackwater stations near a position, for a vessel page whose server render brought none (lib/slackwater.server.ts).
+  route("vessels/slackwater/:at", "routes/slackwater-nearby.ts"),
   route("stations", "routes/stations.tsx"),
   // Station ids contain slashes (`kystverket/2573010`).
   route("stations/*", "routes/station.tsx"),
