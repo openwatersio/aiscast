@@ -66,23 +66,21 @@ describe("ferry vessel pages", () => {
 
   it("links the Slackwater station pages near the vessel by name, at their own addresses", () => {
     const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type: 70 } };
-    const db = "Slackwater database (https://github.com/openwatersio/slackwater-database)";
     const stations = [
-      { kind: "tide" as const, name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/", attribution: `${db}. Source: TICON-4` },
-      { kind: "current" as const, name: "Porlier Pass", url: "https://slackwater.xyz/currents/ca/bc/porlier-pass/", attribution: db },
+      { kind: "tide" as const, name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/" },
+      { kind: "current" as const, name: "Porlier Pass", url: "https://slackwater.xyz/currents/ca/bc/porlier-pass/" },
     ];
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
       createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature, stations }),
     ));
     expect(html).toContain("Near its last position:");
-    // Each its own line and a full-size tap target, as the app link is.
-    expect(html).toContain('<li><a href="https://slackwater.xyz/tides/ca/bc/crofton/" target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11');
+    // Each its own line, a 32 px tap target that reads as a list rather than spaced-out buttons.
+    expect(html).toContain('<li><a href="https://slackwater.xyz/tides/ca/bc/crofton/" target="_blank" rel="noopener noreferrer" class="flex min-h-8');
     expect(html).toContain(">Tides: Crofton</a>");
-    expect(html).toContain('<li><a href="https://slackwater.xyz/currents/ca/bc/porlier-pass/" target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11');
+    expect(html).toContain('<li><a href="https://slackwater.xyz/currents/ca/bc/porlier-pass/" target="_blank" rel="noopener noreferrer" class="flex min-h-8');
     expect(html).toContain(">Currents: Porlier Pass</a>");
-    // Each station's licence asks a page showing it to display its notice; a shared notice shows once.
-    expect(html.match(/Source: TICON-4/g)).toHaveLength(1);
-    expect(html.match(/Slackwater database \(https:\/\/github\.com\/openwatersio\/slackwater-database\)/g)).toHaveLength(2);
+    // A name and a link copy none of a station's data, so its notice stays on the station page the link opens.
+    expect(html).not.toMatch(/slackwater-database|Source:/);
     // The app link stays, for a reader who wants more than one station.
     expect(html).toContain('href="https://slackwater.xyz/?ref=ais-vessel"');
   });

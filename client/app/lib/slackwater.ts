@@ -9,8 +9,6 @@ export interface NearbyStation {
   kind: "tide" | "current";
   name: string;
   url: string;
-  /** The notice the station's licence asks a page showing it to display, verbatim. */
-  attribution: string;
 }
 
 /** A click handler that counts one Slackwater handoff from a ferry or other vessel page. */
