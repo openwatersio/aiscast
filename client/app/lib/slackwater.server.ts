@@ -172,6 +172,26 @@ export async function slackwaterStations(
   return index ? nearestStations(index, lat, lon) : undefined;
 }
 
+// At most two decimals, as the page sends (nearbyPath): one answer a kilometre, and no finer grid to walk.
+const POSITION = /^(-?\d{1,2}(?:\.\d{1,2})?),(-?\d{1,3}(?:\.\d{1,2})?)$/;
+
+/**
+ * GET /ais/vessels/slackwater/:at, where `at` is `lat,lon`: the stations near a position as
+ * `{ stations }`, for a vessel page whose server render brought none. The browser keeps an answer for an hour.
+ * When the index can't be had, a 503 that nothing keeps, so the next page asks again.
+ */
+export async function nearbyResponse(at: string, keepAlive: (work: Promise<unknown>) => void): Promise<Response> {
+  const m = POSITION.exec(at);
+  const lat = m ? Number(m[1]) : NaN;
+  const lon = m ? Number(m[2]) : NaN;
+  if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) {
+    return new Response("Not a position", { status: 400, headers: { "Cache-Control": "no-store" } });
+  }
+  const stations = await slackwaterStations(lat, lon, keepAlive);
+  if (!stations) return Response.json({ stations: [] }, { status: 503, headers: { "Cache-Control": "no-store" } });
+  return Response.json({ stations }, { headers: { "Cache-Control": "public, max-age=3600" } });
+}
+
 /** Drops the isolate's copy of the index. For tests. */
 export function forgetStationIndex() {
   ready = undefined;
