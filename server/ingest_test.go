@@ -505,6 +505,21 @@ func TestTCPIngestBounds(t *testing.T) {
 	if !closed(c, br) {
 		t.Error("connection open after an overlong line")
 	}
+
+	// a line of exactly tcpMaxLine bytes is allowed, with LF or CR LF
+	for _, end := range []string{"\n", "\r\n"} {
+		c, br = dialTCP(t, addr)
+		fmt.Fprintf(c, "AUTH anything\n")
+		if l, _ := br.ReadString('\n'); !strings.HasPrefix(l, "OK ") {
+			t.Fatalf("reply %q", l)
+		}
+		c.Write([]byte(strings.Repeat("x", tcpMaxLine) + end))
+		c.Write([]byte("x\n"))
+		if closed(c, br) {
+			t.Errorf("connection closed after a line of exactly %d bytes ending %q", tcpMaxLine, end)
+		}
+		c.Close()
+	}
 }
 
 // waitTCPSlots waits for loopback to hold n TCP connection slots.

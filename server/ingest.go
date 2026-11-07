@@ -267,7 +267,7 @@ func (p *Pipeline) serveTCPConn(c net.Conn) {
 	}
 	defer release()
 	sc := bufio.NewScanner(c)
-	sc.Buffer(make([]byte, 4096), tcpMaxLine)
+	sc.Buffer(make([]byte, 4096), tcpMaxLine+2) // room for the line's own CR LF; the length is checked on the text below
 	c.SetReadDeadline(time.Now().Add(tcpAuthTimeout))
 	if !sc.Scan() {
 		return
@@ -296,9 +296,12 @@ func (p *Pipeline) serveTCPConn(c net.Conn) {
 	for {
 		c.SetReadDeadline(time.Now().Add(tcpIdle))
 		if !sc.Scan() {
-			return // EOF, the idle deadline, or a line past tcpMaxLine
+			return // EOF, the idle deadline, or a line past the buffer
 		}
 		line := sc.Text()
+		if len(line) > tcpMaxLine {
+			return // a line past tcpMaxLine closes the connection
+		}
 		if strings.TrimSpace(line) == "" {
 			continue
 		}

@@ -27,8 +27,8 @@ groups:
       # With no streams there is nothing to divide by, and the > 0 filter leaves the rule empty rather than +Inf.
       - alert: AiscastCPUPerStreamRegressed
         expr: |
-          (sum(rate(process_cpu_seconds_total{job="aiscast"}[1h])) / (avg_over_time(sum(aiscast_streams{protocol!="mqtt"})[1h:5m]) > 0))
-          > 1.5 * (sum(rate(process_cpu_seconds_total{job="aiscast"}[1d] offset 1d)) / avg_over_time(sum(aiscast_streams{protocol!="mqtt"})[1d:5m] offset 1d))
+          (sum(rate(process_cpu_seconds_total{job="aiscast"}[1h])) / (avg_over_time(sum(aiscast_streams{protocol!~"mqtt|tcp"})[1h:5m]) > 0))
+          > 1.5 * (sum(rate(process_cpu_seconds_total{job="aiscast"}[1d] offset 1d)) / avg_over_time(sum(aiscast_streams{protocol!~"mqtt|tcp"})[1d:5m] offset 1d))
         for: 15m
         labels: {severity: warning}
         annotations:
@@ -83,14 +83,14 @@ groups:
 
       # MQTT sockets only publish, so they carry no fan-out cost.
       - alert: AiscastStreamsHigh
-        expr: sum(aiscast_streams{protocol!="mqtt"}) > 600
+        expr: sum(aiscast_streams{protocol!~"mqtt|tcp"}) > 600
         for: 10m
         labels: {severity: warning}
         annotations:
           summary: '{{ $value }} open streams'
           description: Approaching the fan-out CPU ceiling for this box.
       - alert: AiscastStreamsCritical
-        expr: sum(aiscast_streams{protocol!="mqtt"}) > 900
+        expr: sum(aiscast_streams{protocol!~"mqtt|tcp"}) > 900
         for: 10m
         labels: {severity: critical}
         annotations:
