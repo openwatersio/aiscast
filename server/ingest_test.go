@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -363,5 +368,204 @@ func TestAdmissionTimeIsProcessingOrder(t *testing.T) {
 	}
 	if len(pts) < 1600 {
 		t.Fatalf("%d copies written, want every reception", len(pts))
+	}
+}
+
+// tcpListener serves TCP ingest on a loopback port for one test.
+func tcpListener(t *testing.T, p *Pipeline) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go serveTCP(p, ln)
+	return ln.Addr().String()
+}
+
+// dialTCP connects and returns the connection with a reader for the server's reply line.
+func dialTCP(t *testing.T, addr string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	return c, bufio.NewReader(c)
+}
+
+// closed reports whether the server has closed c, reading past anything it wrote first.
+func closed(c net.Conn, br *bufio.Reader) bool {
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err := io.ReadAll(br)
+	var ne net.Error
+	return !errors.As(err, &ne) || !ne.Timeout() // EOF, or a reset when the server closed with input unread
+}
+
+// tagged puts a TAG block with a valid checksum in front of a sentence.
+func tagged(tag, line string) string {
+	var sum byte
+	for i := range len(tag) {
+		sum ^= tag[i]
+	}
+	return fmt.Sprintf("\\%s*%02X\\%s", tag, sum, line)
+}
+
+// A token on the first line, then NMEA: the lines are the token's station's, as a /v1/stream publish frame's are,
+// and a refused token is answered and the connection closed.
+func TestTCPIngest(t *testing.T) {
+	p := testPipeline(t)
+	allowAnon = false
+	defer func() { allowAnon = true }()
+	kid, priv := testIssuer(t, p)
+	exp := time.Now().Add(time.Hour).Unix()
+	feeder, _ := signToken(priv, Claims{Kid: kid, Sub: "st-9", Role: "feeder", Exp: exp})
+	partner, _ := signToken(priv, Claims{Kid: kid, Sub: "acme", Role: "partner", Exp: exp})
+	elsewhere, _ := signToken(priv, Claims{Kid: kid, Sub: "far", Role: "feeder", Exp: exp, CIDR: []string{"203.0.113.0/24"}})
+	sub := p.subscribe()
+	addr := tcpListener(t, p)
+
+	c, br := dialTCP(t, addr)
+	fmt.Fprintf(c, "AUTH %s\r\n", feeder)
+	if l, err := br.ReadString('\n'); err != nil || l != "OK "+termsURL+"\r\n" {
+		t.Fatalf("reply %q %v, want OK and the terms", l, err)
+	}
+	// a blank line is skipped, and a TAG block is read as on UDP
+	fmt.Fprintf(c, "\r\n%s\r\n%s\n", testSentence, tagged(fmt.Sprintf("s:dock,c:%d", time.Now().Unix()), "!BSVDM,1,1,,B,13noH:00000H@P@RSPEakGK@0D33,0*43"))
+	for _, want := range []uint32{227006760, 258857000} {
+		select {
+		case ev := <-sub.ch:
+			if ev.Source != "station:st-9" || ev.Station != "station:st-9" || ev.MMSI != want {
+				t.Errorf("event %s %s %d, want station:st-9 and %d", ev.Source, ev.Station, ev.MMSI, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no event for %d (parse_err=%d)", want, p.stats.parseErr.Load())
+		}
+	}
+
+	for name, first := range map[string]string{
+		"partner may not publish": "AUTH " + partner,
+		"token bound elsewhere":   "AUTH " + elsewhere,
+		"garbage":                 "AUTH ak1.nope",
+		"no AUTH":                 testSentence,
+	} {
+		c, br := dialTCP(t, addr)
+		fmt.Fprintf(c, "%s\n%s\n", first, testSentence)
+		if l, err := br.ReadString('\n'); err != nil || !strings.HasPrefix(l, "ERR ") {
+			t.Errorf("%s: reply %q %v, want ERR", name, l, err)
+		}
+		if !closed(c, br) {
+			t.Errorf("%s: connection stayed open", name)
+		}
+	}
+	select {
+	case ev := <-sub.ch:
+		t.Errorf("refused connection ingested %d", ev.MMSI)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A connection that sends no token closes after the timeout; one past the address's cap, or a line past the
+// limit, closes at once, so an open port cannot be made to hold memory.
+func TestTCPIngestBounds(t *testing.T) {
+	p := testPipeline(t)
+	addr := tcpListener(t, p)
+
+	tcpAuthTimeout = 200 * time.Millisecond
+	defer func() { tcpAuthTimeout = 5 * time.Second }()
+	c, br := dialTCP(t, addr)
+	start := time.Now()
+	if !closed(c, br) || time.Since(start) > time.Second {
+		t.Errorf("silent connection open after %s", time.Since(start))
+	}
+	tcpAuthTimeout = 5 * time.Second
+
+	var held []net.Conn
+	for range tcpPerAddr {
+		c, _ := dialTCP(t, addr)
+		held = append(held, c)
+	}
+	waitTCPSlots(t, tcpPerAddr) // accepted and counted, so the next is the one past the cap
+	c, br = dialTCP(t, addr)
+	if l, _ := br.ReadString('\n'); l != "ERR concurrent connections per address exceeded\r\n" {
+		t.Errorf("connection past the cap: reply %q", l)
+	}
+	for _, h := range held {
+		h.Close()
+	}
+	waitTCPSlots(t, 0) // the slots come back as the held connections close
+
+	c, br = dialTCP(t, addr)
+	fmt.Fprintf(c, "AUTH anything\n") // ALLOW_ANON: any token is the anonymous admin
+	if l, _ := br.ReadString('\n'); !strings.HasPrefix(l, "OK ") {
+		t.Fatalf("reply %q", l)
+	}
+	c.Write([]byte(strings.Repeat("x", tcpMaxLine+1) + "\n"))
+	if !closed(c, br) {
+		t.Error("connection open after an overlong line")
+	}
+}
+
+// waitTCPSlots waits for loopback to hold n TCP connection slots.
+func waitTCPSlots(t *testing.T, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		tcpAddrConns.mu.Lock()
+		got := tcpAddrConns.n["127.0.0.1"]
+		tcpAddrConns.mu.Unlock()
+		if got == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d TCP slots held, want %d", got, n)
+		}
+	}
+}
+
+// withSeq gives a sentence another sequence id and the checksum that goes with it.
+func withSeq(line string, seq int) string {
+	f := strings.Split(line[1:strings.LastIndex(line, "*")], ",")
+	f[3] = strconv.Itoa(seq)
+	body := strings.Join(f, ",")
+	var sum byte
+	for i := range len(body) {
+		sum ^= body[i]
+	}
+	return fmt.Sprintf("!%s*%02X", body, sum)
+}
+
+// Two TCP connections under one token number their sequences on their own. Each keeps its own reassembler,
+// so the same sequence id from both, interleaved, still makes two messages; and a closed connection's
+// unfinished fragments are dropped with its reassembler.
+func TestTCPConnectionsReassembleApart(t *testing.T) {
+	a := []string{"!AIVDM,2,1,9,B,55RGLH82G=qO<DuSB20d4d58TdV2222222222216?hP7B6LB0C3VUk1p,0*17", "!AIVDM,2,2,9,B,888888888888880,2*2E"}
+	b := []string{withSeq("!AIVDM,2,1,0,B,53GQrVH2HFaLD4Hv221@4h5HE86222222222220l1P;4840Ht0000000,0*1E", 9), withSeq("!AIVDM,2,2,0,B,000000000000000,2*27", 9)}
+	if b[1] != "!AIVDM,2,2,9,B,000000000000000,2*2E" {
+		t.Fatalf("withSeq: %s", b[1])
+	}
+	p := testPipeline(t)
+	sub := p.subscribe()
+	recv := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for i, rx := range []Reception{{Body: a[0], Conn: "tcp:1"}, {Body: b[0], Conn: "tcp:2"}, {Body: a[1], Conn: "tcp:1"}, {Body: b[1], Conn: "tcp:2"}} {
+		rx.Source, rx.Station, rx.RecvTime = "station:s", "station:s", recv.Add(time.Duration(i)*time.Second)
+		p.ingestLine(rx)
+	}
+	got := eventSentences(sub)
+	want := []string{strings.Join(a, "|"), strings.Join(b, "|")}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("interleaved connections carry\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	p.ingestLine(Reception{Source: "station:s", Station: "station:s", RecvTime: recv, Body: a[0], Conn: "tcp:1"})
+	p.ingestLine(Reception{Source: "station:s", Station: "station:s", RecvTime: recv, Body: b[0], Conn: "tcp:12"})
+	p.forgetConn("tcp:1")
+	p.mu.Lock()
+	_, kept := p.codecs["station:s\x00tcp:12"]
+	_, gone := p.codecs["station:s\x00tcp:1"]
+	pending := len(p.pending)
+	p.mu.Unlock()
+	if gone || !kept || pending != 1 {
+		t.Errorf("after forgetting tcp:1: its codec kept %v, tcp:12's kept %v, %d pending, want false, true, 1", gone, kept, pending)
 	}
 }

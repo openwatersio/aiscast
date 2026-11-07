@@ -24,8 +24,9 @@ type Reception struct {
 	RecvTime   time.Time
 	SourceTime time.Time // feeder-supplied, zero if none
 	Body       string
-	Buffered   bool // sender replays an offline backlog: sentences with a TAG time older than replayAge are archived, not emitted
-	Published  bool // a /v1/stream publish line: replay must take the body as a line, never an AIS-catcher envelope
+	Buffered   bool   // sender replays an offline backlog: sentences with a TAG time older than replayAge are archived, not emitted
+	Published  bool   // a /v1/stream publish line: replay must take the body as a line, never an AIS-catcher envelope
+	Conn       string // the TCP connection a line arrived on, which keeps its own reassembler; not archived
 }
 
 // Event is one decoded AIS message after reassembly and dedupe.
@@ -297,14 +298,21 @@ func (p *Pipeline) ingestLine(rx Reception) {
 		station = rx.Source + "/" + vdm.TagBlock.Source
 	}
 
+	// Fragments are collected per station, and per connection within it: two TCP connections under one token
+	// number their sequences independently, so a shared reassembler would join one's first half to the other's
+	// second.
+	scope := station
+	if rx.Conn != "" {
+		scope += "\x00" + rx.Conn
+	}
 	p.mu.Lock()
-	nc := p.codecs[station]
+	nc := p.codecs[scope]
 	if nc == nil {
 		nc = aisnmea.NMEACodecNew(p.codec)
-		p.codecs[station] = nc
+		p.codecs[scope] = nc
 	}
 	var sentences []string
-	pk := fmt.Sprintf("%s\x00%d\x00%s", station, vdm.MessageID, vdm.Channel)
+	pk := fmt.Sprintf("%s\x00%d\x00%s", scope, vdm.MessageID, vdm.Channel)
 	if vdm.NumFragments > 1 {
 		p.pending[pk] = addFragment(p.pending[pk], fragment{vdm.FragmentNumber, line})
 	}
@@ -370,6 +378,23 @@ func (p *Pipeline) ingestLine(rx Reception) {
 	// TAG s:self on an own-ship sentence is signalk-aiscast building reports from GPS on a boat with no
 	// transponder: not a VHF reception. VDO-only, so the tag cannot mislabel received traffic as synthesized.
 	p.emit(&Event{Time: t, RecvTime: rx.RecvTime, Source: source, Station: station, Channel: ch, Payload: pkt.Payload, Packet: pkt.Packet, Sentences: sentences, Synthesized: vdm.Type == "VDO" && vdm.TagBlock.Source == "self", Own: vdm.Type == "VDO", Sender: sender})
+}
+
+// forgetConn drops a closed connection's reassemblers and the fragments they held, which no later line can complete.
+func (p *Pipeline) forgetConn(conn string) {
+	tail := "\x00" + conn
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k := range p.codecs {
+		if strings.HasSuffix(k, tail) {
+			delete(p.codecs, k)
+		}
+	}
+	for k := range p.pending {
+		if strings.Contains(k, tail+"\x00") {
+			delete(p.pending, k)
+		}
+	}
 }
 
 // ingestPacket takes an already-decoded message from a non-NMEA source (Digitraffic JSON, a peer's structs).

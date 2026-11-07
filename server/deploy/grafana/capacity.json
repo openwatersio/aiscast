@@ -156,7 +156,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(rate(process_cpu_seconds_total{job=\"aiscast\"}[$__rate_interval])) / sum(aiscast_streams{protocol!=\"mqtt\"})",
+          "expr": "sum(rate(process_cpu_seconds_total{job=\"aiscast\"}[$__rate_interval])) / sum(aiscast_streams{protocol!~\"mqtt|tcp\"})",
           "legendFormat": "per stream"
         },
         {
@@ -165,7 +165,7 @@
             "uid": "${datasource}"
           },
           "refId": "B",
-          "expr": "sum(rate(process_cpu_seconds_total{job=\"aiscast\"}[$__rate_interval] offset 1d)) / sum(aiscast_streams{protocol!=\"mqtt\"} offset 1d)",
+          "expr": "sum(rate(process_cpu_seconds_total{job=\"aiscast\"}[$__rate_interval] offset 1d)) / sum(aiscast_streams{protocol!~\"mqtt|tcp\"} offset 1d)",
           "legendFormat": "same time yesterday"
         }
       ],

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -203,5 +204,109 @@ func serveUDP(p *Pipeline, l *udpListener, pc net.PacketConn) {
 			p.Ingest(Reception{Source: src, Station: src, RecvTime: now, Body: line})
 		}
 		p.stations.noteNet(netKey(ip), src)
+	}
+}
+
+// TCP ingest takes NMEA lines from a receiver that can only emit them (rtl_ais, dAISy, a plotter through kplex or
+// a serial-to-TCP bridge), with a token on the first line, so it gets the identity and credit UDP cannot carry:
+//
+//	( echo "AUTH <token>"; cat /dev/ttyUSB0 ) | nc tcp.ais.openwaters.io 10111
+const (
+	tcpIdle    = 10 * time.Minute // a receiver hears nothing for this long only when its link or radio is gone
+	tcpMaxLine = 4096             // bytes; a TAG block and a sentence fit with room to spare, and a longer line closes the connection
+	tcpPerAddr = 8                // connections per address, authenticated or not, so an open port cannot hold memory
+)
+
+var (
+	tcpAuthTimeout = 5 * time.Second                   // for the AUTH line: a client that has a token sends it at once. A var so tests can shrink it.
+	tcpAddrConns   = &connCounter{n: map[string]int{}} // per address, counted from accept, before the token is read
+	tcpConnIDs     atomic.Int64                        // names each connection's reassembler
+)
+
+// runTCP accepts NMEA over plain TCP on TCP_ADDR.
+func runTCP(p *Pipeline, addr string) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("tcp %s: %v", addr, err)
+		return
+	}
+	serveTCP(p, ln)
+}
+
+func serveTCP(p *Pipeline, ln net.Listener) {
+	for {
+		c, err := ln.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
+		if err != nil { // out of file descriptors, most likely: wait for some to close rather than spin
+			log.Printf("tcp: %v", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		go p.serveTCPConn(c)
+	}
+}
+
+// serveTCPConn reads one connection: AUTH <token>, then NMEA lines, each taken as a /v1/stream publish frame's
+// would be. The station is the token's, station:<sub>, so a feeder can move between TCP, MQTT, and HTTP without
+// changing identity, and the connection holds one of the token's streams as an MQTT session does. One reply line
+// answers the token: OK with the contributor agreement, which publishing accepts, or ERR and the reason before the
+// connection closes. Nothing else is ever written, so a sender that never reads (nc fed from a pipe) is fine.
+func (p *Pipeline) serveTCPConn(c net.Conn) {
+	defer c.Close()
+	ip, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+	reply := func(s string) {
+		c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		io.WriteString(c, s+"\r\n")
+	}
+	release, ok := tcpAddrConns.acquire(ip, tcpPerAddr)
+	if !ok {
+		reply("ERR concurrent connections per address exceeded")
+		return
+	}
+	defer release()
+	sc := bufio.NewScanner(c)
+	sc.Buffer(make([]byte, 4096), tcpMaxLine)
+	c.SetReadDeadline(time.Now().Add(tcpAuthTimeout))
+	if !sc.Scan() {
+		return
+	}
+	tok, ok := strings.CutPrefix(strings.TrimSpace(sc.Text()), "AUTH ")
+	if !ok {
+		reply("ERR the first line must be AUTH <token>")
+		return
+	}
+	cl, err := p.authorizeToken(strings.TrimSpace(tok), ip, "publish")
+	if err != nil {
+		reply("ERR " + err.Error())
+		return
+	}
+	relStream, err := acquireStream(cl, ip)
+	if err != nil {
+		reply("ERR " + err.Error())
+		return
+	}
+	defer relStream()
+	defer p.streams.open("tcp", cl)()
+	reply("OK " + termsURL)
+	src := stationSource(cl.Sub)
+	conn := fmt.Sprintf("tcp:%d", tcpConnIDs.Add(1))
+	defer p.forgetConn(conn)
+	for {
+		c.SetReadDeadline(time.Now().Add(tcpIdle))
+		if !sc.Scan() {
+			return // EOF, the idle deadline, or a line past tcpMaxLine
+		}
+		line := sc.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// Thinned, not closed, as on the other publish paths: the connection stays up and later lines count.
+		if !publishLimit.allow(cl.Sub) {
+			p.stats.rateLimited.Add(1)
+			continue
+		}
+		p.Ingest(Reception{Source: src, Station: src, RecvTime: time.Now(), Body: line, Published: true, Conn: conn})
 	}
 }
