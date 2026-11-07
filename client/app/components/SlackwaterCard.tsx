@@ -6,7 +6,8 @@ const outbound = { target: "_blank", rel: "noopener noreferrer" } as const;
 /**
  * Every vessel page offers Slackwater; a ferry's speaks to someone aboard it. The app link
  * carries no position, so its copy offers the reader's coast rather than the vessel's. The
- * station pages near the vessel's last position, when the server found any, are linked by name
+ * station pages near the vessel's last position, from the server render or asked of the Worker by
+ * a page opened inside the app (useNearbyStations), are linked by name
  * at their own addresses, so a crawler that reaches the vessel reaches them too. A name and a link
  * copy none of a station's data, so its attribution notice is left to the station page
  * (docs/policy.md, the Slackwater row).

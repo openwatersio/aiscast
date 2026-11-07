@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { forgetStationIndex, nearestStations, slackwaterStations, type StationIndex } from "./slackwater.server";
+import { forgetStationIndex, nearbyResponse, nearestStations, slackwaterStations, type StationIndex } from "./slackwater.server";
 
 const INDEX: StationIndex = {
   origin: "https://slackwater.xyz",
@@ -218,5 +218,33 @@ describe("slackwaterStations", () => {
       await vi.advanceTimersByTimeAsync(24 * 3_600_000 + 1);
       await expect(slackwaterStations(48.8657, -123.63606)).resolves.toBeUndefined();
     });
+  });
+});
+
+describe("nearbyResponse", () => {
+  beforeEach(() => forgetStationIndex());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("answers the stations near a position as JSON the browser may keep for an hour", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(INDEX)));
+    const res = await nearbyResponse("48.87,-123.64", () => {});
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("public, max-age=3600");
+    expect(((await res.json()) as { stations: Array<{ name: string }> }).stations.map((s) => s.name)).toEqual(["Crofton", "Porlier Pass"]);
+  });
+
+  it.each(["", "48.87", "48.87,-123.64,1", "north,west", "91,0", "0,181", "48.871,-123.64", "48.87,-123.6412"])("refuses %j as a position", async (at) => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    expect((await nearbyResponse(at, () => {})).status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("says it can't tell, and asks not to be kept, when the index isn't to be had", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 503 })));
+    const res = await nearbyResponse("48.87,-123.64", () => {});
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 });

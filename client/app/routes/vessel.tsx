@@ -40,17 +40,19 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
   const record: VesselRecord = feature;
   // Gear has no photo: its MMSI is one a maker or owner chose, often a ship's, whose photo a link would unfurl with.
   const key = feature && kind !== "gear" && mediaKey(feature.properties.imo, mmsi);
-  // Only a vessel's page offers Slackwater, and only this render looks up its stations: they are
-  // for the crawler, which never navigates inside the app.
+  // Only a vessel's page offers Slackwater. Its stations are in this render for the crawler, which
+  // never navigates inside the app; a page opened there asks the Worker for them (useNearbyStations).
   const [lon, lat] = feature?.geometry?.coordinates ?? [];
+  const placed = kind === "vessel" && lat != null && lon != null;
   const [photo, found] = await Promise.all([
     key ? firstPhoto(key, request.url) : undefined,
-    kind === "vessel" && lat != null && lon != null ? slackwaterStations(lat, lon, context.get(serverWaitUntil)) : [],
+    placed ? slackwaterStations(lat, lon, context.get(serverWaitUntil)) : undefined,
   ]);
   // Rendered before the index arrived, the page asks the edge to keep it for seconds rather than
-  // the minute, so the crawler it was for gets the links on its next visit.
-  const init: ResponseInit = feature ? (found ? {} : { headers: { "Cache-Control": "public, max-age=10" } }) : { status: 404 };
-  return data({ mmsi, name, feature: record, photo, stations: found ?? [] }, init);
+  // the minute, so the crawler it was for gets the links on its next visit. A vessel with no
+  // position has none to miss; its page asks once the stream places it.
+  const init: ResponseInit = feature ? (placed && !found ? { headers: { "Cache-Control": "public, max-age=10" } } : {}) : { status: 404 };
+  return data({ mmsi, name, feature: record, photo, stations: found }, init);
 }
 
 /**
