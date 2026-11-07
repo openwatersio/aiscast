@@ -31,21 +31,21 @@ const USER_AGENT = "aiscast-web/1.0 (https://openwaters.io/ais/; hello@openwater
 
 export type StationKind = NearbyStation["kind"];
 
-/** One entry of slackwater.xyz's `/stations.json`. */
+/**
+ * The parts of a `/stations.json` entry a vessel page uses. The index also points each station at
+ * its attribution notice, which is owed where the station's data is shown, and a vessel page shows
+ * only a name and a link (docs/policy.md, the Slackwater row).
+ */
 export interface IndexedStation {
   kind: StationKind;
   path: string;
   name: string;
   latitude: number;
   longitude: number;
-  /** Its notice's position in `attributions`. */
-  attribution: number;
 }
 
 export interface StationIndex {
   origin: string;
-  /** The notices the stations' licences ask a page showing them to display, each listed once. */
-  attributions: string[];
   stations: IndexedStation[];
 }
 
@@ -61,24 +61,19 @@ function km(lat1: number, lon1: number, lat2: number, lon2: number): number {
   return 12_742 * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
-/**
- * The nearest tide station and the nearest current station within reach, tide first. A station
- * whose notice the index doesn't carry is passed over: its licence asks for the notice wherever
- * it is shown, so without one it can't be shown.
- */
+/** The nearest tide station and the nearest current station within reach, tide first. */
 export function nearestStations(index: StationIndex, lat: number, lon: number): NearbyStation[] {
-  const best = new Map<StationKind, { station: IndexedStation; notice: string; km: number }>();
+  const best = new Map<StationKind, { station: IndexedStation; km: number }>();
   for (const station of index.stations) {
-    const notice = index.attributions[station.attribution];
-    if (!STATION_PATH.test(station.path) || typeof notice !== "string" || !notice.trim()) continue;
+    if (!STATION_PATH.test(station.path)) continue;
     const d = km(lat, lon, station.latitude, station.longitude);
     if (d > REACH_KM) continue;
     const held = best.get(station.kind);
-    if (!held || d < held.km) best.set(station.kind, { station, notice, km: d });
+    if (!held || d < held.km) best.set(station.kind, { station, km: d });
   }
   return (["tide", "current"] as const).flatMap((kind) => {
-    const found = best.get(kind);
-    return found ? [{ kind, name: found.station.name, url: `${ORIGIN}${found.station.path}`, attribution: found.notice }] : [];
+    const found = best.get(kind)?.station;
+    return found ? [{ kind, name: found.name, url: `${ORIGIN}${found.path}` }] : [];
   });
 }
 
@@ -88,22 +83,21 @@ const isStation = (s: unknown): s is IndexedStation => {
     // A tide station's page is under /tides/, a current station's under /currents/.
     && e.path.startsWith(e.kind === "tide" ? "/tides/" : "/currents/")
     && typeof e.name === "string" && e.name.trim() !== ""
-    && Number.isFinite(e.latitude) && Number.isFinite(e.longitude) && Number.isInteger(e.attribution);
+    && Number.isFinite(e.latitude) && Number.isFinite(e.longitude);
 };
 
 /** The usable entries of whatever the index answered, or nothing when none are. */
 function readIndex(body: unknown): StationIndex | undefined {
-  const { stations: listed, attributions: notices } = (body ?? {}) as { stations?: unknown; attributions?: unknown };
+  const listed = (body as { stations?: unknown } | null)?.stations;
   const stations = Array.isArray(listed) ? listed.filter(isStation) : [];
-  const attributions = Array.isArray(notices) ? notices.map((n) => (typeof n === "string" ? n : "")) : [];
   // Entries this can't read mean slackwater.xyz changed its format, which nothing else would show.
   const unread = (Array.isArray(listed) ? listed.length : 0) - stations.length;
   if (unread) console.warn(`slackwater: stations.json has ${unread} of ${Array.isArray(listed) ? listed.length : 0} entries this can't read`);
-  if (!stations.length || !attributions.length) {
-    console.warn("slackwater: stations.json has no usable stations or attributions");
+  if (!stations.length) {
+    console.warn("slackwater: stations.json has no usable stations");
     return undefined;
   }
-  return { origin: ORIGIN, attributions, stations };
+  return { origin: ORIGIN, stations };
 }
 
 async function fetchIndex(): Promise<StationIndex | undefined> {

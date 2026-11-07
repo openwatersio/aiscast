@@ -33,7 +33,7 @@ describe("vessel loader", () => {
   beforeEach(() => lookup.stations.mockReset());
 
   it("looks the stations up near the vessel's position, keeping the fetch alive with the Worker's waitUntil", async () => {
-    const near = [{ kind: "tide", name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/", attribution: "Slackwater database" }];
+    const near = [{ kind: "tide", name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/" }];
     lookup.stations.mockResolvedValue(near);
     const { data, init } = await load();
     expect(lookup.stations).toHaveBeenCalledWith(48.8657, -123.63606, expect.any(Function));
