@@ -28,6 +28,10 @@ Go 1.27 and Node 24 (`mise.toml` supplies Node to local development and CI; `ser
 - Every source gets its own `source` value, license tag in the archive path, and env flag, and stays out of the health gate unless it is an open-licensed feed we commit to.
 - Comments explain why, not what; durable docs describe the current state, not history.
 
+## License and CLA
+
+The server and the rest of the repo are [AGPL-3.0](LICENSE). The Signal K plugin (`signalk-plugin/`) and the web client (`client/`) are MIT, so other projects can build on them. Every contributor signs the [Contributor License Agreement](CLA.md) before a pull request can merge; the CLA workflow asks on your first one. The CLA lets Open Water Software, LLC move code into the MIT parts or into other MIT packages, and offer other licenses, while an OSI-approved license stays public. Code another project needs to import belongs in an MIT package, not in the AGPL server, or that project becomes AGPL.
+
 ## Production
 
 `server/deploy/README.md` has the box, firewall, the managed files under `rootfs/`, the one-step deploy, and the secrets layout. Secrets live in the untracked `.env` at the repo root (issuer seed for tokens, Hetzner/R2/AISHub credentials) and in `/etc/aiscast.env` on the box.
