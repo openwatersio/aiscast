@@ -674,7 +674,7 @@ func (p *Pipeline) logStats() {
 		p.pruneAishubStatics(time.Now())
 		p.sampleRate(time.Now())
 		p.smu.RLock()
-		ns := len(p.subs)
+		ns := len(p.subs) - int(p.taps.Load())
 		p.smu.RUnlock()
 		log.Printf("events=%d dup=%d parse_err=%d decode_fail=%d vessels=%d subs=%d",
 			p.stats.events.Load(), p.stats.dup.Load(), p.stats.parseErr.Load(), p.stats.decodeFail.Load(), nv, ns)
