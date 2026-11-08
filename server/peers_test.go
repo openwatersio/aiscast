@@ -40,6 +40,9 @@ func TestPeerable(t *testing.T) {
 	if peerable(&Event{Source: "station:ed25519:k", Own: true, Packet: ais.PositionReport{}}) {
 		t.Error("an own-ship report is peerable")
 	}
+	if got := seriesSource("peer:ed25519:k/station:ed25519:x", peerSource); got != "peer:ed25519:k" {
+		t.Errorf("a restored peer station's source is %s", got)
+	}
 	if !lowTrust("peer:ed25519:k") {
 		t.Error("a peer's reception is trusted")
 	}

@@ -452,7 +452,9 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 		case sub == p.nodeSub:
 			wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": errSelf.Error()})
 			return
-		case p.approvedPeers[sub] && p.nodeKey != nil:
+		case p.nodeKey == nil:
+			log.Printf("node %s (%s) connected from %s; not peering: this node has no NODE_KEY", sub, r.UserAgent(), ip)
+		case p.approvedPeers[sub]:
 			if !freshProof(sub, ms) {
 				wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "node proof already used"})
 				return
@@ -519,16 +521,16 @@ func (p *Pipeline) serveV1(w http.ResponseWriter, r *http.Request) {
 			}
 			switch f.Type {
 			case "subscribe":
-				if node != "" && f.Origin != "local" { // a peer's role grants only what this node may re-serve
+				// A peer's role grants only what this node may re-serve, and origin is the peer's alone.
+				switch {
+				case node != "" && f.Origin == "local":
+					subscription.Store(&v1Sub{local: true})
+					continue
+				case node != "":
 					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "a peer node subscribes with origin=local"})
 					continue
-				}
-				if f.Origin != "" {
-					if f.Origin != "local" || node == "" {
-						wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "origin=local is for approved peers"})
-						continue
-					}
-					subscription.Store(&v1Sub{local: true})
+				case f.Origin != "":
+					wsWriteJSON(ctx, c, map[string]string{"type": "error", "error": "origin=local is for approved peers"})
 					continue
 				}
 				b := f.BBox

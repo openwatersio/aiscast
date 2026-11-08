@@ -67,6 +67,7 @@ type subscriber struct {
 }
 
 type Pipeline struct {
+	taps atomic.Int32 // subscribers in subs that are not clients
 	arch *archive
 	// access log: a line per HTTP request (access.go); no-op unless configured
 	access        *archive
@@ -622,6 +623,21 @@ var subBuffer = 1024
 
 func (p *Pipeline) subscribe() *subscriber {
 	p.usage.streams.add(time.Now())
+	return p.listen()
+}
+
+// tap is a fan-out subscriber that is not a client, such as a peer link: kept out of the usage figures.
+func (p *Pipeline) tap() *subscriber {
+	p.taps.Add(1)
+	return p.listen()
+}
+
+func (p *Pipeline) untap(s *subscriber) {
+	p.unsubscribe(s)
+	p.taps.Add(-1)
+}
+
+func (p *Pipeline) listen() *subscriber {
 	s := &subscriber{ch: make(chan *Event, subBuffer)}
 	p.smu.Lock()
 	p.subs[s] = struct{}{}

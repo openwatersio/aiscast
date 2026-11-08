@@ -211,6 +211,11 @@ func sourceKind(source string) string {
 }
 
 // volunteer: a station someone runs and feeds us directly, as opposed to a feed or an aggregate.
+// selfReported: a source whose receptions a sender vouches for alone, a volunteer's or a peer's.
+func selfReported(source string) bool {
+	return volunteer(source) || sourceKind(source) == peerSource
+}
+
 func volunteer(source string) bool {
 	for _, pfx := range []string{"station:", "udp:", "mmsi:"} {
 		if strings.HasPrefix(source, pfx) {
@@ -354,10 +359,13 @@ func retiredStation(kind string) bool { return kind == "v1" || kind == "http" }
 // seriesSource is a station's source from the kind the series keeps: a volunteer's station is named by its source,
 // and a feed's receivers by the feed.
 func seriesSource(id, kind string) string {
-	if strings.HasPrefix(id, kind+":") {
-		return id
+	if !strings.HasPrefix(id, kind+":") {
+		return kind
 	}
-	return kind
+	if kind == peerSource { // peer:<node>/<station>: the source is the node, as live rows carry it
+		id, _, _ = strings.Cut(id, "/")
+	}
+	return id
 }
 
 // stationRows is every station's row with its name fields filled in.

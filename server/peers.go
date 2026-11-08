@@ -159,6 +159,8 @@ func verifyNode(h, host string, now time.Time) (string, int64, error) {
 	return "ed25519:" + parts[0], ms, nil
 }
 
+var tagStation = strings.NewReplacer(",", "_", "*", "_", `\`, "_")
+
 // tagLine replaces a sentence's TAG block with one naming its station and time, so the peer keeps each
 // station apart (as <source>/<station>) and takes the event's own time.
 func tagLine(station string, t time.Time, line string) string {
@@ -167,7 +169,7 @@ func tagLine(station string, t time.Time, line string) string {
 			line = line[i+2:]
 		}
 	}
-	tag := "s:" + strings.NewReplacer(",", "_", "*", "_", `\`, "_").Replace(station) + ",c:" + strconv.FormatInt(t.UnixMilli(), 10)
+	tag := "s:" + tagStation.Replace(station) + ",c:" + strconv.FormatInt(t.UnixMilli(), 10)
 	var sum byte
 	for i := 0; i < len(tag); i++ {
 		sum ^= tag[i]
@@ -242,11 +244,11 @@ func (p *Pipeline) peerOnce(ctx context.Context, pr peer, key ed25519.PrivateKey
 		}
 		return f, err
 	}
+	go p.pingLoop(ctx, c, cancel) // a silently dropped link, or a peer that never welcomes, ends this connection
 	w, err := read()
 	if err != nil {
 		return err
 	}
-	go p.pingLoop(ctx, c, cancel) // a silently dropped link ends this connection, so it is redialed
 	errc := make(chan error, 1)
 	if w.Role != "peer" || !verifyReply(w.Node, proof, w.NodeSig) {
 		log.Printf("peer %s: connected; waiting for its operator to approve %s", pr.Name, p.nodeSub)
@@ -284,8 +286,8 @@ func (p *Pipeline) peerOnce(ctx context.Context, pr peer, key ed25519.PrivateKey
 		}
 	}()
 
-	sub := p.subscribe()
-	defer p.unsubscribe(sub)
+	sub := p.tap()
+	defer p.untap(sub)
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	var batch []string
@@ -313,7 +315,8 @@ func (p *Pipeline) peerOnce(ctx context.Context, pr peer, key ed25519.PrivateKey
 				continue
 			}
 		}
-		if err := wsWriteJSON(ctx, c, v1Frame{Type: "publish", NMEA: batch}); err != nil {
+		// Replay: each sentence carries its own reception time, which a backlog or a stalled link leaves past maxSkew.
+		if err := wsWriteJSON(ctx, c, v1Frame{Type: "publish", NMEA: batch, Replay: true}); err != nil {
 			return err
 		}
 		batch = nil

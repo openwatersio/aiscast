@@ -287,7 +287,7 @@ func (p *Pipeline) serveStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.smu.RLock()
-	streams := len(p.subs)
+	streams := len(p.subs) - int(p.taps.Load())
 	p.smu.RUnlock()
 	clients := map[string]any{"streams": streams, "streams_opened": p.usage.streams.windows(now), "requests": p.usage.requests.windows(now)}
 
