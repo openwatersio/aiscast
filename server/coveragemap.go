@@ -635,7 +635,8 @@ const chCoverageStation = `if(source IN ('station', 'udp', 'mmsi', 'v1', 'http')
 const chStreamFoldBefore = "2026-10-05 15:30:00"
 
 // chVolunteerSources are the source kinds a volunteer's receiver sends under, as client/app/lib/ais.ts lists them,
-// and peer, whose stations (peer:<node key>/<station>) are volunteers' heard through an approved node.
+// and peer: receptions an approved node passes on from its own volunteers, each under the station
+// peer:<node key>/<that volunteer's station>.
 const chVolunteerSources = "('station', 'udp', 'mmsi', 'v1', 'http', 'peer')"
 
 // chStationKey is the station a reception counts toward in station_coverage: the station as receptions holds
