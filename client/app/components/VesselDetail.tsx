@@ -25,6 +25,7 @@ import { mediaKey, type Photo } from "../lib/media";
 import { particularsFacts } from "../lib/particulars";
 import { ferryIdentity } from "../lib/ferries";
 import type { NearbyStation } from "../lib/slackwater";
+import { useNearbyStations } from "../lib/useNearbyStations";
 import { useMedia } from "../lib/useMedia";
 import type { TrackRange } from "../lib/trackRange";
 import { useStation } from "../lib/useStationTitle";
@@ -55,7 +56,10 @@ export function VesselDetail({
   mmsi: number;
   feature: VesselFeature | undefined;
   loading?: boolean;
-  /** The Slackwater station pages near the vessel, which only a server render looks up. */
+  /**
+   * The Slackwater station pages near the vessel, as a server render found them. Undefined, as on
+   * a page opened inside the app or one rendered before the index arrived, and they are asked for.
+   */
   stations?: NearbyStation[];
 }) {
   const live = useLive();
@@ -107,6 +111,8 @@ export function VesselDetail({
     p?.beam,
   );
   const media = useMedia((feature || heard) && !gear ? mediaKey(imo, mmsi) : undefined);
+  // Only a vessel's card links stations, so only a vessel's position is asked about.
+  const nearby = useNearbyStations(stations, kind === "vessel" ? lat : undefined, kind === "vessel" ? lon : undefined);
 
   // Draw, follow, and frame the vessel. The record's position seeds the stream, so the map
   // shows the vessel even when the stream is refused, which happens per address.
@@ -281,7 +287,7 @@ export function VesselDetail({
       />
 
       {/* Vessels only. Other vessels wait for the record, since a ferry known only by its particulars would otherwise be offered, and counted, as any vessel. */}
-      {kind === "vessel" && (p || ferry) && <SlackwaterCard ferry={Boolean(ferry)} stations={stations} />}
+      {kind === "vessel" && (p || ferry) && <SlackwaterCard ferry={Boolean(ferry)} stations={nearby} />}
 
       {p?.particulars && (
         <Particulars particulars={p.particulars} provenance={p.provenance} sources={p.sources} name={name} photos={media?.links.commonsCategory} />
