@@ -49,12 +49,57 @@ describe("ferry vessel pages", () => {
     expect(JSON.stringify(descriptors)).not.toMatch(/Slackwater|slackwater/);
   });
 
-  it.each([70, 80, 52, 60, undefined])("does not offer Slackwater on an unverified non-ferry page (type %s)", (type) => {
+  it.each([70, 80, 52, 60, undefined])("offers Slackwater without the ferry wording on an unverified non-ferry page (type %s)", (type) => {
     const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type } };
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
       createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
     ));
-    expect(html).not.toMatch(/Riding this ferry|slackwater.xyz/);
+    expect(html).not.toMatch(/Riding this ferry/);
+    expect(html.match(/Heading out on the water\?/g)).toHaveLength(1);
+    // The link carries no position, so the copy speaks of the reader's coast, not the vessel's.
+    expect(html).toContain("Slackwater shows today&#x27;s tides and currents for the coast around you.");
+    expect(html).toContain('href="https://slackwater.xyz/?ref=ais-vessel" target="_blank" rel="noopener noreferrer"');
+    expect(html).toContain(">Get Slackwater</a>");
+    const descriptors = meta({ loaderData: { mmsi: feature.properties.mmsi, name: "TEST SHIP", feature } } as Parameters<typeof meta>[0]);
+    expect(JSON.stringify(descriptors)).not.toMatch(/Slackwater|slackwater/);
+  });
+
+  it("links the Slackwater station pages near the vessel by name, at their own addresses", () => {
+    const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type: 70 } };
+    const stations = [
+      { kind: "tide" as const, name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/" },
+      { kind: "current" as const, name: "Porlier Pass", url: "https://slackwater.xyz/currents/ca/bc/porlier-pass/" },
+    ];
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature, stations }),
+    ));
+    expect(html).toContain("Near its last position:");
+    // Each its own line, a 32 px tap target that reads as a list rather than spaced-out buttons.
+    expect(html).toContain('<li><a href="https://slackwater.xyz/tides/ca/bc/crofton/" target="_blank" rel="noopener noreferrer" class="flex min-h-8');
+    expect(html).toContain(">Tides: Crofton</a>");
+    expect(html).toContain('<li><a href="https://slackwater.xyz/currents/ca/bc/porlier-pass/" target="_blank" rel="noopener noreferrer" class="flex min-h-8');
+    expect(html).toContain(">Currents: Porlier Pass</a>");
+    // A name and a link copy none of a station's data, so its notice stays on the station page the link opens.
+    expect(html).not.toMatch(/slackwater-database|Source:/);
+    // The app link stays, for a reader who wants more than one station.
+    expect(html).toContain('href="https://slackwater.xyz/?ref=ais-vessel"');
+  });
+
+  it("offers only the app when no station is near", () => {
+    const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type: 70 } };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature, stations: [] }),
+    ));
+    expect(html).not.toContain("Near its last position");
+    expect(html.match(/slackwater\.xyz/g)).toHaveLength(1);
+  });
+
+  it.each(["gear", "aton", "base", "sar"] as const)("does not offer Slackwater on a %s page", (kind) => {
+    const feature: VesselFeature = { ...ferry, properties: { ...ferry.properties, kind } };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
+    ));
+    expect(html).not.toMatch(/slackwater\.xyz/);
   });
 
   it.each([9332779, 9876543])("uses the same IMO check in visible content and metadata (%s)", (imo) => {
@@ -132,5 +177,24 @@ describe("ferry vessel pages", () => {
     const descriptors = meta({ loaderData: { mmsi: 230000001, name: "TEST SHIP", feature } } as Parameters<typeof meta>[0]);
     expect(descriptors).toContainEqual({ title: "TEST SHIP, passenger ship: live AIS position | Open Waters AIS" });
     expect(descriptors).toContainEqual({ property: "og:title", content: "TEST SHIP, passenger ship: live AIS position | Open Waters AIS" });
+  });
+});
+
+describe("correcting vessel details", () => {
+  it.each([undefined, { ship_type: "survey vessel" }])("links vessels to the Wikidata guide with or without particulars", (particulars) => {
+    const feature: VesselFeature = { ...ferry, properties: { ...ferry.properties, particulars } };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
+    ));
+    expect(html).toContain('href="https://openwaters.io/ais/wikidata/"');
+    expect(html).toContain(">Correct vessel details</a>");
+  });
+
+  it.each(["gear", "aton", "base", "sar"] as const)("does not suggest vessel edits for %s", (kind) => {
+    const feature: VesselFeature = { ...ferry, properties: { ...ferry.properties, kind } };
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
+    ));
+    expect(html).not.toContain("/ais/wikidata/");
   });
 });

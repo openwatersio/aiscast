@@ -3,7 +3,7 @@
 Signal K plugin for [Open Waters AIS](https://openwaters.io/ais/), the open AIS network that runs on [aiscast](https://github.com/openwatersio/aiscast). It does two things over one connection:
 
 - **Share**: the plugin sends every AIS sentence your receiver hears to aiscast as it arrives (`!AIVDM` on NMEA 0183, or NMEA 2000 AIS PGNs re-encoded as sentences), so the places only boats can hear get coverage. The plugin also shares your own transponder's position (`!AIVDO`). When an AIS transponder is not available, the plugin builds class B reports from the Signal K position and marks them self-reported. Each part has its own checkbox.
-- **Receive**: when the boat hears no AIS of its own (no receiver, receiver off, server running ashore), the plugin subscribes to aiscast around your position. It injects the traffic as Signal K targets with `$source` `signalk-aiscast.net`, so Freeboard and friends show them. `Always` mode also adds traffic beyond VHF range, and locally heard targets win.
+- **Receive**: when the boat hears no AIS of its own (no receiver, receiver off, server running ashore), the plugin subscribes to aiscast around your position. It injects the traffic as Signal K targets with a `$source` under `signalk-aiscast.net`, so Freeboard and friends show them. `Always` mode also adds traffic beyond VHF range, and locally heard targets win.
 
 It also follows your buddy boats worldwide: see [Buddy boats](#buddy-boats).
 
@@ -56,6 +56,20 @@ Without the buddylist plugin installed, there are no buddies and nothing changes
 ## Data and licensing
 
 aiscast publishes what you share under its open data terms: the [contributor agreement](https://github.com/openwatersio/aiscast/blob/main/docs/contributor-agreement.md), summarized in the [aiscast README](https://github.com/openwatersio/aiscast#readme). The plugin shares only AIS sentences and, if you enable it, your own position. That position comes from the transponder, or the plugin builds it from Signal K when an AIS transponder is not available. Removal requests and the privacy policy are on the aiscast site.
+
+Received traffic identifies its feed in `$source`: `signalk-aiscast.net.feed-<base64url of the feed's UTF-8 bytes>`. For example, Kystverket is `signalk-aiscast.net.feed-a3lzdHZlcmtldA`. Volunteer stations share a source per prefix (`station`, `udp`, `mmsi`, `http`, or `v1`), since stations under each prefix carry the same license and credit. The full reception source stays in `sensors.aiscast`. Events without a source use `signalk-aiscast.net`.
+
+If you use source-priority rules with the exact name `signalk-aiscast.net`, inspect the new names in Signal K's Data Browser and add the feeds you want to those rules. Feed names are exact identifiers; a rule for the old name does not cover them.
+
+Each injected event also sets `sensors.aiscast` on the parsed target to its `{source, license, attribution}`, with the same `$source` and timestamp as the parsed updates. This is a plugin-specific data path, available through Signal K deltas and REST. For a vessel, read `GET /signalk/v1/api/vessels/<vessel URN>/sensors/aiscast`. Use the event's parsed context for other targets: aids and base stations are under `atons`, and SAR aircraft under `aircraft`. Display the `attribution` text when displaying or redistributing the data. Missing fields mean the event did not supply them.
+
+`sensors.aiscast` is an extension, not a standard hardware sensor descriptor. Consumers that enforce the stock Signal K schema must allow this extension.
+
+Signal K keeps [values from multiple sources](https://signalk.org/specification/1.8.4/doc/multiple_values.html). For fields with `$source`, use `sensors.aiscast.values[update.$source].value` to find the credit; without `values`, use its `value` only when its `$source` matches. Retrieve this object through REST, or subscribe to all sources for `sensors.aiscast`: a preferred-source stream can omit the credit for another feed.
+
+Plain identity fields such as name, callsign, and IMO do not retain `$source` in Signal K's full model. When displaying those fields or the vessel as a whole, display every distinct attribution supplied in `sensors.aiscast.value` and its per-source `values`. Do not infer their credit from the position's source or from the last received message.
+
+NMEA 0183 output carries no license or attribution text. A chartplotter receiving only `!AIVDM` cannot recover those credits. Display them separately using the Signal K data above, or turn off **Send aiscast traffic to NMEA 0183 output** when the receiving setup cannot provide the required attribution. The same limitation applies when another plugin converts these Signal K targets to NMEA 0183 or NMEA 2000.
 
 ## Development
 

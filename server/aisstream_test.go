@@ -1,6 +1,16 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,5 +39,74 @@ func TestAisstreamEnvelopeMapping(t *testing.T) {
 	}
 	if float64(pr.Latitude) != 55.990715 || float64(pr.Longitude) != -3.183045 {
 		t.Errorf("position round trip: %v %v", pr.Latitude, pr.Longitude)
+	}
+}
+
+func TestVerifyAllowExpired(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	notAfter := time.Date(2026, 11, 17, 14, 4, 0, 0, time.UTC)
+	cert := func(tmpl, parent *x509.Certificate) *x509.Certificate {
+		if parent == nil {
+			parent = tmpl
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return c
+	}
+	caCert := func(serial int64, name string, notAfter time.Time, parent *x509.Certificate) *x509.Certificate {
+		return cert(&x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: name}, NotBefore: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), NotAfter: notAfter, IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}, parent)
+	}
+	leafCert := func(serial int64, notAfter time.Time, parent *x509.Certificate) *x509.Certificate {
+		return cert(&x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "stream.aisstream.io"}, DNSNames: []string{"stream.aisstream.io"}, NotBefore: notAfter.AddDate(0, -3, 0), NotAfter: notAfter, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}, parent)
+	}
+	root := caCert(1, "root", notAfter.AddDate(5, 0, 0), nil)
+	inter := caCert(2, "intermediate", notAfter.AddDate(1, 0, 0), root)
+	shortInter := caCert(3, "short intermediate", notAfter.Add(2*24*time.Hour), root)
+	leaf := leafCert(4, notAfter, inter)
+	shortLeaf := leafCert(5, notAfter, shortInter)
+	roots := x509.NewCertPool()
+	roots.AddCert(root)
+	chain := func(host string, certs ...*x509.Certificate) tls.ConnectionState {
+		return tls.ConnectionState{ServerName: host, PeerCertificates: certs}
+	}
+	const host = "stream.aisstream.io"
+	for _, c := range []struct {
+		name  string
+		cs    tls.ConnectionState
+		roots *x509.CertPool
+		now   time.Time
+		ok    bool
+	}{
+		{"valid", chain(host, leaf, inter), roots, notAfter.Add(-time.Hour), true},
+		{"expired within grace", chain(host, leaf, inter), roots, notAfter.Add(10 * 24 * time.Hour), true},
+		{"expired past grace", chain(host, leaf, inter), roots, notAfter.Add(certGrace + time.Hour), false},
+		{"not yet valid", chain(host, leaf, inter), roots, notAfter.AddDate(0, -4, 0), false},
+		{"expired intermediate", chain(host, shortLeaf, shortInter), roots, notAfter.Add(5 * 24 * time.Hour), false},
+		{"wrong host, valid", chain("evil.example", leaf, inter), roots, notAfter.Add(-time.Hour), false},
+		{"wrong host, expired", chain("evil.example", leaf, inter), roots, notAfter.Add(time.Hour), false},
+		{"no server name", chain("", leaf, inter), roots, notAfter.Add(-time.Hour), false},
+		{"untrusted root", chain(host, leaf, inter), x509.NewCertPool(), notAfter.Add(time.Hour), false},
+		{"no certificates", chain(host), roots, notAfter, false},
+	} {
+		if err := verifyAllowExpired(c.cs, c.roots, c.now); (err == nil) != c.ok {
+			t.Errorf("%s: err = %v, want ok=%v", c.name, err, c.ok)
+		}
+	}
+}
+
+// aisstreamHTTP skips Go's own verification, so the dial must reach verifyAllowExpired: a self-signed server is refused.
+func TestAisstreamHTTPVerifies(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	c, err := aisstreamDial(t.Context(), strings.Replace(srv.URL, "https://127.0.0.1", "wss://localhost", 1))
+	if err == nil {
+		c.CloseNow()
+		t.Fatal("self-signed certificate accepted")
+	}
+	if !strings.Contains(err.Error(), "aisstream certificate:") {
+		t.Fatalf("err = %v, want verifyAllowExpired's error", err)
 	}
 }

@@ -14,6 +14,7 @@ export const AISSTREAM_VS = `${WEBSITE}/ais/vs/aisstream/`;
 export const AISSTREAM_STATUS = `${WEBSITE}/ais/alternatives/aisstream/`;
 /** Where a free personal token is issued. */
 export const TOKEN = `${WEBSITE}/ais/token/`;
+export const WIKIDATA_GUIDE = `${WEBSITE}/ais/wikidata/`;
 export const SIGNALK_PLUGIN = "https://github.com/openwatersio/aiscast/tree/main/signalk-plugin#readme";
 export const GITHUB = "https://github.com/openwatersio/aiscast";
 

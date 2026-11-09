@@ -17,13 +17,15 @@ import {
 } from "../lib/ais";
 import { publicApiBase, type SourceRef, type VesselFeature, type VesselParticulars } from "../lib/api";
 import { useLive, useLiveVessel, type Live } from "../lib/live";
-import { DEVELOPERS, SIGNALK_PLUGIN } from "../lib/links";
+import { DEVELOPERS, SIGNALK_PLUGIN, WIKIDATA_GUIDE } from "../lib/links";
 import { SITE } from "../lib/meta";
 import { shareLink } from "../lib/share";
 import { cn } from "../lib/cn";
 import { mediaKey, type Photo } from "../lib/media";
 import { particularsFacts } from "../lib/particulars";
 import { ferryIdentity } from "../lib/ferries";
+import type { NearbyStation } from "../lib/slackwater";
+import { useNearbyStations } from "../lib/useNearbyStations";
 import { useMedia } from "../lib/useMedia";
 import type { TrackRange } from "../lib/trackRange";
 import { useStation } from "../lib/useStationTitle";
@@ -49,10 +51,16 @@ export function VesselDetail({
   mmsi,
   feature,
   loading = false,
+  stations,
 }: {
   mmsi: number;
   feature: VesselFeature | undefined;
   loading?: boolean;
+  /**
+   * The Slackwater station pages near the vessel, as a server render found them. Undefined, as on
+   * a page opened inside the app or one rendered before the index arrived, and they are asked for.
+   */
+  stations?: NearbyStation[];
 }) {
   const live = useLive();
   const heard = useLiveVessel(mmsi);
@@ -103,6 +111,8 @@ export function VesselDetail({
     p?.beam,
   );
   const media = useMedia((feature || heard) && !gear ? mediaKey(imo, mmsi) : undefined);
+  // Only a vessel's card links stations, so only a vessel's position is asked about.
+  const nearby = useNearbyStations(stations, kind === "vessel" ? lat : undefined, kind === "vessel" ? lon : undefined);
 
   // Draw, follow, and frame the vessel. The record's position seeds the stream, so the map
   // shows the vessel even when the stream is refused, which happens per address.
@@ -276,10 +286,17 @@ export function VesselDetail({
         ]}
       />
 
-      {ferry && <SlackwaterCard />}
+      {/* Vessels only. Other vessels wait for the record, since a ferry known only by its particulars would otherwise be offered, and counted, as any vessel. */}
+      {kind === "vessel" && (p || ferry) && <SlackwaterCard ferry={Boolean(ferry)} stations={nearby} />}
 
       {p?.particulars && (
         <Particulars particulars={p.particulars} provenance={p.provenance} sources={p.sources} name={name} photos={media?.links.commonsCategory} />
+      )}
+
+      {kind === "vessel" && (
+        <p className="mt-3 text-footnote text-fg-muted">
+          Missing or incorrect particulars? <a href={WIKIDATA_GUIDE}>Correct vessel details</a>.
+        </p>
       )}
 
       <ContributePrompt

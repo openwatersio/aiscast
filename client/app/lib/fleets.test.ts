@@ -33,6 +33,9 @@ describe("fleets", () => {
       const optional = (v: unknown, what: string) => v === undefined || text(v, what);
       text(fleet.title, "title");
       text(fleet.summary, "summary");
+      // The share card shows the summary's first sentence, which an initialism such as "U.S." ends early. Shorter
+      // abbreviations ("St.", "Ltd.") are left to the author, since "Ltd." also ends real sentences here.
+      expect(fleet.summary, `${fleet.id}: abbreviation in summary`).not.toMatch(/\b(?:[A-Za-z]\.){2,}\s/);
       optional(fleet.description, "description");
       optional(fleet.reviewed, "reviewed");
       const links = (l: Record<string, unknown> | undefined) => Object.entries(l ?? {}).forEach(([k, v]) => (text(k, "link label"), text(v, `link ${k}`)));
@@ -92,7 +95,7 @@ it("covers a fleet with its named vessel, or the first it can find on the map, a
   expect(coverKey(fleet("Unconfirmed"))).toBe("368478440");
   const cruise = getFleet("cruise-ships")!;
   expect(coverKey(cruise)).toBe(coverKey(getFleet(cruise.children[0]!)!));
-  // A group's card shows the first photo its fleets name, here Royal Caribbean's, the only one that names any.
+  // A group's card shows the first photo its fleets name, in card order: Royal Caribbean's, the first fleet that names one.
   expect(coverPhoto(cruise)).toBe(getFleet("cruise-ships/royal-caribbean")!.photos![0]);
   expect(coverPhoto(getFleet("youtube")!)).toBeUndefined();
 });
