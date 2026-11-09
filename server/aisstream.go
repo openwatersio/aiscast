@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"reflect"
@@ -102,7 +103,7 @@ func runAisstream(p *Pipeline, url, apiKey, bboxJSON string) {
 func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPClient: aisstreamHTTP})
+	c, err := aisstreamDial(ctx, url)
 	if err != nil {
 		return err
 	}
@@ -141,10 +142,20 @@ var aisstreamHTTP = func() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone() // keeps the default proxy and timeouts
 	t.TLSClientConfig = &tls.Config{
 		InsecureSkipVerify: true, // verifyAllowExpired does the verification
-		VerifyConnection:   func(cs tls.ConnectionState) error { return verifyAllowExpired(cs, nil, time.Now()) },
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if err := verifyAllowExpired(cs, nil, time.Now()); err != nil {
+				return fmt.Errorf("aisstream certificate: %w", err)
+			}
+			return nil
+		},
 	}
 	return &http.Client{Transport: t}
 }()
+
+func aisstreamDial(ctx context.Context, url string) (*websocket.Conn, error) {
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPClient: aisstreamHTTP})
+	return c, err
+}
 
 // roots nil means the system pool.
 func verifyAllowExpired(cs tls.ConnectionState, roots *x509.CertPool, now time.Time) error {

@@ -97,16 +97,16 @@ func TestVerifyAllowExpired(t *testing.T) {
 	}
 }
 
-// aisstreamHTTP skips Go's own verification, so it must reach verifyAllowExpired: a self-signed server is refused.
+// aisstreamHTTP skips Go's own verification, so the dial must reach verifyAllowExpired: a self-signed server is refused.
 func TestAisstreamHTTPVerifies(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
-	resp, err := aisstreamHTTP.Get(strings.Replace(srv.URL, "127.0.0.1", "localhost", 1))
+	c, err := aisstreamDial(t.Context(), strings.Replace(srv.URL, "https://127.0.0.1", "wss://localhost", 1))
 	if err == nil {
-		resp.Body.Close()
+		c.CloseNow()
 		t.Fatal("self-signed certificate accepted")
 	}
-	if !strings.Contains(err.Error(), "x509:") {
-		t.Fatalf("err = %v, want a certificate error", err)
+	if !strings.Contains(err.Error(), "aisstream certificate:") {
+		t.Fatalf("err = %v, want verifyAllowExpired's error", err)
 	}
 }
