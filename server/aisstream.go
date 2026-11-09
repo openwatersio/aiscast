@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"log"
+	"net/http"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
@@ -97,7 +102,7 @@ func runAisstream(p *Pipeline, url, apiKey, bboxJSON string) {
 func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, url, nil)
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPClient: aisstreamHTTP})
 	if err != nil {
 		return err
 	}
@@ -123,6 +128,54 @@ func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) error {
 		}
 		p.aisstreamMessage(body, time.Now())
 	}
+}
+
+// aisstream's certificate has lapsed before (aisstream/issues#341). Keep ingesting through a short lapse:
+// the chain and hostname are still verified, and only a leaf that expired within certGrace is let through.
+// Every other certificate in the chain must be valid now. Go never checks revocation, so for the grace period a
+// leaked key from the lapsed certificate could intercept the connection and the API key it carries.
+// ponytail: delete once aisstream renews reliably.
+const certGrace = 30 * 24 * time.Hour
+
+var aisstreamHTTP = func() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone() // keeps the default proxy and timeouts
+	t.TLSClientConfig = &tls.Config{
+		InsecureSkipVerify: true, // verifyAllowExpired does the verification
+		VerifyConnection:   func(cs tls.ConnectionState) error { return verifyAllowExpired(cs, nil, time.Now()) },
+	}
+	return &http.Client{Transport: t}
+}()
+
+// roots nil means the system pool.
+func verifyAllowExpired(cs tls.ConnectionState, roots *x509.CertPool, now time.Time) error {
+	if len(cs.PeerCertificates) == 0 {
+		return errors.New("no peer certificate")
+	}
+	if cs.ServerName == "" { // an IP-literal URL sends no SNI, and an empty DNSName would skip the hostname check
+		return errors.New("aisstream URL must use a hostname")
+	}
+	leaf := cs.PeerCertificates[0]
+	opts := x509.VerifyOptions{DNSName: cs.ServerName, CurrentTime: now, Roots: roots, Intermediates: x509.NewCertPool()}
+	for _, c := range cs.PeerCertificates[1:] {
+		opts.Intermediates.AddCert(c)
+	}
+	_, err := leaf.Verify(opts)
+	var ce x509.CertificateInvalidError
+	if !errors.As(err, &ce) || ce.Reason != x509.Expired || !now.After(leaf.NotAfter) || now.After(leaf.NotAfter.Add(certGrace)) {
+		return err
+	}
+	opts.CurrentTime = leaf.NotAfter
+	chains, err := leaf.Verify(opts)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(chains, func(chain []*x509.Certificate) bool {
+		return !slices.ContainsFunc(chain[1:], func(c *x509.Certificate) bool { return now.Before(c.NotBefore) || now.After(c.NotAfter) })
+	}) {
+		return errors.New("certificate chain is not valid now")
+	}
+	log.Printf("aisstream: accepting certificate for %s that expired %s", cs.ServerName, leaf.NotAfter.UTC().Format(time.RFC3339))
+	return nil
 }
 
 type aisstreamError struct{ msg string }

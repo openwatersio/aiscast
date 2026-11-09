@@ -15,7 +15,7 @@ Environment:
 - `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`.
 - `BARENTSWATCH_CLIENT_ID` + `BARENTSWATCH_CLIENT_SECRET` (set = BarentsWatch upstream on), `BARENTSWATCH_URL`.
 - `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`.
-- `AISSTREAM_API_KEY` (set = aisstream.io upstream on), `AISSTREAM_BBOX` (world), `AISSTREAM_URL`.
+- `AISSTREAM_API_KEY` (set = aisstream.io upstream on), `AISSTREAM_BBOX` (world), `AISSTREAM_URL` (must use a hostname). The aisstream connection accepts a certificate up to 30 days after it expires, so ingest survives a lapsed renewal; the chain and hostname are still checked.
 - `AISHUB_FEED` (`data.aishub.net:<port>`): forward volunteer-station events to AISHub as plain `!AIVDM`. The server never forwards public feeds or synthesized events, per their terms.
 - `AISHUB_USERNAME` (set = poll AISHub's aggregate snapshot), `AISHUB_INTERVAL` (`20s`, the limit AISHub set for our account).
 - `ARCHIVE_DIR` (`archive`).
