@@ -226,12 +226,6 @@ export function formatCoord(lat: number, lon: number): string {
   return `${d(lat, "N", "S")} ${d(lon, "E", "W")}`;
 }
 
-/** Signed decimal degrees, latitude first, the form a map search or a spreadsheet takes. */
-export function formatDecimalCoord(lat: number, lon: number): string {
-  const d = (v: number) => (Math.round(v * 1e5) / 1e5 || 0).toFixed(5);
-  return `${d(lat)}, ${d(lon)}`;
-}
-
 // The server resolves the MMSI's MID to an ISO 3166-1 alpha-2 code, so the only work left
 // is turning that into something readable. Intl does both; a lookup table would be 250
 // rows of what the platform already ships.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { formatCoord, formatDecimalCoord } from "../lib/ais";
+import { formatCoord } from "../lib/ais";
 import { useLive } from "../lib/live";
 
 /**
@@ -29,10 +29,9 @@ export function PointerPosition() {
   return (
     <div
       aria-hidden
-      className="pointer-dock pane pointer-events-none fixed z-10 hidden h-9 items-center gap-3 rounded-full px-3.5 font-mono text-footnote whitespace-nowrap text-fg tabular-nums md:pointer-fine:flex"
+      className="pointer-dock pane pointer-events-none fixed z-10 hidden h-9 items-center rounded-full px-3.5 text-footnote font-medium whitespace-nowrap text-fg tabular-nums md:pointer-fine:flex"
     >
-      <span>{formatCoord(at.lat, at.lng)}</span>
-      <span className="text-fg-secondary">{formatDecimalCoord(at.lat, at.lng)}</span>
+      {formatCoord(at.lat, at.lng)}
     </div>
   );
 }

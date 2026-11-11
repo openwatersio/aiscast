@@ -42,7 +42,6 @@ import {
   centerBoxes,
   vesselSlug,
   formatCoord,
-  formatDecimalCoord,
 } from "./ais";
 
 describe("vesselSlug", () => {
@@ -846,12 +845,5 @@ describe("formatCoord", () => {
 
   it("carries minutes that round up to 60 into the degree", () => {
     expect(formatCoord(59.9999999, -0.0000001)).toBe("60°00.000' N 0°00.000' E");
-  });
-});
-
-describe("formatDecimalCoord", () => {
-  it("writes signed degrees to five places, latitude first", () => {
-    expect(formatDecimalCoord(59.902051, -10.740934)).toBe("59.90205, -10.74093");
-    expect(formatDecimalCoord(-0.000001, 0)).toBe("0.00000, 0.00000");
   });
 });
