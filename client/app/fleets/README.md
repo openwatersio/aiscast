@@ -45,9 +45,9 @@ sections:
         mmsi: 368478440
 ```
 
-`npm test -w client` checks every file: that it parses, has a title and summary, that every folder has an `index.yaml`, that it uses only the keys above, that each MMSI is a number of nine digits starting 2 to 7 and each IMO a number with a valid check digit, that no MMSI is listed twice in a fleet, and that every link is https.
+`npm test -w client` checks every file: that it parses, has a title and summary, that the summary has no initialism such as "U.S.", which would end the first sentence that share cards show, that every folder has an `index.yaml`, that it uses only the keys above, that each MMSI is a number of nine digits starting 2 to 7 and each IMO a number with a valid check digit, that no MMSI is listed twice in a fleet, and that every link is https.
 
-Photos must be on Wikimedia Commons under a free licence, which every Commons file is; each is shown with its author and licence from Commons. A group's card shows the first photo its first fleet lists, and a fleet's card its own first photo. A photo that cannot be found falls back to the cover vessel's. Commons answers are kept at the edge for a week, so a new photo shows within that time of a deploy.
+Photos must be on Wikimedia Commons under a free licence, which every Commons file is; each is shown with its author and licence from Commons. A group's card shows the first photo of the first of its fleets, in card order, that lists one, and a fleet's card its own first photo. A photo that cannot be found falls back to the cover vessel's. Commons answers are kept at the edge for a week, so a new photo shows within that time of a deploy.
 
 On a fleet's page, readers can sort its vessels as listed, by when they were last heard, or by name, and show only those on the map or heard in the last day.
 
