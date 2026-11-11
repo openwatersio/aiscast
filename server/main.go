@@ -156,7 +156,14 @@ func main() {
 		go runDigitraffic(p, env("DIGITRAFFIC_URL", "wss://meri.digitraffic.fi:443/mqtt"))
 	}
 	if key := os.Getenv("AISSTREAM_API_KEY"); key != "" {
-		go runAisstream(p, env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream"), key, env("AISSTREAM_BBOX", "[[[-90,-180],[90,180]]]"))
+		subs, err := aisstreamSubscriptions(env("AISSTREAM_BBOX", aisstreamDefaultBoxes))
+		if err != nil { // aisstream is best effort: a bad box turns it off, not the server
+			log.Printf("AISSTREAM_BBOX: %v: aisstream upstream off", err)
+		}
+		url := env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream")
+		for _, sub := range subs {
+			go runAisstream(p, url, key, sub)
+		}
 	}
 	if u := os.Getenv("AISHUB_USERNAME"); u != "" {
 		iv, err := time.ParseDuration(env("AISHUB_INTERVAL", "20s"))

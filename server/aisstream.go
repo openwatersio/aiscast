@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"reflect"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
@@ -90,41 +92,116 @@ func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
 	p.ingestPacket("aisstream", "aisstream", t, now, pv.Elem().Interface().(ais.Packet))
 }
 
+// aisstream caps each connection's throughput. A whole-world subscription keeps up for a minute or two, then
+// falls minutes behind until aisstream drops it, so the default splits the world at 4.5°E, where the volume
+// divides about evenly, and runs a connection for each half. aisstream closes a third connection on a key a
+// second after it subscribes, without an error.
+const aisstreamDefaultBoxes = "[[[-90,-180],[90,4.5]],[[-90,4.5],[90,180]]]"
+
+// aisstreamSubscriptions turns AISSTREAM_BBOX into one subscription per connection: the first box gets the
+// first connection, and every other box shares the second, since aisstream would close a third.
+func aisstreamSubscriptions(bboxJSON string) ([]string, error) {
+	var boxes [][][]float64
+	if err := json.Unmarshal([]byte(bboxJSON), &boxes); err != nil {
+		return nil, err
+	}
+	if len(boxes) == 0 {
+		return nil, errors.New("no bounding boxes")
+	}
+	for i, b := range boxes {
+		if len(b) != 2 || len(b[0]) != 2 || len(b[1]) != 2 || !validLatLon(b[0]) || !validLatLon(b[1]) {
+			return nil, fmt.Errorf("box %d is not two [lat, lon] corners: %v", i+1, b)
+		}
+	}
+	groups := [][][][]float64{boxes[:1]}
+	if len(boxes) > 1 {
+		groups = append(groups, boxes[1:])
+	}
+	subs := make([]string, len(groups))
+	for i, g := range groups {
+		sub, _ := json.Marshal(g)
+		subs[i] = string(sub)
+	}
+	return subs, nil
+}
+
+func validLatLon(c []float64) bool { return math.Abs(c[0]) <= 90 && math.Abs(c[1]) <= 180 }
+
+// aisstream answers dials made at the same moment with HTTP 429, so connections take turns: each dial
+// waits until aisstreamDialGap after the previous one, at startup and after a drop that ended both.
+const aisstreamDialGap = 5 * time.Second
+
+var aisstreamDialTurn struct {
+	sync.Mutex
+	last time.Time
+}
+
+func waitAisstreamDialTurn(gap time.Duration) {
+	aisstreamDialTurn.Lock()
+	defer aisstreamDialTurn.Unlock()
+	time.Sleep(time.Until(aisstreamDialTurn.last.Add(gap)))
+	aisstreamDialTurn.last = time.Now()
+}
+
 func runAisstream(p *Pipeline, url, apiKey, bboxJSON string) {
 	backoff := 5 * time.Second
 	for {
-		err := aisstreamSession(p, url, apiKey, bboxJSON)
-		log.Printf("aisstream: %v (retry in %s)", err, backoff)
+		connected, err := aisstreamSession(p, url, apiKey, bboxJSON)
+		backoff = reconnectDelay(backoff, sessionLength(connected))
+		log.Printf("aisstream %s: %v (retry in %s)", bboxJSON, err, backoff)
 		time.Sleep(backoff)
 		backoff = min(backoff*2, 5*time.Minute)
 	}
 }
 
-func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) error {
+// sessionLength is how long the session ran once it was established; zero when it never was,
+// so a dial or subscribe that blocked a long time and then failed still counts as a failed attempt.
+func sessionLength(connected time.Time) time.Duration {
+	if connected.IsZero() {
+		return 0
+	}
+	return time.Since(connected)
+}
+
+// reconnectDelay is the wait before the next attempt. A session that ran for more than a minute was
+// working, so its drop is a blip: start again from the shortest wait instead of keeping the backoff
+// earned by earlier failures, which otherwise stays at five minutes for the rest of the process.
+func reconnectDelay(backoff, ran time.Duration) time.Duration {
+	if ran > time.Minute {
+		return 5 * time.Second
+	}
+	return backoff
+}
+
+// aisstreamSession runs one connection and returns when it ends. connected is the time the
+// subscription was sent, zero if the session was never established.
+func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) (connected time.Time, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	waitAisstreamDialTurn(aisstreamDialGap)
 	c, err := aisstreamDial(ctx, url)
 	if err != nil {
-		return err
+		return connected, err
 	}
 	defer c.CloseNow()
 	c.SetReadLimit(1 << 20)
 	sub, _ := json.Marshal(map[string]any{"APIKey": apiKey, "BoundingBoxes": json.RawMessage(bboxJSON)})
 	if err := c.Write(ctx, websocket.MessageText, sub); err != nil {
-		return err
+		return connected, err
 	}
-	log.Printf("aisstream: connected to %s", url)
+	connected = time.Now()
+	log.Printf("aisstream %s: connected to %s", bboxJSON, url)
 	for {
 		rctx, rc := context.WithTimeout(ctx, upstreamSilence)
 		_, body, err := c.Read(rctx)
 		rc()
 		if err != nil {
-			return err
+			return connected, err
 		}
 		if len(body) > 0 && body[0] == '{' && len(body) < 200 {
 			var e struct{ Error string }
 			if json.Unmarshal(body, &e) == nil && e.Error != "" {
-				return &aisstreamError{e.Error}
+				return connected, &aisstreamError{e.Error}
 			}
 		}
 		p.aisstreamMessage(body, time.Now())

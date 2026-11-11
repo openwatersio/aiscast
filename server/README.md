@@ -15,7 +15,7 @@ Environment:
 - `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`.
 - `BARENTSWATCH_CLIENT_ID` + `BARENTSWATCH_CLIENT_SECRET` (set = BarentsWatch upstream on), `BARENTSWATCH_URL`.
 - `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`.
-- `AISSTREAM_API_KEY` (set = aisstream.io upstream on), `AISSTREAM_BBOX` (world), `AISSTREAM_URL` (a `wss://` URL must use a hostname, not an IP address). The aisstream connection accepts a certificate up to 30 days after it expires, so ingest survives a lapsed renewal; the chain and hostname are still checked.
+- `AISSTREAM_API_KEY` (set = aisstream.io upstream on), `AISSTREAM_BBOX` (default the world, split at 4.5°E into two boxes; aisstream caps throughput per connection and allows two connections per key, so the first box gets one connection and the rest share the second; that uses both, so don't share the key with another server; an invalid value turns aisstream off), `AISSTREAM_URL` (a `wss://` URL must use a hostname, not an IP address). The aisstream connection accepts a certificate up to 30 days after it expires, so ingest survives a lapsed renewal; the chain and hostname are still checked.
 - `AISHUB_USERNAME` (set = poll AISHub's aggregate snapshot), `AISHUB_INTERVAL` (`20s`, the limit AISHub set for our account).
 - `ARCHIVE_DIR` (`archive`).
 - `ACCESS_DIR` (`access`) + `ACCESS_BUCKET`: the access log, one JSON line per HTTP request, staged in hourly gzip files and uploaded under `access/v1/` to `ACCESS_BUCKET` with the R2 credentials. `off` turns it off. Without a bucket the hours stay on disk, and the sweep uploads them once one is set. See [Access log](#access-log).
