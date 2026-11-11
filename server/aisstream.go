@@ -93,38 +93,61 @@ func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
 func runAisstream(p *Pipeline, url, apiKey, bboxJSON string) {
 	backoff := 5 * time.Second
 	for {
-		err := aisstreamSession(p, url, apiKey, bboxJSON)
+		connected, err := aisstreamSession(p, url, apiKey, bboxJSON)
+		backoff = reconnectDelay(backoff, sessionLength(connected))
 		log.Printf("aisstream: %v (retry in %s)", err, backoff)
 		time.Sleep(backoff)
 		backoff = min(backoff*2, 5*time.Minute)
 	}
 }
 
-func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) error {
+// sessionLength is how long the session ran once it was established; zero when it never was,
+// so a dial or subscribe that blocked a long time and then failed still counts as a failed attempt.
+func sessionLength(connected time.Time) time.Duration {
+	if connected.IsZero() {
+		return 0
+	}
+	return time.Since(connected)
+}
+
+// reconnectDelay is the wait before the next attempt. A session that ran for more than a minute was
+// working, so its drop is a blip: start again from the shortest wait instead of keeping the backoff
+// earned by earlier failures, which otherwise stays at five minutes for the rest of the process.
+func reconnectDelay(backoff, ran time.Duration) time.Duration {
+	if ran > time.Minute {
+		return 5 * time.Second
+	}
+	return backoff
+}
+
+// aisstreamSession runs one connection and returns when it ends. connected is the time the
+// subscription was sent, zero if the session was never established.
+func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) (connected time.Time, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c, err := aisstreamDial(ctx, url)
 	if err != nil {
-		return err
+		return connected, err
 	}
 	defer c.CloseNow()
 	c.SetReadLimit(1 << 20)
 	sub, _ := json.Marshal(map[string]any{"APIKey": apiKey, "BoundingBoxes": json.RawMessage(bboxJSON)})
 	if err := c.Write(ctx, websocket.MessageText, sub); err != nil {
-		return err
+		return connected, err
 	}
+	connected = time.Now()
 	log.Printf("aisstream: connected to %s", url)
 	for {
 		rctx, rc := context.WithTimeout(ctx, upstreamSilence)
 		_, body, err := c.Read(rctx)
 		rc()
 		if err != nil {
-			return err
+			return connected, err
 		}
 		if len(body) > 0 && body[0] == '{' && len(body) < 200 {
 			var e struct{ Error string }
 			if json.Unmarshal(body, &e) == nil && e.Error != "" {
-				return &aisstreamError{e.Error}
+				return connected, &aisstreamError{e.Error}
 			}
 		}
 		p.aisstreamMessage(body, time.Now())
