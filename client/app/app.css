@@ -607,6 +607,13 @@ input[type="search"]::-webkit-search-cancel-button {
   }
 }
 
+/* The pointer's position (components/PointerPosition.tsx) is in the map's bottom-left corner,
+   beside the panel, opposite the map's buttons. It shows only on a wide screen. */
+.pointer-dock {
+  bottom: var(--gap);
+  left: calc(var(--map-left, 0px) + var(--gap));
+}
+
 /* The coverage key (components/CoverageKey.tsx) is centered in the part of the map the panel
    leaves: on the status chip's line on a wide screen, and a line under it on a phone, where
    the screen's center would put it over the chip. The chip is 36px tall. */

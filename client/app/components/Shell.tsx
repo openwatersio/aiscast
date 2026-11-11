@@ -22,6 +22,7 @@ import { CoverageKey } from "./CoverageKey";
 import type { CoverageMeasure } from "../lib/coverage";
 import { Sheet, type Detent } from "./Sheet";
 import { Header } from "./Header";
+import { PointerPosition } from "./PointerPosition";
 import { StatusChip } from "./StatusChip";
 import { stackStateFor, type StackState } from "./ui/PanelHeader";
 
@@ -255,6 +256,7 @@ export function Shell({ initialTheme }: { initialTheme: ThemeChoice }) {
 
         <Header />
         <StatusChip />
+        <PointerPosition />
         {coverage && <CoverageKey coverage={coverage} measure={coverageMeasure} />}
 
         <Sheet detent={detent} onDetentChange={setDetent}>

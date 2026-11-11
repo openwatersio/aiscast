@@ -214,13 +214,22 @@ export function formatAge(seconds: number): string {
   return `${Math.round(seconds / 86400)} days ago`;
 }
 
+/** Degrees and decimal minutes, as a chart and most AIS displays write a position. */
 export function formatCoord(lat: number, lon: number): string {
   const d = (v: number, pos: string, neg: string) => {
-    const deg = Math.floor(Math.abs(v));
-    const min = (Math.abs(v) - deg) * 60;
-    return `${deg}°${min.toFixed(3)}' ${v >= 0 ? pos : neg}`;
+    // Rounded as a whole, so 59.99999° reads 60°00.000' rather than 59°60.000'.
+    const thousandths = Math.round(Math.abs(v) * 60_000);
+    const deg = Math.floor(thousandths / 60_000);
+    const min = (thousandths % 60_000) / 1000;
+    return `${deg}°${min.toFixed(3).padStart(6, "0")}' ${thousandths === 0 || v >= 0 ? pos : neg}`;
   };
   return `${d(lat, "N", "S")} ${d(lon, "E", "W")}`;
+}
+
+/** Signed decimal degrees, latitude first, the form a map search or a spreadsheet takes. */
+export function formatDecimalCoord(lat: number, lon: number): string {
+  const d = (v: number) => (Math.round(v * 1e5) / 1e5 || 0).toFixed(5);
+  return `${d(lat)}, ${d(lon)}`;
 }
 
 // The server resolves the MMSI's MID to an ISO 3166-1 alpha-2 code, so the only work left

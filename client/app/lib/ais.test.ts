@@ -41,6 +41,8 @@ import {
   viewBoxes,
   centerBoxes,
   vesselSlug,
+  formatCoord,
+  formatDecimalCoord,
 } from "./ais";
 
 describe("vesselSlug", () => {
@@ -833,5 +835,23 @@ describe("vesselMix", () => {
       { cls: "other", vessels: 9, only: 0 },
     ]);
     expect(vesselMix(undefined)).toEqual([]);
+  });
+});
+
+describe("formatCoord", () => {
+  it("writes degrees and two-digit decimal minutes", () => {
+    expect(formatCoord(59.90205, 10.74093)).toBe("59°54.123' N 10°44.456' E");
+    expect(formatCoord(-33.85, -151.0833)).toBe("33°51.000' S 151°04.998' W");
+  });
+
+  it("carries minutes that round up to 60 into the degree", () => {
+    expect(formatCoord(59.9999999, -0.0000001)).toBe("60°00.000' N 0°00.000' E");
+  });
+});
+
+describe("formatDecimalCoord", () => {
+  it("writes signed degrees to five places, latitude first", () => {
+    expect(formatDecimalCoord(59.902051, -10.740934)).toBe("59.90205, -10.74093");
+    expect(formatDecimalCoord(-0.000001, 0)).toBe("0.00000, 0.00000");
   });
 });
