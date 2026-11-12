@@ -187,6 +187,9 @@ func main() {
 	for _, l := range p.udp {
 		go runUDP(p, l)
 	}
+	if addr := os.Getenv("TCP_ADDR"); addr != "" { // off unless set: the port has to be opened on the box too
+		go runTCP(p, addr)
+	}
 	if url := os.Getenv("CLICKHOUSE_URL"); url != "" {
 		// Until runStationSeries reads the candidates back, or ownPendingMax passes without ClickHouse answering.
 		p.stations.ownPending.Store(true)

@@ -12,6 +12,7 @@ go test ./...
 Environment:
 
 - `ADDR` (`:8080`), `UDP_ADDR` (`:10110`): comma-separated UDP listeners as `[label=]host:port`, labels unique. `/metrics` counts datagrams per label, so a listener per address shows which name feeders send to.
+- `TCP_ADDR` (unset = off), such as `:10111`: the TCP ingest listener, NMEA lines after an `AUTH <token>` first line.
 - `KYSTVERKET` (`1`), `KYSTVERKET_ADDR`.
 - `BARENTSWATCH_CLIENT_ID` + `BARENTSWATCH_CLIENT_SECRET` (set = BarentsWatch upstream on), `BARENTSWATCH_URL`.
 - `DIGITRAFFIC` (`1`), `DIGITRAFFIC_URL`.
@@ -74,7 +75,15 @@ Sources:
 - aisstream.io when `AISSTREAM_API_KEY` is set. The server maps its `/v0` envelopes back to structs, also `synthesized`. Anything the open feeds already delivered dedupes.
 - AISHub's aggregate snapshot when `AISHUB_USERNAME` is set (`synthesized`, source `aishub`, reciprocal with `AISHUB_FEED`). AISHub regenerates its world snapshot about once a minute, so positions from it run about a minute behind (`sources.aishub.delay` in `/v1/stats`). The server skips unchanged snapshots.
 
-Volunteer stations feed over `/v1/stream` as MQTT (a socket that negotiates the `mqtt` subprotocol gets a receive-only MQTT 3.1.1 session: the token is the CONNECT password or the request's, each PUBLISH payload is newline-separated NMEA on any topic, QoS 0 to 2 acknowledged, SUBSCRIBE refused), `/v1/receive` (AIS-catcher HTTP output), or `/v1/stream` publish frames. All three name the station by the token's `sub` alone, `station:<sub>`, so a feeder can switch transports without changing identity. UDP senders are `udp:<hash>`, or `mmsi:<n>` once their own `!AIVDO` names the vessel.
+Volunteer stations feed over `/v1/stream` as MQTT (a socket that negotiates the `mqtt` subprotocol gets a receive-only MQTT 3.1.1 session: the token is the CONNECT password or the request's, each PUBLISH payload is newline-separated NMEA on any topic, QoS 0 to 2 acknowledged, SUBSCRIBE refused), `/v1/receive` (AIS-catcher HTTP output), `/v1/stream` publish frames, or plain TCP on `TCP_ADDR`. All four name the station by the token's `sub` alone, `station:<sub>`, so a feeder can switch transports without changing identity. UDP senders are `udp:<hash>`, or `mmsi:<n>` once their own `!AIVDO` names the vessel.
+
+TCP ingest is for a receiver that only emits NMEA lines (rtl_ais, dAISy, a plotter's output through kplex or a serial-to-TCP bridge), which could otherwise reach aiscast only over UDP, with no token and no credit:
+
+```sh
+( echo "AUTH <token>"; cat /dev/ttyUSB0 ) | nc tcp.ais.openwaters.io 10111
+```
+
+The first line must be `AUTH <token>` within 5 seconds, from a token whose role may publish and that is valid from the sender's address, or the connection closes. aiscast answers it with one line, `OK <terms URL>` or `ERR <reason>`, and writes nothing after that. Each line after it is taken as a `/v1/stream` publish frame's line: the station is `station:<sub>`, the per-token sentence rate applies, an `!AIVDO` names the station's own vessel, and a TAG block is read as on UDP. The connection holds one of the token's concurrent streams, as an MQTT session does, and counts as `protocol="tcp"` in `aiscast_streams`. Each connection keeps its own reassembler, so two connections under one token never join each other's fragments; the archive does not record the connection, so replay reassembles them per station, as it does for every other path. One address may hold 8 TCP connections, counted from accept, a line longer than 4,096 bytes closes the connection, and so do 10 minutes without a line.
 
 Archive layout: `<license>/<source>/YYYY/MM/DD/HH.gz`, one record per line: receive time, station, body as received. A station followed by ` buffered` marks a sender's offline backlog, which live withheld from the stream when stale and replay withholds the same way. A station followed by ` published` marks a line published over `/v1/stream`, which replay feeds to the NMEA parser rather than trying as an AIS-catcher envelope. A record can carry both marks, ` published` first.
 
