@@ -634,13 +634,16 @@ const chCoverageStation = `if(source IN ('station', 'udp', 'mmsi', 'v1', 'http')
 // folds away. It goes by the reception's time, so the rows replay writes for those days fold too.
 const chStreamFoldBefore = "2026-10-05 15:30:00"
 
-// chVolunteerSources are the source kinds a volunteer's receiver sends under, as client/app/lib/ais.ts lists them.
-const chVolunteerSources = "('station', 'udp', 'mmsi', 'v1', 'http')"
+// chVolunteerSources are the source kinds a volunteer's receiver sends under, as client/app/lib/ais.ts lists them,
+// and peer: receptions an approved node passes on from its own volunteers, each under the station
+// peer:<node key>/<that volunteer's station>.
+const chVolunteerSources = "('station', 'udp', 'mmsi', 'v1', 'http', 'peer')"
 
 // chStationKey is the station a reception counts toward in station_coverage: the station as receptions holds
 // it, a feed's receiver or path included, and for a volunteer's receptions from before chStreamFoldBefore, the
-// part before the first slash, which can merge two stations whose token subjects hold a slash in that period.
-const chStationKey = `if(source IN ` + chVolunteerSources + ` AND ts < toDateTime64('` + chStreamFoldBefore + `', 3, 'UTC'), splitByChar('/', station)[1], station)`
+// part before the first slash, which can merge two stations whose token subjects hold a slash in that period. A
+// peer's station (peer:<node key>/<station>) is never folded, whatever its time.
+const chStationKey = `if(source IN ('station', 'udp', 'mmsi', 'v1', 'http') AND ts < toDateTime64('` + chStreamFoldBefore + `', 3, 'UTC'), splitByChar('/', station)[1], station)`
 
 // chStationCoverageTable keeps each day's distinct vessels per cell and station at each resolution the map
 // draws, so the network map merges stations per cell and a station's page reads its own cells. Ordered by day

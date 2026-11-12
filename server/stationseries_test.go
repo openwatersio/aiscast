@@ -108,9 +108,10 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	wild := at("station:s2", 5, recent)
 	wild.implausible = true
 	old := at("station:s3", 4, now.Add(-30*time.Hour))
+	peer := at("peer:ed25519:K/udp:ab12", 13, now.Add(-30*time.Hour))                 // a volunteer's station heard through a peer node
 	stream := at("station:old/n2k", 6, time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)) // a TAG stream before the fold
 	pts := []trackPoint{at("station:s1", 1, cur.Add(-2*time.Hour+10*time.Minute)), at("station:s1", 2, recent), at("station:s1", 9, recent),
-		shared, at("station:s2", 3, recent), echo, wild, old, stream,
+		shared, at("station:s2", 3, recent), echo, wild, old, peer, stream,
 		at("station:s1", 123456789, recent)} // a default MMSI from before ingest kept them out, which counts as no vessel
 	// Listing reaches back stationKeep: a station heard 10 days ago is listed, one heard 31 days ago is not, one whose last hour held only a stale copy is last heard at that hour's
 	// start, and a historical archive is no station.
@@ -375,8 +376,8 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Errorf("label points for days ending yesterday hold today's: %v %v", before["station:s2"], err)
 	}
 	points, err := conn.stationPoints(ctx, today.AddDate(0, 0, -2), today)
-	if err != nil || len(points["station:s1"]) != 1 || math.Abs(points["station:s1"][0][0]-59.9) > 0.05 || math.Abs(points["station:s1"][0][1]-10.7) > 0.05 || points["aishub"] != nil {
-		t.Errorf("label points %v, %v; want s1's one cell near Oslo and no feed's", points, err)
+	if err != nil || len(points["station:s1"]) != 1 || math.Abs(points["station:s1"][0][0]-59.9) > 0.05 || math.Abs(points["station:s1"][0][1]-10.7) > 0.05 || points["aishub"] != nil || len(points["peer:ed25519:K/udp:ab12"]) != 1 {
+		t.Errorf("label points %v, %v; want s1's and the peer station's one cell near Oslo and no feed's", points, err)
 	}
 }
 
