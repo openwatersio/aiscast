@@ -136,7 +136,7 @@ func (p *Pipeline) noteStaticPacket(source, station string, t, recv time.Time, p
 		return
 	}
 	k.mmsi, k.source, k.station = pkt.GetHeader().UserID, sourceKind(source), sourceKind(source)
-	if volunteer(source) {
+	if selfReported(source) {
 		k.station = station
 	}
 	t = t.UTC()

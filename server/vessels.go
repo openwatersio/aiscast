@@ -390,7 +390,7 @@ func (p *Pipeline) noteFolded(ev *Event, v *vessel, u *vessel, stale, hadPrev bo
 			}
 			p.ch.rebuiltLate.Add(1)
 		}
-		pt.implausible = volunteer(ev.Source) || v.jumps(pt)
+		pt.implausible = selfReported(ev.Source) || v.jumps(pt)
 		ev.unserved = pt.implausible // its dedupe copies inherit it; the stream's own flags stay as they were
 	}
 	// A transmission of its own takes a byte free in its millisecond and joins the recent ones its copies find it
