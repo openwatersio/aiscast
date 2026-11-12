@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
 	"reflect"
 	"slices"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BertoldVdb/go-ais"
@@ -49,7 +52,8 @@ type v0Envelope struct {
 // Go's time.Time.String() layout, which is what aisstream emits.
 const goTimeLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
 
-func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
+// aisstreamMessage reports whether body carried an AIS message, as opposed to a control frame or one it couldn't read.
+func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) (data bool) {
 	now, ok := p.admit(now)
 	if !ok {
 		return
@@ -90,6 +94,7 @@ func (p *Pipeline) aisstreamMessage(body []byte, now time.Time) {
 		t = st
 	}
 	p.ingestPacket("aisstream", "aisstream", t, now, pv.Elem().Interface().(ais.Packet))
+	return true
 }
 
 // aisstream caps each connection's throughput. A whole-world subscription keeps up for a minute or two, then
@@ -129,7 +134,7 @@ func validLatLon(c []float64) bool { return math.Abs(c[0]) <= 90 && math.Abs(c[1
 
 // aisstream answers dials made at the same moment with HTTP 429, so connections take turns: each dial
 // waits until aisstreamDialGap after the previous one, at startup and after a drop that ended both.
-const aisstreamDialGap = 5 * time.Second
+var aisstreamDialGap = 5 * time.Second
 
 var aisstreamDialTurn struct {
 	sync.Mutex
@@ -143,10 +148,49 @@ func waitAisstreamDialTurn(gap time.Duration) {
 	aisstreamDialTurn.last = time.Now()
 }
 
+// aisstreamConn is one connection's health for /metrics. Both connections ingest as the one aisstream source,
+// so the source's age stays fresh while either half delivers; these show each half on its own.
+type aisstreamConn struct {
+	drops atomic.Int64 // sessions that ended after subscribing; failed dials don't count, so a full outage doesn't
+	last  atomic.Int64 // unix nanoseconds of the last AIS message, or of the start before the first one
+}
+
+var aisstreamConns sync.Map // subscription -> *aisstreamConn
+
+var aisstreamSilence = upstreamSilence // how long a session waits for a frame before giving up
+
+// newAisstreamConn returns the subscription's entry; two connections with the same boxes share one.
+func newAisstreamConn(bboxJSON string) *aisstreamConn {
+	c := new(aisstreamConn)
+	c.last.Store(time.Now().UnixNano())
+	got, _ := aisstreamConns.LoadOrStore(bboxJSON, c)
+	return got.(*aisstreamConn)
+}
+
+func writeAisstreamMetrics(w io.Writer) {
+	var subs []string
+	aisstreamConns.Range(func(k, _ any) bool { subs = append(subs, k.(string)); return true })
+	if len(subs) == 0 {
+		return
+	}
+	sort.Strings(subs)
+	metricHead(w, "aiscast_aisstream_drops_total", "counter", "aisstream sessions that ended after subscribing, per connection")
+	for _, s := range subs {
+		c, _ := aisstreamConns.Load(s)
+		fmt.Fprintf(w, "aiscast_aisstream_drops_total{bbox=%q} %d\n", s, c.(*aisstreamConn).drops.Load())
+	}
+	metricHead(w, "aiscast_aisstream_last_age_seconds", "gauge", "seconds since each aisstream connection's last message")
+	for _, s := range subs {
+		c, _ := aisstreamConns.Load(s)
+		fmt.Fprintf(w, "aiscast_aisstream_last_age_seconds{bbox=%q} %.0f\n", s, time.Since(time.Unix(0, c.(*aisstreamConn).last.Load())).Seconds())
+	}
+}
+
 func runAisstream(p *Pipeline, url, apiKey, bboxJSON string) {
+	conn := newAisstreamConn(bboxJSON)
 	backoff := 5 * time.Second
 	for {
-		connected, err := aisstreamSession(p, url, apiKey, bboxJSON)
+		connected, err := aisstreamSession(p, url, apiKey, bboxJSON, conn)
 		backoff = reconnectDelay(backoff, sessionLength(connected))
 		log.Printf("aisstream %s: %v (retry in %s)", bboxJSON, err, backoff)
 		time.Sleep(backoff)
@@ -175,7 +219,7 @@ func reconnectDelay(backoff, ran time.Duration) time.Duration {
 
 // aisstreamSession runs one connection and returns when it ends. connected is the time the
 // subscription was sent, zero if the session was never established.
-func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) (connected time.Time, err error) {
+func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string, conn *aisstreamConn) (connected time.Time, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	waitAisstreamDialTurn(aisstreamDialGap)
@@ -190,10 +234,18 @@ func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) (connected time
 		return connected, err
 	}
 	connected = time.Now()
+	silent := false
+	defer func() {
+		// A session we ended on silence is aisstream sending nothing: an outage, left to the source's own signals.
+		if !silent {
+			conn.drops.Add(1)
+		}
+	}()
 	log.Printf("aisstream %s: connected to %s", bboxJSON, url)
 	for {
-		rctx, rc := context.WithTimeout(ctx, upstreamSilence)
+		rctx, rc := context.WithTimeout(ctx, aisstreamSilence)
 		_, body, err := c.Read(rctx)
+		silent = rctx.Err() == context.DeadlineExceeded
 		rc()
 		if err != nil {
 			return connected, err
@@ -204,7 +256,9 @@ func aisstreamSession(p *Pipeline, url, apiKey, bboxJSON string) (connected time
 				return connected, &aisstreamError{e.Error}
 			}
 		}
-		p.aisstreamMessage(body, time.Now())
+		if now := time.Now(); p.aisstreamMessage(body, now) {
+			conn.last.Store(now.UnixNano())
+		}
 	}
 }
 
