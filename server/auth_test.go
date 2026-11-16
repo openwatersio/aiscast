@@ -292,6 +292,19 @@ func TestV1Register(t *testing.T) {
 	}
 }
 
+// Registering in-band does not take up a token backed off for being slow.
+func TestV1RegisterSlowRefused(t *testing.T) {
+	_, write, read := registerConn(t, keysPerMinute)
+	devPub, _ := newIssuerKey()
+	for i := 0; i < slowStrikes; i++ {
+		slowClients.strike("ed25519:"+devPub, time.Now())
+	}
+	write(`{"type":"register","pubkey":"` + devPub + `"}`)
+	if m := read(); !strings.Contains(fmt.Sprint(m["error"]), "too slow: retry in") {
+		t.Fatalf("register while refused: %v", m)
+	}
+}
+
 func TestV1RegisterDisabled(t *testing.T) {
 	_, write, read := registerConn(t, keysPerMinute)
 	t.Setenv("PERSONAL_ISSUER_KEY", "")

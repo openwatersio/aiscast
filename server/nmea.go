@@ -34,6 +34,9 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
+	if p.refusedHTTP(w, cl.Sub) {
+		return
+	}
 	var boxes []bbox
 	for _, q := range r.URL.Query()["bbox"] {
 		var b bbox

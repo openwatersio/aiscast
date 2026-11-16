@@ -661,7 +661,11 @@
           "101": { "description": "Switching to the WebSocket protocol." },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "429": {
+            "description": "Over the connect limit or the concurrent stream limit, or refused for 5 minutes after the client was disconnected as too slow three times in 10 minutes. That refusal gives the seconds to wait in `Retry-After`.",
+            "headers": { "Retry-After": { "schema": { "type": "integer" } } },
+            "content": { "text/plain": { "schema": { "type": "string" }, "example": "client too slow: retry in 287 seconds" } }
+          }
         }
       }
     },

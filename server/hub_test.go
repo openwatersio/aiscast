@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,10 @@ func testPipeline(t *testing.T) *Pipeline {
 	allowAnon = true
 	wsConnectLimit = newLimiter(wsConnectLimit.max) // package-level, so connects otherwise accumulate across tests
 	httpLimit = newLimiter(httpLimit.max)           // and requests
+	// And slow closes, all under ALLOW_ANON's one sub; cleared in place, as a handler may outlive its test.
+	slowClients.mu.Lock()
+	slowClients.seen = nil
+	slowClients.mu.Unlock()
 	return newPipeline(newArchive("", nil))
 }
 
@@ -1042,6 +1047,94 @@ func TestV0SlowClientCounted(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("v0 slow close not counted")
+}
+
+func TestSlowBackoff(t *testing.T) {
+	var b slowBackoff
+	now := time.Now()
+	at := func(m int) time.Time { return now.Add(time.Duration(m) * time.Minute) }
+	for _, m := range []int{0, 6, 11} {
+		if b.strike("a", at(m)) {
+			t.Fatalf("refused at minute %d, before %d slow closes inside %s", m, slowStrikes, slowWindow)
+		}
+	}
+	if !b.strike("a", at(12)) {
+		t.Fatal("not refused after slow closes at minutes 6, 11, and 12")
+	}
+	if b.wait("a", at(16)) <= 0 || b.wait("a", at(17)) > 0 || b.wait("b", at(16)) > 0 {
+		t.Fatalf("refusal of a from minute 12 for %s: wait %v at 16, %v at 17, b %v", slowRefusal, b.wait("a", at(16)), b.wait("a", at(17)), b.wait("b", at(16)))
+	}
+	b.strike("c", at(30))
+	if len(b.seen) != 1 {
+		t.Fatalf("%d clients kept, want only c", len(b.seen))
+	}
+}
+
+// After slowStrikes slow closes, every protocol that serves the fan-out refuses the client and says when to
+// retry; MQTT, which only ingests, still connects.
+func TestSlowClientRefused(t *testing.T) {
+	p := testPipeline(t)
+	srv := httptest.NewServer(httpHandler(p))
+	defer srv.Close()
+	ws := "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cl := &Claims{Sub: "anon", Role: "admin"} // every test client, under ALLOW_ANON
+	sub := &subscriber{}
+	sub.overflow.Store(true)
+	probe := httptest.NewRequest("GET", "/v1/stream", nil)
+	probe.RemoteAddr = "127.0.0.1:4000"
+	for i := 0; i < slowStrikes; i++ {
+		p.noteSlow(sub, "v1", cl, probe)
+	}
+	r := httptest.NewRequest("GET", "/v1/stream", nil)
+	for i := 0; i < slowStrikes; i++ {
+		if msg, _ := p.refused(cl.Sub); msg != "" {
+			t.Fatalf("refused after %d slow closes and %d from loopback: %s", i, slowStrikes, msg)
+		}
+		p.noteSlow(sub, "v1", cl, r)
+	}
+
+	resp, err := http.Get(srv.URL + "/v1/stream?bbox=49,0,50,1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if s, _ := strconv.Atoi(resp.Header.Get("Retry-After")); resp.StatusCode != http.StatusTooManyRequests || s <= 0 || s > int(slowRefusal/time.Second) {
+		t.Fatalf("sse: %d, Retry-After %q", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	_, resp, err = websocket.Dial(ctx, ws+"/v1/nmea", nil)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("nmea: dial %v, response %+v", err, resp)
+	}
+
+	// The sockets refuse after the upgrade, with an error frame and the close.
+	for _, path := range []string{"/v1/stream", "/v0/stream"} {
+		c, _, err := websocket.Dial(ctx, ws+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.CloseNow()
+		if path == "/v0/stream" {
+			c.Write(ctx, websocket.MessageText, []byte(`{"APIKey":"k","BoundingBoxes":[[[-90,-180],[90,180]]]}`))
+		}
+		if _, b, err := c.Read(ctx); err != nil || !strings.Contains(string(b), "too slow: retry in") {
+			t.Fatalf("%s frame %q, %v", path, b, err)
+		}
+		if _, _, err := c.Read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+			t.Fatalf("%s close: %v", path, err)
+		}
+	}
+
+	m, _, err := websocket.Dial(ctx, ws+"/v1/stream", &websocket.DialOptions{Subprotocols: []string{"mqtt"}})
+	if err != nil {
+		t.Fatalf("mqtt refused: %v", err)
+	}
+	m.CloseNow()
+	if n := p.stats.slowRefused.Load(); n != 4 {
+		t.Fatalf("refusals counted %d, want 4", n)
+	}
 }
 
 func TestParseUDPAddrs(t *testing.T) {

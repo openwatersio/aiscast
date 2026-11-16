@@ -46,7 +46,7 @@ aiscast rate-limits every HTTP endpoint per network address:
 
 A token can carry its own request limit. aiscast then counts requests to the endpoints that share the 120 by the name the token was issued to, not by address, so a server that shares its address with other clients keeps its own budget. Tokens issued to the same name, such as a token and its replacement, share one budget. The limit can also be lifted altogether, and then the tile limit no longer applies either. Write to hello@openwaters.io if you need one.
 
-Behind the proxy, the client address is the last hop of `X-Forwarded-For`. aiscast disconnects a client that cannot keep up with its stream (1,024 queued events) and gives a close reason.
+Behind the proxy, the client address is the last hop of `X-Forwarded-For`. aiscast disconnects a client that cannot keep up with its stream (1,024 queued events) and gives a close reason. A client disconnected this way three times in 10 minutes is refused new streams for 5 minutes, counted by token, or by address without one. The WebSockets on `/v0/stream` and `/v1/stream` send an error frame giving the seconds to wait and close. `/v1/nmea` and `/v1/stream` over SSE answer 429 with the seconds in `Retry-After`. A `/v1/stream` socket that publishes is refused like any other, and so is an in-band `register` for a refused token. MQTT sessions only publish, so they are never refused.
 
 ## Revocation
 
