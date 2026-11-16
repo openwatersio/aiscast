@@ -42,6 +42,9 @@ func main() {
 				return
 			}
 			connected.Add(1)
+			if _, _, err := c.Read(ctx); err != nil { // the SubscriptionConfirmation, not an AIS message
+				return
+			}
 			for {
 				_, b, err := c.Read(ctx)
 				if err != nil {

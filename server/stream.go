@@ -237,12 +237,19 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	go p.pingLoop(ctx, c, cancel)
+	// Accept sets the extensions header only when the client's permessage-deflate offer was taken.
+	confirm, _ := json.Marshal(map[string]any{"MessageType": "SubscriptionConfirmation",
+		"Message": map[string]bool{"CompressionEnabled": strings.Contains(w.Header().Get("Sec-WebSocket-Extensions"), "permessage-deflate")}})
 
 	var filter atomic.Pointer[v0Filter]
 	var pace pacer
 	var release func()
-	var owner *Claims // set with release, on the first subscription, before the resend reader starts
+	var owner *Claims   // set with release, on the first subscription, before the resend reader starts
+	var sub *subscriber // registered on the first subscription, before it is confirmed
 	defer func() {
+		if sub != nil {
+			p.unsubscribe(sub)
+		}
 		if release != nil {
 			release()
 		}
@@ -280,7 +287,10 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		filter.Store(f) // resend replaces the subscription
-		return true
+		if sub == nil {
+			sub = p.subscribe() // before the confirmation, so nothing after it is missed
+		}
+		return wsWrite(ctx, c, confirm) == nil // aisstream confirms every accepted subscription, whatever its type filter
 	}
 	if !readSub(3 * time.Second) { // aisstream's subscribe deadline
 		return
@@ -291,8 +301,6 @@ func (p *Pipeline) serveV0(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	sub := p.subscribe()
-	defer p.unsubscribe(sub)
 	defer func() { p.noteSlow(sub, "v0", owner, r) }() // owner read at exit, not when deferred
 	for {
 		select {
