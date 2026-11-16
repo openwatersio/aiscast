@@ -173,13 +173,18 @@ func TestV0WebSocket(t *testing.T) {
 	}
 	c.CloseNow()
 
-	c, _, err = websocket.Dial(ctx, url, nil)
+	c, _, err = websocket.Dial(ctx, url, &websocket.DialOptions{CompressionMode: websocket.CompressionContextTakeover})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.CloseNow()
-	c.Write(ctx, websocket.MessageText, []byte(`{"APIKey":"k","BoundingBoxes":[[[49,0],[50,1]]],"FilterMessageTypes":["PositionReport"]}`))
-	time.Sleep(50 * time.Millisecond) // let the server register the subscriber
+	sub := []byte(`{"APIKey":"k","BoundingBoxes":[[[49,0],[50,1]]],"FilterMessageTypes":["PositionReport"]}`)
+	const confirmed = `{"Message":{"CompressionEnabled":true},"MessageType":"SubscriptionConfirmation"}`
+	c.Write(ctx, websocket.MessageText, sub)
+	if _, msg, err = c.Read(ctx); err != nil || string(msg) != confirmed {
+		t.Fatalf("subscribe: %s %v", msg, err)
+	}
+	// no wait: the confirmation promises the subscriber is registered
 	p.Ingest(Reception{Source: "t", Station: "t", RecvTime: time.Now(), Body: "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"})
 	_, msg, err = c.Read(ctx)
 	if err != nil {
@@ -192,6 +197,10 @@ func TestV0WebSocket(t *testing.T) {
 	json.Unmarshal(msg, &env)
 	if env.MessageType != "PositionReport" || env.MetaData["MMSI"] != float64(227006760) {
 		t.Errorf("unexpected frame: %s", msg)
+	}
+	c.Write(ctx, websocket.MessageText, sub) // a resend replaces the subscription and is confirmed again
+	if _, msg, err = c.Read(ctx); err != nil || string(msg) != confirmed {
+		t.Fatalf("resubscribe: %s %v", msg, err)
 	}
 }
 
@@ -1011,6 +1020,9 @@ func TestV0SlowClientCounted(t *testing.T) {
 	}
 	defer c.CloseNow()
 	c.Write(ctx, websocket.MessageText, []byte(`{"APIKey":"k","BoundingBoxes":[[[-90,-180],[90,180]]]}`))
+	if _, msg, err := c.Read(ctx); err != nil || string(msg) != `{"Message":{"CompressionEnabled":false},"MessageType":"SubscriptionConfirmation"}` {
+		t.Fatalf("subscribe without compression: %s %v", msg, err)
+	}
 
 	var sub *subscriber
 	for sub == nil && ctx.Err() == nil {
