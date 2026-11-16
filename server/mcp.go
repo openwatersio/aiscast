@@ -23,7 +23,7 @@ import (
 
 // mcpVersion is the tool-set version clients see; server.json at the repo root carries the same number
 // and the two are checked against each other in mcp_test.go. Bump on any change to a tool or its schema.
-const mcpVersion = "0.18.2"
+const mcpVersion = "0.18.3"
 
 const (
 	mcpDefaultLimit    = 50  // rows per call unless asked; ~120 B of JSON each keeps a page under 10k tokens
@@ -69,10 +69,9 @@ func mcpClaims(ctx context.Context) *Claims {
 func mcpPtr[T any](v T) *T { return &v }
 
 func newMCPService(p *Pipeline) *mcpService {
-	// Read-only, idempotent, closed world: every tool reads the in-memory cache and nothing else. Claude
-	// runs read-only tools without a per-call confirmation, so the hints matter.
+	// These tools only read network data; explicit hints let clients run them without per-call confirmation.
 	ro := func(title string) *mcp.ToolAnnotations {
-		return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: mcpPtr(false)}
+		return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: true, DestructiveHint: mcpPtr(false), IdempotentHint: true, OpenWorldHint: mcpPtr(false)}
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "aiscast", Title: "Open Waters AIS", Version: mcpVersion, WebsiteURL: "https://openwaters.io/ais/"},
 		&mcp.ServerOptions{
