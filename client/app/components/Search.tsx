@@ -1,4 +1,3 @@
-import { Antenna } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
@@ -15,7 +14,6 @@ import {
 import { browserAuth, searchVessels, vesselsInArea, type VesselFeature } from "../lib/api";
 import { useLive, useMapView, useNow, useStreamFrame } from "../lib/live";
 import { mediaKey, smallThumb } from "../lib/media";
-import { CONTRIBUTE, CONTRIBUTE_PROMPT } from "../lib/links";
 import { BROWSE } from "../lib/nav";
 import {
   areaParams,
@@ -38,7 +36,7 @@ import { cn } from "../lib/cn";
 import { useLoading, useShell } from "./Shell";
 import { ChipRow, MenuChip } from "./ui/Chip";
 import { ClassDot, IconBadge, List, ListRow } from "./ui/List";
-import { Prompt } from "./ui/Prompt";
+import { ReceiverLink } from "./ui/Prompt";
 import { SearchField } from "./ui/SearchField";
 
 interface Row {
@@ -282,11 +280,7 @@ function Results({ q }: { q: string }) {
     return (
       <>
         <p className="px-2 py-3 text-body text-fg-muted">No vessel matches that name or MMSI.</p>
-        {hits && (
-          <Prompt icon={Antenna} href={CONTRIBUTE} action={CONTRIBUTE_PROMPT} className="mx-2">
-            The network only knows vessels its receivers have heard.
-          </Prompt>
-        )}
+        {hits && <ReceiverLink className="mx-2" />}
       </>
     );
   }

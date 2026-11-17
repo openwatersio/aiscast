@@ -118,13 +118,17 @@ type Pipeline struct {
 	tc              tcStats                    // the weekly sync of Transport Canada's vessel register (tc.go)
 	amsa            amsaStats                  // the weekly sync of AMSA's list of registered ships (amsa.go)
 	ised            isedStats                  // the on-demand rounds against ISED's Canadian MMSI registry (ised.go)
+	indexNow        indexNowStats              // vessel pages submitted to IndexNow as they enter the sitemap (indexnow.go)
 	ch              *chStore                   // history in ClickHouse (clickhouse.go); nil without CLICKHOUSE_URL or until it connects; guarded by vmu
 	series          stationRollups             // the station series' figures, read at most once a minute (stationseries.go)
+	details         stationDetails             // each station page's figures, read at most once a minute per station (stationseries.go)
 	chMu            sync.Mutex                 // guards chQueue; taken after vmu when both are held
 	chQueue         []trackPoint               // copies received since the last flush to ClickHouse; nil until it connects
 	chOwn           map[ownKey]time.Time       // own-ship sightings since the last flush, the latest per key; nil until it connects
 	chOwnClaimed    map[ownKey]map[uint32]bool // the vessels each station claimed as its own each hour it received them, keyed without mmsi, for maxOwnPerStation
 	chOwnClaimHours map[int64]int              // how many claims chOwnClaimed holds for each hour, so pruning knows whether there is anything to scan for
+	aishubStaticAt  map[uint32]int64           // the TIME of each vessel's AISHub row last noted for statics, guarded by chMu
+	chStatics       map[staticKey]staticTimes  // static states since the last flush, first and last heard; nil until ClickHouse connects or without a statics writer
 	chOwnHW         int64                      // the latest hour an own-ship message was received in, which claims older than its last hour are pruned against
 	chOn            atomic.Bool                // ClickHouse is attached, so copies are worth building
 	history         *historyStats              // historical archives loaded into ClickHouse (history.go); nil unless a source is on
@@ -406,14 +410,34 @@ func aisnmeaPacket(channel byte, payload []byte) aisnmea.VdmPacket {
 	return aisnmea.VdmPacket{Channel: ch, TalkerID: "AI", MessageType: "VDM", Payload: payload}
 }
 
+// corruptBaseReport reports a base station report (type 4) no station sent. One fills a single slot, 168 bits, so a
+// longer payload is a corrupt reception the receiver assembled from two sentences; a rebuilt copy is always re-encoded
+// to 168 bits, so only the year can tell on one. And its UTC year is 0, "not
+// available", or one AIS could carry: from ITU-R M.1371's 1998 to a year past the event's. A station with a wrong
+// clock still has a year like that; noise, such as 8211, mostly does not. Either kind of corruption would make a
+// random MMSI a base station at a random place.
+func corruptBaseReport(ev *Event) bool {
+	m, ok := ev.Packet.(ais.BaseStationReport)
+	if !ok || m.MessageID != 4 {
+		return false
+	}
+	y := int(m.UtcYear)
+	return len(ev.Payload) > 168 || y != 0 && (y < 1998 || y > ev.Time.Year()+1)
+}
+
 // emit is the common tail: dedupe on (payload, channel) within the window, then id, vessel cache, fan-out.
 func (p *Pipeline) emit(ev *Event) {
-	// Kept out of the cache, the record, history, the stream, and the delay stats; the raw archive already holds
-	// the reception.
+	// Kept out of the cache, the record, history, the stream, and the delay stats, as is a corrupt base station
+	// report; the raw archive already holds the reception.
 	if !validMMSI(ev.Packet.GetHeader().UserID) {
 		p.stats.invalidMMSI.Add(1)
 		return
 	}
+	if corruptBaseReport(ev) {
+		p.stats.decodeFail.Add(1)
+		return
+	}
+	p.noteStatic(ev) // every copy, each under its source, whatever dedupe and the fold make of it
 	p.delays.observe(ev, time.Now())
 	key := string(ev.Payload) + string(ev.Channel)
 	p.mu.Lock()
@@ -627,6 +651,7 @@ func (p *Pipeline) logStats() {
 	for range time.Tick(30 * time.Second) {
 		nv := p.vesselCount() // updateVessel sweeps, on the reception clock
 		p.stations.sweep(time.Now().Add(-stationVesselTTL))
+		p.pruneAishubStatics(time.Now())
 		p.sampleRate(time.Now())
 		p.smu.RLock()
 		ns := len(p.subs)

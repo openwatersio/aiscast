@@ -467,7 +467,7 @@ func xmlEscape(s string) string {
 const mcpTrackDefaultLimit = 50
 
 type mcpTrackIn struct {
-	MMSI            uint32 `json:"mmsi,omitempty" jsonschema:"the vessel's MMSI; give mmsi or imo. Use search_vessels_by_name first when you only have a name"`
+	MMSI            uint32 `json:"mmsi,omitempty" jsonschema:"the vessel's MMSI, as an alternative to its IMO number"`
 	IMO             uint32 `json:"imo,omitempty" jsonschema:"the vessel's IMO number, instead of mmsi; needs a feeder or partner token. Follows the one vessel the IMO names: its only MMSI, or the only one heard in the last 30 days"`
 	From            string `json:"from,omitempty" jsonschema:"start, RFC 3339 UTC; default 24 hours before to. A call covers up to 366 days"`
 	To              string `json:"to,omitempty" jsonschema:"end, RFC 3339 UTC; default now"`
@@ -494,10 +494,10 @@ type mcpTrack struct {
 	IntervalS   int64             `json:"interval_s" jsonschema:"at most one position per this many seconds; 0 is every position heard. Simplified, the resolution the positions were read at"`
 	Simplified  bool              `json:"simplified" jsonschema:"true when the track was simplified by shape: the positions that hold its path, not evenly spaced"`
 	ToleranceM  *float64          `json:"tolerance_m,omitempty" jsonschema:"simplified: every position left out lay within this many meters of the line through the ones kept"`
-	Breaks      *[]int            `json:"breaks,omitempty" jsonschema:"simplified, always present and empty when the vessel was heard throughout: indexes of positions that start a stretch after it went unheard; draw no line into them"`
+	Breaks      *[]int            `json:"breaks,omitempty" jsonschema:"simplified, always present and empty when the vessel was heard throughout: indexes of positions that start a new segment after a gap in reports"`
 	Positions   []mcpTrackPoint   `json:"positions" jsonschema:"oldest first"`
-	Truncated   bool              `json:"truncated" jsonschema:"true when positions were left out: simplified, the tolerance rose past 15 m to fit the limit, or the range held more than 50,000 positions and the oldest were not read; by interval, the newest were kept, so set from later or raise interval_minutes"`
-	Attribution map[string]string `json:"attribution" jsonschema:"credit line per source kind in the positions, to show with the data"`
+	Truncated   bool              `json:"truncated" jsonschema:"true when positions were left out: simplified, the tolerance rose past 15 m to fit the limit, or the range held more than 50,000 positions and the oldest were not read; by interval, the newest were kept"`
+	Attribution map[string]string `json:"attribution" jsonschema:"attribution required when displaying the positions, by source kind"`
 }
 
 func (p *Pipeline) mcpGetVesselTrack(ctx context.Context, _ *mcp.CallToolRequest, in mcpTrackIn) (*mcp.CallToolResult, mcpTrack, error) {

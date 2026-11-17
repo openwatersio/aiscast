@@ -71,6 +71,37 @@ jobs:
           done
           echo "::error::events per second stayed at or below 100 for two minutes after the deploy"
           exit 1
+      # Caddy, not aiscast, compresses the SSE stream, and Caddy changes only when apply.sh runs. An empty
+      # bbox sends the welcome frame and then a keepalive comment every 30 s, so both arrive only if Caddy
+      # flushes its compressor per event. Caddy prefers zstd, which browsers take, and gives gzip to clients
+      # without it, so both are checked.
+      - name: check the event stream is compressed
+        run: |
+          curl -V | grep -qw zstd || { echo "::error::this runner's curl cannot decode zstd"; exit 1; }
+          for enc in gzip zstd; do
+            curl -sS -N --compressed -H "Accept-Encoding: $enc" --max-time 45 -D "$RUNNER_TEMP/sse-$enc.headers" -o "$RUNNER_TEMP/sse-$enc.body" 'https://ais.openwaters.io/v1/stream?bbox=-40,-140,-39,-139' || true &
+          done
+          wait
+          for enc in gzip zstd; do
+            out="$RUNNER_TEMP/sse-$enc"
+            cat "$out.headers" 2>/dev/null || true
+            if ! grep -Eq '^HTTP/[0-9.]+ 200' "$out.headers" 2>/dev/null; then
+              echo "::error::/v1/stream did not answer 200 to Accept-Encoding: $enc"
+              exit 1
+            fi
+            if ! grep -qi "^content-encoding: $enc" "$out.headers"; then
+              echo "::error::/v1/stream answered without $enc"
+              exit 1
+            fi
+            if ! grep -q '"type":"welcome"' "$out.body"; then
+              echo "::error::/v1/stream sent no $enc welcome frame within 45 s"
+              exit 1
+            fi
+            if ! grep -qx ':' "$out.body"; then
+              echo "::error::/v1/stream sent no $enc keepalive within 45 s"
+              exit 1
+            fi
+          done
 
   # The registry listing follows the deploy so it never advertises a version the server is not
   # serving yet. It is a no-op unless server.json carries a version the registry lacks.

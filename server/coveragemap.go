@@ -127,8 +127,8 @@ type covRow struct {
 
 // coverageSource is where coverage comes from: ClickHouse (chConn), or a fake in tests.
 type coverageSource interface {
-	// coverageBackfill fills the coverage tables from the receptions written before their views existed, for
-	// each day from today back to since.
+	// coverageBackfill fills station_coverage from the receptions written before its view existed, for each day
+	// from today back to since.
 	coverageBackfill(ctx context.Context, since time.Time) error
 	// coverageDays lists the days from first to last that hold coverage, as YYYY-MM-DD.
 	coverageDays(ctx context.Context, first, last time.Time) ([]string, error)
@@ -607,9 +607,10 @@ const (
 	chCoverageMonths = 13
 )
 
-// chCoverageTable keeps each day's distinct vessels, and the distinct stations that heard them, per cell at each
-// resolution the map draws. Distinct sets merge as unions, so every copy of a transmission, and the same copies
-// counted again by a backfill that overlaps the view, count each vessel and station once.
+// chCoverageTable is the network's coverage before station_coverage: each day's distinct vessels, and the distinct
+// stations that heard them, per cell at each resolution the map draws. Migrations 7 to 12 still create it and its
+// view, so each step does what it always did. The view fills it until aiscast clickhouse-cleanup drops both;
+// nothing reads it.
 var chCoverageTable = `CREATE TABLE IF NOT EXISTS {db}.coverage (
 	day     Date,
 	res     UInt8,
@@ -662,21 +663,21 @@ TTL day + INTERVAL ` + chCoverageKeep + ` DELETE`
 // whole, and a feed or aggregator once by its source, as chCoverageStation does.
 const chCoverageSources = `if(source IN ` + chVolunteerSources + `, station, source)`
 
-// chStationCoverageSelect bins positions from a table into station_coverage rows, as chCoverageSelect bins coverage.
+// chStationCoverageSelect bins positions from a table into station_coverage rows.
 func chStationCoverageSelect(table, and string) string {
 	return chCoverageBin(table, and, "source, "+chStationKey+" AS station, uniqExactState(mmsi) AS vessels", "station, source")
 }
 
-// chCoverageSelect bins positions from a table into coverage rows, those within chCoverageKeep and matching
-// and, when it is not empty: each position's cell at the finest resolution, and the cells that contain it at
-// the coarser ones, so every resolution nests exactly. The argument order is set here because ClickHouse
-// releases have disagreed on whether geoToH3 takes latitude or longitude first, and a view keeps the order it
-// was created with.
+// chCoverageSelect bins positions from a table into coverage rows, for migrations 8 and 11's view.
 func chCoverageSelect(table, and string) string {
 	return chCoverageBin(table, and, "uniqExactState(mmsi) AS vessels, uniqExactState("+chCoverageStation+") AS stations", "")
 }
 
-// chCoverageBin is the binning both coverage tables share: cols after day, res, and cell, grouped by those and by.
+// chCoverageBin bins positions from a table into coverage rows, those within chCoverageKeep and matching and,
+// when it is not empty: each position's cell at the finest resolution, and the cells that contain it at the
+// coarser ones, so every resolution nests exactly, with cols after day, res, and cell, grouped by those and by.
+// The argument order is set here because ClickHouse releases have disagreed on whether geoToH3 takes latitude or
+// longitude first, and a view keeps the order it was created with.
 func chCoverageBin(table, and, cols, by string) string {
 	if by != "" {
 		by = ", " + by
@@ -701,7 +702,6 @@ func chCoverageBin(table, and, cols, by string) string {
 // query that bins one day.
 var chCoverageTables = []struct{ table, ledger, insert string }{
 	{"station_coverage", "station_coverage_backfilled", "INSERT INTO {db}.station_coverage (day, res, cell, source, station, vessels) " + chStationCoverageSelect("{db}.receptions", chUsable+" AND ts >= ? AND ts < ?")},
-	{"coverage", "coverage_backfilled", "INSERT INTO {db}.coverage " + chCoverageSelect("{db}.receptions", chUsable+" AND ts >= ? AND ts < ?")},
 }
 
 // chBinning bounds a day's binning as rebuildPositions1m bounds its own: grouping by station as well as cell, a
@@ -727,7 +727,7 @@ var coverageBinning sync.Mutex
 
 // coverageBackfill bins each day from today back to since, no further than chCoverageKeep, that a table's backfill
 // has not yet covered: receptions loaded before its view existed, which never passed through it. It runs newest
-// first so the window fills first, one day and table per query so the largest day stays within ClickHouse's
+// first so the window fills first, one day per query so the largest day stays within ClickHouse's
 // memory, and records each day as it finishes, an empty one too. Days are counted back from today rather than
 // read from partitions, so it never depends on how receptions is partitioned. A day the view and the backfill
 // both cover counts each vessel once.

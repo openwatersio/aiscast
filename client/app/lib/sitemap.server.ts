@@ -69,7 +69,7 @@ export async function sitemap(pathname: string, auth: ApiAuth): Promise<Response
     if (!vessels) return new Response("Not found", { status: 404 });
     return document(
       "urlset",
-      vessels.map((v) => entry("url", `${SITE}${vesselPath(v.mmsi, v.name)}`, v.seen)),
+      vessels.map((v) => entry("url", `${SITE}${vesselPath(v.mmsi, v.name)}`, v.lastmod)),
     );
   } catch (e) {
     if (!(e instanceof ApiUnavailable)) throw e;

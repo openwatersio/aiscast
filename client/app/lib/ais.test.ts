@@ -11,9 +11,15 @@ import {
   stationName,
   stationStatus,
   stationDescription,
+  vesselDescription,
+  vesselTitle,
   stationTitle,
   volunteerReceiver,
   stationTitles,
+  uptimePercent,
+  fitBox,
+  creditLine,
+  vesselMix,
   indexAt,
   interpolateAt,
   mergeTrack,
@@ -63,6 +69,14 @@ describe("vesselSlug", () => {
     expect(vesselSlug(undefined)).toBe("");
     expect(vesselSlug("")).toBe("");
     expect(vesselSlug("***")).toBe("");
+  });
+
+  // The server builds vessel page URLs for IndexNow with its own port of this function (server/slug.go),
+  // held to the same answers by the same fixture.
+  it("answers as the server's port does", () => {
+    const cases: Array<{ name: string; slug: string }> = JSON.parse(readFileSync(new URL("../../../server/testdata/vessel-slugs.json", import.meta.url), "utf8"));
+    expect(cases.length).toBeGreaterThan(20);
+    for (const { name, slug } of cases) expect(vesselSlug(name), name).toBe(slug);
   });
 
   it("caps length without leaving a trailing hyphen", () => {
@@ -611,6 +625,134 @@ describe("trackGap", () => {
   });
 });
 
+describe("vesselTitle", () => {
+  it("identifies a verified ferry even when AIS reports only high-speed craft", () => {
+    expect(vesselTitle({ mmsi: 367720690, name: "GREY LADY IV", kind: "vessel", type: 40 })).toBe(
+      "GREY LADY IV ferry tracker | Open Waters AIS",
+    );
+  });
+
+  it("identifies an explicitly enriched ferry without classifying every passenger ship as one", () => {
+    expect(vesselTitle({ mmsi: 230000001, name: "TEST FERRY", type: 60, particulars: { ship_type: "passenger ferry" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 230000001, name: "CRUISE SHIP", type: 60 })).not.toContain("ferry");
+    expect(vesselTitle({ mmsi: 230000001, name: "FAST CRAFT", type: 40 })).not.toContain("ferry");
+  });
+
+  it("does not give a ferry identity to fishing gear using a ship's MMSI", () => {
+    expect(vesselTitle({ mmsi: 367720690, name: "BUOY", kind: "gear", type: 40 })).not.toContain("ferry");
+  });
+
+  it("does not transfer a curated service to a different vessel name on the MMSI", () => {
+    expect(vesselTitle({ mmsi: 367720690, name: "ANOTHER SHIP", kind: "vessel", type: 40 })).not.toContain("ferry");
+  });
+
+  it("recognizes registered ferry service and verified ferries with generic passenger service", () => {
+    expect(vesselTitle({ mmsi: 316001251, name: "QUEEN OF COWICHAN", kind: "vessel", type: 60, particulars: { service: "FERRY" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 316030627, name: "SALISH ORCA", kind: "vessel", type: 60, particulars: { service: "FERRY" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 366929710, name: "COHO", kind: "vessel", type: 60, particulars: { service: "Passenger (Inspected)" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 230000001, name: "PASSENGER SHIP", kind: "vessel", type: 60, particulars: { service: "Passenger (Inspected)" } })).not.toContain("ferry tracker");
+  });
+
+  it("recognizes Wikidata's roll-on/roll-off passenger ship classification", () => {
+    expect(vesselTitle({ mmsi: 266343000, name: "STENA SCANDINAVICA", kind: "vessel", type: 60, particulars: { ship_type: "roll-on/roll-off passenger ship" } })).toContain("ferry tracker");
+    expect(vesselTitle({ mmsi: 266343000, name: "TEST SHIP", kind: "vessel", type: 70, particulars: { ship_type: "roll-on/roll-off cargo ship" } })).not.toContain("ferry tracker");
+  });
+
+  it.each(["Ferry", " car ferry ", "high‑speed ferry", "ro-ro passenger ferry", "train ferry"])("recognizes the explicit enriched type %s", (ship_type) => {
+    expect(vesselTitle({ mmsi: 230000001, name: "TEST SHIP", particulars: { ship_type } })).toContain("ferry tracker");
+  });
+
+  it.each(["former ferry", "ferry tender", "passenger ship", "high-speed craft"])("does not infer a ferry from %s", (ship_type) => {
+    expect(vesselTitle({ mmsi: 230000001, name: "TEST SHIP", particulars: { ship_type } })).not.toContain("ferry tracker");
+  });
+
+  it("leads with the name and says what kind of vessel it is", () => {
+    expect(vesselTitle({ mmsi: 563344600, name: "EVER EDUCE", kind: "vessel", type: 70 })).toBe(
+      "EVER EDUCE, cargo ship: live AIS position | Open Waters AIS",
+    );
+  });
+
+  it("falls back to the MMSI for a vessel that has not sent its name", () => {
+    expect(vesselTitle({ mmsi: 563344600 })).toBe("MMSI 563344600 live AIS position | Open Waters AIS");
+  });
+});
+
+describe("vesselDescription", () => {
+  const ship = { mmsi: 563344600, name: "EVER EDUCE", kind: "vessel" as const, type: 70, flag: "SG", imo: 1025289, length: 369, beam: 54 };
+
+  it("describes the ferry's usual service without claiming a current direction or arrival", () => {
+    const description = vesselDescription({ mmsi: 367720690, name: "GREY LADY IV", kind: "vessel", type: 40, destination: "NANTUCKET ROUTE" });
+    expect(description).toContain("Hy-Line Cruises ferry serving Hyannis–Nantucket");
+    expect(description).toContain("MMSI 367720690");
+    expect(description).toContain("Live AIS position and track.");
+    expect(description).not.toMatch(/Bound for|bound for|arriv|ETA/);
+  });
+
+  it("does not promote a potentially historical operator into the ferry description", () => {
+    const description = vesselDescription({ ...ship, type: 60, particulars: { ship_type: "car ferry", operator: "Example Ferries" } });
+    expect(description).toContain("is a ferry");
+    expect(description).not.toContain("Example Ferries");
+  });
+
+  it("requires a vessel name before applying a verified operator and service", () => {
+    expect(vesselDescription({ mmsi: 367720690, kind: "vessel", type: 40 })).not.toContain("Hy-Line Cruises");
+  });
+
+  it("retains the ferry's IMO and last-reported place without interpreting its AIS route", () => {
+    const description = vesselDescription({ ...ship, type: 60, near: "Tsawwassen, Canada", destination: "TSA<>SWB", particulars: { service: "FERRY" } });
+    expect(description).toContain("IMO 1025289");
+    expect(description).toContain("Last reported near Tsawwassen, Canada.");
+    expect(description).not.toContain("bound for");
+  });
+
+  it("says what the vessel is, where it was last heard, and where it is going", () => {
+    expect(vesselDescription({ ...ship, near: "Sinhyeon, South Korea", destination: "SEA TRIAL(SHI-2678)" })).toBe(
+      "EVER EDUCE is a 369 m cargo ship flagged in Singapore (MMSI 563344600, IMO 1025289). " +
+        "Last reported near Sinhyeon, South Korea, bound for SEA TRIAL(SHI-2678). Live AIS position and track.",
+    );
+  });
+
+  it("states no time, which a search result would show long after it was true", () => {
+    expect(vesselDescription({ ...ship, near: "Busan, South Korea" })).not.toMatch(/\bago\b|GMT|UTC|2026/);
+  });
+
+  it("gives the length the vessel reports, not a register's, which would need its credit beside it", () => {
+    expect(vesselDescription({ ...ship, particulars: { length: 340 } } as Parameters<typeof vesselDescription>[0])).toContain("a 369 m");
+  });
+
+  it("names the flag, with the article its name takes", () => {
+    expect(vesselDescription({ ...ship, flag: "MH" })).toContain("cargo ship flagged in the Marshall Islands (");
+    expect(vesselDescription({ ...ship, flag: "lr" })).toContain("cargo ship flagged in Liberia (");
+  });
+
+  it("leaves out what the vessel has not sent", () => {
+    expect(vesselDescription({ mmsi: 244001221, name: "WABI SABI", kind: "vessel", type: 37 })).toBe(
+      "WABI SABI is a pleasure craft (MMSI 244001221). Live AIS position and track.",
+    );
+    // A nameless vessel is labelled by its MMSI once.
+    expect(vesselDescription({ mmsi: 244001221, kind: "vessel", type: 37 })).toBe("MMSI 244001221 is a pleasure craft. Live AIS position and track.");
+  });
+
+  it("reads the destination's far end and skips a placeholder", () => {
+    expect(vesselDescription({ ...ship, destination: "NLRTM>SGSIN" })).toContain("Bound for SGSIN.");
+    expect(vesselDescription({ ...ship, destination: "XXXXX" })).not.toContain("Bound");
+  });
+
+  it("tells a distress beacon from a search and rescue aircraft by its MMSI", () => {
+    expect(vesselDescription({ mmsi: 970123456, name: "SART TEST", kind: "sar" })).toContain("is a search and rescue beacon");
+    expect(vesselDescription({ mmsi: 111257005, name: "RESCUE 1", kind: "sar" })).toContain("is a search and rescue aircraft");
+    expect(vesselTitle({ mmsi: 111257005, name: "RESCUE 1", kind: "sar" })).toBe("RESCUE 1, search and rescue aircraft: live AIS position | Open Waters AIS");
+  });
+
+  it("takes the article the words are said with", () => {
+    expect(vesselDescription({ ...ship, length: 80 })).toContain("is an 80 m");
+    expect(vesselDescription({ ...ship, length: 11, flag: undefined })).toContain("is an 11 m cargo ship");
+    expect(vesselDescription({ ...ship, length: 110 })).toContain("is a 110 m");
+    expect(vesselDescription({ ...ship, length: undefined })).toContain("is a cargo ship flagged in");
+    expect(vesselDescription({ mmsi: 992446000, name: "BUOY", kind: "aton" })).toContain("is an aid to navigation");
+  });
+});
+
 describe("stationDescription", () => {
   const st = { vessels: 225, vessels_24h: 645, events: { last_24h: 873404 }, last_age_s: 2 };
 
@@ -645,5 +787,51 @@ describe("vesselActivity", () => {
     expect(vesselActivity({ sog: 12 })).toBe("Under way");
     expect(vesselActivity({ sog: 0, near: "Nassau" })).toBe("Near Nassau");
     expect(vesselActivity({})).toBeUndefined();
+  });
+});
+
+describe("fitBox", () => {
+  it("turns the TileJSON's west, south, east, north into the map's south, west, north, east", () => {
+    expect(fitBox([15.1, 37.2, 16.4, 38.9])).toEqual([37.2, 15.1, 38.9, 16.4]);
+    expect(fitBox(undefined)).toBeUndefined();
+    expect(fitBox([1, 2])).toBeUndefined();
+  });
+});
+
+describe("creditLine", () => {
+  const own = "Open Waters AIS (https://openwaters.io/ais/)";
+  const kystverket = "Contains data under the Norwegian licence for Open Government data (NLOD) distributed by the Norwegian Coastal Administration.";
+  it("says the network's own credit once and each source's as the source words it", () => {
+    expect(
+      creditLine(
+        { station: own, aisstream: `${own}. aisstream.io`, kystverket: `${own}. ${kystverket}` },
+        { kystverket: `${own}. ${kystverket}` },
+      ),
+    ).toBe(`${own}. aisstream.io. ${kystverket}`);
+    expect(creditLine({ station: own })).toBe(own);
+    expect(creditLine(undefined, {})).toBe("");
+  });
+});
+
+describe("uptimePercent", () => {
+  it("rounds down, so only every hour reads 100, and has none while unknown", () => {
+    expect(uptimePercent(167 / 168)).toBe(99);
+    expect(uptimePercent(1)).toBe(100);
+    expect(uptimePercent(0.29)).toBe(29);
+    expect(uptimePercent(0)).toBe(0);
+    expect(uptimePercent(null)).toBeUndefined();
+    expect(uptimePercent(undefined)).toBeUndefined();
+  });
+});
+
+describe("vesselMix", () => {
+  it("adds ship types up into the map's classes, most first and other last", () => {
+    expect(vesselMix({ "70": [5, 1], "79": [2, 2], "0": [9, 0], "36": [3, 3], base: [1, 0] })).toEqual([
+      { cls: "cargo", vessels: 7, only: 3 },
+      { cls: "pleasure", vessels: 3, only: 3 },
+      { cls: "base", vessels: 1, only: 0 },
+      { cls: "other", vessels: 9, only: 0 },
+    ]);
+    expect(vesselMix(undefined)).toEqual([]);
   });
 });

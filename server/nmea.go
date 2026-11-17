@@ -77,6 +77,7 @@ func (p *Pipeline) serveNMEA(w http.ResponseWriter, r *http.Request) {
 	}()
 	sub := p.subscribe()
 	defer p.unsubscribe(sub)
+	defer p.noteSlow(sub, "nmea", cl, r)
 	pace := pacer{n: cl.Rate}
 	for {
 		select {

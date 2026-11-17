@@ -9,8 +9,9 @@ export interface Stat {
   unit?: string;
 }
 
-/** Figures read at a glance rather than looked up, in a row of three. */
+/** Figures read at a glance rather than looked up, in a row of two or three. */
 export function StatGrid({ stats, tiles = false }: { stats: Stat[]; tiles?: boolean }) {
+  const cols = stats.length === 2 ? "grid-cols-2" : "grid-cols-3";
   const cells = stats.map((s) => (
     <div key={s.label} className={cn("text-center", tiles && "rounded-lg bg-surface-tile p-3")}>
       <div className="text-title font-semibold text-fg tabular-nums">
@@ -20,5 +21,5 @@ export function StatGrid({ stats, tiles = false }: { stats: Stat[]; tiles?: bool
       <div className="text-caption text-fg-muted uppercase">{s.label}</div>
     </div>
   ));
-  return tiles ? <div className="grid grid-cols-3 gap-2">{cells}</div> : <Tile className="grid grid-cols-3 gap-2">{cells}</Tile>;
+  return tiles ? <div className={cn("grid gap-2", cols)}>{cells}</div> : <Tile className={cn("grid gap-2", cols)}>{cells}</Tile>;
 }

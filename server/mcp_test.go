@@ -112,6 +112,9 @@ func TestMCPToolList(t *testing.T) {
 		if tool.Title == "" || tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || len(tool.Name) > 64 || tool.Description == "" {
 			t.Errorf("%s: missing title, read-only hint, or description: %+v", tool.Name, tool)
 		}
+		if tool.Annotations == nil || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint {
+			t.Errorf("%s: destructiveHint must be explicitly false", tool.Name)
+		}
 		if tool.Name == "find_vessels_in_area" {
 			schema, _ := json.Marshal(tool.InputSchema)
 			if !strings.Contains(string(schema), `"required":["bbox"]`) {

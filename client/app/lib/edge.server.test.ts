@@ -50,6 +50,15 @@ describe("edge cache", () => {
     expect(store.get("b")?.headers.get("cache-control")).toBe("public, max-age=3600");
   });
 
+  it("reads a page's shorter time through the private header every page carries", async () => {
+    // entry.server.tsx's documentCacheControl, for a vessel page drawn without its Slackwater stations.
+    const { cache, store } = fakeCache();
+    const pending: Promise<unknown>[] = [];
+    await edgeCached(cache, "v", { 200: 60 }, (p) => pending.push(p), async () => new Response("x", { headers: { "cache-control": "private, max-age=10" } }));
+    await Promise.all(pending);
+    expect(store.get("v")?.headers.get("cache-control")).toBe("public, max-age=10");
+  });
+
   it("keys a page by theme and query, and nothing else from the request", () => {
     const url = new URL("https://openwaters.io/ais/vessels/257000001-first");
     expect(pageCacheKey(url, null)).toBe("https://openwaters.io/ais/__edge/system/vessels/257000001-first");

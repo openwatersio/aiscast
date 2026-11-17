@@ -199,10 +199,26 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	s.list = func(context.Context) ([]historyFile, error) {
 		return []historyFile{{name: "csv2/csv2026/ais-2026-06-30.csv.zst", day: day, size: 101, etag: "0x2"}}, nil
 	}
-	// a cell the earlier load counted that the changed file no longer has, in each coverage table
+	// The day's static states, one per distinct state the file gives a vessel.
+	states := func() []string {
+		t.Helper()
+		got, err := chColumn[string](ctx, conn.conn, "SELECT concat(toString(mmsi), ' ', name, ' ', callsign) FROM "+db+
+			".statics FINAL WHERE source = 'marinecadastre' AND message = 'archive' AND mmsi = 367567110 ORDER BY 1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := states(); len(got) != 1 || got[0] != "367567110 CETACEA WDG7421" {
+		t.Errorf("static states from the file: %q", got)
+	}
+	// and one the changed file no longer has
+	if err := conn.exec(ctx, "INSERT INTO {db}.statics (mmsi, day, source, message, name, first_ts, last_ts) VALUES (367567110, '2026-06-30', 'marinecadastre', 'archive', 'OLD NAME', '2026-06-30 01:00:00', '2026-06-30 01:00:00')"); err != nil {
+		t.Fatal(err)
+	}
+	// a cell the earlier load counted that the changed file no longer has
 	if err := conn.exec(ctx,
-		"INSERT INTO {db}.station_coverage (day, station, res, cell, source, vessels) SELECT toDate('2026-06-30'), 'marinecadastre', 6, 1, 'marinecadastre', uniqExactState(toUInt32(1))",
-		"INSERT INTO {db}.coverage (day, res, cell, vessels, stations) SELECT toDate('2026-06-30'), 6, 1, uniqExactState(toUInt32(1)), uniqExactState('marinecadastre')"); err != nil {
+		"INSERT INTO {db}.station_coverage (day, station, res, cell, source, vessels) SELECT toDate('2026-06-30'), 'marinecadastre', 6, 1, 'marinecadastre', uniqExactState(toUInt32(1))"); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.loadHistory(ctx, s, stats); err != nil {
@@ -212,10 +228,11 @@ func TestHistoryLoadsAMarineCadastreDay(t *testing.T) {
 	if hours, err := chColumn[uint64](ctx, conn.conn, "SELECT uniqExact(hour) FROM "+db+".station_dirty WHERE toDate(hour) = '2026-06-30'"); err != nil || hours[0] != 24 {
 		t.Errorf("the reloaded day's hours marked: %v %v", hours, err)
 	}
-	for _, table := range []string{"coverage", "station_coverage"} {
-		if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+"."+table+" WHERE cell = 1"); err != nil || len(n) != 1 || n[0] != 0 {
-			t.Errorf("%s keeps a cell the reloaded day no longer has: %v %v", table, n, err)
-		}
+	if got := states(); len(got) != 1 || got[0] != "367567110 CETACEA WDG7421" {
+		t.Errorf("a reload replaces its day's static states: %q", got)
+	}
+	if n, err := chColumn[uint64](ctx, conn.conn, "SELECT count() FROM "+db+".station_coverage WHERE cell = 1"); err != nil || len(n) != 1 || n[0] != 0 {
+		t.Errorf("station_coverage keeps a cell the reloaded day no longer has: %v %v", n, err)
 	}
 	if again := rows(); len(again) != 8 {
 		t.Errorf("a changed file replaces its day rather than adding to it: %d rows", len(again))

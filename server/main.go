@@ -118,6 +118,11 @@ func main() {
 			if env("ISED", "1") == "1" {
 				go p.runISED(env("ISED_URL", isedEndpoint))
 			}
+			// Off unless asked for: only the production box speaks for openwaters.io.
+			if os.Getenv("INDEXNOW") == "1" {
+				p.indexNow.enabled.Store(true)
+				go p.runIndexNow(env("INDEXNOW_URL", indexNowEndpoint), envInt("INDEXNOW_DAILY", indexNowDaily))
+			}
 			go p.runRecordCounts()
 		}
 	}
@@ -151,7 +156,14 @@ func main() {
 		go runDigitraffic(p, env("DIGITRAFFIC_URL", "wss://meri.digitraffic.fi:443/mqtt"))
 	}
 	if key := os.Getenv("AISSTREAM_API_KEY"); key != "" {
-		go runAisstream(p, env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream"), key, env("AISSTREAM_BBOX", "[[[-90,-180],[90,180]]]"))
+		subs, err := aisstreamSubscriptions(env("AISSTREAM_BBOX", aisstreamDefaultBoxes))
+		if err != nil { // aisstream is best effort: a bad box turns it off, not the server
+			log.Printf("AISSTREAM_BBOX: %v: aisstream upstream off", err)
+		}
+		url := env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream")
+		for _, sub := range subs {
+			go runAisstream(p, url, key, sub)
+		}
 	}
 	if addr := os.Getenv("AISHUB_FEED"); addr != "" { // reciprocity: our received stream to AISHub's assigned UDP port
 		f, err := newUDPFeeder(addr)
@@ -197,7 +209,9 @@ func main() {
 		}
 		p.coverage = newCoverageMap()
 		go p.runCoverage()
+		p.series.expected.Store(true)
 		go p.runStationSeries()
+		go p.runStatics()
 	}
 	go p.logStats()
 	go p.runStationNames()

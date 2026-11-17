@@ -8,9 +8,10 @@ package main
 // is deleted and done again. A converted row keeps its recv_ts, which marks it as converted until cleanup.
 //
 // aiscast clickhouse-cleanup: the steps that drop data, run by hand, never at start, and only once every day is
-// converted. It drops positions_15m and positions_1h, which positions_1m replaces, and positions_old, the table
-// before receptions, then deletes the rows in the first layout and drops tx and recv_ts. After that a server
-// built before the current layout can no longer write.
+// converted. It drops positions_15m and positions_1h, which positions_1m replaces, positions_old, the table
+// before receptions, and coverage, which station_coverage replaces, then deletes the rows in the first layout and
+// drops tx and recv_ts. After that a server built before the current layout can no longer write, and one that
+// still bins coverage can no longer backfill or rebuild it.
 
 import (
 	"cmp"
@@ -237,6 +238,12 @@ func (c *chConn) cleanup(ctx context.Context, say func(string)) error {
 	}
 	say("dropping positions_old, the table before receptions")
 	if err := c.exec(ctx, "DROP TABLE IF EXISTS {db}.positions_old"); err != nil {
+		return err
+	}
+	// The view goes first, so no insert into receptions fails on the table it writes.
+	say("dropping coverage, its view, and its ledger, which station_coverage replaces")
+	if err := c.exec(ctx, "DROP VIEW IF EXISTS {db}.coverage_mv", "DROP TABLE IF EXISTS {db}.coverage",
+		"DROP TABLE IF EXISTS {db}.coverage_backfilled"); err != nil {
 		return err
 	}
 	if legacy, err := c.legacy(ctx); err != nil || !legacy {

@@ -3,7 +3,7 @@
   "info": {
     "title": "aiscast API",
     "version": "1.0.0",
-    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket JSON frames, MQTT over WebSocket for feeders, or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, no sign-in, the same tiers as `/v1/vessels`. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).",
+    "description": "Live AIS data from openwaters.io: current vessel positions, receiving stations, usage stats, self-serve tokens, and HTTP ingest for feeders. Successful responses are JSON; errors and `/health` are plain text. CORS is open, times are UTC, and JSON is compressed (zstd or gzip) when the request sends `Accept-Encoding`.\n\nThe streams are documented separately: `/v0/stream` (WebSocket, aisstream.io-compatible), `/v1/stream` (WebSocket JSON frames, MQTT over WebSocket for feeders, or Server-Sent Events), `/v1/nmea` (WebSocket, raw NMEA), and raw NMEA ingest on UDP port 10110. `/mcp` is the MCP (Model Context Protocol) endpoint for AI assistants: Streamable HTTP, no sign-in, the same tiers as `/v1/vessels`. See [openwaters.io/api/ais](https://openwaters.io/api/ais/).\n\nAll requests require a valid `User-Agent` header that names your app, version, and a URL or email address, such as `my-app/1.2 (you@example.org)`. See the [User-Agent policy](https://openwaters.io/api/user-agent/).",
     "contact": {
       "name": "aiscast",
       "url": "https://github.com/openwatersio/aiscast"
@@ -309,7 +309,7 @@
         "operationId": "listStations",
         "tags": ["Stations"],
         "summary": "List stations",
-        "description": "Every receiving station heard since the server started, with what it contributes. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes and `vessels_24h` in the last 24 hours. `vessels_exclusive_24h` counts the vessels no other station heard in those 24 hours, the gap a station fills. `bbox` is the extent of positions heard, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
+        "description": "Every receiving station heard in the last 30 days, with what it contributes, across restarts on a server that keeps its history in ClickHouse. A UDP station (`udp:` or `mmsi:`) is listed only once heard since the server last started. `events` counts messages the station delivered first, over the last 24 hours and 7 days. `vessels` is distinct MMSIs heard in the last 30 minutes and `vessels_24h` in the last 24 hours. `vessels_exclusive_24h` counts the vessels no other station heard in those 24 hours, the gap a station fills. `bbox` is the extent of positions heard since the server last started, a rough coverage footprint. Volunteer UDP stations appear as a keyed hash, never an address.",
         "security": [],
         "responses": {
           "200": {
@@ -386,11 +386,21 @@
                   "required": ["station", "vessels"],
                   "properties": {
                     "station": { "$ref": "#/components/schemas/Station" },
-                    "vessels": { "$ref": "#/components/schemas/FeatureCollection" }
+                    "vessels": { "$ref": "#/components/schemas/FeatureCollection" },
+                    "attribution": {
+                      "type": "object",
+                      "description": "Per source kind whose ship types or kinds `station.types` counts, the credit line to display with it. Absent when `types` is, or when it counts no source's type.",
+                      "additionalProperties": { "type": "string" }
+                    }
                   }
                 }
               }
             }
+          },
+          "503": {
+            "description": "The station is not heard since the server started, and the history that lists stations heard before it has not answered: after a start until its first read, or once its reads have failed for 10 minutes. Retry after `Retry-After` seconds.",
+            "headers": { "Retry-After": { "schema": { "type": "integer" } } },
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } } } }
           },
           "404": {
             "description": "Unknown station id.",
@@ -904,15 +914,34 @@
           "mmsi": { "type": "integer", "description": "The station's own vessel, from the `!AIVDO` sentences it sends." },
           "near": { "type": "string", "description": "The town or region nearest the traffic the station hears, such as `Santa Monica, CA` or `Munster, Ireland`. Volunteer stations only. Place names from GeoNames, CC BY 4.0." },
           "positions": { "type": "integer", "description": "Position messages the station delivered first, over the station's history, up to an hour behind; since the last restart while `uptime_7d` is null." },
-          "first_seen": { "type": "string", "format": "date-time", "description": "The station's first hour in its history, or when this server first heard it if earlier, or while `uptime_7d` is null. During the first backfill the history is partial, so the first hour can read later than it was." },
-          "last_seen": { "type": "string", "format": "date-time" },
-          "last_age_s": { "type": "integer", "description": "Seconds since the last message." },
+          "first_seen": { "type": "string", "format": "date-time", "description": "The station's first hour in its history, or when this server first heard it if earlier, or while `uptime_7d` is null; for a station not heard since the server started, its first hour in the last 30 days until its history is read. During the first backfill the history is partial, so the first hour can read later than it was." },
+          "last_seen": { "type": "string", "format": "date-time", "description": "The last message. For a station not heard since the server started, its last position reception the history holds, up to about 7 minutes behind, or the start of its last hour when that hour held only stale copies or the read of its last reception failed." },
+          "last_age_s": { "type": "integer", "description": "Seconds since `last_seen`." },
           "bbox": {
             "type": "array",
-            "description": "`[minLat, minLon, maxLat, maxLon]` extent of positions heard, a rough coverage footprint. Absent until a position has been heard.",
+            "description": "`[minLat, minLon, maxLat, maxLon]` extent of positions heard since the server last started, a rough coverage footprint. Absent until the station hears one.",
             "items": { "type": "number" },
             "minItems": 4,
             "maxItems": 4
+          },
+          "hours": {
+            "type": "array",
+            "description": "`GET /v1/stations/{id}` only: the station's position receptions in each hour of the last 7 days, UTC, 168 counts oldest first, the current hour last, its own vessel's included, as `uptime_7d` counts them. An hour with none is 0. Up to about 7 minutes behind, and read at most once a minute per station. Absent without ClickHouse, while the station list's figures find ClickHouse down, for the minute after its read fails, and when the page waited 10 seconds behind another station's read; each of those stands for the minute.",
+            "items": { "type": "integer" },
+            "minItems": 168,
+            "maxItems": 168
+          },
+          "hours_from": { "type": "string", "format": "date-time", "description": "`GET /v1/stations/{id}` only, with `hours`: the UTC hour its first count is for. Each later count is the next hour." },
+          "types": {
+            "type": "object",
+            "description": "`GET /v1/stations/{id}` only: the vessels the station heard in the last 24 hours, its own vessel left out, by type, each as `[vessels, unique]`, where unique counts those no other station heard, as `vessels_exclusive_24h` does. A key is an ITU ship type such as `\"70\"`: the latest non-zero one any source sent, within the last 35 days, else the one the vessel cache or record holds, credited to the vessel's source as `/v1/vessels` credits it; `\"0\"` when none is known; or a kind for what is not a ship: `aton`, `base`, `sar` for a SAR aircraft or a distress beacon, or `gear`. Read apart from `vessels_24h`, so the counts can differ from it by a minute's traffic. Absent without ClickHouse, while the station list's figures find ClickHouse down, for the minute after its read fails, after a 10-second wait, and when the station heard no vessel. The response's `attribution` credits the sources of the types.",
+            "additionalProperties": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "example": { "70": [12, 3], "37": [4, 0], "0": [2, 1], "aton": [1, 0] }
           }
         }
       },
@@ -933,7 +962,7 @@
           "stations": {
             "type": "object",
             "properties": {
-              "total": { "type": "integer", "description": "Stations heard since the server started." },
+              "total": { "type": "integer", "description": "Stations heard in the last 30 days; only those heard since the server started in the first minute after a start, or while the history is unavailable." },
               "active": { "type": "integer", "description": "Stations heard in the last 5 minutes." },
               "by_source": {
                 "type": "object",

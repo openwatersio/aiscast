@@ -157,6 +157,17 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 	if n := owned(); n != 1 {
 		t.Fatalf("a dry run changed station_own: %d sightings, was 1", n)
 	}
+	states := func() uint64 {
+		t.Helper()
+		n, err := chColumn[uint64](ctx, c.conn, "SELECT count() FROM "+db+".statics WHERE source = 'kystverket'")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n[0]
+	}
+	if n := states(); n != 0 {
+		t.Fatalf("a dry run wrote %d static states", n)
+	}
 	if err := c.replayDay(ctx, dir, day, warmup, false, false); err == nil || !strings.Contains(err.Error(), "-force") {
 		t.Fatalf("six replayed copies against seven stored replaced the day without -force: %v", err)
 	}
@@ -177,6 +188,9 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		if err := c.replayDay(ctx, dir, day, warmup, false, true); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if n := states(); n == 0 {
+		t.Error("a replay swapped in wrote no static states")
 	}
 	if n := owned(); n != maxOwnPerStation {
 		t.Errorf("a replay swapped in wrote %d own-ship sightings, want the allowance %d", n, maxOwnPerStation)
@@ -209,19 +223,17 @@ func TestReplayReplacesTheNetworksDay(t *testing.T) {
 		t.Errorf("positions_1m holds the replayed track: %v %v", lats, err)
 	}
 	finest := coverageBands[len(coverageBands)-1].res
-	for _, table := range []string{"coverage", "station_coverage"} {
-		cell := func(lat float64) uint64 {
-			t.Helper()
-			var n uint64
-			if err := c.conn.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s.%s WHERE day = ? AND res = %d AND cell = geoToH3(?, 10.7, %d)"+
-				" SETTINGS geotoh3_argument_order = 'lat_lon'", db, table, finest, finest), day, lat).Scan(&n); err != nil {
-				t.Fatal(err)
-			}
-			return n
+	cell := func(lat float64) uint64 {
+		t.Helper()
+		var n uint64
+		if err := c.conn.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s.station_coverage WHERE day = ? AND res = %d AND cell = geoToH3(?, 10.7, %d)"+
+			" SETTINGS geotoh3_argument_order = 'lat_lon'", db, finest, finest), day, lat).Scan(&n); err != nil {
+			t.Fatal(err)
 		}
-		if cell(58.0) != 0 || cell(59.90) == 0 {
-			t.Errorf("%s drops the stored position's cell and has the replayed one's: %d %d", table, cell(58.0), cell(59.90))
-		}
+		return n
+	}
+	if cell(58.0) != 0 || cell(59.90) == 0 {
+		t.Errorf("station_coverage drops the stored position's cell and has the replayed one's: %d %d", cell(58.0), cell(59.90))
 	}
 	complete, err := chColumn[bool](ctx, c.conn, "SELECT complete FROM "+db+".history_loads FINAL WHERE file = 'f'")
 	if err != nil || len(complete) != 1 || complete[0] {

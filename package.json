@@ -1,6 +1,7 @@
 {
   "name": "aiscast",
   "private": true,
+  "license": "AGPL-3.0-only",
   "workspaces": [
     "signalk-plugin",
     "client"

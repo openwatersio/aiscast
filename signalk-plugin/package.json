@@ -1,6 +1,6 @@
 {
   "name": "signalk-aiscast",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "Show nearby traffic without an AIS receiver and share what yours hears via the Open Waters AIS network",
   "license": "MIT",
   "author": "Brandon Keepers <brandon@opensoul.org>",
@@ -54,16 +54,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@canboat/ts-pgns": "^2.0.0",
+    "@canboat/ts-pgns": "^3.1.0",
     "@signalk/nmea0183-signalk": "^3.20.1",
-    "ggencoder": "^1.0.12",
-    "ws": "^8.22.0"
+    "ggencoder": "^1.0.13",
+    "ws": "^8.22.2"
   },
   "devDependencies": {
-    "@signalk/server-api": "^2.33.0",
-    "@types/node": "^26.6.4",
+    "@signalk/server-api": "^2.37.0",
+    "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.3"
+    "vitest": "^5.1.0"
   }
 }

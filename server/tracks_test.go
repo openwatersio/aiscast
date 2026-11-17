@@ -312,8 +312,8 @@ func TestTrackRangeWithNoPositions(t *testing.T) {
 	base := "/v1/vessels/257000001/track"
 	long := time.Now().Add(-5 * 24 * time.Hour)
 	for _, q := range []string{
-		"?from=" + long.Format(time.RFC3339) + "&to=" + long.Add(time.Hour).Format(time.RFC3339),
-		"?from=" + time.Now().Add(time.Hour).Format(time.RFC3339) + "&to=" + time.Now().Add(2*time.Hour).Format(time.RFC3339),
+		"?from=" + long.UTC().Format(time.RFC3339) + "&to=" + long.Add(time.Hour).UTC().Format(time.RFC3339),
+		"?from=" + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + "&to=" + time.Now().Add(2*time.Hour).UTC().Format(time.RFC3339),
 	} {
 		tr := getTrack(t, p, base+q)
 		from, _ := time.Parse(time.RFC3339, tr.Properties.From)

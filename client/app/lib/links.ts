@@ -11,6 +11,12 @@ export const DEVELOPERS = `${WEBSITE}/api/ais/`;
 export const CONTRIBUTE = `${WEBSITE}/ais/#contribute`;
 /** What the map and the API collect about visitors, stations, and vessels. */
 export const PRIVACY = `${WEBSITE}/ais/privacy/`;
+/** For someone who arrived on the aisstream.io feed's station: the API comparison, and its live status and outages. */
+export const AISSTREAM_VS = `${WEBSITE}/ais/vs/aisstream/`;
+export const AISSTREAM_STATUS = `${WEBSITE}/ais/alternatives/aisstream/`;
+/** Where a free personal token is issued. */
+export const TOKEN = `${WEBSITE}/ais/token/`;
+export const WIKIDATA_GUIDE = `${WEBSITE}/ais/wikidata/`;
 export const SIGNALK_PLUGIN = "https://github.com/openwatersio/aiscast/tree/main/signalk-plugin#readme";
 export const GITHUB = "https://github.com/openwatersio/aiscast";
 
@@ -21,4 +27,4 @@ export const DEFAULT_SHARE_IMAGE = `${WEBSITE}/og/ais.png`;
  * The contributor ask, one line wherever it appears, so it reads as one invitation rather
  * than a dozen variations.
  */
-export const CONTRIBUTE_PROMPT = "Put your receiver on the map";
+export const CONTRIBUTE_PROMPT = "Add an AIS receiver to the map";

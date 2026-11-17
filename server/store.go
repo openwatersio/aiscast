@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS vessels (
 	static_at   INTEGER NOT NULL DEFAULT 0,    -- unix ms of the last static report
 	seen        INTEGER NOT NULL,              -- unix ms of the last message that updated the vessel
 	first_seen  INTEGER NOT NULL,              -- unix ms of the earliest report written to this row
+	page_at     INTEGER NOT NULL DEFAULT 0,    -- unix ms of the last change to what the vessel's page says (vesselPageTriggers)
 	source      TEXT    NOT NULL DEFAULT '',
 	station     TEXT    NOT NULL DEFAULT '',
 	msg_type    TEXT    NOT NULL DEFAULT ''
@@ -135,6 +136,19 @@ CREATE TABLE IF NOT EXISTS ised (
 	callsign   TEXT    NOT NULL DEFAULT '',
 	checked_at INTEGER NOT NULL DEFAULT 0 -- unix ms of the last ask
 );
+-- the slug each vessel page was last submitted to IndexNow under, so a round sends only new vessels and
+-- pages a rename moved (indexnow.go)
+CREATE TABLE IF NOT EXISTS indexnow (
+	mmsi    INTEGER PRIMARY KEY,
+	slug    TEXT    NOT NULL,
+	sent_at INTEGER NOT NULL -- unix ms of the submission
+);
+-- each IndexNow submission's size, which the daily budget is summed from; kept two days (indexnow.go)
+CREATE TABLE IF NOT EXISTS indexnow_rounds (
+	sent_at INTEGER NOT NULL, -- unix ms
+	urls    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS indexnow_rounds_sent_at ON indexnow_rounds (sent_at);
 -- Canadian vessels with an IMO from Transport Canada's Register of Large Vessels, replaced weekly (tc.go)
 CREATE TABLE IF NOT EXISTS tc (
 	imo           INTEGER PRIMARY KEY,
@@ -181,6 +195,38 @@ var storeAddedCols = []string{
 	"to_port INTEGER NOT NULL DEFAULT 0",
 	"to_starboard INTEGER NOT NULL DEFAULT 0",
 }
+
+// vesselPageTriggers keep page_at, the sitemap's lastmod for a vessel's page. seen moves with nearly every
+// report, so a lastmod read from it would change on every fetch and say nothing. page_at moves when the
+// vessel's identity, voyage or size changes: name, kind, type, flag, IMO, call sign, destination, length or
+// beam. Position does not move it, since a live position page is always changing, nor do draught, ETA,
+// navigational status, which change within a voyage, or the registers' particulars, kept in their own
+// tables. It moves at most once a day, because aggregates can deliver two versions of a vessel's static
+// data in turn, and an MMSI two ships share flips between their names; a change inside the day waits for
+// the next change after it. The vessel's first name is the exception: it brings the page into the sitemap.
+//
+// The triggers run after every writer, the fold's upsert, the import and the kind migration alike, and a
+// blank the upsert keeps the stored value for is no change. They stamp the time of the write, not seen:
+// the import fills a blank name without moving seen. The clock is SQLite's own, because the triggers live
+// in the file: one calling a function only this build registers would leave an older build, after a
+// rollback, or the sqlite3 shell unable to write to vessels at all. Each start replaces them, so a file
+// keeps the rule of the build that last opened it.
+const vesselPageTriggers = `
+DROP TRIGGER IF EXISTS vessels_page_insert;
+DROP TRIGGER IF EXISTS vessels_page_update;
+CREATE TRIGGER vessels_page_insert AFTER INSERT ON vessels BEGIN
+	UPDATE vessels SET page_at = CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) WHERE mmsi = NEW.mmsi;
+END;
+CREATE TRIGGER vessels_page_update
+AFTER UPDATE OF name, kind, ship_type, flag, imo, callsign, destination, length, beam ON vessels
+WHEN (NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind OR NEW.ship_type IS NOT OLD.ship_type
+	OR NEW.flag IS NOT OLD.flag OR NEW.imo IS NOT OLD.imo OR NEW.callsign IS NOT OLD.callsign
+	OR NEW.destination IS NOT OLD.destination OR NEW.length IS NOT OLD.length OR NEW.beam IS NOT OLD.beam)
+	AND (OLD.name = '' OR OLD.page_at <= CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) - 86400000)
+BEGIN
+	UPDATE vessels SET page_at = CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER) WHERE mmsi = NEW.mmsi;
+END;
+`
 
 // upsertKind is the kind a row takes from the cache's. A kind a message type sets (aton, base, sar) wins and stays.
 // Between vessel and gear the cache decides, unless it does not yet know the station's name or type, as when a buoy
@@ -263,6 +309,25 @@ type store struct {
 	mirrorFailures                      atomic.Int64 // refreshes of the mirror that failed
 }
 
+// addPageAt adds page_at to a file without it, filled from seen.
+func addPageAt(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("ALTER TABLE vessels ADD COLUMN page_at INTEGER NOT NULL DEFAULT 0"); err != nil {
+		if strings.Contains(err.Error(), "duplicate column") {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.Exec("UPDATE vessels SET page_at = min(seen, ?)", time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func openStore(path string) (*store, error) {
 	// WAL lets the API read while the writer commits; NORMAL sync is durable across a process crash, and a
 	// power loss costs at most the last commits, which the next folds rewrite.
@@ -282,6 +347,18 @@ func openStore(path string) (*store, error) {
 			db.Close()
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+	}
+	// A file from before page_at gains the column, set to each vessel's seen: every lastmod in the sitemap
+	// moves once, then only with its page. One transaction, so a stop between the two cannot leave the column
+	// without its values, which no later start would fill.
+	if err := addPageAt(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// After page_at, which an older file gains just above.
+	if _, err := db.Exec(vesselPageTriggers); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	// A file from before official_key gains the column, and its sync stamp is cleared so the next hourly
 	// check re-lists, filling the keys, rather than serving empty ones for up to a week. The old
@@ -405,20 +482,25 @@ func openStore(path string) (*store, error) {
 
 // derivedKindsVersion names the rule deriveStoredKinds last applied; a change to derivedKind bumps it, so the next
 // boot applies the new rule to the rows the fold has not heard since.
-const derivedKindsVersion = "1"
+const derivedKindsVersion = "2"
 
-// deriveStoredKinds gives every row saved as a vessel or gear the kind its stored name, type, size, and status give
-// it (derivedKind), and the flag that goes with it, once per version of the rule. The fold decides a station's kind
-// as it is heard and the daily import as history merges in, but a station not heard since keeps the row it had. A
-// beacon's sar row is left to the fold: the import resets a row's status to not available when history brings a
-// newer position, so a stored status cannot say a beacon has stopped. A full scan, under a second for 300,000 rows,
-// then a write per row that changes.
+// deriveStoredKinds gives every row saved as a vessel or gear the kind its stored name, type, size, and status give it
+// (derivedKind), and the flag that goes with it, once per version of the rule. So does a base station row on a ship's
+// number (2xx to 7xx) that has a ship's class, type, or IMO number: a ship a UTC response (type 11) made a base station
+// when the fold took it for a type 4. A base station row on a ship's number with none of those was never heard as a
+// ship, as a corrupt reception at a random place was not, and stays as it is; a real base station on any number is
+// base again with its next report. The fold decides a station's kind as it is heard and the daily import as history
+// merges in, but a station not heard since keeps the row it had. A beacon's sar row is left to the fold: the import
+// resets a row's status to not available when history brings a newer position, so a stored status cannot say a beacon
+// has stopped. A full scan, under a second for 300,000 rows, then a write per row that changes.
 func deriveStoredKinds(db *sql.DB) error {
 	var done string
 	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'derived_kinds'`).Scan(&done); err == nil && done == derivedKindsVersion {
 		return nil
 	}
-	rows, err := db.Query(`SELECT mmsi, kind, name, ship_type, length, beam, nav_status FROM vessels WHERE kind IN ('vessel', 'gear')`)
+	rows, err := db.Query(`SELECT mmsi, kind, name, ship_type, length, beam, nav_status FROM vessels
+		WHERE kind IN ('vessel', 'gear')
+			OR kind = 'base' AND mmsi BETWEEN 200000000 AND 799999999 AND (class != '' OR ship_type BETWEEN 20 AND 99 OR imo != 0)`)
 	if err != nil {
 		return err
 	}

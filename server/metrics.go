@@ -44,8 +44,9 @@ func tierOf(c *Claims) string {
 
 // streamGauge counts open streams by protocol and tier.
 type streamGauge struct {
-	mu sync.Mutex
-	n  map[[2]string]int
+	mu   sync.Mutex
+	n    map[[2]string]int
+	slow map[[2]string]int64 // streams closed with their fan-out queue overflowed, ever
 }
 
 // open counts one stream and returns the call that uncounts it.
@@ -62,6 +63,32 @@ func (g *streamGauge) open(protocol string, c *Claims) func() {
 		g.n[k]--
 		g.mu.Unlock()
 	}
+}
+
+// closedSlow counts one stream that ended because its client fell behind the fan-out.
+func (g *streamGauge) closedSlow(protocol string, c *Claims) {
+	g.mu.Lock()
+	if g.slow == nil {
+		g.slow = map[[2]string]int64{}
+	}
+	g.slow[[2]string{protocol, tierOf(c)}]++
+	g.mu.Unlock()
+}
+
+// slowSnapshot copies the slow-close counts with every protocol × known tier present, as snapshot does.
+func (g *streamGauge) slowSnapshot() map[[2]string]int64 {
+	out := map[[2]string]int64{}
+	for _, p := range streamProtocols {
+		for _, t := range streamTiers {
+			out[[2]string{p, t}] = 0
+		}
+	}
+	g.mu.Lock()
+	for k, v := range g.slow {
+		out[k] = v
+	}
+	g.mu.Unlock()
+	return out
 }
 
 // snapshot copies the counts with every protocol × known tier present, so an idle series reads 0 rather than absent.
@@ -165,7 +192,7 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("aiscast_duplicates_total", "messages dropped as duplicates", p.stats.dup.Load())
 	counter("aiscast_parse_errors_total", "unparseable input lines", p.stats.parseErr.Load())
 	counter("aiscast_replayed_total", "buffered sentences archived without live emit (TAG time older than 60 s)", p.stats.replayed.Load())
-	counter("aiscast_decode_failures_total", "sentences that did not decode to an AIS message", p.stats.decodeFail.Load())
+	counter("aiscast_decode_failures_total", "sentences that did not decode to an AIS message, and base station reports dropped as corrupt", p.stats.decodeFail.Load())
 	counter("aiscast_client_drops_total", "events dropped because a client queue was full", p.stats.clientDrops.Load())
 	counter("aiscast_ping_timeouts_total", "stream connections closed because the client stopped answering pings", p.stats.pingTimeouts.Load())
 	counter("aiscast_ratelimited_total", "requests rejected by rate limits", p.stats.rateLimited.Load())
@@ -251,6 +278,9 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		metricHead(w, "aiscast_clickhouse_own_dropped_total", "counter", "own-ship sightings not written: refused past a sender's 4 vessels an hour, or full past 10,000 senders an hour or 10,000 waiting for ClickHouse")
 		fmt.Fprintf(w, "aiscast_clickhouse_own_dropped_total{reason=\"refused\"} %d\n", c.ownRefused.Load())
 		fmt.Fprintf(w, "aiscast_clickhouse_own_dropped_total{reason=\"full\"} %d\n", c.ownDropped.Load())
+		metricHead(w, "aiscast_clickhouse_statics_dropped_total", "counter", "static states not written, past 100,000 waiting for ClickHouse")
+		fmt.Fprintf(w, "aiscast_clickhouse_statics_dropped_total %d\n", c.staticsDropped.Load())
+
 		metricHead(w, "aiscast_clickhouse_rebuilt_copies_total", "counter", "stale copies from rebuilt sources: matched to a transmission the vessel sent in the last five minutes, or kept as a late report of its own")
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"true\"} %d\n", c.rebuiltMatched.Load())
 		fmt.Fprintf(w, "aiscast_clickhouse_rebuilt_copies_total{matched=\"false\"} %d\n", c.rebuiltLate.Load())
@@ -363,6 +393,16 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "aiscast_ised_check_failures_total %d\n", p.ised.failures.Load())
 		metricHead(w, "aiscast_ised_ships", "gauge", "Canadian vessels with a registry record stored")
 		fmt.Fprintf(w, "aiscast_ised_ships %d\n", p.ised.ships.Load())
+		if p.indexNow.enabled.Load() {
+			metricHead(w, "aiscast_indexnow_submitted_total", "counter", "vessel page URLs submitted to IndexNow")
+			fmt.Fprintf(w, "aiscast_indexnow_submitted_total %d\n", p.indexNow.submitted.Load())
+			metricHead(w, "aiscast_indexnow_failures_total", "counter", "IndexNow submissions that failed; their vessels are sent in a later round")
+			fmt.Fprintf(w, "aiscast_indexnow_failures_total %d\n", p.indexNow.failures.Load())
+			if t := p.indexNow.lastSuccess.Load(); t > 0 {
+				metricHead(w, "aiscast_indexnow_last_success_timestamp_seconds", "gauge", "when IndexNow last accepted a submission")
+				fmt.Fprintf(w, "aiscast_indexnow_last_success_timestamp_seconds %d\n", t)
+			}
+		}
 	}
 
 	metricHead(w, "aiscast_streams", "gauge", "open streams by protocol and tier; the loopback health probe is one v1 anonymous stream")
@@ -374,6 +414,11 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	slices.SortFunc(keys, func(a, b [2]string) int { return strings.Compare(a[0]+"\x00"+a[1], b[0]+"\x00"+b[1]) })
 	for _, k := range keys {
 		fmt.Fprintf(w, "aiscast_streams{protocol=%q,tier=%q} %d\n", k[0], k[1], streams[k])
+	}
+	metricHead(w, "aiscast_slow_disconnects_total", "counter", "streams closed because the client fell behind the fan-out; aiscast_client_drops_total counts the events this cost")
+	slow := p.streams.slowSnapshot()
+	for _, k := range keys {
+		fmt.Fprintf(w, "aiscast_slow_disconnects_total{protocol=%q,tier=%q} %d\n", k[0], k[1], slow[k])
 	}
 
 	fan := []struct {

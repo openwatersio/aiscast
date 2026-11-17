@@ -14,16 +14,23 @@ import (
 
 // fakeSeries answers the station series' reads from fixed figures.
 type fakeSeries struct {
-	counts  map[string]stationCount
-	totals  map[string]stationCount
-	sources map[string][2]int
-	own     map[string]map[uint32]int64
-	points  map[string][][2]float64
-	reads   int
-	err     error
+	counts     map[string]stationCount
+	totals     map[string]stationCount
+	sources    map[string][2]int
+	own        map[string]map[uint32]int64
+	points     map[string][][2]float64
+	hours      map[string][]uint64
+	vessels    map[string]map[uint32]heardVessel
+	vesselsErr error // what the next vessels read returns
+	reads      int
+	err        error
 	// totals' reads, and the error the next one returns
 	totalsReads int
 	totalsErr   error
+	// hours' reads, and the error the next one returns
+	hoursReads int
+	hoursErr   error
+	hoursDelay time.Duration // how long each hours read takes
 }
 
 func (f *fakeSeries) rebuildStationSeries(context.Context, time.Time) error  { return nil }
@@ -39,6 +46,22 @@ func (f *fakeSeries) stationTotals(context.Context) (map[string]stationCount, er
 		return nil, err
 	}
 	return f.totals, nil
+}
+func (f *fakeSeries) stationHours(_ context.Context, id string, _ time.Time) ([]uint64, error) {
+	f.hoursReads++
+	time.Sleep(f.hoursDelay)
+	if err := f.hoursErr; err != nil {
+		f.hoursErr = nil
+		return nil, err
+	}
+	return f.hours[id], nil
+}
+func (f *fakeSeries) stationVessels(_ context.Context, id string, _ time.Time) (map[uint32]heardVessel, error) {
+	if err := f.vesselsErr; err != nil {
+		f.vesselsErr = nil
+		return nil, err
+	}
+	return f.vessels[id], nil
 }
 func (f *fakeSeries) sourceCounts(context.Context, time.Time) (map[string][2]int, error) {
 	return f.sources, nil
@@ -89,6 +112,13 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	pts := []trackPoint{at("station:s1", 1, cur.Add(-2*time.Hour+10*time.Minute)), at("station:s1", 2, recent), at("station:s1", 9, recent),
 		shared, at("station:s2", 3, recent), echo, wild, old, stream,
 		at("station:s1", 123456789, recent)} // a default MMSI from before ingest kept them out, which counts as no vessel
+	// Listing reaches back stationKeep: a station heard 10 days ago is listed, one heard 31 days ago is not, one whose last hour held only a stale copy is last heard at that hour's
+	// start, and a historical archive is no station.
+	tenDays, monthAgo := now.Add(-10*24*time.Hour).Truncate(time.Second), now.Add(-31*24*time.Hour)
+	staleOnly := at("station:stale", 11, recent)
+	staleOnly.stale = true
+	archived := at("dma", 12, now.Add(-3*24*time.Hour))
+	pts = append(pts, at("station:s10", 10, tenDays), at("station:s31", 10, monthAgo), at("station:stale", 11, cur.Add(-3*time.Hour)), staleOnly, archived)
 	// The receptions were written before the series existed, as on a database at step 17: its tables and view
 	// come with the upgrade, and the backfill bins what came before.
 	if err := conn.exec(ctx, "DROP VIEW {db}.station_dirty_mv", "DROP TABLE {db}.station_dirty", "DROP TABLE {db}.station_hours",
@@ -97,6 +127,9 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := conn.insert(ctx, "series", pts); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.exec(ctx, "INSERT INTO {db}.history_loads (source, file, day, loaded) VALUES ('dma', 'aisdk.zip', today(), now64(3))"); err != nil {
 		t.Fatal(err)
 	}
 	conn.conn.Close()
@@ -168,8 +201,48 @@ func TestStationSeriesFromClickHouse(t *testing.T) {
 	if s := counts["station:s2"]; s.day != 2 || s.unique != 1 || s.receptions != 2 || s.firsts != 1 {
 		t.Errorf("s2: %+v; want the shared and its own vessel, the implausible copy left out, and 1 of 2 receptions first", s)
 	}
-	if s := counts["station:s3"]; s.day != 0 || s.receptions != 1 {
-		t.Errorf("s3, heard 30 hours ago: %+v", s)
+	if s := counts["station:s3"]; s.day != 0 || s.receptions != 1 || s.source != "station" || !s.last.Equal(old.ts.Truncate(time.Millisecond)) {
+		t.Errorf("s3, heard 30 hours ago: %+v; want it listed with its source and last reception", s)
+	}
+	if s := counts["station:s10"]; s.source != "station" || !s.last.Equal(tenDays) {
+		t.Errorf("s10, heard 10 days ago: %+v; want it listed", s)
+	}
+	if s := counts["station:s31"]; !s.last.IsZero() {
+		t.Errorf("s31, heard 31 days ago: %+v; want it only in the totals", s)
+	}
+	if s := counts["station:stale"]; !s.last.Equal(cur) {
+		t.Errorf("station:stale: last %v; want %v, the start of its last hour, which held only a stale copy", s.last, cur)
+	}
+	if s := counts["dma"]; !s.last.IsZero() {
+		t.Errorf("the DMA archive is listed as a station: %+v", s)
+	}
+	if s := counts["station:s1"]; !s.last.Equal(recent.Truncate(time.Millisecond)) {
+		t.Errorf("s1: last %v; want %v", s.last, recent)
+	}
+	// Hours read each hour's newest recorded version: s1's current hour is its copies, not the older version's
+	// 1000 or the unrecorded 5000. Its own ship counts, as uptime counts it; the default MMSI is no reception.
+	last := stationWindow - 1
+	if h, err := conn.stationHours(ctx, "station:s1", now); err != nil || len(h) != stationWindow || h[last-2] != 1 || h[last-1] != 0 || h[last] != 2 {
+		t.Errorf("s1 hours %v, %v; want 1 two hours back, 0 the next, and 2 now: its own ship counts, the default MMSI does not", h[last-3:], err)
+	}
+	if h, err := conn.stationHours(ctx, "station:s3", now); err != nil || h[last-30] != 1 || h[last] != 0 {
+		t.Errorf("s3 hours %v, %v; want 1 thirty hours back", h, err)
+	}
+	// A vessel's type is its latest non-zero one across sources; a vessel with none has 0.
+	d := func(ago time.Duration) string { return now.Add(-ago).Format("2006-01-02 15:04:05.000") }
+	if err := conn.exec(ctx, "INSERT INTO {db}.statics (mmsi, day, source, station, message, ship_type, first_ts, last_ts) VALUES "+
+		"(257000001, toDate('"+d(48*time.Hour)+"'), 'kystverket', 'kystverket', '5', 70, '"+d(48*time.Hour)+"', '"+d(48*time.Hour)+"'), "+
+		"(257000001, toDate('"+d(time.Hour)+"'), 'station', 'station:s1', '5', 30, '"+d(2*time.Hour)+"', '"+d(time.Hour)+"'), "+
+		"(257000001, toDate('"+d(time.Minute)+"'), 'aishub', 'aishub', '5', 0, '"+d(time.Minute)+"', '"+d(time.Minute)+"'), "+
+		// the record's seed and a state older than the window statics is read over, neither of which counts
+		"(257000001, toDate('"+d(time.Minute)+"'), 'record', 'record', 'record', 99, '"+d(time.Minute)+"', '"+d(time.Minute)+"'), "+
+		"(257000002, toDate('"+d(40*24*time.Hour)+"'), 'kystverket', 'kystverket', '5', 50, '"+d(40*24*time.Hour)+"', '"+d(40*24*time.Hour)+"'), "+
+		// on the window's first day, but before its start
+		"(257000002, toDate('"+d(35*24*time.Hour)+"'), 'kystverket', 'kystverket', '5', 60, '"+d(35*24*time.Hour+time.Minute)+"', '"+d(35*24*time.Hour+time.Minute)+"')"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := conn.stationVessels(ctx, "station:s1", now); err != nil || fmt.Sprint(v) != fmt.Sprint(map[uint32]heardVessel{257000001: {true, 30, "station"}, 257000002: {}}) {
+		t.Errorf("s1 vessels %v, %v; want vessel 1 unique and type 30, vessel 2 shared and untyped, its own ship left out", v, err)
 	}
 	if _, ok := counts["station:old"]; !ok {
 		t.Errorf("the stream before the fold is not under its receiver: %v", counts)

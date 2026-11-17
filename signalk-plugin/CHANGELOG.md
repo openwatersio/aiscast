@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+Open Waters AIS keeps source and licensing credits available to Signal K apps receiving traffic.
+
+**Upgrade:** If your source-priority rules match `signalk-aiscast.net` exactly, add the relevant per-feed names shown in Signal K's Data Browser. The old name does not match the new feed identifiers.
+
+- Received traffic identifies each upstream feed, with volunteer stations grouped by source prefix. Apps can read source, license, and attribution at each target's `sensors.aiscast` path and match credits to fields with a source. Plain identity fields such as name and callsign use the target's combined credits. [#321](https://github.com/openwatersio/aiscast/pull/321)
+- The NMEA output setting and README explain that chartplotters need credits displayed separately: NMEA 0183 and NMEA 2000 cannot carry the attribution text. [#321](https://github.com/openwatersio/aiscast/pull/321)
+
 ## 0.6.3
 
 - The plugin's App Store page has screenshots of aiscast traffic in Navionics and Aqua Map, which receive it from the Signal K server as NMEA 0183 over Wi-Fi.

@@ -45,8 +45,17 @@ export default async function handleRequest(
   if ((ua && isbot(ua)) || routerContext.isSpaMode) await body.allReady;
 
   headers.set("Content-Type", "text/html; charset=utf-8");
-  // The theme cookie is rendered into the page, and a browser that kept it would show the old
-  // theme after a switch. The edge keeps one copy per theme (workers/app.ts).
-  headers.set("Cache-Control", "private");
+  headers.set("Cache-Control", documentCacheControl(headers));
   return new Response(body, { headers, status });
+}
+
+/**
+ * A page's Cache-Control. The theme cookie is rendered into the page, and a browser that kept it
+ * would show the old theme after a switch, so it is private; the edge keeps one copy per theme
+ * (workers/app.ts). A route that asked for a shorter lifetime keeps its max-age, which the edge
+ * cache reads (lib/edge.server.ts), as a vessel page drawn without its Slackwater stations does.
+ */
+export function documentCacheControl(routeHeaders: Headers): string {
+  const own = /max-age=(\d+)/.exec(routeHeaders.get("Cache-Control") ?? "")?.[1];
+  return own ? `private, max-age=${own}` : "private";
 }

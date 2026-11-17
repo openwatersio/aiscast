@@ -5,13 +5,14 @@ import { Panel } from "../components/Panel";
 import { RouteError, routeErrorHeaders, routeErrorMeta } from "../components/RouteError";
 import { IconLink } from "../components/ui/IconButton";
 import { VesselDetail } from "../components/VesselDetail";
-import { CLASS_LABELS, flagName, parseVesselParam, pathSlug, shipClass, vesselCardPath, vesselPath } from "../lib/ais";
+import { parseVesselParam, pathSlug, vesselCardPath, vesselDescription, vesselPath, vesselTitle } from "../lib/ais";
 import { browserAuth, getVessel, orUnavailable, type VesselFeature } from "../lib/api";
-import { serverEnv } from "../lib/context";
+import { serverEnv, serverWaitUntil } from "../lib/context";
 import { liveInstance } from "../lib/live";
 import { mediaKey } from "../lib/media";
 import { firstPhoto } from "../lib/media.server";
 import { pageMeta, SITE } from "../lib/meta";
+import { slackwaterStations } from "../lib/slackwater.server";
 import type { Route } from "./+types/vessel";
 
 /** Awaited for a server render, possibly still in flight for navigation inside the app. */
@@ -39,8 +40,19 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
   const record: VesselRecord = feature;
   // Gear has no photo: its MMSI is one a maker or owner chose, often a ship's, whose photo a link would unfurl with.
   const key = feature && kind !== "gear" && mediaKey(feature.properties.imo, mmsi);
-  const photo = key ? await firstPhoto(key, request.url) : undefined;
-  return data({ mmsi, name, feature: record, photo }, feature ? undefined : { status: 404 });
+  // Only a vessel's page offers Slackwater. Its stations are in this render for the crawler, which
+  // never navigates inside the app; a page opened there asks the Worker for them (useNearbyStations).
+  const [lon, lat] = feature?.geometry?.coordinates ?? [];
+  const placed = kind === "vessel" && lat != null && lon != null;
+  const [photo, found] = await Promise.all([
+    key ? firstPhoto(key, request.url) : undefined,
+    placed ? slackwaterStations(lat, lon, context.get(serverWaitUntil)) : undefined,
+  ]);
+  // Rendered before the index arrived, the page asks the edge to keep it for seconds rather than
+  // the minute, so the crawler it was for gets the links on its next visit. A vessel with no
+  // position has none to miss; its page asks once the stream places it.
+  const init: ResponseInit = feature ? (placed && !found ? { headers: { "Cache-Control": "public, max-age=10" } } : {}) : { status: 404 };
+  return data({ mmsi, name, feature: record, photo, stations: found }, init);
 }
 
 /**
@@ -59,7 +71,7 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
     if (slug !== pathSlug(heard.name, heard.kind)) throw redirect(vesselPath(mmsi, heard.name, heard.kind));
     // The pane is already open from the stream's copy, which stands if the record fails.
     const feature: VesselRecord = record.catch(() => undefined);
-    return { mmsi, name: heard.name, kind: heard.kind, feature };
+    return { mmsi, imo: heard.imo, name: heard.name, kind: heard.kind, type: heard.shipType, feature };
   }
   const feature = await orUnavailable(record);
   const name = feature?.properties.name;
@@ -68,7 +80,10 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   return { mmsi, name, feature: feature as VesselRecord };
 }
 
-export const headers = routeErrorHeaders;
+/** An error's headers, else the loader's: its shorter edge lifetime for a page drawn without its stations. */
+export function headers(args: Route.HeadersArgs) {
+  return args.errorHeaders ? routeErrorHeaders(args) : args.loaderHeaders;
+}
 
 export function meta({ loaderData, error }: Route.MetaArgs) {
   if (!loaderData) return routeErrorMeta(error);
@@ -77,17 +92,14 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
   const props = feature?.properties;
   const name = props?.name ?? loaderData.name;
   const label = name ?? `MMSI ${mmsi}`;
-  const country = flagName(props?.flag);
   const loading = loaderData.feature instanceof Promise;
-  const description = props
-    ? `Live AIS position for ${label}${country ? `, ${country}` : ""}. ${CLASS_LABELS[shipClass(props.kind, props.type)]}. ` +
-      `Last heard ${new Date(props.seen).toUTCString()}.`
-    : `AIS vessel ${label}.`;
   const kind = props?.kind ?? ("kind" in loaderData ? loaderData.kind : undefined);
+  const description = props ? vesselDescription(props) : `AIS vessel ${label}.`;
   const path = vesselPath(mmsi, name, kind);
   const photo = "photo" in loaderData ? loaderData.photo : undefined;
   return pageMeta({
-    title: `${label}${name ? ` (${mmsi})` : ""} live position | Open Waters AIS`,
+    // The stream's ship type names the class until the record is in, as its name and kind do.
+    title: vesselTitle({ mmsi, imo: props?.imo ?? ("imo" in loaderData ? loaderData.imo : undefined), name, kind, type: props?.type ?? ("type" in loaderData ? loaderData.type : undefined), particulars: props?.particulars }),
     description,
     // An MMSI the network has never heard has no page of its own to point at.
     path: feature || loading ? path : undefined,
@@ -119,6 +131,7 @@ export function meta({ loaderData, error }: Route.MetaArgs) {
 export default function Vessel({ loaderData }: Route.ComponentProps) {
   const { mmsi, feature, name } = loaderData;
   const heardKind = "kind" in loaderData ? loaderData.kind : undefined;
+  const stations = "stations" in loaderData ? loaderData.stations : undefined;
   // Back pops to whatever pushed this vessel; close always returns to the map, as a place
   // card's does in a maps app. A vessel's page opens with its photos under the bar; gear has
   // none, so its bar stands on the page as any other panel's does, and the title starts below it.
@@ -130,7 +143,7 @@ export default function Vessel({ loaderData }: Route.ComponentProps) {
   );
   return (
     <Suspense fallback={panel(heardKind, <VesselDetail mmsi={mmsi} feature={undefined} loading />)}>
-      <Await resolve={feature}>{(f) => panel(f?.properties.kind ?? heardKind, <VesselDetail mmsi={mmsi} feature={f} />)}</Await>
+      <Await resolve={feature}>{(f) => panel(f?.properties.kind ?? heardKind, <VesselDetail mmsi={mmsi} feature={f} stations={stations} />)}</Await>
     </Suspense>
   );
 }

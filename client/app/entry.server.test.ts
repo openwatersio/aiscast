@@ -1,6 +1,17 @@
 import { data, UNSAFE_ErrorResponseImpl as ErrorResponse } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleError } from "./entry.server";
+import { documentCacheControl, handleError } from "./entry.server";
+
+describe("documentCacheControl", () => {
+  it("keeps the browser from storing a page, whose theme a cookie decides", () => {
+    expect(documentCacheControl(new Headers())).toBe("private");
+  });
+
+  it("passes on a page's own shorter lifetime, which the edge cache reads", () => {
+    // A vessel page rendered before the Slackwater index arrived asks for 10 s (routes/vessel.tsx).
+    expect(documentCacheControl(new Headers({ "Cache-Control": "public, max-age=10" }))).toBe("private, max-age=10");
+  });
+});
 
 describe("handleError", () => {
   const request = new Request("https://openwaters.io/ais/vessels/368168720-x?around=1,2");

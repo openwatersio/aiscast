@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,13 +76,14 @@ func TestStationRowsTakeTheSeries(t *testing.T) {
 }
 
 // Own-ship candidates read back at start are claimed by their station when it is next heard, or at once when it
-// already has been, so two vessels sent as own within the hour still mean no own vessel after a restart.
+// already has been, so two vessels sent as own within the hour still mean no own vessel after a restart. Until then
+// they decide the own vessel of a station listed from the series.
 func TestOwnCandidatesSurviveRestart(t *testing.T) {
 	p := testPipeline(t)
 	now := time.Now()
 	p.ingestPacket("heard", "heard", now, now, posReport(366000001, 41.5, -70.6))
 	p.stations.restoreOwn(map[string]map[uint32]int64{"heard": {227006760: now.Unix()}, "later": {227006761: now.Unix()}})
-	if own := p.stations.ownShips(); own["heard"][227006760] != now.Unix() || own["later"] != nil {
+	if own := p.stations.ownShips(); own["heard"][227006760] != now.Unix() || own["later"][227006761] != now.Unix() {
 		t.Errorf("own ships before the second station reports: %v", own)
 	}
 	p.ingestPacket("later", "later", now, now, posReport(366000001, 41.5, -70.6))
@@ -111,5 +117,103 @@ func TestOwnVesselWaitsForRestoredCandidates(t *testing.T) {
 	p.refreshOwn(now)
 	if r := rowOf(t, p.stationRows(now), "station:ed25519:k"); r.MMSI != 0 {
 		t.Errorf("two own vessels within the hour across the restart, yet one decided: %+v", r)
+	}
+}
+
+// A restart lists the stations the series heard before it within stationKeep, but never a udp: or mmsi: one. They
+// take their source and last reception from the series, their ring from the usage file, and no extent, which is
+// kept only for the stations heard since the start.
+func TestRowsListTheSeriesStations(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	day := now.Add(-24 * time.Hour)
+	ring := &hourRing{}
+	ring.add(day)
+	ring.add(day)
+	p.stations.restoreRings(map[string]ringState{"station:ed25519:k": ring.state()})
+	p.stations.event(&Event{Station: "live", Source: "live", Time: now, MMSI: 366000001})
+	p.stations.event(&Event{Station: "gone", Source: "gone", Time: now.Add(-stationKeep - time.Hour), MMSI: 366000001})
+	p.stations.event(&Event{Station: "expired", Source: "expired", Time: now.Add(-stationKeep - time.Hour), MMSI: 366000001})
+	counts := map[string]stationCount{
+		"station:ed25519:k":  {source: "station", last: day, first: day.Add(-48 * time.Hour), receptions: 10, firsts: 7, totaled: true, uptime: 0.5},
+		"kystverket/2573010": {source: "kystverket", last: day, first: day},
+		"expired":            {source: "expired", last: day, first: day}, // heard live over 30 days ago, by the series since
+		"udp:fed":            {source: "udp", last: day},                 // never from the series
+		"mmsi:366000009":     {source: "mmsi", last: day},
+		"old":                {source: "old", last: now.Add(-stationKeep - time.Hour)},
+		"v1:ed25519:k":       {source: "v1", last: day}, // a volunteer before station: named it
+		"totals-only":        {receptions: 5, firsts: 5, totaled: true},
+	}
+	rows := p.stations.rows(now, counts)
+	var ids []string
+	for _, r := range rows {
+		ids = append(ids, r.Station)
+	}
+	if want := []string{"expired", "kystverket/2573010", "live", "station:ed25519:k"}; !slices.Equal(ids, want) {
+		t.Fatalf("listed %v, want %v", ids, want)
+	}
+	k := rowOf(t, rows, "station:ed25519:k")
+	if k.Source != "station:ed25519:k" || !k.LastSeen.Equal(day.UTC()) || !k.FirstSeen.Equal(day.Add(-48*time.Hour).UTC()) ||
+		k.Positions != 7 || k.Dups != 3 || k.Uptime == nil || k.Events["last_7d"] != 2 || k.BBox != nil {
+		t.Errorf("series station: %+v", k)
+	}
+	if f := rowOf(t, rows, "kystverket/2573010"); f.Source != "kystverket" || f.Uptime != nil || f.Positions != 0 {
+		t.Errorf("feed receiver: %+v", f)
+	}
+	if l := rowOf(t, rows, "live"); l.BBox != nil {
+		t.Errorf("a station with no position has an extent: %+v", l.BBox)
+	}
+	// /v1/stats and MCP count the same list.
+	p.refreshRollups(&fakeSeries{counts: counts}, now)
+	w := httptest.NewRecorder()
+	p.serveStats(w, httptest.NewRequest("GET", "/v1/stats", nil))
+	var stats struct {
+		Stations struct{ Total int } `json:"stations"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil || stats.Stations.Total != 4 {
+		t.Errorf("/v1/stats total %d, %v; want the 4 listed", stats.Stations.Total, err)
+	}
+	// A revoked token's station leaves the list.
+	p.auth = &verifier{revoked: map[string]bool{"ed25519:k": true}}
+	p.refreshRollups(&fakeSeries{counts: counts}, now)
+	if counts, _ := p.rollups(now); slices.ContainsFunc(p.stations.rows(now, counts), func(r stationRow) bool { return r.Station == "station:ed25519:k" }) {
+		t.Error("a revoked token's station is still listed")
+	}
+}
+
+// A late copy leaves last_seen alone, so it cannot age a station that is still reporting out of the list.
+func TestLateEventKeepsStation(t *testing.T) {
+	p := testPipeline(t)
+	now := time.Now()
+	p.stations.event(&Event{Station: "s1", Source: "s1", Time: now, MMSI: 366000001})
+	p.stations.event(&Event{Station: "s1", Source: "s1", Time: now.Add(-stationKeep - time.Hour), MMSI: 366000002})
+	p.stations.dup(&Event{Station: "s1", Source: "s1", Time: now.Add(-stationKeep - time.Hour), Packet: posReport(366000003, 41.7, -70.4)})
+	if r := rowOf(t, p.stations.rows(now, nil), "s1"); !r.LastSeen.Equal(now.UTC()) {
+		t.Errorf("late copy moved last_seen: %+v", r)
+	}
+}
+
+// Until the series answers, a station missing from the list may be one it heard before the start, so its page is
+// unavailable rather than unknown. Without ClickHouse, a station not heard since the start is unknown.
+func TestUnknownStationWaitsForTheSeries(t *testing.T) {
+	p := testPipeline(t)
+	get := func() int {
+		w := httptest.NewRecorder()
+		p.serveStations(w, httptest.NewRequest("GET", "/v1/stations/kystverket/1", nil))
+		return w.Code
+	}
+	if code := get(); code != http.StatusNotFound {
+		t.Errorf("without ClickHouse: %d, want 404", code)
+	}
+	p.series.expected.Store(true)
+	if code := get(); code != http.StatusServiceUnavailable {
+		t.Errorf("before the series answers: %d, want 503", code)
+	}
+	if _, out, err := p.mcpGetCoverage(context.Background(), nil, mcpCoverageIn{Station: "kystverket/1"}); err != nil || !strings.Contains(out.Note, "not loaded yet") {
+		t.Errorf("MCP before the series answers: %q, %v", out.Note, err)
+	}
+	p.refreshRollups(&fakeSeries{counts: map[string]stationCount{}}, time.Now())
+	if code := get(); code != http.StatusNotFound {
+		t.Errorf("once the series answers without it: %d, want 404", code)
 	}
 }
