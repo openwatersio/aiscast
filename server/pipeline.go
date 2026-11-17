@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -66,6 +67,7 @@ type subscriber struct {
 }
 
 type Pipeline struct {
+	taps atomic.Int32 // subscribers in subs that are not clients
 	arch *archive
 	// access log: a line per HTTP request (access.go); no-op unless configured
 	access        *archive
@@ -139,23 +141,26 @@ type Pipeline struct {
 	smu  sync.RWMutex
 	subs map[*subscriber]struct{}
 
-	auth         *verifier // issuer public keys for access tokens
-	stations     *stationStats
-	feeder       *udpFeeder     // optional: forward received (non-synthesized) events to an aggregator
-	udp          []*udpListener // ingest sockets; /metrics counts datagrams per listener
-	last         atomic.Int64
-	probeLast    atomic.Int64 // unix time of the last event the loopback probe received; 0 = probe not running
-	rate         rateSample   // events/s over the last logStats interval; /v1/stats
-	usage        usageCounters
-	recordCounts atomic.Pointer[recordCounts] // the vessel record's counts, refreshed each minute; nil without a record
-	lastBySource sync.Map                     // source → time.Time of last event; /metrics reads it
-	delays       delayStats
-	mcp          *mcpService // /mcp: the cache as tools for AI assistants
-	streams      streamGauge // open streams by protocol and tier; /metrics
-	requests     requestMetrics
-	fanout       struct{ v0, v1, sse, nmea fanoutCounter }
-	names        *stationNames
-	stats        struct {
+	auth          *verifier // issuer public keys for access tokens
+	stations      *stationStats
+	feeder        *udpFeeder         // optional: forward received (non-synthesized) events to an aggregator
+	nodeKey       ed25519.PrivateKey // this node's key (peers.go); nil = no peering
+	nodeSub       string             // nodeKey as a sub; a peer connection from it is refused
+	approvedPeers map[string]bool    // node subs given the peer role (PEERS_APPROVED)
+	udp           []*udpListener     // ingest sockets; /metrics counts datagrams per listener
+	last          atomic.Int64
+	probeLast     atomic.Int64 // unix time of the last event the loopback probe received; 0 = probe not running
+	rate          rateSample   // events/s over the last logStats interval; /v1/stats
+	usage         usageCounters
+	recordCounts  atomic.Pointer[recordCounts] // the vessel record's counts, refreshed each minute; nil without a record
+	lastBySource  sync.Map                     // source → time.Time of last event; /metrics reads it
+	delays        delayStats
+	mcp           *mcpService // /mcp: the cache as tools for AI assistants
+	streams       streamGauge // open streams by protocol and tier; /metrics
+	requests      requestMetrics
+	fanout        struct{ v0, v1, sse, nmea fanoutCounter }
+	names         *stationNames
+	stats         struct {
 		keysSigned, keysUnsigned                                                                                                                      atomic.Int64 // personal-token mints, by whether the key signed the request
 		parseErr, decodeFail, dup, events, clientDrops, rateLimited, replayed, thinned, implausible, stale, uncorroborated, pingTimeouts, invalidMMSI atomic.Int64
 		bySource                                                                                                                                      sync.Map // source → *counterT
@@ -618,6 +623,21 @@ var subBuffer = 1024
 
 func (p *Pipeline) subscribe() *subscriber {
 	p.usage.streams.add(time.Now())
+	return p.listen()
+}
+
+// tap is a fan-out subscriber that is not a client, such as a peer link: kept out of the usage figures.
+func (p *Pipeline) tap() *subscriber {
+	p.taps.Add(1)
+	return p.listen()
+}
+
+func (p *Pipeline) untap(s *subscriber) {
+	p.unsubscribe(s)
+	p.taps.Add(-1)
+}
+
+func (p *Pipeline) listen() *subscriber {
 	s := &subscriber{ch: make(chan *Event, subBuffer)}
 	p.smu.Lock()
 	p.subs[s] = struct{}{}
@@ -654,7 +674,7 @@ func (p *Pipeline) logStats() {
 		p.pruneAishubStatics(time.Now())
 		p.sampleRate(time.Now())
 		p.smu.RLock()
-		ns := len(p.subs)
+		ns := len(p.subs) - int(p.taps.Load())
 		p.smu.RUnlock()
 		log.Printf("events=%d dup=%d parse_err=%d decode_fail=%d vessels=%d subs=%d",
 			p.stats.events.Load(), p.stats.dup.Load(), p.stats.parseErr.Load(), p.stats.decodeFail.Load(), nv, ns)

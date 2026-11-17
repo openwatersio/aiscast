@@ -61,6 +61,7 @@ describe("sitemap", () => {
         station("kystverket/2573010", "kystverket", 60),
         station("aishub", "aishub", 90 * 86400),
         station("udp:24dfc99708ff", "udp:24dfc99708ff", 60),
+        station("peer:ed25519:K/station:ed25519:x", "peer:ed25519:K", 60),
       ],
     });
     const body = await (await sitemap("/ais/sitemap-pages.xml", auth)).text();
@@ -72,6 +73,7 @@ describe("sitemap", () => {
     expect(body).toContain("<loc>https://openwaters.io/ais/stations/kystverket/2573010</loc><lastmod>2026-10-02T10:00:00Z</lastmod>");
     expect(body).not.toContain("stations/aishub");
     expect(body).not.toContain("udp:");
+    expect(body).not.toContain("peer:");
   });
 
   it("lists the app's pages before any station is heard, and is a 503 when the API is down", async () => {
