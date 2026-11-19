@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { askNearbyStations, nearbyPath, slackwaterHandoff } from "./slackwater";
+import { askNearbyStations, isStationId, nearbyPath, slackwaterHandoff } from "./slackwater";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -50,6 +50,29 @@ describe("askNearbyStations", () => {
     const odd = [crofton, { kind: "tide", name: "Elsewhere", url: "https://evil.example/tides/" }, { kind: "wave", name: "W", url: "https://slackwater.xyz/tides/x/" }];
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ stations: odd })));
     await expect(askNearbyStations("/ais/vessels/slackwater/1.00,1.00")).resolves.toEqual([crofton]);
+  });
+
+  it("keeps a tide station's API ID for the widget, and drops a station whose ID could reach another path", async () => {
+    const drawn = { ...crofton, id: "ticon/crofton_bc-7450-can-meds" };
+    const odd = [
+      drawn,
+      { ...crofton, url: "https://slackwater.xyz/tides/ca/bc/a/", id: "noaa/../../admin" },
+      { ...crofton, url: "https://slackwater.xyz/tides/ca/bc/b/", id: 9447130 },
+      { kind: "current", name: "Porlier Pass", url: "https://slackwater.xyz/currents/ca/bc/porlier-pass/", id: "noaa/PUG1701" },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ stations: odd })));
+    await expect(askNearbyStations("/ais/vessels/slackwater/2.00,2.00")).resolves.toEqual([drawn]);
+  });
+});
+
+describe("isStationId", () => {
+  it.each(["noaa/9447130", "kartverket/ANX", "ticon/victoria_bc-543a-can-uhslc_rq", "ticon/a.b"])("takes %s", (id) => {
+    expect(isStationId(id)).toBe(true);
+  });
+
+  // The widget asks for predictions only by `source/id`; a CHS ID has no source segment.
+  it.each(["", "chs-dodd-narrows", "/noaa/1", "noaa/../x", "noaa/..", "noaa/.", "ticon/a/b", "noaa/1?x=1", "noaa/1#a", "noaa 1", "noaa/"])("refuses %j", (id) => {
+    expect(isStationId(id)).toBe(false);
   });
 });
 

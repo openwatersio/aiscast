@@ -4,7 +4,7 @@
  * nothing else links to.
  */
 
-import type { NearbyStation } from "./slackwater";
+import { isStationId, type NearbyStation } from "./slackwater";
 
 export type { NearbyStation };
 
@@ -33,11 +33,16 @@ export type StationKind = NearbyStation["kind"];
 
 /**
  * The parts of a `/stations.json` entry a vessel page uses. The index also points each station at
- * its attribution notice, which is owed where the station's data is shown, and a vessel page shows
- * only a name and a link (docs/policy.md, the Slackwater row).
+ * its attribution notice; the one station whose predictions a vessel page draws is credited by the
+ * widget that draws them, and the others it shows only as a name and a link (docs/policy.md, the
+ * Slackwater row).
  */
 export interface IndexedStation {
+  /** The database ID the tides API takes. An index published before it carried IDs has none. */
+  id?: string;
   kind: StationKind;
+  /** False for a station the tides API has no predictions for, as CHS's. */
+  predictions?: boolean;
   path: string;
   name: string;
   latitude: number;
@@ -61,20 +66,31 @@ function km(lat1: number, lon1: number, lat2: number, lon2: number): number {
   return 12_742 * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
-/** The nearest tide station and the nearest current station within reach, tide first. */
+/** A tide station the widget can draw: one the tides API predicts, by an ID the widget takes. */
+const drawable = (s: IndexedStation) => s.kind === "tide" && s.predictions === true && typeof s.id === "string" && isStationId(s.id);
+
+/** The headline station and four more to link: enough to choose from without becoming a directory. */
+const LISTED = 5;
+
+/**
+ * The stations within reach, nearest first, led by the nearest tide station the tides API can
+ * predict, which alone carries its `id` for the widget to draw. Without one, the list is only links.
+ * The nearest current station stays in the list however many tide stations are nearer.
+ */
 export function nearestStations(index: StationIndex, lat: number, lon: number): NearbyStation[] {
-  const best = new Map<StationKind, { station: IndexedStation; km: number }>();
-  for (const station of index.stations) {
-    if (!STATION_PATH.test(station.path)) continue;
-    const d = km(lat, lon, station.latitude, station.longitude);
-    if (d > REACH_KM) continue;
-    const held = best.get(station.kind);
-    if (!held || d < held.km) best.set(station.kind, { station, km: d });
-  }
-  return (["tide", "current"] as const).flatMap((kind) => {
-    const found = best.get(kind)?.station;
-    return found ? [{ kind, name: found.name, url: `${ORIGIN}${found.path}` }] : [];
-  });
+  const near = index.stations
+    .filter((s) => STATION_PATH.test(s.path))
+    .map((station) => ({ station, km: km(lat, lon, station.latitude, station.longitude) }))
+    .filter((s) => s.km <= REACH_KM)
+    .sort((a, b) => a.km - b.km)
+    .map((s) => s.station)
+    // One link a page, should the index ever list a page twice: the entry the widget can draw.
+    .filter((s, _, all) => s === (all.find((t) => t.path === s.path && drawable(t)) ?? all.find((t) => t.path === s.path)));
+  const headline = near.find(drawable);
+  const current = near.find((s) => s.kind === "current");
+  const listed = [...(headline ? [headline] : []), ...near.filter((s) => s !== headline)].slice(0, LISTED);
+  if (current && !listed.includes(current)) listed.splice(-1, 1, current);
+  return listed.map((s) => ({ kind: s.kind, name: s.name, url: `${ORIGIN}${s.path}`, ...(s === headline ? { id: s.id } : {}) }));
 }
 
 const isStation = (s: unknown): s is IndexedStation => {
@@ -97,6 +113,8 @@ function readIndex(body: unknown): StationIndex | undefined {
     console.warn("slackwater: stations.json has no usable stations");
     return undefined;
   }
+  // Linked but never drawn: an index without IDs, or with a shape of them this doesn't take.
+  if (!stations.some(drawable)) console.warn("slackwater: stations.json has no tide station the widget can draw");
   return { origin: ORIGIN, stations };
 }
 

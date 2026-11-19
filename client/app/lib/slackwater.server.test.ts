@@ -4,26 +4,87 @@ import { forgetStationIndex, nearbyResponse, nearestStations, slackwaterStations
 const INDEX: StationIndex = {
   origin: "https://slackwater.xyz",
   stations: [
-    { kind: "current", path: "/currents/ca/bc/active-pass/", name: "Active Pass", latitude: 48.8617, longitude: -123.3133 },
-    { kind: "current", path: "/currents/ca/bc/porlier-pass/", name: "Porlier Pass", latitude: 49.0133, longitude: -123.585 },
-    { kind: "tide", path: "/tides/ca/bc/fulford-harbour/", name: "Fulford Harbour", latitude: 48.7694, longitude: -123.45 },
-    { kind: "tide", path: "/tides/ca/bc/crofton/", name: "Crofton", latitude: 48.8667, longitude: -123.6333 },
-    { kind: "tide", path: "/tides/us/wa/seattle/", name: "Seattle", latitude: 47.6026, longitude: -122.3393 },
+    { id: "chs-active-pass", kind: "current", predictions: false, path: "/currents/ca/bc/active-pass/", name: "Active Pass", latitude: 48.8617, longitude: -123.3133 },
+    { id: "chs-porlier-pass", kind: "current", predictions: false, path: "/currents/ca/bc/porlier-pass/", name: "Porlier Pass", latitude: 49.0133, longitude: -123.585 },
+    { id: "chs-fulford-harbour", kind: "tide", predictions: false, path: "/tides/ca/bc/fulford-harbour/", name: "Fulford Harbour", latitude: 48.7694, longitude: -123.45 },
+    { id: "ticon/crofton_bc-7450-can-meds", kind: "tide", predictions: true, path: "/tides/ca/bc/crofton/", name: "Crofton", latitude: 48.8667, longitude: -123.6333 },
+    { id: "noaa/9447130", kind: "tide", predictions: true, path: "/tides/us/wa/seattle/", name: "Seattle", latitude: 47.6026, longitude: -122.3393 },
   ],
 };
 
+// Quinsam's crossing between Crofton and Vesuvius Bay, and what it finds there, nearest first.
+const QUINSAM = [48.8657, -123.63606] as const;
+const NEAR = ["Crofton", "Porlier Pass", "Fulford Harbour", "Active Pass"];
+
 describe("nearestStations", () => {
-  it("picks the nearest tide station and the nearest current station, tide first", () => {
-    // Quinsam's crossing between Crofton and Vesuvius Bay.
-    const near = nearestStations(INDEX, 48.8657, -123.63606);
-    expect(near.map((s) => [s.kind, s.name, s.url])).toEqual([
-      ["tide", "Crofton", "https://slackwater.xyz/tides/ca/bc/crofton/"],
-      ["current", "Porlier Pass", "https://slackwater.xyz/currents/ca/bc/porlier-pass/"],
+  it("leads with the nearest tide station the API predicts, carrying its ID, then the rest nearest first", () => {
+    const near = nearestStations(INDEX, ...QUINSAM);
+    expect(near.map((s) => [s.kind, s.name, s.url, s.id])).toEqual([
+      ["tide", "Crofton", "https://slackwater.xyz/tides/ca/bc/crofton/", "ticon/crofton_bc-7450-can-meds"],
+      ["current", "Porlier Pass", "https://slackwater.xyz/currents/ca/bc/porlier-pass/", undefined],
+      ["tide", "Fulford Harbour", "https://slackwater.xyz/tides/ca/bc/fulford-harbour/", undefined],
+      ["current", "Active Pass", "https://slackwater.xyz/currents/ca/bc/active-pass/", undefined],
     ]);
   });
 
-  it("leaves out a kind with nothing within reach", () => {
-    // Seattle's waterfront: a tide station on the doorstep, no current station within 50 km.
+  it("passes over a nearer tide station the API can't predict for the headline, and still links it", () => {
+    // Off Fulford Harbour, a CHS station: Crofton, 15 km on, is the nearest the widget can draw.
+    const near = nearestStations(INDEX, 48.77, -123.45);
+    expect(near[0]).toMatchObject({ name: "Crofton", id: "ticon/crofton_bc-7450-can-meds" });
+    expect(near.find((s) => s.name === "Fulford Harbour")?.id).toBeUndefined();
+  });
+
+  it("only links when no tide station within reach can be drawn, as from an index without IDs", () => {
+    const bare: StationIndex = { ...INDEX, stations: INDEX.stations.map(({ id: _, predictions: __, ...s }) => s) };
+    const near = nearestStations(bare, ...QUINSAM);
+    expect(near.map((s) => s.name)).toEqual(NEAR);
+    expect(near.some((s) => s.id)).toBe(false);
+  });
+
+  it("draws no station whose ID could reach another path of the API", () => {
+    const index: StationIndex = { ...INDEX, stations: INDEX.stations.map((s) => (s.name === "Crofton" ? { ...s, id: "../admin" } : s)) };
+    expect(nearestStations(index, ...QUINSAM).some((s) => s.id)).toBe(false);
+  });
+
+  it("draws no station from an entry whose ID isn't a string, and still links it", () => {
+    const index = { ...INDEX, stations: INDEX.stations.map((s) => (s.name === "Crofton" ? { ...s, id: 9447130 } : s)) } as unknown as StationIndex;
+    const near = nearestStations(index, ...QUINSAM);
+    expect(near.map((s) => s.name)).toEqual(NEAR);
+    expect(near.some((s) => s.id)).toBe(false);
+  });
+
+  it.each([["missing", undefined], ["a string", "true"]])("draws no station whose predictions flag is %s, and still links it", (_, predictions) => {
+    const index = { ...INDEX, stations: INDEX.stations.map((s) => (s.name === "Crofton" ? { ...s, predictions } : s)) } as unknown as StationIndex;
+    const near = nearestStations(index, ...QUINSAM);
+    expect(near.map((s) => s.name)).toEqual(NEAR);
+    expect(near.some((s) => s.id)).toBe(false);
+  });
+
+  it("links a page once, should the index list it twice, keeping the entry the widget can draw", () => {
+    const crofton = INDEX.stations.find((s) => s.name === "Crofton")!;
+    // The undrawable copy first, and nearer, so only the preference can pick the other.
+    const copy = { ...crofton, predictions: false, latitude: 48.8657, longitude: -123.63606 };
+    const near = nearestStations({ ...INDEX, stations: [copy, ...INDEX.stations] }, ...QUINSAM);
+    expect(near.map((s) => s.name)).toEqual(NEAR);
+    expect(near[0]?.id).toBe("ticon/crofton_bc-7450-can-meds");
+  });
+
+  it("keeps the nearest current station among the links however many tide stations are nearer", () => {
+    const tides = Array.from({ length: 6 }, (_, i) => ({ kind: "tide" as const, path: `/tides/ca/bc/s${i}/`, name: `S${i}`, latitude: 48.8657 + i / 1000, longitude: -123.63606 }));
+    const current = { kind: "current" as const, path: "/currents/ca/bc/far/", name: "Far", latitude: 48.9, longitude: -123.63606 };
+    expect(nearestStations({ ...INDEX, stations: [current, ...tides] }, ...QUINSAM).map((s) => s.name)).toEqual(["S0", "S1", "S2", "S3", "Far"]);
+  });
+
+  it("lists five stations at most", () => {
+    const many: StationIndex = {
+      ...INDEX,
+      stations: Array.from({ length: 9 }, (_, i) => ({ kind: "tide" as const, path: `/tides/ca/bc/s${i}/`, name: `S${i}`, latitude: 48.8657 + i / 100, longitude: -123.63606 })),
+    };
+    expect(nearestStations(many, ...QUINSAM).map((s) => s.name)).toEqual(["S0", "S1", "S2", "S3", "S4"]);
+  });
+
+  it("leaves out what is beyond reach", () => {
+    // Seattle's waterfront: a tide station on the doorstep, nothing else within 50 km.
     expect(nearestStations(INDEX, 47.6, -122.34).map((s) => s.name)).toEqual(["Seattle"]);
   });
 
@@ -50,7 +111,7 @@ describe("slackwaterStations", () => {
   it("fetches the index once and answers from it after that", async () => {
     const fetch = vi.fn(async () => Response.json(INDEX));
     vi.stubGlobal("fetch", fetch);
-    expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(["Crofton", "Porlier Pass"]);
+    expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(NEAR);
     expect((await slackwaterStations(47.6, -122.34))?.map((s) => s.name)).toEqual(["Seattle"]);
     expect(fetch).toHaveBeenCalledOnce();
     expect(String((fetch.mock.calls[0] as unknown[])[0])).toBe("https://slackwater.xyz/stations.json");
@@ -90,10 +151,19 @@ describe("slackwaterStations", () => {
     warn.mockRestore();
   });
 
+  it("warns when the index has no tide station the widget can draw, and still links its stations", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const bare = INDEX.stations.map(({ id: _, predictions: __, ...s }) => s);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...INDEX, stations: bare })));
+    expect((await slackwaterStations(...QUINSAM))?.map((s) => s.name)).toEqual(NEAR);
+    expect(warn).toHaveBeenCalledWith("slackwater: stations.json has no tide station the widget can draw");
+    warn.mockRestore();
+  });
+
   it("drops a bad entry rather than the whole index", async () => {
     const bad = { kind: "wave", path: "/tides/x/", name: "Wave", latitude: null, longitude: 1 };
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...INDEX, stations: [bad, ...INDEX.stations] })));
-    expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(["Crofton", "Porlier Pass"]);
+    expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(NEAR);
   });
 
   it("reads the index slackwater.xyz publishes, attribution table and all, and links without it", async () => {
@@ -109,7 +179,7 @@ describe("slackwaterStations", () => {
       ],
     };
     vi.stubGlobal("fetch", vi.fn(async () => Response.json(published)));
-    expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(["Vesuvius", "Porlier Pass"]);
+    expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(["Crofton", "Vesuvius", "Porlier Pass", "Fulford Harbour", "Active Pass"]);
   });
 
   it("drops an entry whose kind and path disagree, or that has no name", async () => {
@@ -117,7 +187,7 @@ describe("slackwaterStations", () => {
     const misfiled = { ...nearby, kind: "tide", path: "/currents/ca/bc/stuart-channel/", name: "Stuart Channel" };
     const nameless = { ...nearby, kind: "current", path: "/currents/ca/bc/nameless/", name: " " };
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...INDEX, stations: [misfiled, nameless, ...INDEX.stations] })));
-    expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(["Crofton", "Porlier Pass"]);
+    expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(NEAR);
   });
 
   it("leaves caching to slackwater.xyz's own headers, and names itself", async () => {
@@ -174,7 +244,7 @@ describe("slackwaterStations", () => {
       void slackwaterStations(48.8657, -123.63606).then(settled);
       // No timer advanced: the answer must not be waiting on the refresh.
       await vi.advanceTimersByTimeAsync(0);
-      expect(settled.mock.calls[0]?.[0].map((s: { name: string }) => s.name)).toEqual(["Crofton", "Porlier Pass"]);
+      expect(settled.mock.calls[0]?.[0].map((s: { name: string }) => s.name)).toEqual(NEAR);
       expect(refresh).toHaveBeenCalledOnce();
     });
 
@@ -185,7 +255,7 @@ describe("slackwaterStations", () => {
       await vi.advanceTimersByTimeAsync(2000);
       await expect(first).resolves.toBeUndefined();
       await vi.advanceTimersByTimeAsync(1000);
-      expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(["Crofton", "Porlier Pass"]);
+      expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(NEAR);
       expect(fetch).toHaveBeenCalledOnce();
     });
 
@@ -207,7 +277,7 @@ describe("slackwaterStations", () => {
       await vi.advanceTimersByTimeAsync(6 * 3_600_000 + 1);
       const down = vi.fn(async () => new Response("", { status: 503 }));
       vi.stubGlobal("fetch", down);
-      expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(["Crofton", "Porlier Pass"]);
+      expect((await slackwaterStations(48.8657, -123.63606))?.map((s) => s.name)).toEqual(NEAR);
       expect(down).toHaveBeenCalledOnce();
     });
 
@@ -230,7 +300,7 @@ describe("nearbyResponse", () => {
     const res = await nearbyResponse("48.87,-123.64", () => {});
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("public, max-age=3600");
-    expect(((await res.json()) as { stations: Array<{ name: string }> }).stations.map((s) => s.name)).toEqual(["Crofton", "Porlier Pass"]);
+    expect(((await res.json()) as { stations: Array<{ name: string }> }).stations.map((s) => s.name)).toEqual(NEAR);
   });
 
   it.each(["", "48.87", "48.87,-123.64,1", "north,west", "91,0", "0,181", "48.871,-123.64", "48.87,-123.6412"])("refuses %j as a position", async (at) => {
