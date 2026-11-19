@@ -15,6 +15,9 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+        # The tide widget comes as its own PR, so a release that changes its markup, styles or
+        # requests is looked at in a browser on its own, beyond the e2e checks of one station.
+        exclude-patterns: ["@slackwater/*"]
         update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: /server

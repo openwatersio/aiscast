@@ -4,11 +4,25 @@ declare global {
   }
 }
 
+/** The hosted Slackwater API (neaps' @slackwater/api), which the tide widget asks from the reader's browser. */
+export const TIDES_API = "https://api.openwaters.io";
+
 /** A Slackwater station page near a vessel, which the vessel page links (lib/slackwater.server.ts). */
 export interface NearbyStation {
   kind: "tide" | "current";
   name: string;
   url: string;
+  /** The tides API's ID, on the one station whose tide the vessel page draws. */
+  id?: string;
+}
+
+/**
+ * A database ID the widget can draw, `noaa/9447130`: a source and its station, as `@slackwater/react`
+ * requires for the predictions it asks the tides API for. A CHS ID, `chs-dodd-narrows`, has no source
+ * segment, and the API has no predictions for it anyway.
+ */
+export function isStationId(id: string): boolean {
+  return /^[\w-]+\/[\w.-]+$/.test(id) && !/\/\.\.?$/.test(id);
 }
 
 /**
@@ -23,7 +37,8 @@ export function nearbyPath(lat: number | undefined, lon: number | undefined): st
 
 const STATION_URL = /^https:\/\/slackwater\.xyz\/(tides|currents)\//;
 const isNearby = (s: Partial<NearbyStation> | null): s is NearbyStation =>
-  (s?.kind === "tide" || s?.kind === "current") && typeof s.name === "string" && typeof s.url === "string" && STATION_URL.test(s.url);
+  (s?.kind === "tide" || s?.kind === "current") && typeof s.name === "string" && typeof s.url === "string" && STATION_URL.test(s.url)
+  && (s.id === undefined || (s.kind === "tide" && typeof s.id === "string" && isStationId(s.id)));
 
 // Answers for the life of the page, so going back to a vessel does not ask again, and requests
 // still on their way, so the loading view and the page after it share one. A failure isn't kept.

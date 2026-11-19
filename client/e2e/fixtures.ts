@@ -1,5 +1,6 @@
 import { test as base, expect, type BrowserContext, type Page } from "@playwright/test";
 import { e2eAuth, oneStreamToken } from "./auth";
+import { TIDES_API } from "../app/lib/slackwater";
 import { API, MAP_HASH } from "./data";
 
 // The basemap is OpenFreeMap's, and nothing these tests check depends on it. A blank style in
@@ -25,6 +26,9 @@ export const test = base.extend({
     await context.route(`${API}/v1/vessels/tiles/**`, (route) =>
       route.continue({ headers: { ...route.request().headers(), authorization: `Bearer ${e2eAuth().token}` } }),
     );
+    // Vessel pages' tide widget asks the production tides API. Refused here, it leaves the card's
+    // links alone; the test of the widget routes it again for the answers it checks.
+    await context.route(`${TIDES_API}/**`, (route) => route.abort());
     await use(context);
   },
 });
