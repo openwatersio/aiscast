@@ -113,7 +113,15 @@ test.describe("Slackwater tide widget", () => {
     await page.route(`${TIDES_API}/**`, (route) => route.continue());
     const { card, errors } = await openFerry(page);
     await expect(card.getByRole("img")).toBeVisible({ timeout: 15_000 });
-    await expect(card.locator("figcaption")).toContainText("Slackwater database");
+    // The credit closes the card, folded: its paragraph is no longer under the curve.
+    await expect(card.locator("figcaption")).toBeHidden();
+    const sources = card.locator("details").filter({ has: page.locator("summary", { hasText: "Data sources" }) });
+    await expect(sources).toHaveCount(1);
+    await expect(sources.getByText(/Slackwater database/)).toBeHidden();
+    await sources.locator("summary").click();
+    await expect(sources.getByText(/Slackwater database/)).toBeVisible();
+    // Last in the card, under the links.
+    expect(await sources.evaluate((el) => el.nextElementSibling === null)).toBe(true);
     await expect(card.getByRole("link", { name: /^Tides: / }).first()).toBeVisible();
     expect(errors).toEqual([]);
   });
@@ -136,6 +144,10 @@ test.describe("Slackwater tide widget", () => {
       // Gone once its queries settle, or the widget stops waiting, with none of the API's words on the page.
       await expect(card.locator("[aria-busy], figure")).toHaveCount(0, { timeout: 25_000 });
       await expect(card).not.toContainText(/Internal error|Failed to fetch|Load failed|predictions/i);
+      // No curve, so no credit for one.
+      await expect(card.getByText("Data sources")).toHaveCount(0);
+      // An uncredited curve draws no figure, so the curve itself must be gone too.
+      await expect(card.getByRole("img")).toHaveCount(0);
       await expect(card.getByRole("link", { name: /^Tides: / }).first()).toBeVisible();
       await expect(card.getByRole("link", { name: "Get Slackwater", exact: true })).toBeVisible();
       expect(errors).toEqual([]);

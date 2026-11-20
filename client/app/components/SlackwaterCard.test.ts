@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { widgetFailed } from "./SlackwaterCard";
+import { creditOf, widgetFailed } from "./SlackwaterCard";
 
 const credit = "Slackwater database (https://github.com/openwatersio/slackwater-database)";
 
@@ -37,5 +37,21 @@ describe("widgetFailed", () => {
 
   it.each(["2026-11-18T23:00:00Z", "2026-11-19T07:00:00Z"])("hides a curve that doesn't reach the present (%s), which has no reading", (at) => {
     expect(widgetFailed({ status: "success", data: { station: { attribution: credit }, timeline: curve } }, Date.parse(at))).toBe(true);
+  });
+});
+
+describe("creditOf", () => {
+  it("takes the credit the curve's answer came with, which is the one the card owes", () => {
+    expect(creditOf({ status: "success", data: { station: { attribution: credit }, timeline: [] } })).toBe(credit);
+  });
+
+  it.each([
+    ["a pending query", { status: "pending" }],
+    ["a failed one", { status: "error", data: { station: { attribution: credit }, timeline: [] } }],
+    ["the station's own record", { status: "success", data: { id: "noaa/1", attribution: credit } }],
+    ["the highs and lows", { status: "success", data: { station: { attribution: credit }, extremes: [] } }],
+    ["a blank credit", { status: "success", data: { station: { attribution: " " }, timeline: [] } }],
+  ])("takes none from %s", (_, state) => {
+    expect(creditOf(state)).toBeUndefined();
   });
 });
