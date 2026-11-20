@@ -1,5 +1,5 @@
 import { createQueryClient, SlackwaterProvider, TideConditions } from "@slackwater/react";
-import { Component, useEffect, useState, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useState, type ReactNode } from "react";
 import { slackwaterHandoff, TIDES_API, type NearbyStation } from "../lib/slackwater";
 import { Tile } from "./ui/Section";
 
@@ -24,7 +24,7 @@ export function widgetFailed(state: { status: string; data?: unknown }, now = Da
   return times.length < 2 || !(Math.min(...times) <= now && now <= Math.max(...times));
 }
 
-/** Past this with no curve, a request that never answers counts as one that failed. */
+/** Past this without both the curve and its highs and lows, the widget counts as failed. */
 const WIDGET_WAIT_MS = 15_000;
 
 /** Which of the answers the widget waits for, its curve and its highs and lows, a query holds. */
@@ -51,8 +51,19 @@ class WidgetBoundary extends Component<{ children: ReactNode }, { failed: boolea
   }
 }
 
-/** The widget, with its own queries, so a failure in them hides it and the links below stand alone. */
-function TideHeadline({ id }: { id: string }) {
+/** The station's credit in an answer of the curve the widget draws, which is the credit it owes. */
+export function creditOf(state: { status: string; data?: unknown }): string | undefined {
+  const data = state.data as { timeline?: unknown; station?: { attribution?: unknown } } | undefined;
+  const credit = data?.station?.attribution;
+  return state.status === "success" && Array.isArray(data?.timeline) && typeof credit === "string" && credit.trim() ? credit : undefined;
+}
+
+/**
+ * The widget, with its own queries, so a failure in them hides it and the links below stand alone.
+ * It hands up the credit its curve came with, for the card to keep under its links rather than the
+ * paragraph the widget would print under the curve; a failed widget hands up none.
+ */
+function TideHeadline({ id, onCredit }: { id: string; onCredit: (credit: string | undefined) => void }) {
   const [client] = useState(() => {
     const created = createQueryClient();
     // One retry: past that a reader has waited for a curve long enough to stop expecting one.
@@ -65,24 +76,33 @@ function TideHeadline({ id }: { id: string }) {
     const wait = setTimeout(() => setFailed(true), WIDGET_WAIT_MS);
     // The widget draws once both its curve and its highs and lows have come, so the wait ends then.
     const arrived = new Set<string>();
+    let credit: string | undefined;
     const stop = client.getQueryCache().subscribe((event) => {
       if (event.type !== "updated") return;
       if (widgetFailed(event.query.state)) return setFailed(true);
+      credit = creditOf(event.query.state) ?? credit;
       const answer = answered(event.query.state);
       if (answer) arrived.add(answer);
-      if (arrived.size === 2) clearTimeout(wait);
+      if (arrived.size === 2) {
+        clearTimeout(wait);
+        // Handed up once the curve is drawn, so the credit never shows beside a loading box.
+        onCredit(credit);
+      }
     });
     return () => {
       clearTimeout(wait);
       stop();
     };
-  }, [client]);
+  }, [client, onCredit]);
+  useEffect(() => {
+    if (failed) onCredit(undefined);
+  }, [failed, onCredit]);
   if (failed) return null;
   return (
-    // Not a link: the widget reads out its tide and credit, which a link's name would hide.
-    // Its station leads the list below, as text a crawler or a page without scripts can read.
-    // The widget's credit is drawn for its own dark canvas; under it, ours is the page's ink.
-    <div className="mt-2 [&_figcaption]:text-fg-muted">
+    // Not a link: the widget reads out its tide, which a link's name would hide. Its station leads
+    // the list below, as text a crawler or a page without scripts can read. Its credit runs to a
+    // paragraph, so the card keeps it folded under the links instead of under the curve.
+    <div className="mt-2 [&_figcaption]:hidden">
       <WidgetBoundary>
         <SlackwaterProvider baseUrl={TIDES_API} queryClient={client}>
           <TideConditions id={id} />
@@ -95,9 +115,10 @@ function TideHeadline({ id }: { id: string }) {
 /**
  * The tides near a vessel's last position: the nearest tide station the tides API predicts, drawn
  * by Slackwater's widget, then the station pages within reach, that one first, linked by name at
- * their own addresses so a crawler that reaches the vessel reaches them too. The widget prints its
- * station's credit under the curve; a name and a link copy none of a station's data, so the
- * others' notices are left to their pages (docs/policy.md, the Slackwater row). The stations come from the server
+ * their own addresses so a crawler that reaches the vessel reaches them too. The drawn station's
+ * credit closes the card in a folded "Data sources", as `@slackwater/react` folds its own lists'
+ * credits; a name and a link copy none of a station's data, so the others' notices are left to
+ * their pages (docs/policy.md, the Slackwater row). The stations come from the server
  * render, or are asked of the Worker by a page opened inside the app (useNearbyStations). The app
  * link carries no position, so it stays a quiet line under the stations.
  */
@@ -105,6 +126,13 @@ export function SlackwaterCard({ ferry, stations = [] }: { ferry: boolean; stati
   const context = ferry ? "ferry" : "vessel";
   const track = slackwaterHandoff(context);
   const headline = stations[0]?.id;
+  // Held with the station it credits, so a moving vessel's next headline never shows the last one's.
+  const [credited, setCredited] = useState<{ id: string; credit: string }>();
+  const onCredit = useCallback(
+    (credit: string | undefined) => setCredited(credit && headline ? { id: headline, credit } : undefined),
+    [headline],
+  );
+  const credit = credited && credited.id === headline ? credited.credit : undefined;
   const app = (
     <a
       href={`https://slackwater.xyz/?ref=ais-${context}`}
@@ -127,7 +155,7 @@ export function SlackwaterCard({ ferry, stations = [] }: { ferry: boolean; stati
       <Tile>
         <h2 className="text-headline font-semibold text-fg">{stations.some((s) => s.kind === "tide") ? "Tides nearby" : "Currents nearby"}</h2>
         {/* Keyed by station, so a moving vessel's next headline starts with a clean slate. */}
-        {headline && <TideHeadline key={headline} id={headline} />}
+        {headline && <TideHeadline key={headline} id={headline} onCredit={onCredit} />}
         <ul className="mt-2">
           {stations.map((s) => (
             <li key={s.url}>
@@ -140,6 +168,13 @@ export function SlackwaterCard({ ferry, stations = [] }: { ferry: boolean; stati
           ))}
         </ul>
         <p className="text-footnote text-fg-muted">{app}</p>
+        {credit && (
+          <details className="text-footnote text-fg-muted wrap-anywhere">
+            {/* A block, not flex, so the browser keeps the marker that says it opens. */}
+            <summary className="cursor-pointer py-2">Data sources</summary>
+            <p className="pb-1">{credit}</p>
+          </details>
+        )}
       </Tile>
     </aside>
   );
