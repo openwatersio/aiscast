@@ -96,6 +96,11 @@ test.describe("Slackwater handoff", () => {
 
 test.describe("Slackwater tide widget", () => {
   test.use({ javaScriptEnabled: true });
+  // A route still fetching the tides API when a test ends throws "Test ended", which Playwright
+  // counts as an error in the run though every test passed.
+  test.afterEach(async ({ page }) => {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
 
   // The ferry's synthetic position is beside Port Angeles, a NOAA tide station the tides API
   // predicts, so slackwater.xyz's index gives its page a station to draw.
