@@ -1,0 +1,23 @@
+# Signal K's shared plugin CI: installs, builds and tests signalk-plugin/ on Linux, macOS and Windows. The
+# Signal K plugin registry looks for this run on the commit each release is published from and scores the
+# plugin by it, so release tags trigger it whatever they touch. The root manifest and lockfile decide what the
+# plugin installs, since it is an npm workspace.
+name: signalk-plugin-ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["signalk-plugin-v*"]
+    paths: ["signalk-plugin/**", "package.json", "package-lock.json", ".github/workflows/plugin-ci.yml"]
+  pull_request:
+    paths: ["signalk-plugin/**", "package.json", "package-lock.json", ".github/workflows/plugin-ci.yml"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-ci:
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@master
+    with:
+      working-directory: signalk-plugin

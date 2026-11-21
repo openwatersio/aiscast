@@ -22,6 +22,7 @@ Go 1.27 and Node 24 (`mise.toml` supplies Node to local development and CI; `ser
 ## Changes
 
 - Open a pull request against `main`. CI runs gofmt, vet, tests, a linux build, and the web client's browser tests on every push and PR; a merge to `main` deploys aiscast to `ais-server-1` and, through Cloudflare Workers Builds, the web client.
+- `plugin-ci.yml` runs Signal K's shared plugin CI on `signalk-plugin/` on Linux, macOS and Windows, for changes to the plugin, the root manifest or lockfile, and every `signalk-plugin-v*` tag. The [Signal K plugin registry](https://signalk.org/signalk-plugin-registry/) scores the plugin partly by this run on the commit a release was published from.
 - A plan that takes more than one PR starts as an issue with one checkbox per expected PR. Each PR says `Part of #N`, and only the last PR to merge says `Closes #N`, so GitHub doesn't close the issue early.
 - Keep the issue's checkboxes current. When a PR opens, link it from its checkbox. When it merges, check the box. The last PR's merge closes the issue, so check its box at the same time.
 - `/v0/stream` is frozen to aisstream.io's wire format; anything new goes under `/v1`. Additive changes to `/v1` are fine; breaking ones need a note in [docs/architecture.md](docs/architecture.md#the-v0-compatibility-contract). `/mcp` is the one exception, because MCP versions itself and clients expect that path; a change to a tool or its schema bumps `mcpVersion` and `server.json` together.
