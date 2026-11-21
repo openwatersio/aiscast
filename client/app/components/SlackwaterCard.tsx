@@ -38,13 +38,16 @@ function answered(state: { status: string; data?: unknown }): "timeline" | "extr
 
 /**
  * In the browser, a render error inside the widget leaves the card's links, not the vessel route's
- * error page. React runs no error boundary in a server render, where the widget draws only its
- * placeholder.
+ * error page, and tells the card, which then drops the widget and its credit as for any failure.
+ * React runs no error boundary in a server render, where the widget draws only its placeholder.
  */
-class WidgetBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+class WidgetBoundary extends Component<{ children: ReactNode; onError: () => void }, { failed: boolean }> {
   state = { failed: false };
   static getDerivedStateFromError() {
     return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onError();
   }
   render() {
     return this.state.failed ? null : this.props.children;
@@ -76,7 +79,10 @@ function TideHeadline({ id, href, track, onCredit }: {
     return created;
   });
   const [failed, setFailed] = useState(false);
+  const fail = useCallback(() => setFailed(true), []);
   useEffect(() => {
+    // A credit held from an earlier widget for this station waits for this one's curve.
+    onCredit(undefined);
     // The widget's fetches have no timeout of their own, and a hung one would spin forever.
     const wait = setTimeout(() => setFailed(true), WIDGET_WAIT_MS);
     // The widget draws once both its curve and its highs and lows have come, so the wait ends then.
@@ -112,7 +118,7 @@ function TideHeadline({ id, href, track, onCredit }: {
     // runs to a paragraph, so the card keeps it folded under the links, not under the curve; the
     // widget has no way yet to leave its caption out (openwatersio/slackwater#558).
     <div className="relative mt-2 [&_figcaption]:hidden">
-      <WidgetBoundary>
+      <WidgetBoundary onError={fail}>
         <SlackwaterProvider baseUrl={TIDES_API} queryClient={client}>
           <TideConditions id={id} />
         </SlackwaterProvider>
@@ -123,6 +129,8 @@ function TideHeadline({ id, href, track, onCredit }: {
         aria-hidden="true"
         tabIndex={-1}
         className="absolute inset-0"
+        // A click opens the page without focusing a link screen readers can't see.
+        onMouseDown={(event) => event.preventDefault()}
         onClick={track}
         onAuxClick={track}
       />
@@ -134,9 +142,9 @@ function TideHeadline({ id, href, track, onCredit }: {
  * The tides near a vessel's last position: the nearest tide station the tides API predicts, drawn
  * by Slackwater's widget, then the station pages within reach, that one first, linked by name at
  * their own addresses so a crawler that reaches the vessel reaches them too. The drawn station's
- * credit closes the card in a folded "Data sources", as `@slackwater/react` folds its own lists'
- * credits; a name and a link copy none of a station's data, so the others' notices are left to
- * their pages (docs/policy.md, the Slackwater row). The stations come from the server
+ * credit closes the card in a folded "Data sources", which meets the stations' licences as
+ * docs/policy.md's Slackwater row sets out; a name and a link copy none of a station's data, so the
+ * others' notices are left to their pages. The stations come from the server
  * render, or are asked of the Worker by a page opened inside the app (useNearbyStations). The app
  * link carries no position, so it stays a quiet line under the stations.
  */
