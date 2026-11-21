@@ -40,57 +40,81 @@ describe("ferry vessel pages", () => {
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
       createElement(VesselDetail, { mmsi: properties.mmsi, feature }),
     ));
-    expect(html.match(/Riding this ferry\?/g)).toHaveLength(1);
-    expect(html).toContain("Slackwater shows today&#x27;s tides and currents for the coast around you.");
+    // A plain page element: no pitch to the reader, and the app as one quiet link.
+    expect(html).not.toMatch(/Riding this ferry|Heading out on the water/);
     expect(html).toContain('href="https://slackwater.xyz/?ref=ais-ferry" target="_blank" rel="noopener noreferrer"');
-    expect(html).toContain(">Get Slackwater</a>");
-    expect(html.indexOf("Riding this ferry?")).toBeLessThan(html.indexOf(">Particulars<"));
+    expect(html.match(/>Get Slackwater<\/a>/g)).toHaveLength(1);
+    expect(html.indexOf('aria-label="Slackwater"')).toBeLessThan(html.indexOf(">Particulars<"));
     const descriptors = meta({ loaderData: { mmsi: properties.mmsi, name: properties.name, feature } } as Parameters<typeof meta>[0]);
     expect(JSON.stringify(descriptors)).not.toMatch(/Slackwater|slackwater/);
   });
 
-  it.each([70, 80, 52, 60, undefined])("offers Slackwater without the ferry wording on an unverified non-ferry page (type %s)", (type) => {
+  it.each([70, 80, 52, 60, undefined])("counts the handoff as a vessel's on an unverified non-ferry page (type %s)", (type) => {
     const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type } };
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
       createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature }),
     ));
-    expect(html).not.toMatch(/Riding this ferry/);
-    expect(html.match(/Heading out on the water\?/g)).toHaveLength(1);
     // The link carries no position, so the copy speaks of the reader's coast, not the vessel's.
-    expect(html).toContain("Slackwater shows today&#x27;s tides and currents for the coast around you.");
+    expect(html).toContain("Tides and currents for your coast:");
     expect(html).toContain('href="https://slackwater.xyz/?ref=ais-vessel" target="_blank" rel="noopener noreferrer"');
     expect(html).toContain(">Get Slackwater</a>");
     const descriptors = meta({ loaderData: { mmsi: feature.properties.mmsi, name: "TEST SHIP", feature } } as Parameters<typeof meta>[0]);
     expect(JSON.stringify(descriptors)).not.toMatch(/Slackwater|slackwater/);
   });
 
-  it("links the Slackwater station pages near the vessel by name, at their own addresses", () => {
-    const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type: 70 } };
-    const stations = [
-      { kind: "tide" as const, name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/" },
-      { kind: "current" as const, name: "Porlier Pass", url: "https://slackwater.xyz/currents/ca/bc/porlier-pass/" },
-    ];
+  const testShip: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type: 70 } };
+  const crofton = { kind: "tide" as const, name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/" };
+  const porlier = { kind: "current" as const, name: "Porlier Pass", url: "https://slackwater.xyz/currents/ca/bc/porlier-pass/" };
+
+  it("draws the nearest tide with Slackwater's widget, linked to its station page, then links it and the others by name", () => {
+    const stations = [{ ...crofton, id: "ticon/crofton_bc-7450-can-meds" }, porlier];
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
-      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature, stations }),
+      createElement(VesselDetail, { mmsi: testShip.properties.mmsi, feature: testShip, stations }),
     ));
-    expect(html).toContain("Near its last position:");
-    // Each its own line, a 32 px tap target that reads as a list rather than spaced-out buttons.
-    expect(html).toContain('<li><a href="https://slackwater.xyz/tides/ca/bc/crofton/" target="_blank" rel="noopener noreferrer" class="flex min-h-8');
-    expect(html).toContain(">Tides: Crofton</a>");
+    expect(html).toContain(">Tides nearby</h2>");
+    // The server render holds the widget's placeholder; the browser asks the tides API for the curve.
+    const busy = html.indexOf('aria-busy="true"');
+    expect(busy).toBeGreaterThan(html.indexOf(">Tides nearby</h2>"));
+    // The widget is no link's content, so a reader hears its tide rather than a link's name...
+    expect(html.slice(0, busy)).not.toMatch(/<a [^>]*>(?:(?!<\/a>).)*$/s);
+    // ...and a link laid over it opens its station's page for a pointer, hidden from the
+    // keyboard and from screen readers, which take the station's own link below.
+    expect(html.slice(busy)).toMatch(/^[^]*?<a href="https:\/\/slackwater\.xyz\/tides\/ca\/bc\/crofton\/" target="_blank" rel="noopener noreferrer" aria-hidden="true" tabindex="-1" class="absolute inset-0"><\/a>/);
+    // Its station's name is a link a page without scripts shows, ahead of the rest.
+    expect(html.indexOf(">Tides: Crofton</a>")).toBeGreaterThan(busy);
+    expect(html.indexOf(">Tides: Crofton</a>")).toBeLessThan(html.indexOf(">Currents: Porlier Pass</a>"));
     expect(html).toContain('<li><a href="https://slackwater.xyz/currents/ca/bc/porlier-pass/" target="_blank" rel="noopener noreferrer" class="flex min-h-8');
-    expect(html).toContain(">Currents: Porlier Pass</a>");
-    // A name and a link copy none of a station's data, so its notice stays on the station page the link opens.
-    expect(html).not.toMatch(/slackwater-database|Source:/);
-    // The app link stays, for a reader who wants more than one station.
     expect(html).toContain('href="https://slackwater.xyz/?ref=ais-vessel"');
   });
 
-  it("offers only the app when no station is near", () => {
-    const feature: VesselFeature = { ...ferry, id: 230000003, properties: { ...ferry.properties, mmsi: 230000003, name: "TEST SHIP", type: 70 } };
+  it("links the Slackwater station pages near the vessel by name, at their own addresses, when none can be drawn", () => {
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
-      createElement(VesselDetail, { mmsi: feature.properties.mmsi, feature, stations: [] }),
+      createElement(VesselDetail, { mmsi: testShip.properties.mmsi, feature: testShip, stations: [crofton, porlier] }),
     ));
-    expect(html).not.toContain("Near its last position");
+    expect(html).not.toContain("aria-busy");
+    // Each its own line, a 32 px tap target that reads as a list rather than spaced-out buttons.
+    expect(html).toContain('<li><a href="https://slackwater.xyz/tides/ca/bc/crofton/" target="_blank" rel="noopener noreferrer" class="flex min-h-8');
+    expect(html).toContain(">Tides: Crofton</a>");
+    expect(html).toContain(">Currents: Porlier Pass</a>");
+    // A name and a link copy none of a station's data, so its notice stays on the station page the link opens.
+    expect(html).not.toMatch(/slackwater-database|Source:/);
+    // The app link stays, for a reader who wants more than these stations.
+    expect(html).toContain('href="https://slackwater.xyz/?ref=ais-vessel"');
+  });
+
+  it("heads a card of current stations alone as currents, not tides", () => {
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: testShip.properties.mmsi, feature: testShip, stations: [porlier] }),
+    ));
+    expect(html).toContain(">Currents nearby</h2>");
+    expect(html).not.toContain("Tides nearby");
+  });
+
+  it("offers only the app, in one line, when no station is near", () => {
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(VesselDetail, { mmsi: testShip.properties.mmsi, feature: testShip, stations: [] }),
+    ));
+    expect(html).not.toContain("Tides nearby");
     expect(html.match(/slackwater\.xyz/g)).toHaveLength(1);
   });
 
