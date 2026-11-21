@@ -123,6 +123,16 @@ test.describe("Slackwater tide widget", () => {
     // Last in the card, under the links.
     expect(await sources.evaluate((el) => el.nextElementSibling === null)).toBe(true);
     await expect(card.getByRole("link", { name: /^Tides: / }).first()).toBeVisible();
+    // A click on the curve opens the station page the first station link names. The link that
+    // takes it is out of the accessibility tree, so the station's own link stays the one way there.
+    const station = await card.getByRole("link", { name: /^Tides: / }).first().getAttribute("href");
+    await expect(card.getByRole("link", { name: /Slackwater database/ })).toHaveCount(0);
+    await page.context().route("https://slackwater.xyz/**", (route) => route.fulfill({ contentType: "text/html", body: "<title>Station</title>" }));
+    const opened = page.context().waitForEvent("page");
+    // A real click at the curve's middle, which the link laid over it has to catch.
+    const curve = (await card.getByRole("img").boundingBox())!;
+    await page.mouse.click(curve.x + curve.width / 2, curve.y + curve.height / 2);
+    expect((await opened).url()).toBe(station);
     expect(errors).toEqual([]);
   });
 

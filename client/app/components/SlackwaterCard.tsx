@@ -63,7 +63,12 @@ export function creditOf(state: { status: string; data?: unknown }): string | un
  * It hands up the credit its curve came with, for the card to keep under its links rather than the
  * paragraph the widget would print under the curve; a failed widget hands up none.
  */
-function TideHeadline({ id, onCredit }: { id: string; onCredit: (credit: string | undefined) => void }) {
+function TideHeadline({ id, href, track, onCredit }: {
+  id: string;
+  href: string;
+  track: (event: { type: string; button: number }) => void;
+  onCredit: (credit: string | undefined) => void;
+}) {
   const [client] = useState(() => {
     const created = createQueryClient();
     // One retry: past that a reader has waited for a curve long enough to stop expecting one.
@@ -99,15 +104,28 @@ function TideHeadline({ id, onCredit }: { id: string; onCredit: (credit: string 
   }, [failed, onCredit]);
   if (failed) return null;
   return (
-    // Not a link: the widget reads out its tide, which a link's name would hide. Its station leads
-    // the list below, as text a crawler or a page without scripts can read. Its credit runs to a
-    // paragraph, so the card keeps it folded under the links instead of under the curve.
-    <div className="mt-2 [&_figcaption]:hidden">
+    // A tap or click anywhere on the widget opens its station's page, through a link laid over it.
+    // That link is for pointers only: the widget names its figure from the caption hidden here, so
+    // a link around it would be read as the credit paragraph, and an aria-label would hide the
+    // reading. Keyboards and screen readers reach the same page by the station's own link, which
+    // leads the list below as text a crawler or a page without scripts can read too. Its credit
+    // runs to a paragraph, so the card keeps it folded under the links, not under the curve; the
+    // widget has no way yet to leave its caption out (openwatersio/slackwater#558).
+    <div className="relative mt-2 [&_figcaption]:hidden">
       <WidgetBoundary>
         <SlackwaterProvider baseUrl={TIDES_API} queryClient={client}>
           <TideConditions id={id} />
         </SlackwaterProvider>
       </WidgetBoundary>
+      <a
+        href={href}
+        {...outbound}
+        aria-hidden="true"
+        tabIndex={-1}
+        className="absolute inset-0"
+        onClick={track}
+        onAuxClick={track}
+      />
     </div>
   );
 }
@@ -155,7 +173,7 @@ export function SlackwaterCard({ ferry, stations = [] }: { ferry: boolean; stati
       <Tile>
         <h2 className="text-headline font-semibold text-fg">{stations.some((s) => s.kind === "tide") ? "Tides nearby" : "Currents nearby"}</h2>
         {/* Keyed by station, so a moving vessel's next headline starts with a clean slate. */}
-        {headline && <TideHeadline key={headline} id={headline} onCredit={onCredit} />}
+        {headline && <TideHeadline key={headline} id={headline} href={stations[0]!.url} track={track} onCredit={onCredit} />}
         <ul className="mt-2">
           {stations.map((s) => (
             <li key={s.url}>
