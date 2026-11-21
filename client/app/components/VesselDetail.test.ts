@@ -66,7 +66,7 @@ describe("ferry vessel pages", () => {
   const crofton = { kind: "tide" as const, name: "Crofton", url: "https://slackwater.xyz/tides/ca/bc/crofton/" };
   const porlier = { kind: "current" as const, name: "Porlier Pass", url: "https://slackwater.xyz/currents/ca/bc/porlier-pass/" };
 
-  it("draws the nearest tide with Slackwater's widget, then links it and the others by name", () => {
+  it("draws the nearest tide with Slackwater's widget, linked to its station page, then links it and the others by name", () => {
     const stations = [{ ...crofton, id: "ticon/crofton_bc-7450-can-meds" }, porlier];
     const html = renderToStaticMarkup(createElement(MemoryRouter, null,
       createElement(VesselDetail, { mmsi: testShip.properties.mmsi, feature: testShip, stations }),
@@ -75,9 +75,11 @@ describe("ferry vessel pages", () => {
     // The server render holds the widget's placeholder; the browser asks the tides API for the curve.
     const busy = html.indexOf('aria-busy="true"');
     expect(busy).toBeGreaterThan(html.indexOf(">Tides nearby</h2>"));
-    // The widget is no link's content, so a reader hears its tide and credit, not a link's name.
+    // The widget is no link's content, so a reader hears its tide rather than a link's name...
     expect(html.slice(0, busy)).not.toMatch(/<a [^>]*>(?:(?!<\/a>).)*$/s);
-    expect(html).not.toContain("aria-label=\"Tides: Crofton\"");
+    // ...and a link laid over it opens its station's page for a pointer, hidden from the
+    // keyboard and from screen readers, which take the station's own link below.
+    expect(html.slice(busy)).toMatch(/^[^]*?<a href="https:\/\/slackwater\.xyz\/tides\/ca\/bc\/crofton\/" target="_blank" rel="noopener noreferrer" aria-hidden="true" tabindex="-1" class="absolute inset-0"><\/a>/);
     // Its station's name is a link a page without scripts shows, ahead of the rest.
     expect(html.indexOf(">Tides: Crofton</a>")).toBeGreaterThan(busy);
     expect(html.indexOf(">Tides: Crofton</a>")).toBeLessThan(html.indexOf(">Currents: Porlier Pass</a>"));
