@@ -129,7 +129,9 @@ test.describe("Slackwater tide widget", () => {
     await expect(card.getByRole("link", { name: /Slackwater database/ })).toHaveCount(0);
     await page.context().route("https://slackwater.xyz/**", (route) => route.fulfill({ contentType: "text/html", body: "<title>Station</title>" }));
     const opened = page.context().waitForEvent("page");
-    // A real click at the curve's middle, which the link laid over it has to catch.
+    // A real click at the curve's middle, which the link laid over it has to catch. The card sits
+    // below the vessel's photos in the panel, so the curve is scrolled into view first.
+    await card.getByRole("img").scrollIntoViewIfNeeded();
     const curve = (await card.getByRole("img").boundingBox())!;
     await page.mouse.click(curve.x + curve.width / 2, curve.y + curve.height / 2);
     expect((await opened).url()).toBe(station);
