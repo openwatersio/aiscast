@@ -20,20 +20,20 @@
     "clsx": "^2.1.1",
     "isbot": "^5.2.3",
     "js-yaml": "^5.5.0",
-    "lucide-react": "^1.73.0",
-    "maplibre-gl": "^6.18.0",
+    "lucide-react": "^1.76.0",
+    "maplibre-gl": "^6.19.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-router": "^8.5.1",
+    "react-router": "^8.5.2",
     "tailwind-merge": "^3.7.0",
     "workers-og": "^0.0.27"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.69.1",
+    "@cloudflare/vite-plugin": "^1.70.1",
     "@fontsource/inter": "^5.3.0",
     "@maplibre/maplibre-gl-style-spec": "^26.5.0",
     "@playwright/test": "^1.65.1",
-    "@react-router/dev": "^8.5.1",
+    "@react-router/dev": "^8.5.2",
     "@tailwindcss/vite": "^4.3.5",
     "@types/geojson": "^7946.0.16",
     "@types/js-yaml": "^4.0.9",
@@ -42,7 +42,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",
-    "vitest": "^5.1.0",
+    "vitest": "^5.1.1",
     "wrangler": "^4.143.0"
   }
 }
