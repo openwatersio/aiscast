@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import type { APIRequestContext } from "@playwright/test";
+import type { APIRequestContext, Page, Route } from "@playwright/test";
 import { vesselPath, vesselSlug } from "../app/lib/ais";
+import { TIDES_API } from "../app/lib/slackwater";
 import { heardFerry, heardGear, namedVessel } from "./data";
 import { expect, test } from "./fixtures";
 
@@ -41,9 +42,11 @@ for (const [label, findVessel] of [["a vessel", namedVessel], ["a ferry", heardF
     // One heading, the vessel's, in sight: not a fallback with the vessel hidden behind it.
     await expect(page.getByRole("heading", { level: 1, includeHidden: true })).toHaveText([name]);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    // A plain card, the tides near the vessel when there are any, with no pitch to the reader.
+    await expect(page.getByText(/Riding this ferry|Heading out on the water/)).toHaveCount(0);
     if (label === "a ferry") {
       await page.setViewportSize({ width: 390, height: 844 });
-      await expect(page.getByRole("heading", { name: "Riding this ferry?" })).toBeVisible();
+      await expect(page.getByRole("complementary", { name: "Slackwater" })).toBeVisible();
       const link = page.getByRole("link", { name: "Get Slackwater", exact: true });
       await expect(link).toHaveCount(1);
       await expect(link).toHaveAttribute("href", "https://slackwater.xyz/?ref=ais-ferry");
@@ -55,11 +58,9 @@ for (const [label, findVessel] of [["a vessel", namedVessel], ["a ferry", heardF
       expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     } else {
       // The Worker's render carries the link, so a crawler reaching any vessel page reaches Slackwater.
-      // The named vessel can itself be a ferry, so the card's heading says which context to expect.
-      const ferryCard = await page.getByRole("heading", { name: "Riding this ferry?" }).count();
-      if (!ferryCard) await expect(page.getByRole("heading", { name: "Heading out on the water?" })).toBeVisible();
+      // The named vessel can itself be a ferry, so either context is its own.
       await expect(page.getByRole("link", { name: "Get Slackwater", exact: true }))
-        .toHaveAttribute("href", `https://slackwater.xyz/?ref=ais-${ferryCard ? "ferry" : "vessel"}`);
+        .toHaveAttribute("href", /^https:\/\/slackwater\.xyz\/\?ref=ais-(ferry|vessel)$/);
     }
   });
 }
@@ -91,6 +92,84 @@ test.describe("Slackwater handoff", () => {
     }
     await expect.poll(() => events).toEqual(Array.from({ length: 3 }, () => ["slackwater_handoff", { props: { context: "ferry" } }]));
   });
+});
+
+test.describe("Slackwater tide widget", () => {
+  test.use({ javaScriptEnabled: true });
+  // A route still fetching the tides API when a test ends throws "Test ended", which Playwright
+  // counts as an error in the run though every test passed.
+  test.afterEach(async ({ page }) => {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+
+  // The ferry's synthetic position is beside Port Angeles, a NOAA tide station the tides API
+  // predicts, so slackwater.xyz's index gives its page a station to draw.
+  async function openFerry(page: Page) {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const { mmsi, name } = await heardFerry();
+    await page.goto(`/ais${vesselPath(mmsi, name)}`);
+    const card = page.getByRole("complementary", { name: "Slackwater" });
+    await expect(card.getByRole("heading", { name: "Tides nearby" })).toBeVisible();
+    return { card, errors };
+  }
+
+  test("draws the nearest tide with its credit, above the station links", async ({ page }) => {
+    await page.route(`${TIDES_API}/**`, (route) => route.continue());
+    const { card, errors } = await openFerry(page);
+    await expect(card.getByRole("img")).toBeVisible({ timeout: 15_000 });
+    // The credit closes the card, folded: its paragraph is no longer under the curve.
+    await expect(card.locator("figcaption")).toBeHidden();
+    const sources = card.locator("details").filter({ has: page.locator("summary", { hasText: "Data sources" }) });
+    await expect(sources).toHaveCount(1);
+    await expect(sources.getByText(/Slackwater database/)).toBeHidden();
+    await sources.locator("summary").click();
+    await expect(sources.getByText(/Slackwater database/)).toBeVisible();
+    // Last in the card, under the links.
+    expect(await sources.evaluate((el) => el.nextElementSibling === null)).toBe(true);
+    await expect(card.getByRole("link", { name: /^Tides: / }).first()).toBeVisible();
+    // A click on the curve opens the station page the first station link names. The link that
+    // takes it is out of the accessibility tree, so the station's own link stays the one way there.
+    const station = await card.getByRole("link", { name: /^Tides: / }).first().getAttribute("href");
+    await expect(card.getByRole("link", { name: /Slackwater database/ })).toHaveCount(0);
+    await page.context().route("https://slackwater.xyz/**", (route) => route.fulfill({ contentType: "text/html", body: "<title>Station</title>" }));
+    const opened = page.context().waitForEvent("page");
+    // A real click at the curve's middle, which the link laid over it has to catch. The card sits
+    // below the vessel's photos in the panel, so the curve is scrolled into view first.
+    await card.getByRole("img").scrollIntoViewIfNeeded();
+    const curve = (await card.getByRole("img").boundingBox())!;
+    await page.mouse.click(curve.x + curve.width / 2, curve.y + curve.height / 2);
+    expect((await opened).url()).toBe(station);
+    expect(errors).toEqual([]);
+  });
+
+  for (const [failure, answer] of [
+    ["the tides API can't be reached", (route: Route) => route.abort()],
+    ["the tides API fails", (route: Route) => route.fulfill({ status: 500, json: { message: "Internal error" } })],
+    ["predictions come without their credit", async (route: Route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      if (body?.station) delete body.station.attribution;
+      await route.fulfill({ response: res, json: body });
+    }],
+    // The curve answers and the highs and lows hang, so only the widget's wait can end it.
+    ["the highs and lows never come", (route: Route) => (route.request().url().includes("/extremes") ? undefined : route.continue())],
+  ] as const) {
+    test(`leaves only the station links when ${failure}`, async ({ page }) => {
+      await page.route(`${TIDES_API}/**`, answer);
+      const { card, errors } = await openFerry(page);
+      // Gone once its queries settle, or the widget stops waiting, with none of the API's words on the page.
+      await expect(card.locator("[aria-busy], figure")).toHaveCount(0, { timeout: 25_000 });
+      await expect(card).not.toContainText(/Internal error|Failed to fetch|Load failed|predictions/i);
+      // No curve, so no credit for one.
+      await expect(card.getByText("Data sources")).toHaveCount(0);
+      // An uncredited curve draws no figure, so the curve itself must be gone too.
+      await expect(card.getByRole("img")).toHaveCount(0);
+      await expect(card.getByRole("link", { name: /^Tides: / }).first()).toBeVisible();
+      await expect(card.getByRole("link", { name: "Get Slackwater", exact: true })).toBeVisible();
+      expect(errors).toEqual([]);
+    });
+  }
 });
 
 test("a vessel's address without its name, or with another, redirects to the canonical one", async ({ request }) => {

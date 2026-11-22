@@ -1,4 +1,8 @@
 @import "tailwindcss";
+/* The Slackwater tide widget on vessel pages. Its sheet sets a dark color-scheme on :root, so
+   it comes before the theme rules below, which set ours on the same element and win by order. */
+@import "@slackwater/react/styles.css";
+@source "../../node_modules/@slackwater/react/dist";
 
 /* The Open Waters palette, matching openwaters.io so the app and the site read as one
    product. Kept as the same token names rather than a private copy, so a component can
