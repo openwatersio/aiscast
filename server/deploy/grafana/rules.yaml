@@ -171,6 +171,23 @@ groups:
           summary: No events from AISHub for {{ $value | humanizeDuration }}
           description: AISHub is down or the credentials expired.
 
+      # aisstream is best effort, so UpstreamSilent leaves out a full outage. These catch the failures on our side:
+      # a connection dropped again and again, and one half of the split going quiet while the other delivers.
+      - alert: AisstreamDropsFrequent
+        expr: increase(aiscast_aisstream_drops_total[1h]) > 3.5
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: aisstream {{ $labels.bbox }} dropped {{ $value | printf "%.0f" }} times in the last hour
+          description: The connection is over aisstream's per-connection throughput cap, another server uses the same key (aisstream allows two connections per key), or aisstream rejects the key. Check journalctl -u aiscast | grep aisstream.
+      - alert: AisstreamHalfSilent
+        expr: aiscast_aisstream_last_age_seconds > 300 and on(host) min by (host) (aiscast_aisstream_last_age_seconds) < 60
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: No aisstream events for {{ $labels.bbox }} in {{ $value | humanizeDuration }}, while the other connection delivers
+          description: That connection keeps failing to reconnect, often because another server uses the same key, or a custom AISSTREAM_BBOX box has little traffic. Check journalctl -u aiscast | grep aisstream.
+
       - alert: VesselsCachedLow
         expr: aiscast_vessels < 30000
         for: 10m

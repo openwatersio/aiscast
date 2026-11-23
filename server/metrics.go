@@ -460,6 +460,8 @@ func (p *Pipeline) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	writeAisstreamMetrics(w)
+
 	metricHead(w, "aiscast_unmapped_fields_total", "counter", "source fields outside the capture set and the waiver ledger")
 	unmappedFld.Range(func(k, v any) bool {
 		site, field, _ := strings.Cut(k.(string), "\t")
