@@ -1208,6 +1208,54 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Slow clients",
+      "description": "Streams closed because the client fell behind the fan-out, in the trailing 10 minutes, as SlowClientsHigh counts them. A client reconnecting into the same stall once a minute makes about 10.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum by (protocol, tier) (increase(aiscast_slow_disconnects_total[10m]))",
+          "legendFormat": "{{protocol}} {{tier}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ]
 }
