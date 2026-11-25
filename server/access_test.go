@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"maps"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 )
 
 // readAccess shuts the access log down and reads back every line it wrote.
+// raw leaves out the fields that differ on every run, so tests can search it for leaked digits: a nanosecond timestamp, a slow request's milliseconds, or a client hash under a random salt can contain a tile number or coordinate by chance.
 func readAccess(t *testing.T, p *Pipeline, dir string) (lines []accessLine, raw string) {
 	t.Helper()
 	p.access.shutdown()
@@ -34,7 +37,7 @@ func readAccess(t *testing.T, p *Pipeline, dir string) (lines []accessLine, raw 
 		}
 		sc := bufio.NewScanner(zr)
 		for sc.Scan() {
-			all.WriteString(sc.Text() + "\n")
+			all.WriteString(stableAccessLine(t, sc.Bytes()))
 			var l accessLine
 			if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
 				t.Fatalf("%v: %s", err, sc.Text())
@@ -44,6 +47,45 @@ func readAccess(t *testing.T, p *Pipeline, dir string) (lines []accessLine, raw 
 		fh.Close()
 	}
 	return lines, all.String()
+}
+
+// Run-to-run noise is left out of the searched text, and a leak in any other field stays in it.
+func TestStableAccessLine(t *testing.T) {
+	got := stableAccessLine(t, []byte(`{"t":"2026-11-25T02:16:32.953030274Z","ms":9530.5,"client":"3f9530ab17361c0d","path":"/a&b","x\"ms":9530}`))
+	if strings.Contains(got, "2026") || strings.Contains(got, "17361") || strings.Contains(got, "9530.5") {
+		t.Errorf("noise kept: %s", got)
+	}
+	if !strings.Contains(got, `"x\"ms":9530`) || !strings.Contains(got, `"/a&b"`) {
+		t.Errorf("another field changed: %s", got)
+	}
+	if got := stableAccessLine(t, []byte(`{"client":"anon:203.0.113.77"}`)); !strings.Contains(got, "203.0.113.77") {
+		t.Errorf("an unhashed client was dropped: %s", got)
+	}
+}
+
+var clientHash = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// stableAccessLine re-encodes one line without its t and ms fields or a hashed client, keeping every other field, known or not. A client that is not a hash stays, so the leak checks still see it.
+func stableAccessLine(t *testing.T, line []byte) string {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.UseNumber()
+	var fields map[string]any
+	if err := dec.Decode(&fields); err != nil {
+		t.Fatalf("%v: %s", err, line)
+	}
+	delete(fields, "t")
+	delete(fields, "ms")
+	if c, ok := fields["client"].(string); ok && clientHash.MatchString(c) {
+		delete(fields, "client")
+	}
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(fields); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
 }
 
 func TestAccessLog(t *testing.T) {
