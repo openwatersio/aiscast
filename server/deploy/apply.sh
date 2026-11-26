@@ -46,6 +46,9 @@ id aiscast >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin aiscast
 # ops reads the journal for investigating alerts and changes nothing; its keys are in rootfs/etc/ssh/authorized_keys.d/ops.
 id ops >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash ops
 usermod -aG systemd-journal ops
+# caddy-log reads Caddy's access log, which has full client addresses; ops is its only member.
+getent group caddy-log >/dev/null || groupadd --system caddy-log
+usermod -aG caddy-log ops
 
 # The sshd drop-in is the one file that can lock everyone out of the box, and a bad one
 # only bites on the next reboot, so roll it back if it does not validate.
@@ -134,8 +137,10 @@ if [ -f /etc/clickhouse-server/config.d/r2.xml ]; then
 	systemctl start clickhouse-backup.timer
 fi
 systemctl reload-or-restart fail2ban
-install -d -o caddy -g caddy /var/log/caddy
-chown -h caddy:caddy /var/log/caddy/access.log 2>/dev/null || true # -h: never follow a link the caddy user planted
+# setgid, so a log Caddy creates belongs to caddy-log; Caddy's mode 0640 and its rolling keep the group
+install -d -o caddy -g caddy-log -m 2750 /var/log/caddy
+# the logs written before caddy-log; -type f never follows a link the caddy user planted
+find /var/log/caddy -maxdepth 1 -type f -name 'access*' -exec chown caddy:caddy-log {} + -exec chmod 0640 {} +
 # as root, validate would create the access log root-owned, which Caddy then cannot open
 runuser -u caddy -- env HOME=/var/lib/caddy caddy validate --config /etc/caddy/Caddyfile
 # The Caddyfile's stream_close_delay keeps the reload from blocking on open WebSockets; the

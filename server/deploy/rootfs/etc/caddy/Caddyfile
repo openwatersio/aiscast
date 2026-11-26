@@ -13,6 +13,8 @@ ais.openwaters.io {
 	# Full client addresses for abuse response, under two weeks; README: Access logs.
 	log {
 		output file /var/log/caddy/access.log {
+			# group caddy-log reads it: ops, for naming clients behind an alert; README: Access logs
+			mode 0640
 			roll_size 100MiB
 			roll_interval 24h
 			roll_keep 500
