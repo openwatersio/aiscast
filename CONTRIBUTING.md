@@ -21,6 +21,8 @@ Go 1.27 and Node 24 (`mise.toml` supplies Node to local development and CI; `ser
 
 ## Changes
 
+- Run `gh actions-lock` after adding a workflow or changing an action reference and commit the generated lockfile with the workflow changes. Install it with `gh extension install github/gh-actions-lock`; Dependabot updates the lockfile for action version bumps in onboarded workflows.
+- Actions lockfiles do not cover reusable workflow calls or the dependencies inside them. Check `SignalK/signalk-server`'s `master` commit monthly and review upstream changes before updating the SHA in `.github/workflows/plugin-ci.yml`, including when Dependabot proposes an update. Confirm the plugin CI run passes before merging.
 - Open a pull request against `main`. CI runs gofmt, vet, tests, a linux build, and the web client's browser tests on every push and PR; a merge to `main` deploys aiscast to `ais-server-1` and, through Cloudflare Workers Builds, the web client.
 - `plugin-ci.yml` runs Signal K's shared plugin CI on `signalk-plugin/` on Linux, macOS and Windows, for changes to the plugin, the root manifest or lockfile, and every `signalk-plugin-v*` tag. The [Signal K plugin registry](https://signalk.org/signalk-plugin-registry/) scores the plugin partly by this run on the commit a release was published from.
 - A plan that takes more than one PR starts as an issue with one checkbox per expected PR. Each PR says `Part of #N`, and only the last PR to merge says `Closes #N`, so GitHub doesn't close the issue early.

@@ -35,7 +35,7 @@ jobs:
       group: mcp-registry
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: look the version up in the registry
         id: registry
         run: |

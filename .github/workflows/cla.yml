@@ -28,14 +28,14 @@ jobs:
       # This privileged workflow must never check out or execute pull-request code.
       - name: Create signature writer token
         id: cla-token
-        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
+        uses: actions/create-github-app-token@v3.4.0
         with:
           client-id: ${{ vars.CLA_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLA_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-single-file: write
-      - uses: openwatersio/cla-github-action@f07dfd38224fde9ace8e7b8437ba318e0db042ea # Open Waters fork
+      - uses: openwatersio/cla-github-action@master
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PERSONAL_ACCESS_TOKEN: ${{ steps.cla-token.outputs.token }}
