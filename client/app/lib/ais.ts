@@ -673,8 +673,17 @@ export function centerBoxes([lat, lon]: [number, number], cap: number): Array<[n
 
 // The source kinds people run: a receiver sending over UDP, HTTP or the stream with a token,
 // or identified by its own vessel's MMSI. Everything else is a government feed or a partner
-// aggregate, named by its upstream.
-const VOLUNTEER_KINDS = new Set(["udp", "http", "v1", "mmsi", "station"]);
+// aggregate, named by its upstream. A peer is another node passing on its own volunteers' receptions.
+const VOLUNTEER_KINDS = new Set(["udp", "http", "v1", "mmsi", "station", "peer"]);
+
+/**
+ * The station a peer node heard, `udp:ab12` for `peer:ed25519:K/udp:ab12`, or undefined for any other id. A peer
+ * station is a volunteer's receiver whole, never one of its paths.
+ */
+export function peerStation(id: string): string | undefined {
+  const slash = id.indexOf("/");
+  return id.startsWith("peer:") && slash > 0 ? id.slice(slash + 1) : undefined;
+}
 
 /** Whether a `source`, such as `udp:24dfc99708ff` or `aishub`, is a volunteer's receiver. */
 export function isVolunteer(source: string | undefined): boolean {
@@ -714,7 +723,7 @@ export function stationName(st: { station: string; name?: string; near?: string 
   if (st.near) return { title: `Near ${st.near}` };
   const feed = feedName(st.station);
   if (feed) return { title: feed };
-  const base = st.station.split("/", 1)[0]!;
+  const base = (peerStation(st.station) ?? st.station).split("/", 1)[0]!;
   return isVolunteer(base) ? { title: "Anonymous", suffix: `…${base.slice(-4)}` } : { title: st.station };
 }
 
@@ -771,8 +780,10 @@ export function stationTitles(sts: Array<{ station: string; name?: string; near?
     sts.map((st) => {
       const name = stationName(st);
       if (count.get(stationTitle(st))! < 2 || name.title === st.station) return [st.station, name];
-      const [base, tag] = st.station.split("/", 2) as [string, string | undefined];
-      const tell = tag ?? `…${base.slice(-4)}`;
+      // A station heard through a peer is told apart by its node, from the same one heard directly or through another.
+      const node = peerStation(st.station) ? st.station.split("/", 1)[0]! : undefined;
+      const [base, tag] = (peerStation(st.station) ?? st.station).split("/", 2) as [string, string | undefined];
+      const tell = node ? `via …${node.slice(-4)}` : (tag ?? `…${base.slice(-4)}`);
       return [st.station, { title: name.title, suffix: name.suffix ? `${name.suffix} ${tell}` : tell }];
     }),
   );
@@ -842,7 +853,7 @@ export function uptimePercent(u: number | null | undefined): number | undefined 
  */
 export function volunteerReceiver(id: string): string | undefined {
   const [base, path] = id.split("/", 2);
-  return path != null && isVolunteer(base) ? base : undefined;
+  return path != null && isVolunteer(base) && !peerStation(id) ? base : undefined;
 }
 
 /**

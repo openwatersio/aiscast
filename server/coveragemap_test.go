@@ -454,9 +454,13 @@ func TestCoverageFromClickHouse(t *testing.T) {
 	again.source, again.station, again.recv, again.dup = "station", "station:other", first.ts.Add(2*time.Second), true
 	path := first
 	path.station, path.recv, path.dup = "kystverket/2573010", first.ts.Add(time.Second), true
+	// Two stations heard through one peer node are two stations, each its own.
+	peerA, peerB := first, first
+	peerA.source, peerA.station, peerA.recv, peerA.dup = "peer", "peer:ed25519:K/station:ed25519:x", first.ts.Add(3*time.Second), true
+	peerB.source, peerB.station, peerB.recv, peerB.dup = "peer", "peer:ed25519:K/udp:ab12", first.ts.Add(4*time.Second), true
 	wild := at(5, day1.Add(4*time.Hour))
 	wild.lat6, wild.lon6, wild.implausible, wild.station = int32(10*600000), int32(10*600000), true, "station:wild"
-	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, path, wild, at(1, day2.Add(time.Hour))}
+	batch := []trackPoint{at(1, day1.Add(time.Hour)), at(1, day1.Add(2*time.Hour)), first, again, path, peerA, peerB, wild, at(1, day2.Add(time.Hour))}
 	if err := conn.insert(ctx, "coverage", batch); err != nil {
 		t.Fatal(err)
 	}
@@ -476,16 +480,16 @@ func TestCoverageFromClickHouse(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no resolution-6 cell for Oslo among %d cells", when, len(got))
 		}
-		if oslo.res != 6 || oslo.vessels != 3 || oslo.days != 2 || oslo.stations != 2 || !slices.Equal(slices.Sorted(slices.Values(oslo.ids)), []string{"kystverket", "station:other"}) {
-			t.Errorf("%s: Oslo at resolution 6 is %+v, want 2 + 1 vessels over 2 days from 2 stations", when, oslo)
+		if oslo.res != 6 || oslo.vessels != 3 || oslo.days != 2 || oslo.stations != 4 || !slices.Equal(slices.Sorted(slices.Values(oslo.ids)), []string{"kystverket", peerA.station, peerB.station, "station:other"}) {
+			t.Errorf("%s: Oslo at resolution 6 is %+v, want 2 + 1 vessels over 2 days from 4 stations", when, oslo)
 		}
-		if r := got[osloRes3]; r.res != 3 || r.vessels != 3 || r.stations != 2 {
+		if r := got[osloRes3]; r.res != 3 || r.vessels != 3 || r.stations != 4 {
 			t.Errorf("%s: the resolution-3 cell containing it is %+v", when, r)
 		}
 		if len(got) != len(coverageBands) {
 			t.Errorf("%s: %d cells, want one per resolution", when, len(got))
 		}
-		for station, want := range map[string]covRow{"kystverket": {vessels: 3, days: 2}, "kystverket/2573010": {vessels: 1, days: 1}, "station:other": {vessels: 1, days: 1}} {
+		for station, want := range map[string]covRow{"kystverket": {vessels: 3, days: 2}, "kystverket/2573010": {vessels: 1, days: 1}, "station:other": {vessels: 1, days: 1}, peerA.station: {vessels: 1, days: 1}, peerB.station: {vessels: 1, days: 1}} {
 			var r covRow
 			if err := conn.stationCoverageCells(ctx, station, day1, day2, func(c covRow) error {
 				if c.cell == osloRes6 {
@@ -499,7 +503,7 @@ func TestCoverageFromClickHouse(t *testing.T) {
 				t.Errorf("%s: %s's Oslo cell is %+v, want %d vessels over %d days", when, station, r, want.vessels, want.days)
 			}
 		}
-		if ids, err := conn.coverageStations(ctx, day1, day2); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"kystverket", "kystverket/2573010", "station:other"}) {
+		if ids, err := conn.coverageStations(ctx, day1, day2); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"kystverket", "kystverket/2573010", peerA.station, peerB.station, "station:other"}) {
 			t.Errorf("%s: stations %v, %v", when, ids, err)
 		}
 		if err := conn.stationCoverageCells(ctx, "station:wild", day1, day2, func(c covRow) error {
@@ -671,6 +675,7 @@ func TestStationKey(t *testing.T) {
 		{"station", "station:harbor", before, "station:harbor"},
 		{"kystverket", "kystverket/2573010", before, "kystverket/2573010"},
 		{"barentswatch", "barentswatch/terra", after, "barentswatch/terra"},
+		{"peer", "peer:ed25519:K/udp:ab12", before, "peer:ed25519:K/udp:ab12"},
 	} {
 		var got string
 		if err := conn.conn.QueryRow(ctx, "SELECT "+chStationKey+" FROM (SELECT ? AS source, ? AS station, toDateTime64(?, 3, 'UTC') AS ts)",

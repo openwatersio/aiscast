@@ -8,6 +8,7 @@ import {
   shortAge,
   isValidImo,
   isVolunteer,
+  peerStation,
   stationName,
   stationStatus,
   stationDescription,
@@ -555,7 +556,7 @@ describe("viewBoxes", () => {
 
 describe("isVolunteer", () => {
   it("counts the kinds people run", () => {
-    for (const s of ["udp:24dfc99708ff", "station:ed25519:abc", "http:ed25519:abc", "v1:abc", "mmsi:367430440"]) {
+    for (const s of ["udp:24dfc99708ff", "station:ed25519:abc", "http:ed25519:abc", "v1:abc", "mmsi:367430440", "peer:ed25519:K"]) {
       expect(isVolunteer(s)).toBe(true);
     }
   });
@@ -573,6 +574,8 @@ describe("stationTitles", () => {
     expect(stationTitle({ station: "udp:ec7cca876017" })).toBe("Anonymous …6017");
     expect(stationTitle({ station: "station:ed25519:mFbn0k5uAk_PRO8CpX7H/n2k" })).toBe("Anonymous …pX7H");
     expect(stationTitle({ station: "somefeed" })).toBe("somefeed");
+    expect(stationTitle({ station: "peer:ed25519:K/station:ed25519:mFbn0k5uAk_PRO8CpX7H" })).toBe("Anonymous …pX7H");
+    expect(stationTitle({ station: "peer:ed25519:K/udp:ec7cca876017" })).toBe("Anonymous …6017");
     expect(stationName({ station: "udp:ec7cca876017" })).toEqual({ title: "Anonymous", suffix: "…6017" });
   });
   it("tells apart stations that would read the same", () => {
@@ -589,6 +592,18 @@ describe("stationTitles", () => {
       { title: "CERULEAN", suffix: "…:xyz" },
       { title: "CERULEAN", suffix: "n2k" },
       { title: "AISHub" },
+    ]);
+  });
+  it("tells a station heard through a peer by its node", () => {
+    const titles = stationTitles([
+      { station: "station:ed25519:abcd" },
+      { station: "peer:ed25519:K1/station:ed25519:abcd" },
+      { station: "peer:ed25519:K2/station:ed25519:abcd" },
+    ]);
+    expect([...titles.values()]).toEqual([
+      { title: "Anonymous", suffix: "…abcd …abcd" },
+      { title: "Anonymous", suffix: "…abcd via …9:K1" },
+      { title: "Anonymous", suffix: "…abcd via …9:K2" },
     ]);
   });
 });
@@ -611,6 +626,13 @@ describe("volunteerReceiver", () => {
   it("leaves feed stations and plain ids alone", () => {
     expect(volunteerReceiver("barentswatch/terra")).toBeUndefined();
     expect(volunteerReceiver("station:mmsi:368168720")).toBeUndefined();
+  });
+  it("keeps a station heard through a peer whole", () => {
+    expect(volunteerReceiver("peer:ed25519:K/station:ed25519:x")).toBeUndefined();
+    expect(volunteerReceiver("peer:ed25519:K/udp:ab12")).toBeUndefined();
+    expect(peerStation("peer:ed25519:K/udp:ab12")).toBe("udp:ab12");
+    expect(peerStation("peer:ed25519:K")).toBeUndefined();
+    expect(peerStation("udp:ab12")).toBeUndefined();
   });
 });
 
