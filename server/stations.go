@@ -211,6 +211,11 @@ func sourceKind(source string) string {
 }
 
 // volunteer: a station someone runs and feeds us directly, as opposed to a feed or an aggregate.
+// selfReported: a source whose receptions a sender vouches for alone, a volunteer's or a peer's.
+func selfReported(source string) bool {
+	return volunteer(source) || sourceKind(source) == peerSource
+}
+
 func volunteer(source string) bool {
 	for _, pfx := range []string{"station:", "udp:", "mmsi:"} {
 		if strings.HasPrefix(source, pfx) {
@@ -312,7 +317,9 @@ func (s *stationStats) rows(now time.Time, counts map[string]stationCount) []sta
 		// A UDP station, udp: or mmsi:, is listed only while the process that heard it runs. Anyone can name one with a
 		// line to the UDP port or claim any MMSI with !AIVDO, and a re-keyed sender leaves a udp: row at every restart
 		// until its next own-ship sentence, so nothing in the series tells a real one from these.
-		if c.source == "udp" || c.source == "mmsi" || retiredStation(c.source) {
+		if c.source == "udp" || c.source == "mmsi" || retiredStation(c.source) ||
+			c.source == peerSource && (strings.Contains(id, "/udp:") || strings.Contains(id, "/mmsi:")) { // a peer's UDP stations alike
+
 			continue
 		}
 		src := seriesSource(id, c.source)
@@ -352,10 +359,13 @@ func retiredStation(kind string) bool { return kind == "v1" || kind == "http" }
 // seriesSource is a station's source from the kind the series keeps: a volunteer's station is named by its source,
 // and a feed's receivers by the feed.
 func seriesSource(id, kind string) string {
-	if strings.HasPrefix(id, kind+":") {
-		return id
+	if !strings.HasPrefix(id, kind+":") {
+		return kind
 	}
-	return kind
+	if kind == peerSource { // peer:<node>/<station>: the source is the node, as live rows carry it
+		id, _, _ = strings.Cut(id, "/")
+	}
+	return id
 }
 
 // stationRows is every station's row with its name fields filled in.

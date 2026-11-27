@@ -52,7 +52,7 @@ Golden tests hold the line: per-type fixtures built from captured aisstream outp
 
 ## One peer in a network
 
-Long term aiscast is one peer in a network where vessels, shore receivers, nodes, and chart clients exchange AIS as signed events over the internet, alongside VHF. Three decisions keep that reachable without building it now:
+aiscast is one peer in a network that will grow to one where vessels, shore receivers, nodes, and chart clients exchange AIS as signed events over the internet, alongside VHF. Three decisions keep that reachable without building it now:
 
 1. `/v1/stream` is direction-agnostic. One WebSocket, publish and subscribe frames, bbox and cell subscriptions. Node-to-node peering is then just a client that also publishes.
 2. The internal record is the event above: content-hash id, origin key, geo cell, contributing receptions, and room for a signature. Dedupe by id, provenance by signature chain. aiscast relays, and it signs only its own observations and attestations.
@@ -60,7 +60,7 @@ Long term aiscast is one peer in a network where vessels, shore receivers, nodes
 
 Trust in that network is tiered and shown in the UI rather than assumed: self-reported (any key), corroborated (the key's internet reports matched independent VHF receptions, which a receiver network can attest), attested (a flag-state or MCP certificate, or an organization vouching). Privacy is consent-based, with the sender choosing public, delayed, coarse, or encrypted to a group. IP-sourced targets reach a plotter only through Signal K with the source marked `net`, never via VHF transmit, and are never presented as collision avoidance. The precedents worth copying are APRS-IS (federated filter relays), Nostr (signed events, dumb relays, tag filters, the `g` geohash tag), Secure Scuttlebutt (offline-first gossip), and IALA MCP/MRN (official maritime identity over IP).
 
-One discipline carries into any peering: never forward `synthesized` or aggregate-sourced events to a peer without saying so. Receiver-only networks block relayed aggregates, and `source` provenance is what lets them take just what they want.
+Today the network is a star around Open Waters, one hop each way: the compiled-in list names Open Waters alone. Every node dials the nodes compiled into `server/peers.go`, proving its node key, and once the other side approves that key, each sends the other its own volunteer receptions. It never sends feeds, aggregates, synthesized events, or what it got from another peer. That one rule keeps data with no-redistribute terms on the node that pulled it, and it means nothing loops, so the mesh needs no hop count or seen-set. Approved pairs end up with each other's volunteer receptions, less the transmissions whose first copy came from a feed or another peer, since a node shares only the copy dedupe kept. Approval is manual, by node key, because peer data is self-reported until signing and corroboration exist. Nodes other than Open Waters reach each other only through it once it relays, with provenance and a seen-set, APRS-IS style; a full mesh of N² links would serve a handful of nodes at most. Receiver-only networks block relayed aggregates, and `source` provenance (`peer:<node key>`) is what lets them take just what they want.
 
 ## Measurements
 

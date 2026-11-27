@@ -19,6 +19,8 @@ import (
 var licenses = map[string]string{
 	"kystverket": "NLOD-2.0", "barentswatch": "NLOD-2.0", "digitraffic": "CC-BY-4.0", "aisstream": "aisstream-io-terms", "aishub": "aishub-terms",
 	"station": "CC0-1.0", "udp": "CC0-1.0", "mmsi": "CC0-1.0",
+	// a peer node's volunteer receptions, given under the same contributor agreement every node serves
+	"peer":           "CC0-1.0",
 	"marinecadastre": "us-public-domain", "dma": "DK-PSI",
 	// contributors were named by transport before station ids; raw hours from then still carry these
 	// sources, and replaying them must license their copies the same way
