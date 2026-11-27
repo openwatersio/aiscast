@@ -38,7 +38,7 @@ The Signal K plugin sends the boat's own ship as `!AIVDO`. It does this for a li
 **What does not count.**
 
 - The station's own vessel. Own-ship `!AIVDO` is not reception, and a boat in a remote anchorage would otherwise always add one exclusive vessel. The event gets an `Own` flag in `ingestLine`, set when the sentence is `VDO`.
-- Stale copies. They are never binned into `station_vessels`. This matters for AISHub: the server feeds volunteer receptions to AISHub and polls AISHub back, so a volunteer's vessel can return as an AISHub row, older than the volunteer's own copy.
+- Stale copies. They are never binned into `station_vessels`. This matters for AISHub: a vessel a volunteer hears can also arrive as an AISHub row, older than the volunteer's own copy.
 
 **Window: 24 hours.** A 30-minute snapshot changes with the time of day and with ferry schedules, so it is a poor number for a leaderboard that is read once a month. 24 hours matches `events.last_24h`. A 7-day window reads the same table over a longer span, if the digest wants it.
 
